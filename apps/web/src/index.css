@@ -1,0 +1,205 @@
+@import "tailwindcss";
+@import "./tokens.css";
+
+/* Streamdown (and its plugins) ship pre-built JS carrying Tailwind classes;
+   without these the markdown renderer loses its code-block and table styling. */
+@source "../node_modules/streamdown/dist/*.js";
+@source "../node_modules/@streamdown/cjk/dist/*.js";
+@source "../node_modules/@streamdown/code/dist/*.js";
+@source "../node_modules/@streamdown/math/dist/*.js";
+@source "../node_modules/@streamdown/mermaid/dist/*.js";
+
+/* ============================================================================
+ * tokens.css 的语义层 → Tailwind v4 工具类。
+ *
+ * `inline` 表示工具类里直接写 `var(--color-bg)` 而不是再套一层，
+ * 这样 tokens.css 里 `:root[data-theme="light"]` / `[data-density="compact"]`
+ * 的覆盖在运行时依然生效（tokens.css 是无 layer 的，优先级高于
+ * `@layer theme`，所以这里同名的自引用不会形成死循环）。
+ *
+ * 组件只许用这里映射出来的工具类，不许写裸色值 / 裸像素，
+ * 也不许引用 tokens.css 里的原始色阶（--neutral-* / --amber-* …）。
+ * ========================================================================== */
+@theme inline {
+  /* ── 背景 / 描边 / 前景 ── */
+  --color-bg: var(--color-bg);
+  --color-bg-elevated: var(--color-bg-elevated);
+  --color-bg-inset: var(--color-bg-inset);
+  --color-bg-hover: var(--color-bg-hover);
+  --color-bg-active: var(--color-bg-active);
+  --color-bg-scrim: var(--color-bg-scrim);
+  --color-border: var(--color-border);
+  --color-border-strong: var(--color-border-strong);
+  --color-fg: var(--color-fg);
+  --color-fg-muted: var(--color-fg-muted);
+  --color-fg-faint: var(--color-fg-faint);
+
+  /* ── 品牌主色 ──
+   * 注意：shadcn 的 "accent" 是「hover 表面」，我们的 accent 是品牌色。
+   * 下面的 token 桥把 shadcn 的 --color-accent 映到 --color-bg-hover，
+   * 所以我们自己的组件一律用 `brand`（bg-brand / text-brand / …）。 */
+  --color-brand: var(--color-accent);
+  --color-brand-hover: var(--color-accent-hover);
+  --color-brand-fg: var(--color-accent-fg);
+  --color-brand-bg: var(--color-accent-bg);
+
+  /* ── 状态 ── */
+  --color-success: var(--color-success);
+  --color-success-bg: var(--color-success-bg);
+  --color-warning: var(--color-warning);
+  --color-warning-bg: var(--color-warning-bg);
+  --color-danger: var(--color-danger);
+  --color-danger-bg: var(--color-danger-bg);
+  --color-info: var(--color-info);
+  --color-info-bg: var(--color-info-bg);
+
+  /* ── diff / 其它 ── */
+  --color-diff-add-bg: var(--color-diff-add-bg);
+  --color-diff-add-fg: var(--color-diff-add-fg);
+  --color-diff-del-bg: var(--color-diff-del-bg);
+  --color-diff-del-fg: var(--color-diff-del-fg);
+  --color-selection: var(--color-selection);
+  --color-focus-ring: var(--color-focus-ring);
+
+  /* ── shadcn / AI Elements 语义名 → 我们的 token ──
+   * 取来的组件源码原样保留，靠这一层桥让它们直接长成 Vgent 的样子。
+   * 唯一需要小心的是 accent：shadcn 的 accent = hover 表面，不是品牌色。 */
+  --color-background: var(--color-bg);
+  --color-foreground: var(--color-fg);
+  --color-card: var(--color-bg-elevated);
+  --color-card-foreground: var(--color-fg);
+  --color-popover: var(--color-bg-elevated);
+  --color-popover-foreground: var(--color-fg);
+  --color-primary: var(--color-accent);
+  --color-primary-foreground: var(--color-accent-fg);
+  --color-secondary: var(--color-bg-inset);
+  --color-secondary-foreground: var(--color-fg);
+  --color-muted: var(--color-bg-inset);
+  --color-muted-foreground: var(--color-fg-muted);
+  --color-accent: var(--color-bg-hover);
+  --color-accent-foreground: var(--color-fg);
+  --color-destructive: var(--color-danger);
+  --color-destructive-foreground: var(--color-fg);
+  --color-input: var(--color-border);
+  --color-ring: var(--color-focus-ring);
+
+  /* ── 字体 ── */
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+
+  /* ── 字号 / 行高 ── */
+  --text-2xs: var(--text-2xs);
+  --text-xs: var(--text-xs);
+  --text-sm: var(--text-sm);
+  --text-code: var(--text-code);
+  --text-body: var(--text-body);
+  --text-md: var(--text-md);
+  --text-lg: var(--text-lg);
+  --text-xl: var(--text-xl);
+  --leading-none: var(--leading-none);
+  --leading-tight: var(--leading-tight);
+  --leading-body: var(--leading-body);
+  --leading-code: var(--leading-code);
+
+  /* ── 间距（含布局常量：w-sidebar / h-topbar / h-row-tool …） ── */
+  --spacing: var(--spacing);
+  --spacing-3xs: var(--spacing-3xs);
+  --spacing-2xs: var(--spacing-2xs);
+  --spacing-xs: var(--spacing-xs);
+  --spacing-sm: var(--spacing-sm);
+  --spacing-md: var(--spacing-md);
+  --spacing-lg: var(--spacing-lg);
+  --spacing-xl: var(--spacing-xl);
+  --spacing-2xl: var(--spacing-2xl);
+  --spacing-3xl: var(--spacing-3xl);
+  --spacing-sidebar: var(--spacing-sidebar);
+  --spacing-sidebar-rail: var(--spacing-sidebar-rail);
+  --spacing-rightpane: var(--spacing-rightpane);
+  --spacing-log-max: var(--spacing-log-max);
+  --spacing-review-bar: var(--spacing-review-bar);
+  --spacing-ring: var(--spacing-ring);
+  --spacing-avatar: var(--spacing-avatar);
+  --spacing-topbar: var(--spacing-topbar);
+  --spacing-row-tool: var(--spacing-row-tool);
+  --spacing-row-task: var(--spacing-row-task);
+  --spacing-row-file: var(--spacing-row-file);
+  --spacing-block-gap: var(--spacing-block-gap);
+  --spacing-card-pad: var(--spacing-card-pad);
+
+  /* ── 圆角 ── */
+  --radius-xs: var(--radius-xs);
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+  --radius-full: var(--radius-full);
+
+  /* ── 阴影 ── */
+  --shadow-xs: var(--shadow-xs);
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+  --shadow-popover: var(--shadow-popover);
+
+  /* ── 时长（Tailwind 没有 duration 命名空间，用 duration-[var(--duration-…)]） ── */
+  --duration-fast: var(--duration-fast);
+  --duration-base: var(--duration-base);
+  --duration-slow: var(--duration-slow);
+  --duration-pulse: var(--duration-pulse);
+}
+
+/* ============================================================================
+ * 唯一允许的全局规则：reset / body / 滚动条 / 两个 keyframes。
+ * 其余一切走 Tailwind 工具类。
+ * ========================================================================== */
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    overflow: hidden;
+    background: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    font-size: var(--text-body);
+    line-height: var(--leading-body);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    background: var(--color-selection);
+  }
+
+  /* 细滚动条，配色跟着主题走 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-border-strong) transparent;
+  }
+}
+
+/* 「运行中」呼吸点 —— 唯一的自定义动画 */
+@keyframes vgent-breathe {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.72);
+  }
+}
+
+@theme {
+  --animate-breathe: vgent-breathe var(--duration-pulse) ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-breathe {
+    animation: none;
+  }
+}

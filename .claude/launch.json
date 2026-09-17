@@ -8,6 +8,12 @@
       "port": 4173
     },
     {
+      "name": "server",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["packages/server/dist/main.js", "--port", "7412"],
+      "port": 7412
+    },
+    {
       "name": "web",
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["--filter", "@vgent/web", "dev"],

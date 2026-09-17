@@ -12,11 +12,11 @@ export {
   VgentServerError,
 } from "./errors.js";
 export { createEngineRegistry, type EngineContext, type EngineFactory, type EngineRegistry, type EngineRunner } from "./engines/registry.js";
-export { createRunManager, recoverInterruptedThreads, type RunManager } from "./runs.js";
+export { AUTO_TITLE_MAX_LEN, createRunManager, deriveThreadTitle, recoverInterruptedThreads, type RunManager } from "./runs.js";
 export { readJsonOrQuarantine, writeJsonAtomic } from "./store/atomic-file.js";
 export { createProjectStore, type ProjectStore } from "./store/projects.js";
 export { createSettingsStore, DEFAULT_SETTINGS, type SettingsStore } from "./store/settings.js";
-export { createThreadStore, summarize, type CreateThreadInput, type ThreadPatch, type ThreadStore } from "./store/threads.js";
+export { createThreadStore, DEFAULT_THREAD_TITLE, summarize, type CreateThreadInput, type ThreadPatch, type ThreadStore } from "./store/threads.js";
 export { DEFAULT_DATA_DIR, resolveDataDir } from "./paths.js";
 export type {
   ConnectionInfo,

@@ -6,9 +6,9 @@ import { isToolUIPart, type ModelMessage, type TextStreamPart, type ToolSet, typ
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp, type VgentApp } from "./app.js";
 import { createEngineRegistry, type EngineContext, type EngineFactory, type EngineRunner } from "./engines/registry.js";
-import { ABANDONED_TURN_TEXT, createRunManager, RESTART_PENDING_TOOL_TEXT } from "./runs.js";
+import { ABANDONED_TURN_TEXT, AUTO_TITLE_MAX_LEN, createRunManager, deriveThreadTitle, RESTART_PENDING_TOOL_TEXT } from "./runs.js";
 import { createProjectStore } from "./store/projects.js";
-import { createThreadStore } from "./store/threads.js";
+import { createThreadStore, DEFAULT_THREAD_TITLE } from "./store/threads.js";
 import type { HarnessState, Project, ThreadRecord } from "./types.js";
 
 const TOKEN = "test-token-0123456789";
@@ -511,5 +511,50 @@ describe("run lifecycle", () => {
     // Once the run entry is gone there is nothing to subscribe to.
     for (let attempt = 0; attempt < 100 && runs.subscribe(thread.id) != null; attempt++) await sleep(10);
     expect(runs.subscribe(thread.id)).toBeUndefined();
+  });
+});
+
+describe("auto title", () => {
+  /** A thread created without a title carries the placeholder. */
+  async function untitledThread(app: VgentApp, repoPath: string): Promise<ThreadRecord> {
+    const project = (await (await postJson(app, "/api/projects", { repoPath })).json()) as Project;
+    return (await (
+      await postJson(app, "/api/threads", { projectId: project.id, engine: "claude-code", permissionMode: "allow-reads" })
+    ).json()) as ThreadRecord;
+  }
+
+  it("names an untitled thread after the first line of its first user message", async () => {
+    const dataDir = await tempDir();
+    const app = makeApp(dataDir, createApprovalEngine().factory);
+    const thread = await untitledThread(app, dataDir);
+    expect(thread.title).toBe(DEFAULT_THREAD_TITLE);
+
+    await postJson(app, `/api/chat/${thread.id}`, {
+      messages: [userMessage("u1", "  给 Web 端定三栏布局  \n第二行不应该进标题")],
+    }).then((response) => response.text());
+
+    const updated = await waitForStatus(app, thread.id, "idle");
+    expect(updated.title).toBe("给 Web 端定三栏布局");
+  });
+
+  it("caps the derived title and leaves an explicit one alone", async () => {
+    const dataDir = await tempDir();
+    const app = makeApp(dataDir, createApprovalEngine().factory);
+
+    const long = "长".repeat(AUTO_TITLE_MAX_LEN + 20);
+    const untitled = await untitledThread(app, dataDir);
+    await postJson(app, `/api/chat/${untitled.id}`, { messages: [userMessage("u1", long)] }).then((r) => r.text());
+    expect((await waitForStatus(app, untitled.id, "idle")).title).toBe("长".repeat(AUTO_TITLE_MAX_LEN));
+
+    const named = await setupThread(app, dataDir);
+    await postJson(app, `/api/chat/${named.id}`, { messages: [userMessage("u2", "别改我的标题")] }).then((r) => r.text());
+    expect((await waitForStatus(app, named.id, "idle")).title).toBe("审批");
+  });
+
+  it("derives nothing from a message with no usable text", () => {
+    expect(deriveThreadTitle([])).toBeUndefined();
+    expect(deriveThreadTitle([{ id: "a", role: "assistant", parts: [{ type: "text", text: "嗨" }] }])).toBeUndefined();
+    expect(deriveThreadTitle([userMessage("u1", "   \n  ")])).toBeUndefined();
+    expect(deriveThreadTitle([userMessage("u1", "\n\n真正的标题")])).toBe("真正的标题");
   });
 });

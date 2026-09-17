@@ -1,0 +1,352 @@
+/* ============================================================================
+ * Vgent design tokens —— 唯一的 token 来源 (single source of truth)
+ * ----------------------------------------------------------------------------
+ * 这份文件是 Vgent 全部视觉常量的唯一来源。实现阶段原样搬到
+ * `apps/web/src/tokens.css`，在 `index.css` 里 `@import "./tokens.css";`
+ * 然后用 Tailwind v4 的 `@theme inline { … }` 把语义层映射成工具类
+ * （示例见 docs/prototype/README.md）。
+ *
+ * 规则（硬约束，Review 时按此驳回）：
+ *   1. 任何组件、任何 CSS 文件都不许写裸色值 / 裸像素。一律 `var(--…)`。
+ *   2. 组件只引用【语义层】（--color-bg / --color-fg-muted / …），
+ *      不许引用【原始色阶】（--neutral-800 / --amber-400 / …）。
+ *      原始色阶只在本文件内部被语义层消费。
+ *   3. 变量命名遵循 Tailwind v4 `@theme` 命名空间：
+ *      --color-* / --spacing-* / --radius-* / --text-* / --leading-*
+ *      --font-* / --shadow-* / --duration-*
+ *   4. 新增语义 token 要先在 tokens.html 里出现，让人能对着拍板。
+ *
+ * ----------------------------------------------------------------------------
+ * 品牌主色 (accent) = 琥珀 amber，oklch(0.80 0.155 72)。只挑这一个，理由：
+ *
+ *   a) 血统对。琥珀是 CRT 单色终端的磷光色，是"编译中 / 构建中"的传统颜色。
+ *      Vgent 是编码工作台不是聊天软件，主色应该来自终端而不是来自 SaaS。
+ *   b) 不撞同行。开发者工具的主色几乎被蓝 / 紫 / 青占满
+ *      （Vercel、Linear、VS Code、GitHub）。暖橙在这个品类里是空位，
+ *      一眼能认出来不是 shadcn 默认皮。
+ *   c) 不撞 diff。diff 的红（色相 ~27）绿（~152）是屏幕上信息量最大的两个
+ *      颜色，主色必须让开；琥珀在 72，两边都有距离，且深色底上亮度够高。
+ *   d) 只有一个。accent 的用途被限死在五处：品牌标记、主按钮、焦点环、
+ *      "运行中"指示、当前选中任务的左侧标记。其余一律中性色。
+ *      为了保证这一点，语义状态色（success/warning/danger/info）刻意压低了
+ *      彩度，做成"安静"的颜色 —— 屏幕上只允许 accent 一个响亮的颜色。
+ *
+ *   已拍板（2026-09-17）：warning（赭黄，色相 95）和 accent（琥珀，72）在小色点尺寸下
+ *     相邻，最终不改色、靠形状区分——等审批 / 等回答的状态点改成空心环，
+ *     运行中 / 完成 / 失败保持实心圆（见 prototype.css 的 `.dot[data-state]`）。
+ * ========================================================================== */
+
+:root {
+  /* ══ 原始色阶 (raw scale) —— 组件不许直接引用 ══════════════════════════ */
+
+  /* 中性色：带极轻暖调（色相 75，彩度 0.005），和琥珀主色同族，不发蓝 */
+  --neutral-1000: oklch(0.115 0.004 75);
+  --neutral-975:  oklch(0.135 0.005 75);
+  --neutral-950:  oklch(0.158 0.005 75);
+  --neutral-900:  oklch(0.188 0.005 75);
+  --neutral-850:  oklch(0.212 0.006 75);
+  --neutral-800:  oklch(0.244 0.006 75);
+  --neutral-700:  oklch(0.305 0.007 75);
+  --neutral-600:  oklch(0.400 0.007 75);
+  --neutral-500:  oklch(0.520 0.007 75);
+  --neutral-400:  oklch(0.632 0.007 75);
+  --neutral-300:  oklch(0.742 0.006 75);
+  --neutral-200:  oklch(0.842 0.005 75);
+  --neutral-100:  oklch(0.918 0.004 75);
+  --neutral-50:   oklch(0.965 0.003 75);
+  --neutral-25:   oklch(0.985 0.002 75);
+  --neutral-0:    oklch(1 0 0);
+
+  /* 琥珀（品牌主色） */
+  --amber-300: oklch(0.868 0.125 78);
+  --amber-400: oklch(0.800 0.155 72);
+  --amber-500: oklch(0.730 0.165 66);
+  --amber-600: oklch(0.630 0.160 60);
+  --amber-700: oklch(0.560 0.155 55);
+  --amber-800: oklch(0.440 0.125 52);
+
+  /* 状态色：刻意低彩度，让 accent 成为屏幕上唯一响亮的颜色 */
+  --green-400:  oklch(0.735 0.115 152);
+  --green-500:  oklch(0.660 0.125 152);
+  --green-600:  oklch(0.545 0.120 150);
+  --yellow-400: oklch(0.800 0.105 95);
+  --yellow-500: oklch(0.720 0.110 92);
+  --yellow-600: oklch(0.595 0.105 88);
+  --red-400:    oklch(0.690 0.145 27);
+  --red-500:    oklch(0.620 0.165 27);
+  --red-600:    oklch(0.545 0.170 27);
+  --blue-400:   oklch(0.725 0.085 240);
+  --blue-500:   oklch(0.640 0.100 243);
+  --blue-600:   oklch(0.545 0.110 245);
+
+  /* ══ 语义层 (semantic) —— 组件只许引用这一层 ═════════════════════════════
+   * 下面是深色主题（默认）。浅色在 :root[data-theme="light"] 里单独调，
+   * 不是深色反相。
+   */
+
+  /* 背景 */
+  --color-bg:           var(--neutral-950);  /* 页面底 */
+  --color-bg-elevated:  var(--neutral-900);  /* 面板、卡片、浮层 */
+  --color-bg-inset:     var(--neutral-1000); /* 终端输出、输入框、代码块 */
+  --color-bg-hover:     oklch(1 0 0 / 0.045);
+  --color-bg-active:    oklch(1 0 0 / 0.085);
+  --color-bg-scrim:     oklch(0.115 0.004 75 / 0.62);
+
+  /* 描边 */
+  --color-border:        var(--neutral-850);
+  --color-border-strong: var(--neutral-700);
+
+  /* 前景 */
+  --color-fg:        var(--neutral-100);
+  --color-fg-muted:  var(--neutral-400);
+  --color-fg-faint:  var(--neutral-500);
+
+  /* 主色（用途见文件头） */
+  --color-accent:       var(--amber-400);
+  --color-accent-hover: var(--amber-300);
+  --color-accent-fg:    oklch(0.195 0.030 70);        /* accent 底上的文字 */
+  --color-accent-bg:    oklch(0.800 0.155 72 / 0.14); /* accent 弱底 */
+
+  /* 状态 */
+  --color-success:    var(--green-400);
+  --color-success-bg: oklch(0.735 0.115 152 / 0.13);
+  --color-warning:    var(--yellow-400);
+  --color-warning-bg: oklch(0.800 0.105 95 / 0.13);
+  --color-danger:     var(--red-400);
+  --color-danger-bg:  oklch(0.690 0.145 27 / 0.13);
+  --color-info:       var(--blue-400);
+  --color-info-bg:    oklch(0.725 0.085 240 / 0.14);
+
+  /* diff */
+  --color-diff-add-bg: oklch(0.735 0.115 152 / 0.16);
+  --color-diff-add-fg: oklch(0.815 0.100 152);
+  --color-diff-del-bg: oklch(0.690 0.145 27 / 0.16);
+  --color-diff-del-fg: oklch(0.775 0.115 27);
+
+  /* 其它 */
+  --color-selection:  oklch(0.800 0.155 72 / 0.26);
+  --color-focus-ring: oklch(0.800 0.155 72 / 0.70);
+
+  /* ══ 字体 ═══════════════════════════════════════════════════════════════
+   * 系统栈，不加载外部字体（零网络请求）。
+   * 路径、命令、diff、模型 ID、行号一律 mono。
+   */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter,
+               "Segoe UI", system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono",
+               Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* ══ 字号阶梯 ══════════════════════════════════════════════════════════ */
+  --text-2xs:  10px;  /* 分组标题、角标 */
+  --text-xs:   11px;  /* 元信息、耗时、行号 */
+  --text-sm:   12px;  /* 次要正文、胶囊、按钮 */
+  --text-code: 12px;  /* mono 正文：路径、diff、终端 */
+  --text-body: 13px;  /* 正文（默认密度）—— 密度会覆盖 */
+  --text-md:   14px;  /* 任务标题 */
+  --text-lg:   16px;
+  --text-xl:   20px;  /* 空状态标题 */
+
+  /* ══ 行高 ═══════════════════════════════════════════════════════════════ */
+  --leading-none:  1;
+  --leading-tight: 1.25;
+  --leading-body:  1.45;  /* 默认密度 —— 密度会覆盖 */
+  --leading-code:  1.55;
+
+  /* ══ 间距 ═══════════════════════════════════════════════════════════════
+   * 基准 4px（Tailwind v4 的 --spacing 基数），另给一套语义名。
+   */
+  --spacing: 4px;
+  --spacing-3xs: 2px;
+  --spacing-2xs: 4px;
+  --spacing-xs:  6px;
+  --spacing-sm:  8px;
+  --spacing-md:  12px;
+  --spacing-lg:  16px;
+  --spacing-xl:  24px;
+  --spacing-2xl: 32px;
+  --spacing-3xl: 48px;
+
+  /* 布局常量（也走 --spacing-* 命名空间，Tailwind 里就是 w-sidebar / h-topbar） */
+  --spacing-sidebar:      240px;  /* 左栏展开宽 */
+  --spacing-sidebar-rail:  48px;  /* 左栏收成图标条时的宽（⌘B 的中间档） */
+  --spacing-rightpane:    380px;  /* 右栏展开宽 */
+  --spacing-log-max:      860px;  /* 工作日志正文最大宽度 */
+  --spacing-review-bar:    30px;  /* composer 上方那条常驻审查条的高 */
+  --spacing-ring:          16px;  /* 上下文占用环的直径 */
+  --spacing-avatar:        22px;  /* 左栏底部头像 */
+
+  /* 密度相关的行高 / 内距 —— 密度会覆盖（见下） */
+  --spacing-topbar:     36px;  /* 窗口条高 */
+  --spacing-row-tool:   28px;  /* 工具卡片摘要行高 */
+  --spacing-row-task:   46px;  /* 左栏任务项高 */
+  --spacing-row-file:   26px;  /* 变更文件行高 */
+  --spacing-block-gap:  14px;  /* 日志块之间的距离 */
+  --spacing-card-pad:   8px;   /* 卡片内距 */
+
+  /* ══ 圆角 ═══════════════════════════════════════════════════════════════ */
+  --radius-xs:   3px;
+  --radius-sm:   4px;
+  --radius-md:   6px;
+  --radius-lg:   8px;
+  --radius-xl:   12px;
+  --radius-full: 999px;
+
+  /* ══ 阴影 ═══════════════════════════════════════════════════════════════ */
+  --shadow-xs:      0 1px 1px oklch(0 0 0 / 0.30);
+  --shadow-sm:      0 1px 3px oklch(0 0 0 / 0.38);
+  --shadow-md:      0 4px 12px oklch(0 0 0 / 0.42);
+  --shadow-lg:      0 12px 32px oklch(0 0 0 / 0.50);
+  --shadow-popover: 0 8px 24px oklch(0 0 0 / 0.55), 0 0 0 1px var(--color-border);
+
+  /* ══ 动效时长 ═══════════════════════════════════════════════════════════ */
+  --duration-fast:  90ms;
+  --duration-base:  160ms;
+  --duration-slow:  280ms;
+  --duration-pulse: 1800ms;  /* "运行中"呼吸点一个周期 */
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * 浅色主题 —— 单独调过对比度，不是深色反相。
+ *   · 底不是纯白（纯白在长时间读代码时太刺眼），是 oklch(0.985) 的暖白。
+ *   · 卡片反而是纯白，靠"比底更亮"来抬起层级，和深色的"比底更亮"方向一致。
+ *   · accent 压到 --amber-700：在白底上要过 4.5:1，而深色用的 --amber-400
+ *     在白底上是几乎看不清的浅黄。
+ *   · 状态色统一下沉一到两档，弱底提高不透明度（浅底上弱底更容易糊掉）。
+ * ══════════════════════════════════════════════════════════════════════════ */
+:root[data-theme="light"] {
+  --color-bg:           var(--neutral-25);
+  --color-bg-elevated:  var(--neutral-0);
+  --color-bg-inset:     var(--neutral-50);
+  --color-bg-hover:     oklch(0.400 0.007 75 / 0.065);
+  --color-bg-active:    oklch(0.400 0.007 75 / 0.115);
+  --color-bg-scrim:     oklch(0.305 0.007 75 / 0.30);
+
+  --color-border:        oklch(0.895 0.005 75);
+  --color-border-strong: oklch(0.800 0.006 75);
+
+  --color-fg:       oklch(0.245 0.008 75);
+  --color-fg-muted: oklch(0.495 0.008 75);
+  --color-fg-faint: oklch(0.630 0.007 75);
+
+  --color-accent:       var(--amber-700);
+  --color-accent-hover: var(--amber-800);
+  --color-accent-fg:    var(--neutral-0);
+  --color-accent-bg:    oklch(0.630 0.160 60 / 0.13);
+
+  --color-success:    var(--green-600);
+  --color-success-bg: oklch(0.545 0.120 150 / 0.13);
+  --color-warning:    var(--yellow-600);
+  --color-warning-bg: oklch(0.595 0.105 88 / 0.16);
+  --color-danger:     var(--red-600);
+  --color-danger-bg:  oklch(0.545 0.170 27 / 0.11);
+  --color-info:       var(--blue-600);
+  --color-info-bg:    oklch(0.545 0.110 245 / 0.11);
+
+  --color-diff-add-bg: oklch(0.660 0.125 152 / 0.18);
+  --color-diff-add-fg: oklch(0.430 0.110 150);
+  --color-diff-del-bg: oklch(0.620 0.165 27 / 0.15);
+  --color-diff-del-fg: oklch(0.455 0.150 27);
+
+  --color-selection:  oklch(0.630 0.160 60 / 0.22);
+  --color-focus-ring: oklch(0.560 0.155 55 / 0.75);
+
+  --shadow-xs:      0 1px 1px oklch(0.305 0.007 75 / 0.08);
+  --shadow-sm:      0 1px 3px oklch(0.305 0.007 75 / 0.12);
+  --shadow-md:      0 4px 12px oklch(0.305 0.007 75 / 0.13);
+  --shadow-lg:      0 12px 32px oklch(0.305 0.007 75 / 0.16);
+  --shadow-popover: 0 8px 24px oklch(0.305 0.007 75 / 0.18), 0 0 0 1px var(--color-border);
+}
+
+/* 深色优先：默认永远深色，不跟随系统浅色/深色偏好。
+ * 只有显式 :root[data-theme="light"]（见上面）才会切换成浅色。
+ * 产品阶段如果要恢复"跟随系统"，可以引入 data-theme="system"，
+ * 再在这里用 @media (prefers-color-scheme: light) 配合
+ * :root[data-theme="system"] 选择器启用，而不是像下面这样默认生效。
+ *
+ * @media (prefers-color-scheme: light) {
+ *   :root:not([data-theme="dark"]):not([data-theme="light"]) {
+ *     --color-bg:           var(--neutral-25);
+ *     --color-bg-elevated:  var(--neutral-0);
+ *     --color-bg-inset:     var(--neutral-50);
+ *     --color-bg-hover:     oklch(0.400 0.007 75 / 0.065);
+ *     --color-bg-active:    oklch(0.400 0.007 75 / 0.115);
+ *     --color-bg-scrim:     oklch(0.305 0.007 75 / 0.30);
+ *
+ *     --color-border:        oklch(0.895 0.005 75);
+ *     --color-border-strong: oklch(0.800 0.006 75);
+ *
+ *     --color-fg:       oklch(0.245 0.008 75);
+ *     --color-fg-muted: oklch(0.495 0.008 75);
+ *     --color-fg-faint: oklch(0.630 0.007 75);
+ *
+ *     --color-accent:       var(--amber-700);
+ *     --color-accent-hover: var(--amber-800);
+ *     --color-accent-fg:    var(--neutral-0);
+ *     --color-accent-bg:    oklch(0.630 0.160 60 / 0.13);
+ *
+ *     --color-success:    var(--green-600);
+ *     --color-success-bg: oklch(0.545 0.120 150 / 0.13);
+ *     --color-warning:    var(--yellow-600);
+ *     --color-warning-bg: oklch(0.595 0.105 88 / 0.16);
+ *     --color-danger:     var(--red-600);
+ *     --color-danger-bg:  oklch(0.545 0.170 27 / 0.11);
+ *     --color-info:       var(--blue-600);
+ *     --color-info-bg:    oklch(0.545 0.110 245 / 0.11);
+ *
+ *     --color-diff-add-bg: oklch(0.660 0.125 152 / 0.18);
+ *     --color-diff-add-fg: oklch(0.430 0.110 150);
+ *     --color-diff-del-bg: oklch(0.620 0.165 27 / 0.15);
+ *     --color-diff-del-fg: oklch(0.455 0.150 27);
+ *
+ *     --color-selection:  oklch(0.630 0.160 60 / 0.22);
+ *     --color-focus-ring: oklch(0.560 0.155 55 / 0.75);
+ *
+ *     --shadow-xs:      0 1px 1px oklch(0.305 0.007 75 / 0.08);
+ *     --shadow-sm:      0 1px 3px oklch(0.305 0.007 75 / 0.12);
+ *     --shadow-md:      0 4px 12px oklch(0.305 0.007 75 / 0.13);
+ *     --shadow-lg:      0 12px 32px oklch(0.305 0.007 75 / 0.16);
+ *     --shadow-popover: 0 8px 24px oklch(0.305 0.007 75 / 0.18), 0 0 0 1px var(--color-border);
+ *   }
+ * }
+ */
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * 密度
+ *   默认 comfortable，但基线就比聊天软件紧：正文 13px / 行高 1.45 /
+ *   工具卡片行高 28px。compact 在此之上再收一档，用于外接大屏一屏多信息。
+ *   只覆盖字号、行高和几个行高类 spacing，不动色板、不动圆角。
+ * ══════════════════════════════════════════════════════════════════════════ */
+:root[data-density="compact"] {
+  --text-body: 12.5px;
+  --text-sm:   11.5px;
+  --text-code: 11.5px;
+
+  --leading-body: 1.38;
+  --leading-code: 1.45;
+
+  --spacing-topbar:    32px;
+  --spacing-row-tool:  24px;
+  --spacing-row-task:  38px;
+  --spacing-row-file:  22px;
+  --spacing-block-gap: 10px;
+  --spacing-card-pad:  6px;
+  --spacing-sidebar:   212px;
+}
+
+/* 明确写出 comfortable，方便 tokens.html 对照，也让 data-density 总有值 */
+:root[data-density="comfortable"] {
+  --text-body: 13px;
+  --text-sm:   12px;
+  --text-code: 12px;
+
+  --leading-body: 1.45;
+  --leading-code: 1.55;
+
+  --spacing-topbar:    36px;
+  --spacing-row-tool:  28px;
+  --spacing-row-task:  46px;
+  --spacing-row-file:  26px;
+  --spacing-block-gap: 14px;
+  --spacing-card-pad:  8px;
+  --spacing-sidebar:   240px;
+}

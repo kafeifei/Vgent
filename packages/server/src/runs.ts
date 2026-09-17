@@ -14,7 +14,7 @@ import { createChunkHub } from "./chunk-hub.js";
 import { BadRequestError, ConflictError, NotFoundError, VgentServerError } from "./errors.js";
 import type { EngineRegistry, EngineRunner } from "./engines/registry.js";
 import type { ProjectStore } from "./store/projects.js";
-import type { ThreadStore } from "./store/threads.js";
+import { DEFAULT_THREAD_TITLE, type ThreadStore } from "./store/threads.js";
 import type { Logger, ThreadRecord, ThreadStatus } from "./types.js";
 import { silentLogger } from "./types.js";
 
@@ -36,6 +36,26 @@ const RAW_ERROR_TEXT_MAX_LEN = 2000;
 function rawErrorText(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
   return text.trim().slice(0, RAW_ERROR_TEXT_MAX_LEN);
+}
+
+/** Cap on an auto-derived thread title. */
+export const AUTO_TITLE_MAX_LEN = 60;
+
+/**
+ * The first line of the first user message, for a thread still carrying the
+ * default title. Returns undefined when there is nothing usable to name it
+ * with, so the placeholder stays.
+ */
+export function deriveThreadTitle(messages: readonly UIMessage[]): string | undefined {
+  const first = messages.find((message) => message.role === "user");
+  if (first == null) return undefined;
+  const text = first.parts
+    .filter((part): part is { type: "text"; text: string } => part.type === "text")
+    .map((part) => part.text)
+    .join("");
+  const line = text.split("\n").find((candidate) => candidate.trim().length > 0)?.trim();
+  if (line == null || line.length === 0) return undefined;
+  return line.slice(0, AUTO_TITLE_MAX_LEN);
 }
 
 export const RESTART_INTERRUPT_TEXT = "服务已重启";
@@ -349,7 +369,14 @@ export function createRunManager(options: {
       if (validated.length === 0) throw new BadRequestError("消息为空", "invalid_messages");
 
       const messages = mergeIncoming(thread.messages, validated);
-      const updated = await threads.update(threadId, { messages, status: "running", error: undefined });
+      // A thread is named by its first user message; an explicit title is kept.
+      const title = thread.title === DEFAULT_THREAD_TITLE ? deriveThreadTitle(messages) : undefined;
+      const updated = await threads.update(threadId, {
+        messages,
+        status: "running",
+        error: undefined,
+        ...(title != null ? { title } : {}),
+      });
 
       const run: LiveRun = { hub: createChunkHub(), abort: new AbortController(), done: Promise.resolve(), stopped: false };
       runs.set(threadId, run);

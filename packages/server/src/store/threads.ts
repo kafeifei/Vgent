@@ -7,6 +7,9 @@ import type { EngineId, HarnessState, Logger, PermissionMode, ThreadRecord, Thre
 import { silentLogger } from "../types.js";
 import { readJsonOrQuarantine, writeJsonAtomic } from "./atomic-file.js";
 
+/** The placeholder a thread carries until its first user message names it. */
+export const DEFAULT_THREAD_TITLE = "新任务";
+
 interface ThreadIndexFile {
   version: 1;
   threads: ThreadSummary[];
@@ -163,7 +166,7 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
         version: 1,
         id: randomUUID(),
         projectId: input.projectId,
-        title: input.title?.trim() || "新任务",
+        title: input.title?.trim() || DEFAULT_THREAD_TITLE,
         engine: input.engine,
         ...(input.model != null ? { model: input.model } : {}),
         permissionMode: input.permissionMode,

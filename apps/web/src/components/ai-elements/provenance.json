@@ -1,0 +1,287 @@
+{
+  "note": "Fetched from the official registries by scripts/fetch-ai-elements.mjs. `response` has no registry item of its own — the streamdown renderer ships inside `message` as `MessageResponse`.",
+  "fetchedAt": "2026-09-17T12:44:18.096Z",
+  "patches": [
+    {
+      "id": "cn-import",
+      "why": "shadcn ships `import { cn } from \"cn\"`, a registry placeholder for the host project's helper."
+    },
+    {
+      "id": "registry-alias",
+      "why": "Registry sources import siblings through `@/registry/<style>/ui/*`; ours live in `@/components/ui/*`."
+    },
+    {
+      "id": "react-namespace-import",
+      "why": "Some new-york-v4 files use `React.ComponentProps` without importing React, which `verbatimModuleSyntax` rejects."
+    },
+    {
+      "id": "exact-optional-reasoning",
+      "why": "reasoning.tsx passes an optional `onOpenChange` straight into `useControllableState`, whose `onChange` is required-or-absent under `exactOptionalPropertyTypes`."
+    },
+    {
+      "id": "exact-optional-shimmer",
+      "why": "shimmer.tsx casts its style object to React's `CSSProperties`, which motion's `MotionStyle` rejects under `exactOptionalPropertyTypes`."
+    }
+  ],
+  "npmDependencies": [
+    "@radix-ui/react-use-controllable-state",
+    "@streamdown/cjk",
+    "@streamdown/code",
+    "@streamdown/math",
+    "@streamdown/mermaid",
+    "ai",
+    "lucide-react",
+    "motion",
+    "radix-ui",
+    "shiki",
+    "streamdown",
+    "use-stick-to-bottom"
+  ],
+  "items": [
+    {
+      "name": "alert",
+      "kind": "shadcn",
+      "url": "https://ui.shadcn.com/r/styles/new-york-v4/alert.json",
+      "sha256": "413c97869ec0e53efa4a37f590833bcf4a7a57255f5a2e909c6bb5bac7b4570d",
+      "files": [
+        {
+          "registryPath": "registry/new-york-v4/ui/alert.tsx",
+          "localPath": "src/components/ui/alert.tsx",
+          "sha256": "afeb8ee000195794ccffbf82ab1860bf083e61d355cbe1385fc6ad73fdecfae8",
+          "patches": [
+            "cn-import"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "badge",
+      "kind": "shadcn",
+      "url": "https://ui.shadcn.com/r/styles/new-york-v4/badge.json",
+      "sha256": "0f988b37cf1c56e7ecc83b1dcf24c9af4e73ce4341da5caf2c9d9b07a551319b",
+      "files": [
+        {
+          "registryPath": "registry/new-york-v4/ui/badge.tsx",
+          "localPath": "src/components/ui/badge.tsx",
+          "sha256": "0311bb21a5dc8c1e3d70ffc35cccc375c90e2f08bb0f0dd943dad72c19ed45ff",
+          "patches": [
+            "cn-import"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "button",
+      "kind": "shadcn",
+      "url": "https://ui.shadcn.com/r/styles/new-york-v4/button.json",
+      "sha256": "4b8d7d848742727973c1b088af8d15f0b628272a1316f2d2fa344e73ddff9e9c",
+      "files": [
+        {
+          "registryPath": "registry/new-york-v4/ui/button.tsx",
+          "localPath": "src/components/ui/button.tsx",
+          "sha256": "557e27d5d3159c338da761c5aec138dcd32d313b5a55774ea8001c3f3bfc620c",
+          "patches": [
+            "cn-import"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "button-group",
+      "kind": "shadcn",
+      "url": "https://ui.shadcn.com/r/styles/new-york-v4/button-group.json",
+      "sha256": "750f0d0a247e36446efcb257b289657a6f98a492b4b7c5a2b7aabe291d23f1ec",
+      "files": [
+        {
+          "registryPath": "registry/new-york-v4/ui/button-group.tsx",
+          "localPath": "src/components/ui/button-group.tsx",
+          "sha256": "ef2e712cdbe518b86a4c65dacb8642b7bca4a47ad55bed587cc3a9c1b6275610",
+          "patches": [
+            "cn-import",
+            "registry-alias",
+            "react-namespace-import"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "code-block",
+      "kind": "ai-elements",
+      "url": "https://elements.ai-sdk.dev/api/registry/code-block.json",
+      "sha256": "b5ac0e9373b26576c69a2035aae8868d957189bd3c52807bfa91e2a12904db32",
+      "files": [
+        {
+          "registryPath": "registry/default/ai-elements/code-block.tsx",
+          "localPath": "src/components/ai-elements/code-block.tsx",
+          "sha256": "691ccd82abf8c573b7b1f9393527990fe26a3d6b98999597b98974054668d8e9",
+          "patches": [
+            "registry-alias"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "collapsible",
+      "kind": "shadcn",
+      "url": "https://ui.shadcn.com/r/styles/new-york-v4/collapsible.json",
+      "sha256": "fdc6666e9c728d7e731b0e4d67e11db81020aff47408c259549fc1aefcc8e3e7",
+      "files": [
+        {
+          "registryPath": "registry/new-york-v4/ui/collapsible.tsx",
+          "localPath": "src/components/ui/collapsible.tsx",
+          "sha256": "9d75479290d2b319ce3ef5fa4b9f42e7b580bcacd4b1077ba413109b12cf64df",
+          "patches": [
+            "react-namespace-import"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "confirmation",
+      "kind": "ai-elements",
+      "url": "https://elements.ai-sdk.dev/api/registry/confirmation.json",
+      "sha256": "46c75b46b40421a5489238c9d537de59e79acb7673b87dbc688fcfe1ffc2909f",
+      "files": [
+        {
+          "registryPath": "registry/default/ai-elements/confirmation.tsx",
+          "localPath": "src/components/ai-elements/confirmation.tsx",
+          "sha256": "a52e00ccf4704bc20d8f778c06cc47ec7633c1f70bb5877e77562a89f1f180f8",
+          "patches": [
+            "registry-alias"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "conversation",
+      "kind": "ai-elements",
+      "url": "https://elements.ai-sdk.dev/api/registry/conversation.json",
+      "sha256": "7b964b9252cb39218ebbf1e156bcf42be7a049c51e881cf72cc7b7bc2ce31090",
+      "files": [
+        {
+          "registryPath": "registry/default/ai-elements/conversation.tsx",
+          "localPath": "src/components/ai-elements/conversation.tsx",
+          "sha256": "852d544eaa5afe8eb210af8f2ae496ce449a25e3c61a0bd31a1e9370baa2b2f2",
+          "patches": [
+            "registry-alias",
+            "react-namespace-import"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "message",
+      "kind": "ai-elements",
+      "url": "https://elements.ai-sdk.dev/api/registry/message.json",
+      "sha256": "c37a2189906cf9e14d95f304d609dc6c0b53e22f78d1d644cddbe1d62284e804",
+      "files": [
+        {
+          "registryPath": "registry/default/ai-elements/message.tsx",
+          "localPath": "src/components/ai-elements/message.tsx",
+          "sha256": "2affb1d58d6948cb254e6cec888c60dfa46f2f9b9936b3df3fb7fe4b3230ed74",
+          "patches": [
+            "registry-alias"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "reasoning",
+      "kind": "ai-elements",
+      "url": "https://elements.ai-sdk.dev/api/registry/reasoning.json",
+      "sha256": "4d2e0195a483c40f3cb976ba87df2a931edbb3098bf968ba780f1cc155d5c1e9",
+      "files": [
+        {
+          "registryPath": "registry/default/ai-elements/reasoning.tsx",
+          "localPath": "src/components/ai-elements/reasoning.tsx",
+          "sha256": "6719ed9dc2ec0cf50b83052ef1ac6000934f1a2c8ea533ad88716caee0f464a0",
+          "patches": [
+            "registry-alias",
+            "exact-optional-reasoning"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "select",
+      "kind": "shadcn",
+      "url": "https://ui.shadcn.com/r/styles/new-york-v4/select.json",
+      "sha256": "ca3189ea8101a04f144b6d0f0e7330841639bfa5f4d57e7cca0894d39b30817b",
+      "files": [
+        {
+          "registryPath": "registry/new-york-v4/ui/select.tsx",
+          "localPath": "src/components/ui/select.tsx",
+          "sha256": "a25676a80cb8ea9b90a1daad062dbbd84cafba68d72dd868f390c3bf487e230c",
+          "patches": [
+            "cn-import"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "separator",
+      "kind": "shadcn",
+      "url": "https://ui.shadcn.com/r/styles/new-york-v4/separator.json",
+      "sha256": "4242a9fe839cae9083acff1280b7cccfda10e97bbc83283aed12d2d12bebdc6a",
+      "files": [
+        {
+          "registryPath": "registry/new-york-v4/ui/separator.tsx",
+          "localPath": "src/components/ui/separator.tsx",
+          "sha256": "f9ec8dde26a5c3f2af1c48a0c588c164e350567cddc5c4070cf5ba780e984f26",
+          "patches": [
+            "cn-import"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "shimmer",
+      "kind": "ai-elements",
+      "url": "https://elements.ai-sdk.dev/api/registry/shimmer.json",
+      "sha256": "8b4b49bfa332e84db6bb2e8b717e65663af6085ac10e757eeb6a6889e8c787ae",
+      "files": [
+        {
+          "registryPath": "registry/default/ai-elements/shimmer.tsx",
+          "localPath": "src/components/ai-elements/shimmer.tsx",
+          "sha256": "90ddcf19af8e026a1e0031bd32e37dd154252c2a91a324f9c3baa0e88a3e0ba4",
+          "patches": [
+            "react-namespace-import",
+            "exact-optional-shimmer"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "tool",
+      "kind": "ai-elements",
+      "url": "https://elements.ai-sdk.dev/api/registry/tool.json",
+      "sha256": "ac2f38003fe00b0a0b7594bc028f0d6ff09db1a8a79a40bb4fa632565c06194b",
+      "files": [
+        {
+          "registryPath": "registry/default/ai-elements/tool.tsx",
+          "localPath": "src/components/ai-elements/tool.tsx",
+          "sha256": "4e920248cf250ca34dc2e77792922bd8e393e26f8ba81c0e100008a285b73878",
+          "patches": [
+            "registry-alias"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "tooltip",
+      "kind": "shadcn",
+      "url": "https://ui.shadcn.com/r/styles/new-york-v4/tooltip.json",
+      "sha256": "1b7b452b34beab05b22bd653963abd1c88ebd8e9ebcc89dcaebf4ac4938c929e",
+      "files": [
+        {
+          "registryPath": "registry/new-york-v4/ui/tooltip.tsx",
+          "localPath": "src/components/ui/tooltip.tsx",
+          "sha256": "345bc589a285ece3622bf18f4c842107836cf6fc8a9055b0a604db0cf6c83551",
+          "patches": [
+            "cn-import"
+          ]
+        }
+      ]
+    }
+  ]
+}

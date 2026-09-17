@@ -1,5 +1,6 @@
 import type {
   ChangesSnapshot,
+  EngineId,
   FileDiff,
   PermissionMode,
   Project,
@@ -117,11 +118,18 @@ export function createClient(token: string) {
       api<{ path: string }>(`/projects/${projectId}/changes/revert`, token, { method: "POST", json: { path } }),
 
     listThreads: () => api<{ threads: ThreadSummary[] }>("/threads", token).then((body) => body.threads),
-    createThread: (input: { projectId: string; title?: string; permissionMode?: PermissionMode; model?: string }) =>
-      api<ThreadRecord>("/threads", token, { method: "POST", json: input }),
+    createThread: (input: {
+      projectId: string;
+      title?: string;
+      engine?: EngineId;
+      permissionMode?: PermissionMode;
+      model?: string;
+    }) => api<ThreadRecord>("/threads", token, { method: "POST", json: input }),
     getThread: (id: string) => api<ThreadRecord>(`/threads/${id}`, token),
-    patchThread: (id: string, patch: { title?: string; permissionMode?: PermissionMode; model?: string | null }) =>
-      api<ThreadRecord>(`/threads/${id}`, token, { method: "PATCH", json: patch }),
+    patchThread: (
+      id: string,
+      patch: { title?: string; engine?: EngineId; permissionMode?: PermissionMode; model?: string | null },
+    ) => api<ThreadRecord>(`/threads/${id}`, token, { method: "PATCH", json: patch }),
     deleteThread: (id: string) => api<void>(`/threads/${id}`, token, { method: "DELETE" }),
 
     getSettings: () => api<Settings>("/settings", token),

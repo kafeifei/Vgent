@@ -16,6 +16,14 @@ export type ApprovalDecision = "not-applicable" | "user-approval";
 /** Tools that only observe the workspace. Never need approval in any mode. */
 const READ_ONLY_TOOLS = new Set(["read", "grep", "glob"]);
 
+/**
+ * Tools that only surface a question to the human and have no `execute` of
+ * their own — asking has no side effects, so these never need approval
+ * either. Kept separate from `READ_ONLY_TOOLS` because they don't observe the
+ * workspace; they observe the user.
+ */
+const HUMAN_INPUT_TOOLS = new Set(["askUserQuestions"]);
+
 /** Tools that change files on disk. Approved outright from `allow-edits` up. */
 const EDIT_TOOLS = new Set(["write", "edit"]);
 
@@ -108,7 +116,7 @@ export function decideApproval({
   input: unknown;
 }): ApprovalDecision {
   if (mode === "allow-all") return "not-applicable";
-  if (READ_ONLY_TOOLS.has(toolName)) return "not-applicable";
+  if (READ_ONLY_TOOLS.has(toolName) || HUMAN_INPUT_TOOLS.has(toolName)) return "not-applicable";
 
   if (EDIT_TOOLS.has(toolName)) {
     return mode === "allow-edits" ? "not-applicable" : "user-approval";

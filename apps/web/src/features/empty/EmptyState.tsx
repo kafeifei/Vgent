@@ -1,8 +1,15 @@
 import { useState } from "react";
+import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ProjectPicker } from "@/components/ProjectPicker";
 import { Composer } from "@/features/composer/Composer";
 import { useToast } from "@/lib/toast";
-import type { Project } from "@/lib/types";
+import type { EngineId, Project, Settings } from "@/lib/types";
+
+const ENGINES: ReadonlyArray<{ id: EngineId; label: string }> = [
+  { id: "claude-code", label: "Claude Code" },
+  { id: "codex", label: "Codex" },
+  { id: "vgent", label: "Vgent（自研）" },
+];
 
 /**
  * 「配置 + 输入」, not 「欢迎语 + 建议」: pick the repo and the run location
@@ -11,18 +18,23 @@ import type { Project } from "@/lib/types";
 export function EmptyState({
   projects,
   projectId,
+  settings,
   onSelectProject,
   onAddProject,
   onStart,
 }: {
   projects: Project[];
   projectId: string | null;
+  settings: Settings | null;
   onSelectProject: (projectId: string) => void;
   onAddProject: (repoPath: string) => Promise<void>;
-  onStart: (text: string) => void;
+  onStart: (text: string, engine: EngineId) => void;
 }) {
   const toast = useToast();
   const [draft, setDraft] = useState("");
+  // Local only, no persistence: seeded from the server default once, not kept
+  // in sync if the setting changes later while this screen is open.
+  const [engine, setEngine] = useState<EngineId>(() => settings?.defaultEngine ?? "claude-code");
   const project = projects.find((entry) => entry.id === projectId);
 
   const submit = () => {
@@ -31,7 +43,7 @@ export function EmptyState({
       toast("先选一个项目");
       return;
     }
-    onStart(draft.trim());
+    onStart(draft.trim(), engine);
     setDraft("");
   };
 
@@ -66,6 +78,36 @@ export function EmptyState({
           <span className="inline-flex h-xl items-center gap-3xs rounded-sm px-xs text-fg-muted text-sm">
             <span>本机</span>
           </span>
+          <Popover
+            trigger={(props) => (
+              <button
+                type="button"
+                {...props}
+                className="inline-flex h-xl items-center gap-3xs rounded-sm px-xs text-fg-muted text-sm hover:bg-bg-hover hover:text-fg"
+              >
+                <span>{ENGINES.find((entry) => entry.id === engine)?.label ?? engine}</span>
+                <span className="opacity-60">▾</span>
+              </button>
+            )}
+          >
+            {(close) => (
+              <>
+                <PopTitle>引擎</PopTitle>
+                {ENGINES.map((entry) => (
+                  <PopItem
+                    key={entry.id}
+                    selected={entry.id === engine}
+                    onClick={() => {
+                      setEngine(entry.id);
+                      close();
+                    }}
+                  >
+                    {entry.label}
+                  </PopItem>
+                ))}
+              </>
+            )}
+          </Popover>
         </div>
       </div>
 
@@ -75,6 +117,7 @@ export function EmptyState({
           onChange={setDraft}
           onSubmit={submit}
           live={false}
+          engine={engine}
           model={undefined}
           onPickModel={() => toast("新任务用默认模型，创建后可改")}
           autoFocus

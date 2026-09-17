@@ -10,6 +10,12 @@
   "references": [
     {
       "path": "../engines"
+    },
+    {
+      "path": "../engine"
+    },
+    {
+      "path": "../providers"
     }
   ],
   "exclude": [

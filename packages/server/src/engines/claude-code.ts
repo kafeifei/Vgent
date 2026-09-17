@@ -16,6 +16,11 @@ import type { EngineContext, EngineFactory, EngineRunner } from "./registry.js";
  * run manager parks such a runner instead and calls `stream()` on this same
  * session again. `session.detach()` would let an unfinished turn survive a
  * restart; that is future work.
+ *
+ * No `ensureAvailable`: the adapter runs with `auth: 'auto'`, which may read the
+ * login from `~/.claude`, from the macOS keychain, or from an environment
+ * variable, and there is no probe for that which is both cheap and honest. A
+ * missing login surfaces as a stream error part from the runtime instead.
  */
 export function createClaudeCodeEngineFactory(): EngineFactory {
   return {

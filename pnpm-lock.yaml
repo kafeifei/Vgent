@@ -183,9 +183,15 @@ importers:
       '@hono/node-server':
         specifier: 2.1.1
         version: 2.1.1(hono@4.13.8)
+      '@vgent/engine':
+        specifier: workspace:*
+        version: link:../engine
       '@vgent/engines':
         specifier: workspace:*
         version: link:../engines
+      '@vgent/providers':
+        specifier: workspace:*
+        version: link:../providers
       ai:
         specifier: 7.0.105
         version: 7.0.105(zod@4.6.5)

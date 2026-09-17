@@ -54,6 +54,17 @@ function asPermissionMode(value: unknown): PermissionMode | undefined {
   return typeof value === "string" && (PERMISSION_MODES as readonly string[]).includes(value) ? (value as PermissionMode) : undefined;
 }
 
+/**
+ * The Codex harness has no built-in tool approval, so `HarnessAgent` refuses to
+ * be constructed in any other mode. Rejecting the combination when the thread is
+ * written keeps a thread that can never run from existing in the first place.
+ */
+function assertEngineSupportsMode(engine: EngineId, permissionMode: PermissionMode): void {
+  if (engine === "codex" && permissionMode !== "allow-all") {
+    throw new BadRequestError("Codex 引擎没有内建工具审批，只支持 allow-all 权限模式", "codex_permission_mode");
+  }
+}
+
 export function createApp(options: CreateAppOptions): VgentApp {
   const log = options.log ?? silentLogger;
   const { dataDir, token } = options;
@@ -73,7 +84,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
   });
 
   // Nothing on disk can be mid-turn at boot; this process has no runs yet.
-  const recovered = recoverInterruptedThreads(threads, log).catch((error) => log.warn("恢复中断线程失败", error));
+  const recovered = recoverInterruptedThreads(threads, registry, log).catch((error) => log.warn("恢复中断线程失败", error));
 
   const app = new Hono();
 
@@ -163,12 +174,15 @@ export function createApp(options: CreateAppOptions): VgentApp {
     if ((await projects.get(projectId)) == null) throw new NotFoundError(`项目不存在: ${projectId}`, "project_not_found");
     const defaults = await settings.get();
     const model = body?.model ?? defaults.defaultModel;
+    const engine = asEngine(body?.engine) ?? defaults.defaultEngine;
+    const permissionMode = asPermissionMode(body?.permissionMode) ?? defaults.defaultPermissionMode;
+    assertEngineSupportsMode(engine, permissionMode);
     const record = await threads.create({
       projectId,
       ...(typeof body?.title === "string" ? { title: body.title } : {}),
-      engine: asEngine(body?.engine) ?? defaults.defaultEngine,
+      engine,
       ...(typeof model === "string" ? { model } : {}),
-      permissionMode: asPermissionMode(body?.permissionMode) ?? defaults.defaultPermissionMode,
+      permissionMode,
     });
     return c.json(record);
   });
@@ -183,9 +197,23 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const id = c.req.param("id");
     if (runs.isRunning(id)) throw new ConflictError(`线程正在运行，无法修改: ${id}`, "thread_running");
     const body = (await c.req.json().catch(() => undefined)) as Record<string, unknown> | undefined;
+    const current = await threads.get(id);
+    if (current == null) throw new NotFoundError(`线程不存在: ${id}`, "thread_not_found");
+
+    const engine = asEngine(body?.engine);
+    // Switching engines mid-conversation would hand a history the new runtime
+    // never produced to a session that cannot resume it. An empty thread has
+    // nothing to carry over, so it is free to change.
+    if (engine != null && engine !== current.engine && current.messages.length > 0) {
+      throw new ConflictError("已有对话的任务不能换引擎，请新建任务", "engine_locked");
+    }
+    const permissionMode = asPermissionMode(body?.permissionMode);
+    assertEngineSupportsMode(engine ?? current.engine, permissionMode ?? current.permissionMode);
+
     const record = await threads.update(id, {
       ...(typeof body?.title === "string" ? { title: body.title } : {}),
-      ...(asPermissionMode(body?.permissionMode) != null ? { permissionMode: asPermissionMode(body?.permissionMode)! } : {}),
+      ...(engine != null ? { engine } : {}),
+      ...(permissionMode != null ? { permissionMode } : {}),
       ...("model" in (body ?? {}) ? { model: typeof body?.model === "string" ? body.model : undefined } : {}),
     });
     return c.json(record);

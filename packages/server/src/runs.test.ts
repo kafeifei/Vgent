@@ -2,10 +2,12 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { collectHarnessAgentToolApprovalContinuations } from "@ai-sdk/harness/agent";
-import { isToolUIPart, type ModelMessage, type TextStreamPart, type ToolSet, type UIMessage } from "ai";
+import { isToolUIPart, simulateReadableStream, type LanguageModel, type ModelMessage, type TextStreamPart, type ToolSet, type UIMessage } from "ai";
+import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp, type VgentApp } from "./app.js";
 import { createEngineRegistry, type EngineContext, type EngineFactory, type EngineRunner } from "./engines/registry.js";
+import { createVgentEngineFactory } from "./engines/vgent.js";
 import {
   ABANDONED_TURN_TEXT,
   AUTO_TITLE_MAX_LEN,
@@ -94,6 +96,22 @@ const exists = (path: string) =>
     () => true,
     () => false,
   );
+
+/**
+ * Waits until the run slot is free. The final status write happens inside the
+ * turn, a tick before the run releases its slot and parks its engine, so a test
+ * that shuts the app down right after a status change would race that parking.
+ * The resume endpoint answers 204 only once the slot is gone.
+ */
+async function waitForSlotReleased(app: VgentApp, threadId: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const response = await request(app, `/api/chat/${threadId}/stream`);
+    await response.body?.cancel();
+    if (response.status === 204) return;
+    await sleep(10);
+  }
+  throw new Error(`线程 ${threadId} 的运行槽位没有释放`);
+}
 
 /** The engine writes its resume state after the run releases its slot, so the file lags the status. */
 async function waitForFile(path: string): Promise<void> {
@@ -647,6 +665,143 @@ describe("run lifecycle", () => {
     // Once the run entry is gone there is nothing to subscribe to.
     for (let attempt = 0; attempt < 100 && runs.subscribe(thread.id) != null; attempt++) await sleep(10);
     expect(runs.subscribe(thread.id)).toBeUndefined();
+  });
+});
+
+/**
+ * The in-house engine driven through the *real* `createVgentEngineFactory`,
+ * with only its model replaced. Everything else — the `ToolLoopAgent`, the
+ * permission mapping, the real `write` tool — is the production path.
+ */
+describe("vgent engine", () => {
+  const NO_USAGE = {
+    inputTokens: { total: undefined, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+    outputTokens: { total: undefined, reasoning: undefined },
+    totalTokens: undefined,
+  };
+
+  /** One `doStream` result: a single tool call, streamed the way a provider does it. */
+  const toolCallStream = (toolCallId: string, toolName: string, input: unknown) => ({
+    stream: simulateReadableStream({
+      chunks: [
+        { type: "stream-start", warnings: [] },
+        { type: "tool-input-start", id: toolCallId, toolName },
+        { type: "tool-input-delta", id: toolCallId, delta: JSON.stringify(input) },
+        { type: "tool-input-end", id: toolCallId },
+        { type: "tool-call", toolCallId, toolName, input: JSON.stringify(input) },
+        { type: "finish", finishReason: { unified: "tool-calls" }, usage: NO_USAGE },
+      ],
+    }),
+  });
+
+  /** One `doStream` result: plain text, then stop. */
+  const textStream = (text: string) => ({
+    stream: simulateReadableStream({
+      chunks: [
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "t1" },
+        { type: "text-delta", id: "t1", delta: text },
+        { type: "text-end", id: "t1" },
+        { type: "finish", finishReason: { unified: "stop" }, usage: NO_USAGE },
+      ],
+    }),
+  });
+
+  const mockModel = (results: unknown[]): LanguageModel =>
+    new MockLanguageModelV3({ doStream: results as never }) as unknown as LanguageModel;
+
+  const WRITE_INPUT = { file_path: "SMOKE.txt", content: "写好了\n" };
+
+  function makeVgentApp(dataDir: string, model: LanguageModel): VgentApp {
+    const instance = createApp({
+      dataDir,
+      token: TOKEN,
+      registry: createEngineRegistry({ vgent: createVgentEngineFactory({ model }) }),
+    });
+    apps.push(instance);
+    return instance;
+  }
+
+  async function setupVgentThread(app: VgentApp, repoPath: string, permissionMode = "allow-reads"): Promise<ThreadRecord> {
+    const project = (await (await postJson(app, "/api/projects", { repoPath })).json()) as Project;
+    return (await (
+      await postJson(app, "/api/threads", { projectId: project.id, title: "自研引擎", engine: "vgent", permissionMode })
+    ).json()) as ThreadRecord;
+  }
+
+  it("parks on a write approval in allow-reads and writes the file once it is approved", async () => {
+    const dataDir = await tempDir();
+    const repoPath = await tempDir();
+    const app = makeVgentApp(dataDir, mockModel([toolCallStream("call-w", "write", WRITE_INPUT), textStream("文件已写入")]));
+    const thread = await setupVgentThread(app, repoPath);
+    const written = join(repoPath, "SMOKE.txt");
+
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "在根目录新建 SMOKE.txt")] }));
+    const parked = await waitForStatus(app, thread.id, "awaiting-approval");
+
+    // Approval is pending, so the tool has not run and nothing is on disk.
+    expect(await exists(written)).toBe(false);
+    const pending = parked.messages.at(-1)?.parts.find(isToolUIPart);
+    expect(pending?.state).toBe("approval-requested");
+    // A stateless engine has no resume state, so `finish()` must not write one.
+    expect(await exists(join(dataDir, "threads", `${thread.id}.harness.json`))).toBe(false);
+
+    const approved = approve(parked.messages.at(-1)!);
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [...parked.messages.slice(0, -1), approved] }));
+    const done = await waitForStatus(app, thread.id, "idle");
+
+    expect(await readFile(written, "utf8")).toBe(WRITE_INPUT.content);
+    expect(done.messages.at(-1)?.parts.find(isToolUIPart)?.state).toBe("output-available");
+    expect(JSON.stringify(done.messages)).toContain("文件已写入");
+    expect(await exists(join(dataDir, "threads", `${thread.id}.harness.json`))).toBe(false);
+  });
+
+  it("ends the turn `awaiting-input` when the model calls askUserQuestions", async () => {
+    const dataDir = await tempDir();
+    const repoPath = await tempDir();
+    const questions = {
+      allowPartialAnswers: false,
+      questions: [{ id: "q1", question: "要覆盖已有文件吗？", options: [{ id: "yes", label: "覆盖" }] }],
+    };
+    const app = makeVgentApp(dataDir, mockModel([toolCallStream("call-q", "askUserQuestions", questions)]));
+    const thread = await setupVgentThread(app, repoPath, "allow-reads");
+
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "问我一个问题")] }));
+    const waiting = await waitForStatus(app, thread.id, "awaiting-input");
+
+    // `askUserQuestions` has no `execute`, so the loop ends with the call open.
+    const part = waiting.messages.at(-1)?.parts.find(isToolUIPart);
+    expect(part?.state).toBe("input-available");
+    expect(part?.type).toBe("tool-askUserQuestions");
+  });
+
+  it("keeps a pending approval across a restart and still executes the continuation", async () => {
+    const dataDir = await tempDir();
+    const repoPath = await tempDir();
+    const written = join(repoPath, "SMOKE.txt");
+
+    const appA = makeVgentApp(dataDir, mockModel([toolCallStream("call-w", "write", WRITE_INPUT)]));
+    const thread = await setupVgentThread(appA, repoPath);
+    await readSse(await postJson(appA, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "在根目录新建 SMOKE.txt")] }));
+    const parked = await waitForStatus(appA, thread.id, "awaiting-approval");
+    await waitForSlotReleased(appA, thread.id);
+    await appA.shutdown();
+
+    // A brand new app over the same data dir is what a restart looks like. The
+    // engine is stateless, so neither `stopAll` nor the recovery pass may touch
+    // the waiting thread.
+    const appB = makeVgentApp(dataDir, mockModel([textStream("重启后也写好了")]));
+    const restored = await getThread(appB, thread.id);
+    expect(restored.status).toBe("awaiting-approval");
+    expect(restored.messages.at(-1)?.parts.find(isToolUIPart)?.state).toBe("approval-requested");
+
+    const approved = approve(parked.messages.at(-1)!);
+    await readSse(await postJson(appB, `/api/chat/${thread.id}`, { messages: [...parked.messages.slice(0, -1), approved] }));
+    const done = await waitForStatus(appB, thread.id, "idle");
+
+    expect(await readFile(written, "utf8")).toBe(WRITE_INPUT.content);
+    expect(done.messages.at(-1)?.parts.find(isToolUIPart)?.state).toBe("output-available");
+    expect(JSON.stringify(done.messages)).toContain("重启后也写好了");
   });
 });
 

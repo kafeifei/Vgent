@@ -3,7 +3,7 @@ import { createClient } from "@/lib/api";
 import { ThreadChats } from "@/lib/threadChats";
 import { useServerState } from "@/lib/useServerState";
 import { useToast } from "@/lib/toast";
-import type { PermissionMode, ThreadSummary } from "@/lib/types";
+import type { EngineId, PermissionMode, ThreadSummary } from "@/lib/types";
 import { LIVE_STATUSES } from "@/lib/types";
 import { repoRelative } from "@/features/changes/paths";
 import type { Grouping } from "@/features/sidebar/grouping";
@@ -122,13 +122,17 @@ export function useWorkbench(token: string) {
       },
 
       /** Empty state: create the thread, select it, send the first message. */
-      startThread: (text: string) => {
+      startThread: (text: string, engine: EngineId) => {
         if (activeProjectId == null) {
           toast("先添加一个项目");
           return;
         }
         void client
-          .createThread({ projectId: activeProjectId })
+          .createThread({
+            projectId: activeProjectId,
+            engine,
+            ...(engine === "codex" ? { permissionMode: "allow-all" as const } : {}),
+          })
           .then(async (record) => {
             selectThread(record.id);
             await chats.send(record.id, text);
@@ -150,6 +154,15 @@ export function useWorkbench(token: string) {
 
       setModel: (threadId: string, model: string | null) => {
         void client.patchThread(threadId, { model }).catch((error: Error) => toast(error.message));
+      },
+
+      setEngine: (threadId: string, engine: EngineId) => {
+        void client
+          .patchThread(threadId, {
+            engine,
+            ...(engine === "codex" ? { permissionMode: "allow-all" as const } : {}),
+          })
+          .catch((error: Error) => toast(error.message));
       },
 
       setPermission: (threadId: string, permissionMode: PermissionMode) => {

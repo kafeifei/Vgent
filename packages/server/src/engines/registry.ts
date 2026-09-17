@@ -1,7 +1,8 @@
 import type { ModelMessage, TextStreamPart, ToolSet } from "ai";
-import { NotImplementedError } from "../errors.js";
 import type { EngineId, HarnessState, Logger, Project, ThreadRecord } from "../types.js";
 import { createClaudeCodeEngineFactory } from "./claude-code.js";
+import { createCodexEngineFactory } from "./codex.js";
+import { createVgentEngineFactory } from "./vgent.js";
 
 /**
  * One engine instance bound to one thread. It normally lives for exactly one
@@ -36,33 +37,40 @@ export interface EngineContext {
 
 export interface EngineFactory {
   /**
-   * Cheap precondition checked before the run starts, so "this engine does not
-   * exist" is an HTTP error. Everything that needs the sandbox belongs in
+   * Cheap precondition checked before the run starts, so "this engine cannot
+   * run here" is an HTTP error. Everything that needs the sandbox belongs in
    * `create`, where failures reach the client as stream error parts instead.
    */
-  ensureAvailable?(): void;
+  ensureAvailable?(ctx: { thread: ThreadRecord }): void | Promise<void>;
+  /**
+   * True when a turn leaves nothing behind in the runner: the whole
+   * conversation, including a pending approval, is reconstructible from the
+   * stored messages. Such a thread may stay `awaiting-approval` across a
+   * restart — the next turn just builds a fresh runner from the history — while
+   * a stateful engine's pending approval dies with its bridge and has to be
+   * closed.
+   */
+  statelessTurns?: boolean;
   create(ctx: EngineContext): Promise<EngineRunner>;
 }
 
 export type EngineRegistry = Record<EngineId, EngineFactory>;
 
-function notWired(engine: EngineId): EngineFactory {
-  const fail = (): never => {
-    throw new NotImplementedError(`引擎尚未接线: ${engine}`, "engine_not_implemented");
-  };
-  return { ensureAvailable: fail, create: fail };
+/** Engine ids whose turns hold no live state; see `EngineFactory.statelessTurns`. */
+export function statelessEngines(registry: EngineRegistry): ReadonlySet<EngineId> {
+  const ids = new Set<EngineId>();
+  for (const [id, factory] of Object.entries(registry) as [EngineId, EngineFactory][]) {
+    if (factory.statelessTurns === true) ids.add(id);
+  }
+  return ids;
 }
 
-/**
- * Only the Claude Code engine is wired. Codex and the in-house engine keep a
- * slot so the shape of the registry does not change when they land; asking for
- * one is a typed 501, not a crash.
- */
+/** All three engines, each backed by its real runtime. */
 export function createEngineRegistry(overrides?: Partial<EngineRegistry>): EngineRegistry {
   return {
     "claude-code": createClaudeCodeEngineFactory(),
-    codex: notWired("codex"),
-    vgent: notWired("vgent"),
+    codex: createCodexEngineFactory(),
+    vgent: createVgentEngineFactory(),
     ...overrides,
   };
 }

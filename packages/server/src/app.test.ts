@@ -7,6 +7,7 @@ import type { ModelMessage, TextStreamPart, ToolSet, UIMessage } from "ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp, type VgentApp } from "./app.js";
 import { createEngineRegistry, type EngineContext, type EngineFactory } from "./engines/registry.js";
+import { EngineUnavailableError } from "./errors.js";
 import type { HarnessState, Project, ThreadRecord, ThreadSummary } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -235,24 +236,86 @@ describe("createApp", () => {
     await waitForStatus(app, thread.id, "idle");
   });
 
-  it("rejects an unknown thread, bad messages and an unwired engine", async () => {
+  it("rejects an unknown thread and bad messages", async () => {
     const dir = await tempDir();
     const fake = createFakeEngine();
     const app = makeApp(dir, fake.factory);
-    const { project, thread } = await setupThread(app, dir);
+    const { thread } = await setupThread(app, dir);
 
     expect((await postJson(app, "/api/chat/nope", { messages: [userMessage("u1", "hi")] })).status).toBe(404);
     expect((await postJson(app, `/api/chat/${thread.id}`, {})).status).toBe(400);
     expect((await postJson(app, `/api/chat/${thread.id}`, { messages: [{ role: "user" }] })).status).toBe(400);
+  });
 
-    const codexThread = (await (
-      await postJson(app, "/api/threads", { projectId: project.id, engine: "codex" })
-    ).json()) as ThreadRecord;
-    // An unwired engine is knowable without touching a sandbox, so it is a 501
-    // rather than an error part inside a 200 stream.
-    const response = await postJson(app, `/api/chat/${codexThread.id}`, { messages: [userMessage("u1", "hi")] });
-    expect(response.status).toBe(501);
-    expect(await response.json()).toMatchObject({ error: { code: "engine_not_implemented" } });
+  it("refuses a codex thread in any permission mode but allow-all", async () => {
+    const dir = await tempDir();
+    const app = makeApp(dir, createFakeEngine().factory);
+    const project = (await (await postJson(app, "/api/projects", { repoPath: dir })).json()) as Project;
+
+    // The default permission mode is `allow-reads`, which Codex cannot honour.
+    const rejected = await postJson(app, "/api/threads", { projectId: project.id, engine: "codex" });
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toMatchObject({ error: { code: "codex_permission_mode" } });
+
+    const created = await postJson(app, "/api/threads", { projectId: project.id, engine: "codex", permissionMode: "allow-all" });
+    expect(created.status).toBe(200);
+    const codexThread = (await created.json()) as ThreadRecord;
+
+    // And the same rule applies to a patch that would put it back in a mode it cannot run in.
+    const patched = await request(app, `/api/threads/${codexThread.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ permissionMode: "allow-edits" }),
+    });
+    expect(patched.status).toBe(400);
+    expect(await patched.json()).toMatchObject({ error: { code: "codex_permission_mode" } });
+  });
+
+  it("lets an empty thread change engine but locks one that already has messages", async () => {
+    const dir = await tempDir();
+    const app = makeApp(dir, createFakeEngine().factory);
+    const { thread } = await setupThread(app, dir);
+
+    const switched = await request(app, `/api/threads/${thread.id}`, { method: "PATCH", body: JSON.stringify({ engine: "vgent" }) });
+    expect(switched.status).toBe(200);
+    expect((await switched.json()) as ThreadRecord).toMatchObject({ engine: "vgent" });
+
+    // Back to the wired fake engine, then run a turn so the thread has history.
+    await request(app, `/api/threads/${thread.id}`, { method: "PATCH", body: JSON.stringify({ engine: "claude-code" }) });
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "你好")] }));
+    await waitForStatus(app, thread.id, "idle");
+
+    const locked = await request(app, `/api/threads/${thread.id}`, { method: "PATCH", body: JSON.stringify({ engine: "vgent" }) });
+    expect(locked.status).toBe(409);
+    expect(await locked.json()).toMatchObject({ error: { code: "engine_locked" } });
+    // Re-sending the engine it already has is not a change, so it still passes.
+    const unchanged = await request(app, `/api/threads/${thread.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ engine: "claude-code", title: "改个标题" }),
+    });
+    expect(unchanged.status).toBe(200);
+    expect((await unchanged.json()) as ThreadRecord).toMatchObject({ engine: "claude-code", title: "改个标题" });
+  });
+
+  it("turns an unavailable engine into a 503 before the run starts", async () => {
+    const dir = await tempDir();
+    const factory: EngineFactory = {
+      ensureAvailable() {
+        throw new EngineUnavailableError("Codex 未登录：找不到可用的 ChatGPT / Codex 登录态（~/.codex/auth.json，或 CODEX_HOME）");
+      },
+      create() {
+        throw new Error("不应该被调用");
+      },
+    };
+    const app = makeApp(dir, factory);
+    const { thread } = await setupThread(app, dir);
+
+    const response = await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "hi")] });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      error: { code: "engine_unavailable", message: expect.stringContaining("Codex 未登录") as unknown as string },
+    });
+    // The failed precondition must not leave the thread stuck `running`.
+    expect((await (await request(app, `/api/threads/${thread.id}`)).json()) as ThreadRecord).toMatchObject({ status: "idle" });
   });
 
   it("keeps threads across a restart and hands the saved resume state to the engine", async () => {

@@ -9,6 +9,23 @@ import { LIVE_STATUSES } from "./types";
 const isLive = (status: ThreadStatus): boolean => (LIVE_STATUSES as readonly string[]).includes(status);
 
 /**
+ * The AI SDK's transport turns a non-OK chat response into an `APICallError`
+ * whose `message` is the raw response body — for our `{ error: { code,
+ * message } }` envelope (e.g. 503 `engine_unavailable`), that is the JSON
+ * text itself. Unwrap it so a toast shows the server's Chinese message
+ * instead of raw JSON.
+ */
+function describeTransportError(error: Error): Error {
+  try {
+    const body = JSON.parse(error.message) as { error?: { message?: string } };
+    if (typeof body.error?.message === "string") return new Error(body.error.message);
+  } catch {
+    // Not JSON — a network failure, abort, etc. Keep the original message.
+  }
+  return error;
+}
+
+/**
  * `DefaultChatTransport` plus the repair a replayed stream needs before the
  * SDK's blank resume state can apply it — see `withResumePrelude`.
  */
@@ -110,7 +127,7 @@ export class ThreadChats {
       sendAutomaticallyWhen: shouldSendAutomatically,
       onError: (error) => {
         if (generation !== this.generation) return;
-        this.onError(error);
+        this.onError(describeTransportError(error));
       },
     });
   }

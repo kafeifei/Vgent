@@ -165,7 +165,7 @@ docs/
 - 本地 sandbox 跑 Claude Code bridge 官方无先例，freecode 证明可行但用了脏办法，我们要找干净的。
 - 自研引擎不走 HarnessV1，resume / compact / permissionMode 是自己的实现，和官方引擎语义可能有差；壳用统一配置抽象盖住。
 
-## 当前状态（2026-09-17 晚，阶段一完成）
+## 当前状态（2026-09-18，阶段三完成）
 
 三条引擎路全部本地跑通并有真实冒烟测试（`VGENT_SMOKE=1`）。全仓构建绿，约 150 测试。
 
@@ -207,13 +207,26 @@ docs/
 - 2026-09-18：同一轮里的第二个 bug：**续跑后 `input-streaming` 部件变孤儿并重复**。审批通过后 harness 在新的 `step-start` 之后用**同一个 toolCallId** 重发 `write` 的 `tool-input-start`；SDK 的 `updateToolPart`（`index.js:7293`）只在当前 step 的部件里按 id 找，找不到就新建，于是落盘的助手消息里有两条 `tool-write`（旧的 `input-streaming` + 真跑的那条），UI 上多一行永远「运行中」；如果审批被拒，harness 不重发，孤儿就永远挂着。修法：服务端续跑时把喂给 `readUIMessageStream` 的尾部助手消息里的 `input-streaming` 部件剔掉（harness 会重发），一轮真正结束（`idle` / `error`）时把还剩的 `input-streaming` 封成 `output-error`「未执行」，parked 的轮次不动；客户端 `turns.ts` 渲染时按 `toolCallId` 去重只留最后一条，直播流里也不会出现旧行。
 - 审批卡片上的「本任务内一直允许」仍是 disabled 占位（3a 就是）。
 
-### 明确未做（阶段二起点）
+### 阶段三进度
 
-- **自研引擎的 session 管理**：只有 JSONL 追加，`loadSession` 未接回 agent。（harness 引擎的 resume 已由 `server` 落地，见上。）
-- `server` 未做：Codex / 自研引擎接线、实例锁（`instance-lock.ts` 还没搬）、用 `detach()` 代替 `stop()` 保温 sandbox、worktree。
-- **未跑完的一轮活不过重启**：parked session 只在本进程内存里，重启后 bridge 已死。所以 shutdown 和启动恢复都把 `running` / `awaiting-approval` / `awaiting-input` 的线程收成 `interrupted`，并把悬着的工具调用写成 `output-error`「服务已重启，请重新发送」——否则客户端会对一个不存在的 turn 提交审批。用 `detach()` + `continueStream()` 做跨进程续跑是后续工作。
+- 2026-09-18：引擎注册表接完三引擎（`packages/server/src/engines/{claude-code,codex,vgent}.ts` + `registry.ts` 的 `createEngineRegistry`），`notImplemented` 501 没了。`EngineFactory.ensureAvailable?(ctx: { thread })` 是异步的，`runs.ts` 的 `start` 在校验消息之前先 `await` 它，不可用的引擎在起任何 run 之前就是个 typed error：新增 `EngineUnavailableError`（`errors.ts`，503 `engine_unavailable`）。三家各自的 `ensureAvailable`：Codex 没登录（`describeSubscriptionAuth()`，读 `~/.codex/auth.json`，尊重 `CODEX_HOME`）→ 503；`permissionMode !== 'allow-all'` 的 Codex 线程 → 400 `codex_permission_mode`（POST /api/threads 和 PATCH 都过 `assertEngineSupportsMode`，`app.ts`）；vgent：模型是 `codex-subscription:` 前缀走同一个登录检查，`provider/model` 形式的网关模型要求 `AI_GATEWAY_API_KEY` 或 `VERCEL_OIDC_TOKEN` 之一非空；Claude Code 没有 `ensureAvailable`（`auth: 'auto'` 可能读钥匙串，没有一个又便宜又诚实的探测法）。
+- Codex 引擎（`packages/engines/src/codex.ts`）补了 `sessionId` / `resumeFrom` / `harnessAgent` / `stop()`，跟 Claude Code 对齐；孤儿 sandbox 清理逻辑挪进 `shared.ts` 的 `trackSandboxSessions(provider)`，两个引擎共用。resume 策略照抄 Claude Code：`stop()` → 落 `<id>.harness.json` → 下一轮 `createSession({ sessionId, resumeFrom })`。翻了 harness-codex 1.0.117 的 dist 确认它跟 Claude Code adapter 走同样的 attach（`data.bridge`）/ rerun（`rerunContinue`，`continueTurn` 时发合成的 "Continue." 提示）分支——但 Codex 报 `supportsBuiltinToolApprovals: false` 且这个引擎不传 host tools，一轮 Codex 永远不会停在审批处，`continueTurn` 根本走不到，Claude Code 那套「resume 后先 detach() 再重建 session」的把戏在 Codex 上不需要。Codex 线程从不 park。
+- 自研引擎的 server runner（`packages/server/src/engines/vgent.ts`）：裸 `ToolLoopAgent`，`agent.stream({ messages, abortSignal })` → `result.stream`（v7 命名）；线程没指定模型时默认 `DEFAULT_VGENT_MODEL = codex-subscription:gpt-5.5`；没有 `sessionFile`（server 已经存了 UI 消息，每轮 `convertToModelMessages` 喂回去）；`hasUnfinishedTurn()` 恒 false；`finish()` 不写 harness 文件。审批纯粹是消息状态：重发的 assistant 消息转换后跟一条 `role: 'tool'` 消息（带 `tool-approval-response`），下一次 `stream()` 就会执行被批准的工具——新进程里起一个全新的 runner 照样能续上被 park 的一轮。`askUserQuestions` 没有 execute，停在 `input-available` 就是 `awaiting-input`。
+- 无状态引擎扛得住重启：`EngineFactory.statelessTurns`（vgent 为 true）；parked map 现在存 `{ runner, stateless }`；`stopAll()` 对 stateless 的 parked runner 只是丢掉 map 条目再 `destroy()`，不碰线程状态；`recoverInterruptedThreads(threads, registry, log)` 对 stateless 引擎的 `awaiting-approval` / `awaiting-input` 不动（`running` 还是照样收成 `interrupted`）。harness 引擎不变（bridge 跟进程一起死）。
+- `askUserQuestions` 在任何权限模式下都不再需要审批（`HUMAN_INPUT_TOOLS`，`packages/engine/src/permissions.ts`）：问问题没有副作用；之前 allow-reads / allow-edits 下问一句话都要先审批「我能不能问」。
+- 自研引擎冒烟顺手挖出的 provider bug：`packages/providers/src/codex-model.ts` 现在用 `defaultSettingsMiddleware` 告诉 openai responses provider `store: false`。`createCodexFetch` 早就在请求体上强制 `store:false`，但 provider 不知道，回放上一轮 reasoning 时还是发 `item_reference` id，ChatGPT 后端直接拒（`Item with id 'rs_…' not found`）；告诉 provider 真相后它改成内联 `{type:'reasoning', encrypted_content}`，能扛过 UI 消息的往返。`codex-model.test.ts` 钉住。这个 bug 挡住了所有自研引擎的多轮对话。
+- PATCH /api/threads/:id 接受 `engine`，只有线程零消息时才准换（409 `engine_locked`「已有对话的任务不能换引擎，请新建任务」）；harness 历史存在引擎自己的 session 里，中途换引擎会悄悄丢掉。
+- Web：`TaskHeader` 的引擎胶囊解锁（Claude Code / Codex / Vgent（自研）），新增 `onSetEngine`；切成 Codex 会顺手把 `permissionMode` 设成 `allow-all`，权限胶囊锁住另外两档并提示「Codex 只支持 allow-all」；`EmptyState` 加了引擎胶囊（默认取 `settings.defaultEngine`），新建任务就用选的引擎起；`ModelPicker` 按引擎分表（claude-code：老的两个；codex：只有默认；vgent：默认 + `codex-subscription:gpt-5.5`）；`threadChats.ts` 的 `describeTransportError` 把失败的 POST /api/chat 响应体（SDK 的 `DefaultChatTransport` 把原始 body 塞进 `APICallError.message`）解出来，503 `engine_unavailable` 能在 toast 里看到服务端的中文错误。
+- 验证：`pnpm build && pnpm test` → 32 文件 / 231 测试全绿；`VGENT_SMOKE=1` 的服务端冒烟（`server.smoke.test.ts`）：Claude Code 跑一轮 + 模拟重启续上，Codex 跑一轮 + 模拟重启续上（harness 文件被重写），自研引擎写文件卡在审批 → 重启 → 审批续跑真的写了文件，全程没有 harness 文件。浏览器实测（2026-09-18，dev server）：空状态选 vgent 引擎 + allow-reads 起任务，bash `date > now.txt` 停下等审批，刷新页面，点批准，3 步跑完并读回了文件内容；Codex 任务起时权限自动锁 allow-all，`cat hello.txt` 有回应，刷新后历史还在；给有消息的线程切引擎弹出 409 的中文提示。
+- 已知未修：**shutdown 竞态**——一轮结束时最终状态先落盘，隔一拍才释放运行槽位、把引擎 park 起来，这个窗口期里如果撞上 `stopAll()`，一个本该继续等审批的无状态线程会被错误标成 `interrupted`（`runs.test.ts` 的 `waitForSlotReleased` 就是绕开它）。`NotImplementedError` 现在没人抛了，类还留着。`EmptyState` 的引擎默认值只在挂载时读一次，settings 如果之后才从 SSE 到达不会重新同步。
+
+### 明确未做（阶段三之后）
+
+- **自研引擎的 session 管理**：server 把存好的 UI 消息喂回 agent（每轮 `convertToModelMessages` 重放），JSONL 的 `sessionFile` 路径现在只有 `apps/cli` 在用。
+- `server` 未做：实例锁（`instance-lock.ts` 还没搬）、harness 引擎用 `detach()` 代替 `stop()` 保温 sandbox、worktree。
+- **未跑完的一轮活不过重启（harness 引擎）**：parked session 只在本进程内存里，重启后 bridge 已死。所以 shutdown 和启动恢复都把 `running`（以及 harness 引擎的 `awaiting-approval` / `awaiting-input`）的线程收成 `interrupted`，并把悬着的工具调用写成 `output-error`「服务已重启，请重新发送」——否则客户端会对一个不存在的 turn 提交审批（无状态引擎已经绕开这条，见阶段三进度）。用 `detach()` + `continueStream()` 做跨进程续跑是后续工作。
 - `askUserQuestions` 在 TUI 里不可用（需要 Web `useChat`）。
 - 子代理、MCP + toolSearch、skills 索引、记忆、手动 compact、`@ai-sdk/otel`。
-- Web 已做出工作台骨架（见上），**明确留到后面的**：右栏的文件 / 终端 / 计划三个 tab（现在是「下一步接入」占位）、`@` 引用、context ring、composer 上方的「审查 +N −M」pill、checkpoint / 回退、麦克风、侧聊 `/side`、worktree pill、运行位置下拉（写死「本机」）、模式 chip（写死 `Agent`）、子代理的嵌套流、虚拟滚动、无障碍焦点管理。引擎胶囊里 `codex` / `vgent` 是 disabled 的「未接线」。
+- Web 已做出工作台骨架（见上），**明确留到后面的**：右栏的文件 / 终端 / 计划三个 tab（现在是「下一步接入」占位）、`@` 引用、context ring、composer 上方的「审查 +N −M」pill、checkpoint / 回退、麦克风、侧聊 `/side`、worktree pill、运行位置下拉（写死「本机」）、模式 chip（写死 `Agent`）、子代理的嵌套流、虚拟滚动、无障碍焦点管理。
 
-下一步：阶段三 —— 把 `packages/engines` 里已有的 Codex 引擎和自研 `ToolLoopAgent` 引擎接进 server 的引擎注册表（各自一个 `EngineRunner`，走同一套 chunk hub / 持久化 / 审批），UI 引擎胶囊里的 `codex` / `vgent` 解锁；这是项目的核心价值（一个壳三种引擎，自研引擎用订阅模型），排在任何 UI 抛光前面。右栏的文件 / 终端 / 计划三个 tab、`@` 引用、context ring、composer 上方的「审查 +N −M」pill、「本任务内一直允许」挪到阶段四「补齐」。
+下一步：阶段四——排序是 (1) 先做 Tauri 桌面壳（搬 freecode `backend.rs` 和 `prepare-desktop.mjs` 的 Node pin + hash 校验），让工作台变成一个能双击打开、用户愿意日常挂着的 app；(2) 每个任务一个 worktree 的隔离；(3) 给自研引擎补子代理 / MCP + tool search / skills；然后才是 UI 抛光清单：右栏的文件 / 终端 / 计划三个 tab、`@` 引用、context ring、composer 上方的「审查 +N −M」pill、「本任务内一直允许」。顺路修两个已知 bug：parked 的 Claude Code session 晾久了凭据过期（401，见阶段二真机副作用）、harness 的未跑完一轮活不过重启（`detach()` + `continueStream()`）。

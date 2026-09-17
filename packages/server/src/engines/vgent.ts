@@ -1,0 +1,116 @@
+import { CODEX_SUBSCRIPTION_PREFIX, createVgentEngine } from "@vgent/engine";
+import { describeSubscriptionAuth } from "@vgent/providers";
+import type { LanguageModel, TextStreamPart, ToolSet } from "ai";
+import { BadRequestError, EngineUnavailableError } from "../errors.js";
+import type { EngineContext, EngineFactory, EngineRunner } from "./registry.js";
+
+/** What a `vgent` thread runs on when it names no model of its own. */
+export const DEFAULT_VGENT_MODEL = "codex-subscription:gpt-5.5";
+
+/** Either of these lets the AI Gateway authenticate a `provider/model` spec. */
+const GATEWAY_ENV_VARS = ["AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"] as const;
+
+type ModelSpec = { kind: "codex-subscription" } | { kind: "gateway" } | { kind: "invalid"; reason: string };
+
+/**
+ * What a thread's model string routes to. Mirrors `resolveModel` in
+ * `@vgent/engine` — the function that really builds the model — so an unusable
+ * spec is a typed 400 before the run starts instead of an error part inside a
+ * 200 stream. Deliberately a re-check rather than a call: `resolveModel`
+ * constructs a provider, which is not what a precondition should do.
+ */
+function describeModelSpec(spec: string): ModelSpec {
+  if (spec.startsWith(CODEX_SUBSCRIPTION_PREFIX)) {
+    return spec.length > CODEX_SUBSCRIPTION_PREFIX.length
+      ? { kind: "codex-subscription" }
+      : { kind: "invalid", reason: `${CODEX_SUBSCRIPTION_PREFIX} 后面缺少模型 id` };
+  }
+  const separator = spec.indexOf("/");
+  if (separator <= 0 || separator === spec.length - 1 || spec.includes(" ")) {
+    return { kind: "invalid", reason: '应为 "provider/model" 或 "codex-subscription:<模型 id>"' };
+  }
+  return { kind: "gateway" };
+}
+
+export interface VgentEngineFactoryOptions {
+  /**
+   * Overrides the model the thread names. A test seam: it lets a suite drive
+   * the real factory with a `MockLanguageModelV3` and skips the availability
+   * probe, since an injected model needs no credential.
+   */
+  model?: LanguageModel;
+}
+
+/**
+ * Vgent's own engine — a plain `ToolLoopAgent` — behind the same `EngineRunner`
+ * contract as the harness engines.
+ *
+ * It is *stateless* between turns: the SDK's loop, approvals and tool results
+ * all live in the message array the server already stores, so nothing has to be
+ * persisted alongside it. That is why there is no `sessionFile` (the server owns
+ * the history), why `hasUnfinishedTurn()` is always false, and why `finish()`
+ * must not write a `<id>.harness.json` — there is no resume state, and an empty
+ * one would only confuse the harness engines' loader.
+ */
+export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}): EngineFactory {
+  const { model: override } = options;
+
+  return {
+    statelessTurns: true,
+
+    async ensureAvailable({ thread }) {
+      if (override != null) return;
+      const spec = thread.model ?? DEFAULT_VGENT_MODEL;
+      const described = describeModelSpec(spec);
+      if (described.kind === "invalid") {
+        throw new BadRequestError(`模型标识不合法: ${JSON.stringify(spec)}，${described.reason}`, "invalid_model");
+      }
+      if (described.kind === "codex-subscription") {
+        const report = await describeSubscriptionAuth();
+        if (!report.codex.available) {
+          throw new EngineUnavailableError("Codex 未登录：找不到可用的 ChatGPT / Codex 登录态（~/.codex/auth.json，或 CODEX_HOME）");
+        }
+        return;
+      }
+      if (!GATEWAY_ENV_VARS.some((name) => (process.env[name] ?? "") !== "")) {
+        throw new EngineUnavailableError(`未配置 AI Gateway 凭证：模型 ${JSON.stringify(spec)} 需要环境变量 AI_GATEWAY_API_KEY 或 VERCEL_OIDC_TOKEN`);
+      }
+    },
+
+    async create(ctx: EngineContext): Promise<EngineRunner> {
+      const engine = createVgentEngine({
+        model: override ?? ctx.thread.model ?? DEFAULT_VGENT_MODEL,
+        repoPath: ctx.project.repoPath,
+        permissionMode: ctx.thread.permissionMode,
+      });
+
+      let ended = false;
+      const release = async () => {
+        if (ended) return;
+        ended = true;
+        await engine.dispose().catch((error) => ctx.log.warn(`释放 Vgent 引擎失败 (thread ${ctx.thread.id})`, error));
+      };
+
+      return {
+        // The agent holds no runtime between calls: a paused turn is only the
+        // open tool part in the stored messages.
+        hasUnfinishedTurn: () => false,
+
+        async stream({ messages, abortSignal }) {
+          // The whole history goes in every time. The SDK resolves an approval
+          // continuation out of it (the trailing `role: 'tool'` message carries
+          // the `tool-approval-response` parts) and an `askUserQuestions` answer
+          // the same way, as that tool's output.
+          // `options: undefined` is required by the call-options generic; this agent has no `callOptionsSchema`.
+          const result = await engine.agent.stream({ messages, abortSignal, options: undefined });
+          return { stream: result.stream as ReadableStream<TextStreamPart<ToolSet>> };
+        },
+
+        // Nothing to persist, so both endings are the same release. In
+        // particular `finish()` never calls `saveHarnessState`.
+        destroy: release,
+        finish: release,
+      };
+    },
+  };
+}

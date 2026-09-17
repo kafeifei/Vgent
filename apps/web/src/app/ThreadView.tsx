@@ -84,6 +84,7 @@ function ThreadChatView({
         pending={thread.pendingApprovals + queue.filter((item) => item.kind === "question").length}
         rightOpen={rightOpen}
         onRename={(title) => actions.rename(thread.id, title)}
+        onSetEngine={(engine) => actions.setEngine(thread.id, engine)}
         onSetModel={(model) => actions.setModel(thread.id, model)}
         onSetPermission={(mode) => actions.setPermission(thread.id, mode)}
         onStop={() => actions.stop(thread.id)}
@@ -106,6 +107,7 @@ function ThreadChatView({
           onSubmit={submit}
           onStop={() => actions.stop(thread.id)}
           live={live}
+          engine={thread.engine}
           model={thread.model}
           onPickModel={(model) => actions.setModel(thread.id, model)}
         />

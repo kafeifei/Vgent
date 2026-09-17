@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { ArrowUp, Plus, Square } from "lucide-react";
 import { ModelPicker, modelLabel } from "@/components/ModelPicker";
 import { useToast } from "@/lib/toast";
+import type { EngineId } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export const COMPOSER_PLACEHOLDER = "规划、构建，/ 输入命令，@ 引用上下文";
@@ -18,6 +19,7 @@ export function Composer({
   onSubmit,
   onStop,
   live,
+  engine,
   model,
   onPickModel,
   autoFocus = false,
@@ -28,6 +30,7 @@ export function Composer({
   onSubmit: () => void;
   onStop?: () => void;
   live: boolean;
+  engine: EngineId;
   model: string | undefined;
   onPickModel: (model: string | null) => void;
   autoFocus?: boolean;
@@ -83,6 +86,7 @@ export function Composer({
           </button>
           <span className="inline-flex h-xl items-center rounded-sm px-xs text-fg-muted text-xs">Agent</span>
           <ModelPicker
+            engine={engine}
             model={model}
             onPick={onPickModel}
             side="top"

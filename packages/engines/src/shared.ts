@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdir, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import type { HarnessV1SandboxProvider } from "@ai-sdk/harness";
 
 /**
  * Directory holding a `pnpm` executable. Every harness adapter's bootstrap
@@ -40,5 +41,56 @@ export function withRepoWorkDir<H extends { doStart: (startOptions: any) => any 
   return {
     ...harness,
     doStart: (startOptions: Parameters<H["doStart"]>[0]) => harness.doStart({ ...startOptions, sessionWorkDir: repoPath }),
+  };
+}
+
+type SandboxSession = Awaited<ReturnType<HarnessV1SandboxProvider["createSession"]>>;
+
+export interface TrackedSandbox {
+  /** Drop-in replacement for the provider, recording every session it hands out. */
+  sandbox: HarnessV1SandboxProvider;
+  /** Stop every session handed out so far. For the failure path of `createSession()`. */
+  stopHandedOut(): Promise<void>;
+  /** Forget what was handed out, once the harness owns the session and will stop it itself. */
+  forget(): void;
+}
+
+/**
+ * Wraps a sandbox provider so a failed `HarnessAgent.createSession()` cannot
+ * leak a sandbox session.
+ *
+ * Neither `HarnessAgent` nor `createLocalSandboxProvider` exposes a disposal
+ * API — the only thing a failed `createSession()` can leak is a sandbox session
+ * (a real host process group) the harness did not get far enough to stop
+ * itself. `stop()` on the local sandbox is memoized, so stopping a session the
+ * harness already cleaned up is a no-op rather than a double kill.
+ */
+export function trackSandboxSessions(provider: HarnessV1SandboxProvider): TrackedSandbox {
+  const handedOut = new Set<SandboxSession>();
+  const sandbox: HarnessV1SandboxProvider = {
+    ...provider,
+    createSession: async (createOptions) => {
+      const created = await provider.createSession(createOptions);
+      handedOut.add(created);
+      return created;
+    },
+    ...(provider.resumeSession != null
+      ? {
+          resumeSession: async (resumeOptions: Parameters<NonNullable<HarnessV1SandboxProvider["resumeSession"]>>[0]) => {
+            const resumed = await provider.resumeSession!(resumeOptions);
+            handedOut.add(resumed);
+            return resumed;
+          },
+        }
+      : {}),
+  };
+
+  return {
+    sandbox,
+    async stopHandedOut() {
+      for (const orphan of handedOut) await Promise.resolve(orphan.stop()).catch(() => {});
+      handedOut.clear();
+    },
+    forget: () => handedOut.clear(),
   };
 }

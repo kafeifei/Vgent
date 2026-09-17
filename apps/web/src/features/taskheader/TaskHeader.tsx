@@ -2,13 +2,13 @@ import { useEffect, useState } from "react";
 import { PanelRight, Square } from "lucide-react";
 import { ModelPicker, modelLabel } from "@/components/ModelPicker";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
-import type { PermissionMode, ThreadSummary } from "@/lib/types";
+import type { EngineId, PermissionMode, ThreadSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const ENGINES: ReadonlyArray<{ id: string; label: string; wired: boolean }> = [
-  { id: "claude-code", label: "Claude Code", wired: true },
-  { id: "codex", label: "Codex", wired: false },
-  { id: "vgent", label: "Vgent", wired: false },
+const ENGINES: ReadonlyArray<{ id: EngineId; label: string }> = [
+  { id: "claude-code", label: "Claude Code" },
+  { id: "codex", label: "Codex" },
+  { id: "vgent", label: "Vgent（自研）" },
 ];
 
 const PERMISSIONS: readonly PermissionMode[] = ["allow-reads", "allow-edits", "allow-all"];
@@ -38,6 +38,7 @@ export function TaskHeader({
   pending,
   rightOpen,
   onRename,
+  onSetEngine,
   onSetModel,
   onSetPermission,
   onStop,
@@ -49,6 +50,7 @@ export function TaskHeader({
   pending: number;
   rightOpen: boolean;
   onRename: (title: string) => void;
+  onSetEngine: (engine: EngineId) => void;
   onSetModel: (model: string | null) => void;
   onSetPermission: (mode: PermissionMode) => void;
   onStop: () => void;
@@ -103,15 +105,17 @@ export function TaskHeader({
           return <Pill label="引擎" value={engine?.label ?? thread.engine} {...props} />;
         }}
       >
-        {() => (
+        {(close) => (
           <>
             <PopTitle>引擎</PopTitle>
             {ENGINES.map((engine) => (
               <PopItem
                 key={engine.id}
                 selected={engine.id === thread.engine}
-                disabled={!engine.wired}
-                {...(engine.wired ? {} : { hint: "未接线" })}
+                onClick={() => {
+                  guard(() => onSetEngine(engine.id));
+                  close();
+                }}
               >
                 {engine.label}
               </PopItem>
@@ -121,6 +125,7 @@ export function TaskHeader({
       </Popover>
 
       <ModelPicker
+        engine={thread.engine}
         model={thread.model}
         onPick={(model) => guard(() => onSetModel(model))}
         trigger={(props) => <Pill label="模型" value={modelLabel(thread.model)} {...props} />}
@@ -130,18 +135,23 @@ export function TaskHeader({
         {(close) => (
           <>
             <PopTitle>权限模式</PopTitle>
-            {PERMISSIONS.map((mode) => (
-              <PopItem
-                key={mode}
-                selected={mode === thread.permissionMode}
-                onClick={() => {
-                  guard(() => onSetPermission(mode));
-                  close();
-                }}
-              >
-                <span className="font-mono">{mode}</span>
-              </PopItem>
-            ))}
+            {PERMISSIONS.map((mode) => {
+              const codexLocked = thread.engine === "codex" && mode !== "allow-all";
+              return (
+                <PopItem
+                  key={mode}
+                  selected={mode === thread.permissionMode}
+                  disabled={codexLocked}
+                  {...(codexLocked ? { hint: "Codex 只支持 allow-all" } : {})}
+                  onClick={() => {
+                    guard(() => onSetPermission(mode));
+                    close();
+                  }}
+                >
+                  <span className="font-mono">{mode}</span>
+                </PopItem>
+              );
+            })}
           </>
         )}
       </Popover>

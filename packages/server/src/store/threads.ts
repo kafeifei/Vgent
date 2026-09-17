@@ -25,6 +25,8 @@ export interface CreateThreadInput {
 
 export type ThreadPatch = Partial<{
   title: string;
+  /** Only ever changed on a thread with no messages; the route enforces that. */
+  engine: EngineId;
   model: string | undefined;
   permissionMode: PermissionMode;
   status: ThreadStatus;
@@ -190,6 +192,7 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
         const next: ThreadRecord = {
           ...current,
           ...("title" in patch && patch.title != null ? { title: patch.title } : {}),
+          ...("engine" in patch && patch.engine != null ? { engine: patch.engine } : {}),
           ...("permissionMode" in patch && patch.permissionMode != null ? { permissionMode: patch.permissionMode } : {}),
           ...("status" in patch && patch.status != null ? { status: patch.status } : {}),
           ...("messages" in patch && patch.messages != null ? { messages: patch.messages } : {}),

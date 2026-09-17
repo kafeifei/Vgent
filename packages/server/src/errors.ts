@@ -44,6 +44,17 @@ export class NotImplementedError extends VgentServerError {
   }
 }
 
+/**
+ * The engine itself cannot run on this machine — not logged in, not installed,
+ * no credential in the environment. The request is fine; the host is not ready,
+ * so it is a 503 and the message says what to fix.
+ */
+export class EngineUnavailableError extends VgentServerError {
+  constructor(message: string, code = "engine_unavailable") {
+    super({ message, status: 503, code });
+  }
+}
+
 /** The project's `repoPath` is not (inside) a git work tree, so there is nothing to diff. */
 export class NotAGitRepoError extends VgentServerError {
   constructor(message: string, code = "not_a_git_repo") {

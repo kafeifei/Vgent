@@ -82,6 +82,7 @@ export function Shell({ token }: { token: string }) {
               <EmptyState
                 projects={state.projects}
                 projectId={activeProjectId}
+                settings={state.settings}
                 onSelectProject={actions.selectProject}
                 onAddProject={actions.addProject}
                 onStart={actions.startThread}

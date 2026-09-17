@@ -1,10 +1,16 @@
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { HarnessAgent, type HarnessAgentPermissionMode, type HarnessAgentSession, type HarnessAgentSkill } from "@ai-sdk/harness/agent";
+import {
+  HarnessAgent,
+  type HarnessAgentPermissionMode,
+  type HarnessAgentResumeSessionState,
+  type HarnessAgentSession,
+  type HarnessAgentSkill,
+} from "@ai-sdk/harness/agent";
 import { createCodex } from "@ai-sdk/harness-codex";
 import { createLocalSandboxProvider } from "@vgent/sandbox-local";
 import type { ToolSet } from "ai";
-import { ensureDirectory, resolvePnpmDir, resolveRepoPath, withRepoWorkDir } from "./shared.js";
+import { ensureDirectory, resolvePnpmDir, resolveRepoPath, trackSandboxSessions, withRepoWorkDir } from "./shared.js";
 import { toTUIAgent, type TUIAgent } from "./to-tui-agent.js";
 
 export interface CodexEngineOptions {
@@ -33,12 +39,35 @@ export interface CodexEngineOptions {
   reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   /** Allow the underlying runtime to use live web search. */
   webSearch?: boolean;
+  /**
+   * Stable identifier for the underlying harness session. Required together
+   * with `resumeFrom` to reattach a session created by an earlier process.
+   */
+  sessionId?: string;
+  /**
+   * Resume payload returned by a previous `stop()`. Must be paired with the
+   * `sessionId` that produced it; `HarnessAgent` validates it against the
+   * adapter before handing it to the runtime.
+   */
+  resumeFrom?: HarnessAgentResumeSessionState;
 }
 
 export interface CodexEngine {
   /** AI SDK `Agent` with the engine's single harness session bound in. */
   agent: TUIAgent;
+  /**
+   * The raw `HarnessAgent`. Callers that drive turns themselves need it,
+   * because `HarnessAgent.stream()` requires `session` on every call and the
+   * `Agent`-shaped wrapper above hides it.
+   */
+  harnessAgent: HarnessAgent<any, any, any, any, any>;
   session: HarnessAgentSession;
+  /**
+   * Persist resume state, then stop the runtime and the sandbox. The returned
+   * state goes back in as `resumeFrom` on the next `createCodexEngine` call
+   * with the same `sessionId`.
+   */
+  stop(): Promise<HarnessAgentResumeSessionState>;
   dispose(): Promise<void>;
 }
 
@@ -78,6 +107,9 @@ export const DEFAULT_CODEX_DATA_DIR = join(homedir(), ".vgent", "harness", "code
  * - The sandbox has no request-transformation proxy, so the adapter forwards the
  *   real credential into the bridge environment and warns about it. Nothing in
  *   this module logs the environment it builds.
+ * - The harness session owns its own conversation history. To keep it across
+ *   processes, end a turn with `stop()` and feed the state it returns back in
+ *   as `resumeFrom` together with the same `sessionId`.
  */
 export async function createCodexEngine(options: CodexEngineOptions): Promise<CodexEngine> {
   const repoPath = await resolveRepoPath(options.repoPath, "Codex");
@@ -85,7 +117,7 @@ export async function createCodexEngine(options: CodexEngineOptions): Promise<Co
   // Isolated from the real `~/.codex`; see the module doc comment above.
   const codexHomeDir = await ensureDirectory(join(dataDir, "codex-home"), 0o700);
 
-  const sandbox = createLocalSandboxProvider({
+  const provider = createLocalSandboxProvider({
     cwd: dataDir,
     // `node` for the bridge, `pnpm` for its bootstrap install.
     pathExtensions: [dirname(process.execPath), resolvePnpmDir()],
@@ -97,6 +129,10 @@ export async function createCodexEngine(options: CodexEngineOptions): Promise<Co
     allowDynamicPorts: true,
     loopbackOnly: true,
   });
+
+  // Track what the provider hands out so the catch below can stop a session a
+  // failed `createSession()` would otherwise leak.
+  const { sandbox, stopHandedOut, forget } = trackSandboxSessions(provider);
 
   const harness = createCodex({
     auth: "auto",
@@ -115,11 +151,34 @@ export async function createCodexEngine(options: CodexEngineOptions): Promise<Co
     ...(options.skills != null ? { skills: options.skills } : {}),
   });
 
-  const session = await agent.createSession();
+  // No detach→attach dance here, unlike the Claude Code engine. That dance
+  // exists because a resume payload with no live bridge respawns the runtime in
+  // *rerun* mode, whose `continueTurn` restarts the conversation with a
+  // synthetic `"Continue."` prompt instead of resolving a pending approval. The
+  // Codex adapter takes the same two branches, but it reports
+  // `supportsBuiltinToolApprovals: false` and this engine passes no host
+  // `tools`, so a Codex turn can never pause — `continueTurn` is never reached,
+  // and the rerun flag has nothing to spoil. A plain
+  // `createSession({ sessionId, resumeFrom })` after a previous `stop()` is
+  // enough: the adapter re-seeds the Codex thread on the next prompt
+  // (`seedResumeThreadOnFirstPrompt`).
+  let session: HarnessAgentSession;
+  try {
+    session = await agent.createSession({
+      ...(options.sessionId != null ? { sessionId: options.sessionId } : {}),
+      ...(options.resumeFrom != null ? { resumeFrom: options.resumeFrom } : {}),
+    });
+  } catch (error) {
+    await stopHandedOut();
+    throw error;
+  }
+  forget();
 
   return {
     agent: toTUIAgent({ agent, session }),
+    harnessAgent: agent,
     session,
+    stop: () => session.stop(),
     dispose: () => session.destroy(),
   };
 }

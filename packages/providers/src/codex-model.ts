@@ -1,4 +1,5 @@
 import { createOpenAI } from "@ai-sdk/openai";
+import { defaultSettingsMiddleware, wrapLanguageModel } from "ai";
 import type { LanguageModel } from "ai";
 import type { CodexCredentialOptions } from "./codex-credentials.js";
 import { CHATGPT_CODEX_BASE_URL, CodexTokenProvider } from "./codex-credentials.js";
@@ -46,5 +47,18 @@ export function createCodexSubscriptionModel(
       ...(options.baseURL == null ? {} : { baseURL: options.baseURL }),
     }),
   });
-  return provider.responses(modelId);
+  // `store: false` is not a preference, it is what this endpoint does — the
+  // request rewrite in `createCodexFetch` forces it on the wire. The provider
+  // has to agree, because it decides how to replay earlier assistant turns
+  // *before* that rewrite runs: left at its default (`store: true`) it replays
+  // a reasoning item as `{ type: 'item_reference', id: 'rs_…' }`, and the
+  // endpoint rejects the whole request with "Items are not persisted when
+  // `store` is set to false". Told the truth, it inlines the reasoning with its
+  // `encrypted_content` instead, which is what survives a round trip through
+  // stored UI messages — so a paused turn can still be continued later, even in
+  // another process.
+  return wrapLanguageModel({
+    model: provider.responses(modelId),
+    middleware: defaultSettingsMiddleware({ settings: { providerOptions: { openai: { store: false } } } }),
+  });
 }

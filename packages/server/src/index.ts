@@ -6,6 +6,7 @@ export { createChunkHub, type ChunkHub } from "./chunk-hub.js";
 export {
   BadRequestError,
   ConflictError,
+  EngineUnavailableError,
   GitError,
   GitUnavailableError,
   NotAGitRepoError,
@@ -23,7 +24,17 @@ export {
   type FileDiff,
   type Git,
 } from "./git.js";
-export { createEngineRegistry, type EngineContext, type EngineFactory, type EngineRegistry, type EngineRunner } from "./engines/registry.js";
+export {
+  createEngineRegistry,
+  statelessEngines,
+  type EngineContext,
+  type EngineFactory,
+  type EngineRegistry,
+  type EngineRunner,
+} from "./engines/registry.js";
+export { createClaudeCodeEngineFactory } from "./engines/claude-code.js";
+export { createCodexEngineFactory } from "./engines/codex.js";
+export { createVgentEngineFactory, DEFAULT_VGENT_MODEL, type VgentEngineFactoryOptions } from "./engines/vgent.js";
 export { AUTO_TITLE_MAX_LEN, createRunManager, deriveThreadTitle, recoverInterruptedThreads, type RunManager } from "./runs.js";
 export { readJsonOrQuarantine, writeJsonAtomic } from "./store/atomic-file.js";
 export { createProjectStore, type ProjectStore } from "./store/projects.js";

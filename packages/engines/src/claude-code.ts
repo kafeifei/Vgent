@@ -7,11 +7,10 @@ import {
   type HarnessAgentSession,
   type HarnessAgentSkill,
 } from "@ai-sdk/harness/agent";
-import type { HarnessV1SandboxProvider } from "@ai-sdk/harness";
 import { createClaudeCode } from "@ai-sdk/harness-claude-code";
 import { createLocalSandboxProvider } from "@vgent/sandbox-local";
 import type { ToolSet } from "ai";
-import { ensureDirectory, resolvePnpmDir, resolveRepoPath, withRepoWorkDir } from "./shared.js";
+import { ensureDirectory, resolvePnpmDir, resolveRepoPath, trackSandboxSessions, withRepoWorkDir } from "./shared.js";
 import { toTUIAgent, type TUIAgent } from "./to-tui-agent.js";
 
 export interface ClaudeCodeEngineOptions {
@@ -132,28 +131,9 @@ export async function createClaudeCodeEngine(options: ClaudeCodeEngineOptions): 
     },
   });
 
-  // Neither `HarnessAgent` nor `createLocalSandboxProvider` exposes a disposal
-  // API — the only thing a failed `createSession()` can leak is a sandbox
-  // session (a real host process group) the harness did not get far enough to
-  // stop itself. Track what the provider hands out so the catch below can.
-  const handedOut = new Set<Awaited<ReturnType<HarnessV1SandboxProvider["createSession"]>>>();
-  const sandbox: HarnessV1SandboxProvider = {
-    ...provider,
-    createSession: async (createOptions) => {
-      const created = await provider.createSession(createOptions);
-      handedOut.add(created);
-      return created;
-    },
-    ...(provider.resumeSession != null
-      ? {
-          resumeSession: async (resumeOptions: Parameters<NonNullable<HarnessV1SandboxProvider["resumeSession"]>>[0]) => {
-            const resumed = await provider.resumeSession!(resumeOptions);
-            handedOut.add(resumed);
-            return resumed;
-          },
-        }
-      : {}),
-  };
+  // Track what the provider hands out so the catch below can stop a session a
+  // failed `createSession()` would otherwise leak.
+  const { sandbox, stopHandedOut, forget } = trackSandboxSessions(provider);
 
   const agent = new HarnessAgent({
     id: "vgent-claude-code",
@@ -176,13 +156,10 @@ export async function createClaudeCodeEngine(options: ClaudeCodeEngineOptions): 
       session = await agent.createSession({ sessionId: options.sessionId, resumeFrom: detached });
     }
   } catch (error) {
-    // `stop()` on the local sandbox is memoized, so stopping a session the
-    // harness already cleaned up is a no-op rather than a double kill.
-    for (const orphan of handedOut) await Promise.resolve(orphan.stop()).catch(() => {});
-    handedOut.clear();
+    await stopHandedOut();
     throw error;
   }
-  handedOut.clear();
+  forget();
 
   return {
     agent: toTUIAgent({ agent, session }),

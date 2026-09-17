@@ -65,7 +65,9 @@ Vgent 是一个 **Web 优先**的本地 coding agent 工作台，底下可换引
 - **状态**：所有 provider / 认证 / 目录配置通过 `createXxx(dataDir)` 注入，无模块级可变状态。
 - **认证**：始终 mint token 写入 `connection.json`，不区分桌面与否。
 - **任务运行**：run 的 finally 里先释放槽位再做可能抛错的清理，`run.done` 创建时就挂 catch。
-- **worktree**：搬 freecode `server/workspace.ts` 的 snapshot / restore（销毁前复验所有权、前后 hash 清点、保护 index blob）。
+- **worktree**：`packages/server/src/workspace.ts`，搬 freecode 的 snapshot / restore（销毁前复验所有权、前后 hash 清点、保护 index blob），阶段四已落地，见「阶段四进度」。
+- **静态**：`packages/server/src/static.ts` 的 `registerStatic` 在 `/api` 之外兜底吐 `apps/web/dist`（SPA fallback），`--web-dist` / `VGENT_WEB_DIST` 指定目录，桌面壳和浏览器共用同一个 `#token=` 入口，不需要第二个前端服务。
+- **模型目录**：`packages/server/src/models.ts` 的 `createModelCatalog`，`GET /api/engines/:engine/models` 按 engine 现查（Codex 在线接口 → 本地缓存 → 内置兜底，10 分钟缓存 `?refresh=1` 强刷），不写死清单。
 
 ## 前端 `@vgent/web`（Vite + React）
 
@@ -139,17 +141,18 @@ packages/
 apps/
   web/             Vite + React + useChat + AI Elements
   cli/             runAgentTUI 入口
+  desktop/         Tauri 2 桌面壳，`src-tauri/` + `scripts/prepare-desktop.mjs`
 docs/
   ai-sdk/          AI SDK 文档快照
 ```
 
 ## 分阶段
 
-1. **地基**：monorepo、Node 22、ESM、TS、vitest；搬 `sandbox-local`；`HarnessAgent + harness-claude-code` 用 `runAgentTUI` 在本地仓库跑通，再接 Codex。解决 bridge `0.0.0.0` 问题。这是最大不确定性，先验证。
-2. **Web MVP**：先出低保真原型定三栏布局和 design token；Hono server 出 UI message stream 和续流；前端 `useChat` + 三栏骨架 + 工具卡片 + 变更文件 / diff 面板；任务持久化按文件；先只挂 Claude Code 引擎。
-3. **自研引擎**：`engine` = ToolLoopAgent + 六个工具执行体 + 权限映射，接进同一个 server。
-4. **补齐**：子代理、MCP + tool search、skills、记忆、压缩、worktree、diff 视图、切引擎。
-5. **桌面**：Tauri 壳，搬 freecode `backend.rs` 和 `prepare-desktop.mjs` 的 Node pin + hash 校验。
+1. **地基**（完成）：monorepo、Node 22、ESM、TS、vitest；搬 `sandbox-local`；三条引擎路本地跑通，解决 bridge `0.0.0.0` 问题。
+2. **Web MVP**（完成）：低保真原型定三栏布局和 design token；Hono server 出 UI message stream 和续流；前端 `useChat` + 三栏骨架 + 工具卡片 + 变更文件 / diff 面板；任务持久化按文件。
+3. **自研引擎**（完成）：`engine` = ToolLoopAgent + 六个工具执行体 + 权限映射，接进同一个 server，三引擎在注册表里对齐。
+4. **补齐**（完成）：Tauri 桌面壳、原生选文件夹、worktree 隔离、子代理 + MCP + tool search + skills、动态模型目录、`pnpm start`；见「阶段四进度」。
+5. **UI 抛光 + 发布工程**（进行中）：右栏文件 / 终端 / 计划 tab、`@` 引用、context ring、「审查 +N −M」pill、reclaim/restore 与 MCP 设置 UI、记忆 + 手动 compact；按需再做签名 / 公证 / 自动更新 / Windows。
 
 ## 从 freecode 直接搬的
 
@@ -165,9 +168,9 @@ docs/
 - 本地 sandbox 跑 Claude Code bridge 官方无先例，freecode 证明可行但用了脏办法，我们要找干净的。
 - 自研引擎不走 HarnessV1，resume / compact / permissionMode 是自己的实现，和官方引擎语义可能有差；壳用统一配置抽象盖住。
 
-## 当前状态（2026-09-18，阶段三完成）
+## 当前状态（2026-09-18，阶段四完成）
 
-三条引擎路全部本地跑通并有真实冒烟测试（`VGENT_SMOKE=1`）。全仓构建绿，约 150 测试。
+三条引擎路全部本地跑通并有真实冒烟测试（`VGENT_SMOKE=1`）；桌面壳、worktree 隔离、子代理/MCP/skills、动态模型清单、`pnpm start` 全部落地。全仓构建绿，`pnpm test` 40 文件 / 289 测试通过（另 5 文件 / 11 测试是 `VGENT_SMOKE` 门控的真机冒烟，默认跳过）。
 
 - `packages/sandbox-local`：freecode 移植，`createLocalSandboxProvider`，`loopbackOnly` 预加载已验证 bridge 只绑 127.0.0.1。
 - `packages/engines`：`createClaudeCodeEngine` / `createCodexEngine` → `{ agent, session, dispose }`，`toTUIAgent`，共享逻辑在 `shared.ts`。仓库路径靠覆写 `doStart` 传 `sessionWorkDir`。Claude 保留真实 HOME 复用登录（副作用：`~/.claude/CLAUDE.md` 影响回复）；Codex 用隔离 `CODEX_HOME`（真实 `~/.codex/config.toml` 与 pinned SDK 不兼容），登录态走 env 转发不受影响。Codex 的 permissionMode 只能 `allow-all`，SDK 构造时自己抛错。
@@ -222,17 +225,26 @@ docs/
 
 ### 阶段四进度
 
+- 2026-09-18：**Tauri 桌面壳 `apps/desktop`**（commit 257f818）。Tauri 2.11（`src-tauri/{Cargo.toml,tauri.conf.json,capabilities/main.json,src/main.rs,src/backend.rs}`），`pnpm desktop:build` → `apps/desktop/src-tauri/target/release/bundle/macos/Vgent.app`（约 173 MB，仅 macOS，ad-hoc 签名，无自动更新）。`scripts/prepare-desktop.mjs`：钉 Node 22.23.2（按架构 sha256 校验，缓存进 `apps/desktop/.local/node-runtime/`），sidecar `src-tauri/binaries/vgent-node-<triple>`，server 用 `pnpm deploy --legacy --node-linker=hoisted --filter @vgent/server --prod` 部署进 `src-tauri/resources/server/`（符号链接农场扛不住 tauri 的资源拷贝，改成 0 符号链接、35 MB 的实体拷贝），`apps/web/dist` → `resources/web/`，self-check 用 `--port 0` 拉起部署好的 server 等 connection.json。**`@anthropic-ai/claude-code` / `@openai/codex` 不在部署里**——harness 首次运行时自举（`~/.vgent/harness/<harness>/.harness-bootstrap` 下跑 `pnpm install`），所以首次运行需要联网、且 PATH 上要有 `pnpm`。`backend.rs`：拉起 `vgent-node --enable-source-maps <resources>/server/dist/main.js --port 0 --web-dist <resources>/web`，带 `VGENT_DESKTOP=1`，剥掉 `NODE_OPTIONS`/`NODE_PATH`，PATH 用登录 shell 探测（`$SHELL -lc 'printf %s "$PATH"'`）并把 node 目录前插（Finder 起的 app PATH 很短）；轮询 `~/.vgent/connection.json`（尊重 `VGENT_DATA_DIR`）直到 `pid` 等于子进程 pid（30s 超时），像 freecode 的 `validate_ready` 一样校验 url（http、127.0.0.1、端口、路径 `/`）和 token（32–128 位 `[A-Za-z0-9_-]`）；stderr 尾巴留给报错弹窗；看门狗线程在 server 死掉时弹原生对话框并退出。**没有 stdout/stdin 协议，没有 `initialization_script`，没有 Tauri IPC**：窗口就是 `WebviewUrl::External("<url>/#token=<token>")`，web 端现成的 `#token=` 启动逻辑接管；`on_navigation` 只放行 server 自己的 origin，其它 http(s) 转系统浏览器，弹窗一律拒绝。关闭：给子进程进程组发 SIGTERM，等 20s，SIGKILL，再等 2s；`RunEvent::Exit` 处理是**同步的**，因为 ⌘Q / AppleScript quit 走 `applicationWillTerminate`（detached 线程根本没机会跑——第一版就这么把 server 孤儿掉了）。dev 模式的妥协：`tauri dev` 没有 HMR（`frontendDist` 指到一行的 `placeholder/`），前端开发照旧用 `pnpm server` + `pnpm --filter @vgent/web dev`。图标 `apps/desktop/icon/vgent.svg`（1024²，neutral-900 圆角方块，amber-400 的 V）→ `tauri icon`。5 个 Rust 单元测试。README 在 `apps/desktop/README.md`。
+  - server 侧配合：`packages/server/src/static.ts`（`--web-dist` / `VGENT_WEB_DIST`，`serveStatic` + SPA fallback，`/api` 排除在外，静态资源不需要 token），绑定端口从 `serve()` 回调里拿；以及 `main.ts` 里一个真 bug 修复：`server.close()` 在还挂着 SSE 客户端时永远不 resolve，关闭要拖到 ~21s 被 SIGKILL 且留下 `connection.json`——现在 `closeAllConnections()` 跟着一起跑，顺带修好了 web 模式下的 Ctrl-C。
+- 2026-09-18：**原生选文件夹**（用户诉求「别让我自己输路径」）。`POST /api/projects/pick` → `packages/server/src/folder-picker.ts` 跑 `osascript -e 'tell me to activate' -e 'POSIX path of (choose folder …)'`（`execFile`，5 分钟超时；取消返回 `{path:null}`；非 darwin → 501 `picker_unavailable`）。桌面和浏览器走同一条路径，没有 Tauri dialog 插件/IPC。Web `components/ProjectPicker.tsx`：主选项「选择文件夹…」，文本输入只在 501 或失败时兜底。`apps/web/src/lib/api.ts` 的 `ApiError` 带上服务端的 `code`/`status`。
+- 2026-09-18：**worktree 隔离**（commit b33b176）。`packages/server/src/workspace.ts`（约 470 行，从 freecode 移植裁剪）：`createWorktree`（`<dataDir>/worktrees/<threadId>`，分支 `vgent/<id8>` 从项目 HEAD 切出，所有权文件 `<dataDir>/workspaces/<threadId>.json` 在 `git worktree add` **之前**写，锚点 ref `refs/vgent/tasks/<id>`）、`verifyOwnership`（7 项检查：期望路径、所有权文件 vs 实时 store 的 projectPath、父目录 realpath、存在/是目录/非符号链接、commonDir、`git worktree list --porcelain`）、`inventory`（对排序后的条目+内容做 sha256，碰到特殊文件抛错）、`makeSnapshot`（拷贝文件 + 规范化 index + `git cat-file blob` 把每个已暂存对象写进 `objects/` + 拷贝后复验两份 inventory/index/HEAD，变了就中止「归档期间文件发生了变化」）、`reclaimWorktree`（复验 → 快照 → 再复验 → `git worktree remove --force`；分支和锚点 ref 保留）、`restoreWorktree`（分支 tip == 快照 head 且没被别处签出才复用，否则用 `vgent/<id8>-restored-<hex>`；`git hash-object -w` 重放 `objects/` 并断言 sha；最终 inventory 相等；失败留半成品目录等人工恢复）、`removeWorktree`（分支 tip == baseCommit 才删）。`locked`/busy-set 故意是模块级的。类型：`ThreadRecord.workspace` 上的 `ThreadWorkspace { mode:'worktree', path, branch, baseCommit, reclaimed?, snapshotPath? }`。路由：`POST /api/threads` 接受 `workspace: 'project'|'worktree'`（先建记录再建 worktree，失败回滚）；变更相关路由挪到 `/api/threads/:id/changes*`（按项目的旧路由删掉）；`POST /api/threads/:id/workspace/{reclaim,restore}`；DELETE 先删 worktree（所有权校验失败就中止删除）。`runs.ts` 把 `{ ...project, repoPath: workspace.path }` 传给引擎工厂；已回收的线程 → 409 `workspace_reclaimed`。Web：EmptyState 的「独立 worktree」/「主工作区」切换 pill，TaskHeader 的分支 pill（「已回收」态），变更面板改按线程取数据。测试 `workspace.test.ts`（6 个）+ app.test.ts 端到端。手动验证：worktree 里写的文件项目 `git status` 看不到，DELETE 清掉目录/分支/ref。回收/恢复还没有 UI。
+- 2026-09-18：**自研引擎补齐**（commit e91b769）。`packages/engine/src/subagents.ts` —— `explore`（只有 read/grep/glob，`isStepCount(30)`）和 `coder`（除 askUserQuestions 外的全套编码工具，60 步），子代理从 `createCodingTools` 建；子代理工具没法审批，所以 `denyUnapproved` 包一层每个子工具的 `execute`，`decideApproval` 判定需要用户审批就抛「子代理不能执行需要审批的操作」（靠权限模式强制拒绝）；`explore`/`toolSearch` 加进 `READ_ONLY_TOOLS`，`coder` 加进 `EDIT_TOOLS`。`execute` 是文档里那种 async generator（`readUIMessageStream(toUIMessageStream({ stream: result.stream }))`），逐条把累积的子代理 `UIMessage` yield 出去（UI 通过 `part.preliminary` 显示「进行中…」），`toModelOutput` 只给父代理「最后一条文本，截 4000 字」。`onError` 传给 `toUIMessageStream`（SDK 默认会把错误全部掩盖成 "An error occurred."）。`toModelOutput` 只在 `convertToModelMessages(messages, { tools })` 时才生效——所以 `VgentEngine.tools` 对外暴露，`EngineRunner.tools?` 新增，`runs.ts` 在 `runner.stream` 之前用 runner 的 tools 再转一次（第一次转换时 runner 还没建出来）。`packages/engine/src/mcp.ts` —— `McpServerConfig`（`{name, command, args?, env?}` 走 stdio 的 `@ai-sdk/mcp/mcp-stdio` `Experimental_StdioMCPTransport`，或 `{name, url, transport?:'http'|'sse'}`），`prepareMcpTools` 给工具名加 `<name>__<tool>` 前缀并设 `deferLoading: true`，`connectMcpServers` 并行连接，失败只警告不中断；引擎只要有任意工具被 defer 就加 `toolSearch: toolSearch()`。`Settings.mcpServers`（PUT /api/settings 时校验，400 `invalid_mcp_servers`）；server 端 vgent runner 每轮读一次设置（`createSettingsStore(ctx.dataDir)`），建 run 时连 MCP，释放时关。`packages/engine/src/skills.ts` —— `loadSkillsIndex([repo/.claude/skills, ~/.vgent/skills])` 手写解析 `SKILL.md` frontmatter，instructions 里只放「可用技能」的名称 + 描述 + 路径，模型按需 `read` 文件。CLI 新增 `--mcp <file>`（JSON 文件路径）。`@vgent/engine` 加了 `@ai-sdk/mcp@2.0.52`。Web：`toolMeta.ts` 加 explore/coder 分支，`ToolRow.tsx` 的 `ChildTranscript`。测试 +18；真实冒烟（Codex 登录）观察到模型确实在调 `explore`。没有真实 MCP 往返测试（手头没有可用的 MCP server，只单测了 prep/parse + 连不上时只警告这条路径）。
+- 2026-09-18：**模型清单动态获取**（commit a772d6c，用户诉求「别写死」）。`packages/server/src/models.ts` 的 `createModelCatalog` + `GET /api/engines/:engine/models`（10 分钟缓存，`?refresh=1` 强刷）。Codex：`GET https://chatgpt.com/backend-api/codex/models?client_version=<ver>` 走 `createCodexFetch`（已确认：ETag 和 `~/.codex/models_cache.json` 一致；`client_version` 必传，取自缓存文件，兜底 `0.155.0`）→ 失败退回缓存文件（`visibility:'list'`，按 priority 排序）→ 再退回内置的 `gpt-5.5`；vgent = Codex 的 id 集合映射成 `codex-subscription:<slug>`，并集 `AI_GATEWAY_API_KEY`/`VERCEL_OIDC_TOKEN` 有一个非空时 `gateway.getAvailableModels()`（`modelType==='language'`）的结果；claude-code = SDK 的三个别名 `sonnet`/`opus`/`haiku`（adapter 只认这三个类型）+ 设了 `ANTHROPIC_API_KEY` 时的 `GET https://api.anthropic.com/v1/models`（不发起任何 OAuth 请求）。`createCodexFetch` 现在从 `@vgent/providers` 导出。Web `ModelPicker` 挂载/切引擎时拉一次，「加载中…」→「默认」+ 条目列表，孤儿模型显示「当前：<id>」，footer 标来源（来自 Codex 在线目录 / 来自 Codex 缓存 / 来自 AI Gateway / 来自 Anthropic API / 内置清单）。`MODELS_BY_ENGINE` 删掉了。7 个单测。
+- 2026-09-18：**`pnpm start`**（commit c57198c）。根 script 先全量 build 再 build web 再跑 `main.js`；server 在 `--web-dist` 没传时默认取 `apps/web/dist`（要有 `index.html`）；`--repo` 或 `INIT_CWD`/cwd 的 git toplevel 会被自动注册成一个项目（`app.projects` 挂在 `VgentApp` 上对外暴露）；`isTTY && !VGENT_DESKTOP && static` 时自动开浏览器（`--open`/`--no-open` 可控），打印 `web: http://127.0.0.1:<port>/#token=…`。`main.test.ts` 13 个测试；`isMainModule` 守卫防止被 import 时自动跑。
 - 2026-09-18：**parked 的 Claude Code session 晾久了 401** 修了。根因是 `auth: 'auto'`：适配器在 `doStart` 里把订阅 OAuth token 解析一次，当成静态 `CLAUDE_CODE_OAUTH_TOKEN` 塞进 bridge 环境（本地 sandbox 没有 `addRequestTransformations`，走的是裸转发分支），停在审批上的一轮把那个 bridge 一直吊着，token 过期后续跑就是 401。改成显式传一个认证环境（`defaultClaudeCodeAuth()`，`packages/engines/src/claude-code.ts`）：只转发 `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL` / `AI_GATEWAY_API_KEY` / `AI_GATEWAY_BASE_URL` / `VERCEL_OIDC_TOKEN`，**绝不转发 `CLAUDE_CODE_OAUTH_TOKEN`**；传了环境以后 `isHarnessAuthenticationEnvironment` 会短路掉订阅读取，bridge 里的 `claude` CLI 自己读 `~/.claude` / 钥匙串并自己刷新，跟人手跑一样。顺带发现 sandbox 环境白名单里缺 `USER`：钥匙串条目是按 `security … -a $USER` 找的，没有 `USER` 就是「Not logged in」，所以 `createLocalSandboxProvider` 的 `env` 补上了 `USER`。`auth` 现在是 `createClaudeCodeEngine` 的可选项，想退回 `'auto'` 也行。
 - 2026-09-18：**harness 未跑完的一轮活过优雅重启**。`HarnessAgentSession.suspendTurn()` 冻结当前轮、留着 runtime / bridge / sandbox 不动，返回可 JSON 序列化的 `continueFrom`（带 `pendingToolApprovals`）。落地：`EngineRunner.suspend?()`（只有 Claude Code 实现，Codex 从不 park）；`HarnessState` 变成 `{ resumeFrom?, continueFrom? }`；`stopAll()` 对有状态的 parked runner 先试 `suspend()` → `saveHarnessState`，线程留在 `awaiting-approval`、工具部件不动，失败才退回原来的 destroy + `interrupted`；`recoverInterruptedThreads` 对带 `continueFrom` 的 `awaiting-*` 线程不动；下一轮 `start()` 里 `continuesTurn` 为真才拿 `continueFrom` 去 `createSession({ sessionId, continueFrom })`，并且第一次 `stream()` 改走 `agent.continueStream({ toolApprovalContinuations, toolResultContinuations })`（用 `collectHarnessAgentTool*Continuations` 从同一份 `ModelMessage[]` 里取）。attach 失败（bridge 真死了）是 typed error `TurnResumeFailedError`，线程收成 `interrupted`、悬着的调用写「服务重启后未能恢复这一轮，请重新发送」，并把 `continueFrom` 从 harness 文件里清掉；`finish()` 写 `resumeFrom` 时也自然把它顶掉。本地 sandbox 的 bridge 本来就是 `detached: true` 起的，实测服务器 SIGTERM 退出后 bridge 和 `claude` CLI 都还活着（stdout 是管道，但它没有在那之后写，没有 EPIPE）。
-- 验证：`pnpm build && pnpm test` → 38 文件 / 271 测试全绿；`VGENT_SMOKE=1` 的 `@vgent/engines`（5 个）和 `@vgent/server`（84 个）全绿，其中新增的 `server.smoke.test.ts` 真机跑「allow-reads 下 `date > restart-probe.txt` 停在审批 → `app.shutdown()` → 同 dataDir 新建 app → 还是 `awaiting-approval` → 批准 → 文件写出来了」。真·两进程也实测过：`node packages/server/dist/main.js --port 7413`，curl 驱动到审批、SIGTERM、bridge 进程存活、重启后批准、`restart-probe.txt` 落盘，harness 文件从 `continueFrom` 变回 `resumeFrom`。
+- 已知未修（阶段四）：阶段三就有的 shutdown 竞态还在；suspend 成功但 `saveHarnessState` 写盘失败会孤儿掉 bridge（只记日志）；suspend 和审批回执之间 bridge 死掉算 `interrupted`；没有真实 MCP 往返测试；`tauri dev` 没有 HMR；选文件夹只支持 macOS；桌面壳和 `pnpm server` 共用 `~/.vgent`（`connection.json` 会被覆盖，用 pid 匹配 shell）；直接 `kill` Tauri 进程会孤儿掉 server；`EmptyState` 的引擎默认值只在挂载时读一次 settings。
+- 验证：`pnpm build && pnpm test` → 40 文件 / 289 测试通过（另 5 文件 / 11 测试是 `VGENT_SMOKE` 门控，默认跳过）；阶段四之前记录的 `@vgent/engines`（5 个）/ `@vgent/server`（84 个）真机冒烟、双进程重启验证（见上两条）依旧成立。新增桌面壳验证：`pnpm desktop:build` 产出的 `Vgent.app` 启动后 `connection.json` 的 `pid` 与子进程一致、`/` 返回 web 首页、⌘Q 约 2s 内退出（server 进程一起没了）、点「选择文件夹…」原生对话框前置弹出并可选中目录。
 
-### 明确未做（阶段三之后）
+### 明确未做（阶段四之后）
 
 - **自研引擎的 session 管理**：server 把存好的 UI 消息喂回 agent（每轮 `convertToModelMessages` 重放），JSONL 的 `sessionFile` 路径现在只有 `apps/cli` 在用。
-- `server` 未做：实例锁（`instance-lock.ts` 还没搬）、harness 引擎用 `detach()` 代替 `stop()` 保温 sandbox、worktree。
-- ~~未跑完的一轮活不过重启（harness 引擎）~~：**阶段四已修**，见下。
+- `server` 未做：实例锁（`instance-lock.ts` 还没搬）。
 - `askUserQuestions` 在 TUI 里不可用（需要 Web `useChat`）。
-- 子代理、MCP + toolSearch、skills 索引、记忆、手动 compact、`@ai-sdk/otel`。
-- Web 已做出工作台骨架（见上），**明确留到后面的**：右栏的文件 / 终端 / 计划三个 tab（现在是「下一步接入」占位）、`@` 引用、context ring、composer 上方的「审查 +N −M」pill、checkpoint / 回退、麦克风、侧聊 `/side`、worktree pill、运行位置下拉（写死「本机」）、模式 chip（写死 `Agent`）、子代理的嵌套流、虚拟滚动、无障碍焦点管理。
+- 记忆、手动 compact、`@ai-sdk/otel`。
+- worktree 的回收 / 恢复没有 UI（后端 `POST /api/threads/:id/workspace/{reclaim,restore}` 已就绪）；MCP server 列表没有设置 UI（只能直接编辑 `settings.json` 的 `mcpServers`）。
+- Web 已做出工作台骨架（见上），**明确留到后面的**：右栏的文件 / 终端 / 计划三个 tab（现在是「下一步接入」占位）、`@` 引用、context ring、composer 上方的「审查 +N −M」pill、checkpoint / 回退、麦克风、侧聊 `/side`、运行位置下拉（写死「本机」）、模式 chip（写死 `Agent`）、子代理的嵌套流、虚拟滚动、无障碍焦点管理。
+- 桌面壳：Windows / Linux、签名与公证、自动更新、多窗口。
 
-下一步：阶段四——排序是 (1) 先做 Tauri 桌面壳（搬 freecode `backend.rs` 和 `prepare-desktop.mjs` 的 Node pin + hash 校验），让工作台变成一个能双击打开、用户愿意日常挂着的 app；(2) 每个任务一个 worktree 的隔离；(3) 给自研引擎补子代理 / MCP + tool search / skills；然后才是 UI 抛光清单：右栏的文件 / 终端 / 计划三个 tab、`@` 引用、context ring、composer 上方的「审查 +N −M」pill、「本任务内一直允许」。两个顺路的已知 bug——parked 的 Claude Code session 晾久了凭据过期（401）、harness 未跑完的一轮活不过重启——已经修掉，见「阶段四进度」。
+下一步：阶段五——UI 抛光按优先级排：右栏文件 / 终端 / 计划三个 tab、`@` 引用、context ring、composer 上方「审查 +N −M」pill、「本任务内一直允许」、worktree 回收/恢复和 MCP 的设置 UI、记忆 + 手动 compact；挑着做，不追求一次做完。发布工程（签名 / 公证、自动更新、Windows）只在有明确需求时再启动。

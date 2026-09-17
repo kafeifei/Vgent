@@ -1,0 +1,20 @@
+{
+  "name": "@vgent/cli",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "vgent": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "ai": "7.0.105",
+    "@ai-sdk/tui": "1.0.106",
+    "@vgent/engines": "workspace:*"
+  }
+}

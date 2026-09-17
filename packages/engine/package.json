@@ -1,0 +1,25 @@
+{
+  "name": "@vgent/engine",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "ai": "7.0.105",
+    "zod": "4.6.5",
+    "@vgent/tools": "workspace:*"
+  }
+}

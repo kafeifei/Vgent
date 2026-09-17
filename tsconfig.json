@@ -1,0 +1,10 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/sandbox-local" },
+    { "path": "packages/tools" },
+    { "path": "packages/engine" },
+    { "path": "packages/engines" },
+    { "path": "apps/cli" }
+  ]
+}

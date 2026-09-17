@@ -183,12 +183,24 @@ docs/
 - 已定布局：左栏 240 可收起、中栏自适应、右栏默认收起展开 380；顶部 36px 窗口条；中栏 = 粘顶任务头 + 滚动日志 + 粘底 composer，日志正文最大宽 860。
 - token 相关的五个待拍板问题已于 2026-09-17 定稿，见 `docs/prototype/README.md` 的
   "已拍板（2026-09-17）"一节；状态点形状区分已落地到 `prototype.css`。
+- 2026-09-17：`packages/server`（`@vgent/server`，Hono）落地，`node packages/server/dist/main.js` 或 `pnpm server` 起，只听 127.0.0.1，启动 mint token 写 `connection.json`(0600)，Host 非 loopback 一律 403，两个 SSE GET 额外接受 `?token=`。端点：`/api/health`、projects / threads / settings 的 REST、`POST /api/chat/:threadId`（UI message stream）、`GET /api/chat/:threadId/stream`（无活动 run 返回 204）、`POST /api/chat/:threadId/stop`、`GET /api/state`（SSE，50ms 去抖，一次序列化广播给所有客户端，15s keepalive）。
+- 可重放流：一轮一个 chunk hub（`chunk-hub.ts`），append-only buffer + 订阅者集合，重放和实时 tail 同一条代码路径；服务端自己也订阅一份用 `readUIMessageStream` 重建助手消息，落盘和所有客户端因此共享同一份真相。`interrupt()` 把未终结的工具调用补成 `tool-output-error`、把开着的 text/reasoning 补 end。
+- 持久化：`~/.vgent/`（`VGENT_DATA_DIR` 可覆盖）下 `projects.json`、`settings.json`、`threads/index.json` + 一任务一文件 `threads/<id>.json`；harness resume state 单独放 `threads/<id>.harness.json`(0600)，**永不出 HTTP/SSE**（可能含 bridge 凭据）。写一律 temp + fsync + rename + fsync 父目录，解析失败改名 `.corrupt-<ts>` 继续跑；同一线程的写走 per-id promise 链，中途节流保存（≥1s）不可能压过最终保存。索引丢了扫 `threads/*.json` 重建。
+- resume 策略：线程 id 即 harness `sessionId`。**只有跑完的一轮**才 `session.stop()` 拿 resume state 落盘，下一轮 `createSession({ sessionId, resumeFrom })`。停在 `awaiting-approval` / `awaiting-input` 的一轮不能 stop：harness 对未完成的 turn 返回的是 continuation payload（里面是**活着的** bridge 的 port + token），而同一个 `stop()` 在 finally 里已经把那个 bridge 杀了，下次拿它 resume 会永久挂死。所以这种轮次把 `EngineRunner` 原地 **parked**（每线程一个，不写 `<id>.harness.json`）：下一轮如果转出来的最后一条是 `role: 'tool'`（审批回执 / 工具结果）就复用同一个 session 继续 `stream()`；如果是新的 user 提问就 `session.destroy()`、把历史里悬着的工具调用收成 `output-error`、再用上一次**跑完**的 resume state 起新 runner。一轮的完整消息数组原样交给 `HarnessAgent.stream()`——它自己取最后一条 user 消息，而审批续跑要靠数组里上一条 assistant 消息的 `tool-approval-request` 才能解出 approval id。run 在 finally 里先释放槽位再停引擎，同线程下一轮 start 前等这次清理结束；`stop()` / `stopAll()` 对 `run.done` 设 10s 超时（可配），引擎赖着不退也不会卡死槽位和 SIGTERM。
+  - **resume 出来的 session 必须先转成 attach 态**（`packages/engines/src/claude-code.ts`）。`stop()` 落盘的 payload 里没有 bridge 坐标，adapter 拿它重启时走的是 *rerun* 分支（`rerunContinue: true`），而 rerun session 的每一次 `continueTurn`——包括审批续跑——都会先往 bridge 发一条 `{ type: 'start', prompt: 'Continue.', resumeSessionId }` 重开对话，Claude Code 于是把上一轮那个没回执的 `tool_use` 记成 `User rejected tool use`，审批 `approved: true` 白发。所以 `createSession({ resumeFrom })` 之后立刻 `session.detach()` 再用返回的（带 bridge 坐标的）payload 重建一次 session：走 attach 分支，`rerunContinue` 为 false，审批才按审批处理。只有**第一轮**（无 resume state）可以跳过这一步。
+  - 落盘的消息数组里不会出现 `parts: []` 的 assistant 消息：一轮如果没产出任何可渲染 chunk（比如 hook 直接报错），就原样保留历史，不塞空壳。
+- 引擎注册表只接了 Claude Code；`codex` / `vgent` 占位，`create` 抛 501 `NotImplementedError`。错误一律 typed（`status` + `code`），HTTP 层按 `instanceof` 映射，不匹文案。流里出现 `error` part 的一轮落盘为 `status: 'error'` + 错误文案（助手消息按已生成的原样保留）。
+- 2026-09-17：`apps/web` 起了个一次性冒烟客户端（Vite + React，**不是**产品 UI，产品 UI 仍按 `docs/prototype/` 做）：token 从 `#token=` 读一次存 sessionStorage 并抹掉 URL，Vite `/api` 代理到 7412，`useChat` + `DefaultChatTransport`（`prepareReconnectToStreamRequest` 打到 `/api/chat/:id/stream`、`resume: true`），审批走 `addToolApprovalResponse({ id: part.approval.id, approved })`，`askUserQuestions` 走 `addToolOutput`。
+- 真机副作用：sandbox 保留调用者的真实 `HOME`，所以用户全局 `~/.claude` 的 hooks 会作用在 Claude Code 引擎里——实测一次 Write 被用户自己的 hook 拦下，以 stream error 的形式冒到 UI。
+- 真机副作用：一个 parked 在 awaiting-approval、晾了几分钟才去审批的线程，续跑时以 `HTTP 401: authentication_failed`（harness 记的原文是 `harness stream error: HTTP 401: authentication_failed`）失败；本地沙箱没有请求改写，adapter 是在 `spawn` 时把 Claude 的真实凭据一次性转发进 bridge 的环境变量（harness 为此警告 "Falling back to less secure credential forwarding"），bridge 晾得越久，转发进去的 token 就越可能过期。同一提问换个新 session 立刻就能跑通。记为已知风险，缓解方案待定（parked 会话加空闲超时 / 每轮重新读凭据）。
 
 ### 明确未做（阶段二起点）
 
-- **Session 管理**：自研引擎只有 JSONL 追加，`loadSession` 未接回 agent；harness 引擎的 `detach()/stop()` 恢复状态未落盘、无 resume。按方案在 `server` 层做：一任务一文件 + harness resume state + 可重放流。
+- **自研引擎的 session 管理**：只有 JSONL 追加，`loadSession` 未接回 agent。（harness 引擎的 resume 已由 `server` 落地，见上。）
+- `server` 未做：Codex / 自研引擎接线、实例锁（`instance-lock.ts` 还没搬）、用 `detach()` 代替 `stop()` 保温 sandbox、worktree。
+- **未跑完的一轮活不过重启**：parked session 只在本进程内存里，重启后 bridge 已死。所以 shutdown 和启动恢复都把 `running` / `awaiting-approval` / `awaiting-input` 的线程收成 `interrupted`，并把悬着的工具调用写成 `output-error`「服务已重启，请重新发送」——否则客户端会对一个不存在的 turn 提交审批。用 `detach()` + `continueStream()` 做跨进程续跑是后续工作。
 - `askUserQuestions` 在 TUI 里不可用（需要 Web `useChat`）。
 - 子代理、MCP + toolSearch、skills 索引、记忆、手动 compact、`@ai-sdk/otel`。
-- Web：原型已定，组件和 server 全部未做。
+- Web：原型已定，组件未做。
 
-下一步：Hono server（chat stream、续流、session 落盘）→ 前端 `apps/web`（Vite + React + Tailwind v4 + AI Elements，接 `tokens.css`）。
+下一步：前端 `apps/web`（Vite + React + Tailwind v4 + AI Elements，接 `tokens.css`）对接上面的 HTTP 契约。

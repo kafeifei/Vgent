@@ -1,0 +1,248 @@
+import { randomUUID } from "node:crypto";
+import { mkdir, readdir, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { isToolUIPart, type UIMessage } from "ai";
+import { NotFoundError } from "../errors.js";
+import type { EngineId, HarnessState, Logger, PermissionMode, ThreadRecord, ThreadStatus, ThreadSummary } from "../types.js";
+import { silentLogger } from "../types.js";
+import { readJsonOrQuarantine, writeJsonAtomic } from "./atomic-file.js";
+
+interface ThreadIndexFile {
+  version: 1;
+  threads: ThreadSummary[];
+}
+
+export interface CreateThreadInput {
+  projectId: string;
+  title?: string;
+  engine: EngineId;
+  model?: string;
+  permissionMode: PermissionMode;
+}
+
+export type ThreadPatch = Partial<{
+  title: string;
+  model: string | undefined;
+  permissionMode: PermissionMode;
+  status: ThreadStatus;
+  error: string | undefined;
+  messages: UIMessage[];
+}>;
+
+export interface ThreadStore {
+  list(): Promise<ThreadSummary[]>;
+  get(id: string): Promise<ThreadRecord | undefined>;
+  create(input: CreateThreadInput): Promise<ThreadRecord>;
+  update(id: string, patch: ThreadPatch): Promise<ThreadRecord>;
+  /**
+   * Mid-turn message persist: writes only that thread's file, and neither
+   * rewrites the index nor notifies subscribers. The run's final `update()`
+   * does both.
+   */
+  saveMessages(id: string, messages: UIMessage[]): Promise<void>;
+  remove(id: string): Promise<void>;
+  saveHarnessState(id: string, state: HarnessState): Promise<void>;
+  loadHarnessState(id: string): Promise<HarnessState | undefined>;
+  subscribe(listener: () => void): () => void;
+}
+
+const isRecord = (value: unknown): value is ThreadRecord =>
+  typeof value === "object" && value !== null && typeof (value as ThreadRecord).id === "string" && Array.isArray((value as ThreadRecord).messages);
+
+const isIndexFile = (value: unknown): value is ThreadIndexFile =>
+  typeof value === "object" && value !== null && Array.isArray((value as ThreadIndexFile).threads);
+
+const isHarnessState = (value: unknown): value is HarnessState =>
+  typeof value === "object" && value !== null && typeof (value as HarnessState).sessionId === "string" && (value as HarnessState).resumeFrom != null;
+
+/** Approvals the UI still has to answer: tool parts parked in `approval-requested`. */
+export function countPendingApprovals(messages: readonly UIMessage[]): number {
+  let count = 0;
+  for (const message of messages) {
+    for (const part of message.parts) {
+      if (isToolUIPart(part) && part.state === "approval-requested") count += 1;
+    }
+  }
+  return count;
+}
+
+export function summarize(record: ThreadRecord): ThreadSummary {
+  const { messages, ...rest } = record;
+  return { ...rest, messageCount: messages.length, pendingApprovals: countPendingApprovals(messages) };
+}
+
+/**
+ * One file per thread plus a small index, under `<dataDir>/threads/`.
+ * Every write to a given thread goes through that thread's own promise chain,
+ * so a throttled mid-turn persist can never land after the final one.
+ */
+export function createThreadStore(dataDir: string, log: Logger = silentLogger): ThreadStore {
+  const dir = join(dataDir, "threads");
+  const indexPath = join(dir, "index.json");
+  const recordPath = (id: string) => join(dir, `${id}.json`);
+  const harnessPath = (id: string) => join(dir, `${id}.harness.json`);
+
+  const listeners = new Set<() => void>();
+  const chains = new Map<string, Promise<unknown>>();
+  let index: ThreadSummary[] | undefined;
+  let ready: Promise<void> | undefined;
+
+  /** Serializes work per key; the chain never rejects, so one failure cannot poison the next call. */
+  const serialize = <T>(key: string, work: () => Promise<T>): Promise<T> => {
+    const previous = chains.get(key) ?? Promise.resolve();
+    const next = previous.then(work, work);
+    chains.set(
+      key,
+      next.catch(() => {}),
+    );
+    return next;
+  };
+
+  const notify = () => {
+    for (const listener of [...listeners]) {
+      try {
+        listener();
+      } catch (error) {
+        log.warn("线程变更监听器抛错", error);
+      }
+    }
+  };
+
+  const rebuildIndex = async (): Promise<ThreadSummary[]> => {
+    const entries = await readdir(dir).catch(() => [] as string[]);
+    const summaries: ThreadSummary[] = [];
+    for (const entry of entries) {
+      if (!entry.endsWith(".json") || entry === "index.json" || entry.endsWith(".harness.json")) continue;
+      const record = await readJsonOrQuarantine<ThreadRecord>(join(dir, entry), { validate: isRecord, log });
+      if (record != null) summaries.push(summarize(record));
+    }
+    summaries.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    await writeJsonAtomic(indexPath, { version: 1, threads: summaries } satisfies ThreadIndexFile);
+    return summaries;
+  };
+
+  const ensureReady = (): Promise<void> => {
+    ready ??= (async () => {
+      await mkdir(dir, { recursive: true, mode: 0o700 });
+      const file = await readJsonOrQuarantine<ThreadIndexFile>(indexPath, { validate: isIndexFile, log });
+      index = file?.threads ?? (await rebuildIndex());
+    })();
+    return ready;
+  };
+
+  const writeIndex = () =>
+    serialize("\0index", async () => {
+      await writeJsonAtomic(indexPath, { version: 1, threads: index ?? [] } satisfies ThreadIndexFile);
+    });
+
+  const putSummary = (summary: ThreadSummary) => {
+    const current = index ?? [];
+    const position = current.findIndex((entry) => entry.id === summary.id);
+    if (position >= 0) current[position] = summary;
+    else current.unshift(summary);
+    index = current;
+  };
+
+  const readRecord = (id: string) => readJsonOrQuarantine<ThreadRecord>(recordPath(id), { validate: isRecord, log });
+
+  return {
+    async list() {
+      await ensureReady();
+      return [...(index ?? [])];
+    },
+
+    async get(id) {
+      await ensureReady();
+      return readRecord(id);
+    },
+
+    async create(input) {
+      await ensureReady();
+      const now = new Date().toISOString();
+      const record: ThreadRecord = {
+        version: 1,
+        id: randomUUID(),
+        projectId: input.projectId,
+        title: input.title?.trim() || "新任务",
+        engine: input.engine,
+        ...(input.model != null ? { model: input.model } : {}),
+        permissionMode: input.permissionMode,
+        status: "idle",
+        createdAt: now,
+        updatedAt: now,
+        messages: [],
+      };
+      await serialize(record.id, () => writeJsonAtomic(recordPath(record.id), record));
+      putSummary(summarize(record));
+      await writeIndex();
+      notify();
+      return record;
+    },
+
+    async update(id, patch) {
+      await ensureReady();
+      const updated = await serialize(id, async () => {
+        const current = await readRecord(id);
+        if (current == null) throw new NotFoundError(`线程不存在: ${id}`, "thread_not_found");
+        const next: ThreadRecord = {
+          ...current,
+          ...("title" in patch && patch.title != null ? { title: patch.title } : {}),
+          ...("permissionMode" in patch && patch.permissionMode != null ? { permissionMode: patch.permissionMode } : {}),
+          ...("status" in patch && patch.status != null ? { status: patch.status } : {}),
+          ...("messages" in patch && patch.messages != null ? { messages: patch.messages } : {}),
+          updatedAt: new Date().toISOString(),
+        };
+        // `exactOptionalPropertyTypes`: clearing an optional field means deleting it.
+        if ("model" in patch) {
+          if (patch.model == null) delete next.model;
+          else next.model = patch.model;
+        }
+        if ("error" in patch) {
+          if (patch.error == null) delete next.error;
+          else next.error = patch.error;
+        }
+        await writeJsonAtomic(recordPath(id), next);
+        return next;
+      });
+      putSummary(summarize(updated));
+      await writeIndex();
+      notify();
+      return updated;
+    },
+
+    async saveMessages(id, messages) {
+      await ensureReady();
+      await serialize(id, async () => {
+        const current = await readRecord(id);
+        if (current == null) return;
+        await writeJsonAtomic(recordPath(id), { ...current, messages, updatedAt: new Date().toISOString() } satisfies ThreadRecord);
+      });
+    },
+
+    async remove(id) {
+      await ensureReady();
+      await serialize(id, async () => {
+        await rm(recordPath(id), { force: true });
+        await rm(harnessPath(id), { force: true });
+      });
+      index = (index ?? []).filter((entry) => entry.id !== id);
+      await writeIndex();
+      notify();
+    },
+
+    async saveHarnessState(id, state) {
+      await ensureReady();
+      await serialize(`${id}\0harness`, () => writeJsonAtomic(harnessPath(id), state, { mode: 0o600 }));
+    },
+
+    async loadHarnessState(id) {
+      await ensureReady();
+      return readJsonOrQuarantine<HarnessState>(harnessPath(id), { validate: isHarnessState, log });
+    },
+
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+}

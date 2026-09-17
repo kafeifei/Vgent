@@ -6,6 +6,8 @@
     { "path": "packages/providers" },
     { "path": "packages/engine" },
     { "path": "packages/engines" },
-    { "path": "apps/cli" }
+    { "path": "packages/server" },
+    { "path": "apps/cli" },
+    { "path": "apps/web" }
   ]
 }

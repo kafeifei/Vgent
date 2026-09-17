@@ -14,3 +14,5 @@ export {
   type CodexEngineOptions,
 } from "./codex.js";
 export { toTUIAgent, type TUIAgent } from "./to-tui-agent.js";
+/** Opaque harness resume payload; callers persist it between turns. */
+export type { HarnessAgentPermissionMode, HarnessAgentResumeSessionState } from "@ai-sdk/harness/agent";

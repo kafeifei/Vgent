@@ -1,0 +1,515 @@
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { collectHarnessAgentToolApprovalContinuations } from "@ai-sdk/harness/agent";
+import { isToolUIPart, type ModelMessage, type TextStreamPart, type ToolSet, type UIMessage } from "ai";
+import { afterEach, describe, expect, it } from "vitest";
+import { createApp, type VgentApp } from "./app.js";
+import { createEngineRegistry, type EngineContext, type EngineFactory, type EngineRunner } from "./engines/registry.js";
+import { ABANDONED_TURN_TEXT, createRunManager, RESTART_PENDING_TOOL_TEXT } from "./runs.js";
+import { createProjectStore } from "./store/projects.js";
+import { createThreadStore } from "./store/threads.js";
+import type { HarnessState, Project, ThreadRecord } from "./types.js";
+
+const TOKEN = "test-token-0123456789";
+const ORIGIN = "http://127.0.0.1:7412";
+
+const dirs: string[] = [];
+const apps: VgentApp[] = [];
+
+afterEach(async () => {
+  await Promise.all(apps.splice(0).map((app) => app.shutdown()));
+  await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 5 })));
+});
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function tempDir(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "vgent-runs-"));
+  dirs.push(dir);
+  return dir;
+}
+
+const auth = { authorization: `Bearer ${TOKEN}` };
+
+function request(app: VgentApp, path: string, init?: RequestInit & { headers?: Record<string, string> }): Promise<Response> {
+  return app.app.request(`${ORIGIN}${path}`, {
+    ...init,
+    headers: { ...auth, ...(init?.body != null ? { "content-type": "application/json" } : {}), ...init?.headers },
+  });
+}
+
+const postJson = (app: VgentApp, path: string, body: unknown) => request(app, path, { method: "POST", body: JSON.stringify(body) });
+
+async function readSse(response: Response): Promise<{ type: string; errorText?: string }[]> {
+  const text = await response.text();
+  return text
+    .split("\n")
+    .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+    .map((line) => JSON.parse(line.slice(6)) as { type: string; errorText?: string });
+}
+
+function makeApp(dataDir: string, factory: EngineFactory, stopTimeoutMs?: number): VgentApp {
+  const instance = createApp({
+    dataDir,
+    token: TOKEN,
+    registry: createEngineRegistry({ "claude-code": factory }),
+    ...(stopTimeoutMs != null ? { stopTimeoutMs } : {}),
+  });
+  apps.push(instance);
+  return instance;
+}
+
+async function setupThread(app: VgentApp, repoPath: string): Promise<ThreadRecord> {
+  const project = (await (await postJson(app, "/api/projects", { repoPath })).json()) as Project;
+  return (await (
+    await postJson(app, "/api/threads", { projectId: project.id, title: "审批", engine: "claude-code", permissionMode: "allow-reads" })
+  ).json()) as ThreadRecord;
+}
+
+const userMessage = (id: string, text: string): UIMessage => ({ id, role: "user", parts: [{ type: "text", text }] });
+
+async function getThread(app: VgentApp, threadId: string): Promise<ThreadRecord> {
+  return (await (await request(app, `/api/threads/${threadId}`)).json()) as ThreadRecord;
+}
+
+async function waitForStatus(app: VgentApp, threadId: string, wanted: string): Promise<ThreadRecord> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const record = await getThread(app, threadId);
+    if (record.status === wanted) return record;
+    await sleep(10);
+  }
+  throw new Error(`线程 ${threadId} 没有进入状态 ${wanted}: ${JSON.stringify(await getThread(app, threadId))}`);
+}
+
+const exists = (path: string) =>
+  stat(path).then(
+    () => true,
+    () => false,
+  );
+
+/** The engine writes its resume state after the run releases its slot, so the file lags the status. */
+async function waitForFile(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (await exists(path)) return;
+    await sleep(10);
+  }
+  throw new Error(`文件没有出现: ${path}`);
+}
+
+const toStream = (parts: TextStreamPart<ToolSet>[]) =>
+  ReadableStream.from(
+    (async function* () {
+      for (const part of parts) yield part;
+    })(),
+  ) as ReadableStream<TextStreamPart<ToolSet>>;
+
+const TOOL_CALL = {
+  type: "tool-call" as const,
+  toolCallId: "call-1",
+  toolName: "bash",
+  input: { command: "uname -a | wc -c" },
+  providerExecuted: true,
+};
+
+/** Exactly what a permission-gated bash call looks like on the wire. */
+const approvalParts = (): TextStreamPart<ToolSet>[] =>
+  [
+    { type: "start" },
+    TOOL_CALL,
+    { type: "tool-approval-request", approvalId: "ap-1", toolCall: TOOL_CALL },
+  ] as unknown as TextStreamPart<ToolSet>[];
+
+const textParts = (text: string): TextStreamPart<ToolSet>[] => [
+  { type: "start" },
+  { type: "text-start", id: "t1" },
+  { type: "text-delta", id: "t1", text },
+  { type: "text-end", id: "t1" },
+];
+
+/**
+ * The continuation: the approved call finally produces its output. Its chunks
+ * address the tool part of the *previous* assistant message, which is what
+ * makes this the regression test for rebuilding that message from a blank one.
+ */
+const continuationParts = (): TextStreamPart<ToolSet>[] =>
+  [
+    { type: "start" },
+    { ...TOOL_CALL, type: "tool-result", output: { stdout: "     137" } },
+    ...textParts("命令已执行").slice(1),
+  ] as unknown as TextStreamPart<ToolSet>[];
+
+interface FakeRunner extends EngineRunner {
+  readonly id: number;
+  readonly streams: ModelMessage[][];
+}
+
+/**
+ * A runner that asks for approval on any prompt containing 「工具」 and answers
+ * with plain text otherwise. It reports an unfinished turn exactly while an
+ * approval is outstanding, like the real harness session does.
+ */
+function createApprovalEngine() {
+  const runners: FakeRunner[] = [];
+  const created: EngineContext[] = [];
+  const finished: number[] = [];
+  const destroyed: number[] = [];
+
+  const factory: EngineFactory = {
+    async create(ctx) {
+      created.push(ctx);
+      const id = runners.length + 1;
+      const streams: ModelMessage[][] = [];
+      let unfinished = false;
+      const runner: FakeRunner = {
+        id,
+        streams,
+        hasUnfinishedTurn: () => unfinished,
+        async stream({ messages }) {
+          streams.push(messages);
+          const last = messages.at(-1);
+          if (last?.role === "tool") {
+            unfinished = false;
+            return { stream: toStream(continuationParts()) };
+          }
+          const wantsTool = JSON.stringify(last).includes("工具");
+          unfinished = wantsTool;
+          return { stream: toStream(wantsTool ? approvalParts() : textParts("普通回答")) };
+        },
+        async finish() {
+          finished.push(id);
+          await ctx.saveHarnessState({
+            version: 1,
+            sessionId: ctx.thread.id,
+            resumeFrom: { harnessId: "fake", specificationVersion: 1, data: { runner: id } },
+            updatedAt: new Date().toISOString(),
+          } as unknown as HarnessState);
+        },
+        async destroy() {
+          destroyed.push(id);
+        },
+      };
+      runners.push(runner);
+      return runner;
+    },
+  };
+
+  return { factory, runners, created, finished, destroyed };
+}
+
+/** Flip a pending approval part to what `useChat`'s `addToolApprovalResponse` produces. */
+function approve(message: UIMessage): UIMessage {
+  return {
+    ...message,
+    parts: message.parts.map((part) =>
+      isToolUIPart(part) && part.state === "approval-requested"
+        ? { ...part, state: "approval-responded", approval: { ...part.approval, approved: true } }
+        : part,
+    ),
+  } as UIMessage;
+}
+
+/** Seed a thread's stored history directly; `POST /api/chat` only ever appends its own tail. */
+async function seedHistory(dataDir: string, threadId: string, messages: UIMessage[]): Promise<void> {
+  const path = join(dataDir, "threads", `${threadId}.json`);
+  const record = JSON.parse(await readFile(path, "utf8")) as ThreadRecord;
+  await writeFile(path, JSON.stringify({ ...record, messages }));
+}
+
+describe("approval parking", () => {
+  it("keeps the engine alive across an approval and only finishes it once the turn ends", async () => {
+    const dir = await tempDir();
+    const engine = createApprovalEngine();
+    const app = makeApp(dir, engine.factory);
+    const thread = await setupThread(app, dir);
+    const harnessPath = join(dir, "threads", `${thread.id}.harness.json`);
+
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "用工具跑一下 uname")] }));
+    const parked = await waitForStatus(app, thread.id, "awaiting-approval");
+
+    // The engine is parked, not stopped: no `finish()`, and no resume state on
+    // disk that would point at a bridge that is already dead.
+    expect(engine.finished).toEqual([]);
+    expect(engine.destroyed).toEqual([]);
+    expect(await exists(harnessPath)).toBe(false);
+    expect(parked.messages.at(-1)?.parts.some((part) => isToolUIPart(part) && part.state === "approval-requested")).toBe(true);
+
+    const approved = approve(parked.messages.at(-1)!);
+    const second = await postJson(app, `/api/chat/${thread.id}`, { messages: [...parked.messages.slice(0, -1), approved] });
+    expect(second.status).toBe(200);
+    await readSse(second);
+    const done = await waitForStatus(app, thread.id, "idle");
+    await waitForFile(harnessPath);
+
+    // Same runner instance both times — the continuation ran on the live session.
+    expect(engine.runners).toHaveLength(1);
+    expect(engine.runners[0]?.streams).toHaveLength(2);
+    expect(engine.runners[0]?.streams[1]?.at(-1)?.role).toBe("tool");
+    expect(engine.finished).toEqual([1]);
+    // The continued message is rebuilt on top of the one the client sent back,
+    // so the approved call carries its output instead of being dropped.
+    expect(done.messages).toHaveLength(2);
+    const tool = done.messages.at(-1)?.parts.find(isToolUIPart);
+    expect(tool?.state).toBe("output-available");
+    expect(tool).toMatchObject({ output: { stdout: "     137" } });
+    expect(JSON.stringify(done.messages)).toContain("命令已执行");
+  });
+
+  it("destroys the parked engine when a new prompt arrives and restarts from the last finished state", async () => {
+    const dir = await tempDir();
+    const engine = createApprovalEngine();
+    const app = makeApp(dir, engine.factory);
+    const thread = await setupThread(app, dir);
+
+    // A finished turn first, so there is a resume state to fall back to.
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "先随便聊聊")] }));
+    const afterFirst = await waitForStatus(app, thread.id, "idle");
+
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [...afterFirst.messages, userMessage("u2", "用工具跑一下")] }));
+    const parked = await waitForStatus(app, thread.id, "awaiting-approval");
+
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [...parked.messages, userMessage("u3", "算了，换个问题")] }));
+    const after = await waitForStatus(app, thread.id, "idle");
+
+    expect(engine.destroyed).toEqual([2]);
+    expect(engine.runners).toHaveLength(3);
+    // The fresh runner resumed from runner 1 — the last turn that really finished.
+    expect(engine.created[2]?.harnessState?.resumeFrom).toMatchObject({ data: { runner: 1 } });
+    // And the abandoned approval is closed in the stored history.
+    const abandoned = after.messages.find((message) =>
+      message.parts.some((part) => isToolUIPart(part) && part.state === "output-error" && part.errorText === ABANDONED_TURN_TEXT),
+    );
+    expect(abandoned).toBeDefined();
+    expect(after.messages.some((message) => message.parts.some((part) => isToolUIPart(part) && part.state === "approval-requested"))).toBe(
+      false,
+    );
+  });
+
+  it("closes an `awaiting-*` thread on startup, because its turn died with the process", async () => {
+    const dir = await tempDir();
+    const threads = createThreadStore(dir);
+    const record = await threads.create({ projectId: "p1", engine: "claude-code", permissionMode: "allow-reads" });
+    await threads.update(record.id, {
+      status: "awaiting-approval",
+      messages: [
+        userMessage("u1", "跑个命令"),
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [{ type: "tool-bash", toolCallId: "call-1", state: "approval-requested", input: {}, approval: { id: "ap-1" } }],
+        } as unknown as UIMessage,
+      ],
+    });
+
+    const engine = createApprovalEngine();
+    const app = makeApp(dir, engine.factory);
+    const recovered = await waitForStatus(app, record.id, "interrupted");
+    const part = recovered.messages.at(-1)?.parts.find(isToolUIPart);
+    expect(part?.state).toBe("output-error");
+    expect((part as { errorText?: string }).errorText).toBe(RESTART_PENDING_TOOL_TEXT);
+  });
+
+  /**
+   * Regression: the history a long-lived thread accumulates must not change
+   * what the continuation looks like to the harness. `convertToModelMessages`
+   * drops assistant messages with no parts and turns closed tool parts into
+   * plain results, so the only `tool-approval-request` left is the pending one
+   * — which is what `collectHarnessAgentToolApprovalContinuations` matches the
+   * response against.
+   */
+  it("keeps the continuation clean on a history with an empty turn and a closed tool call", async () => {
+    const dir = await tempDir();
+    const engine = createApprovalEngine();
+    const app = makeApp(dir, engine.factory);
+    const thread = await setupThread(app, dir);
+
+    const history: UIMessage[] = [
+      userMessage("u0", "在根目录新建 SMOKE.txt"),
+      {
+        id: "a0",
+        role: "assistant",
+        parts: [
+          { type: "tool-write", toolCallId: "call-0", state: "output-error", input: { path: "SMOKE.txt" }, errorText: "hook 拦了" },
+          { type: "text", state: "done", text: "写文件被拦了" },
+        ],
+      } as unknown as UIMessage,
+      // A turn that produced nothing renderable — what the server used to store
+      // for an errored turn, and what any older thread still carries.
+      { id: "a1", role: "assistant", parts: [] },
+      userMessage("u1", "用工具跑一下 uname"),
+    ];
+    await seedHistory(dir, thread.id, history);
+
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: history }));
+    const parked = await waitForStatus(app, thread.id, "awaiting-approval");
+
+    const approved = approve(parked.messages.at(-1)!);
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [...parked.messages.slice(0, -1), approved] }));
+    await waitForStatus(app, thread.id, "idle");
+
+    const continuation = engine.runners[0]?.streams[1];
+    expect(continuation).toBeDefined();
+    const empty = continuation!.filter((message) => Array.isArray(message.content) && message.content.length === 0);
+    expect(empty).toEqual([]);
+    expect(continuation!.at(-1)?.role).toBe("tool");
+    expect(continuation!.at(-1)?.content).toMatchObject([{ type: "tool-approval-response", approvalId: "ap-1", approved: true }]);
+    // The closed `write` call is a tool result, not a second pending approval.
+    const requests = continuation!
+      .flatMap((message) => (Array.isArray(message.content) ? message.content : []))
+      .filter((part) => part.type === "tool-approval-request");
+    expect(requests).toHaveLength(1);
+    // And the harness resolves the response against it instead of throwing.
+    expect(collectHarnessAgentToolApprovalContinuations({ messages: continuation! })).toMatchObject([
+      { type: "tool-approval-response", approvalId: "ap-1", approved: true },
+    ]);
+  });
+
+  it("never stores an assistant message with no parts", async () => {
+    const dir = await tempDir();
+    const factory: EngineFactory = {
+      async create() {
+        return {
+          hasUnfinishedTurn: () => false,
+          // A turn that dies before producing anything renderable.
+          async stream() {
+            return { stream: toStream([{ type: "start" }] as unknown as TextStreamPart<ToolSet>[]) };
+          },
+          async finish() {},
+          async destroy() {},
+        };
+      },
+    };
+    const app = makeApp(dir, factory);
+    const thread = await setupThread(app, dir);
+
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "你好")] }));
+    const done = await waitForStatus(app, thread.id, "idle");
+    expect(done.messages.map((message) => message.role)).toEqual(["user"]);
+  });
+
+});
+
+describe("run lifecycle", () => {
+  it("ends the thread in `error` when the engine stream carries an error part", async () => {
+    const dir = await tempDir();
+    const factory: EngineFactory = {
+      async create() {
+        return {
+          hasUnfinishedTurn: () => false,
+          async finish() {},
+          async destroy() {},
+          async stream() {
+            return {
+              stream: toStream([
+                { type: "start" },
+                { type: "text-start", id: "t1" },
+                { type: "text-delta", id: "t1", text: "开始" },
+                { type: "error", error: new Error("HTTP 401: authentication_failed") },
+              ]),
+            };
+          },
+        } satisfies EngineRunner;
+      },
+    };
+    const app = makeApp(dir, factory);
+    const thread = await setupThread(app, dir);
+
+    const chunks = await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "写个文件")] }));
+    const errorChunk = chunks.find((chunk) => chunk.type === "error");
+    expect(errorChunk?.errorText).toBeTruthy();
+    // Client-safe by default: a plain `Error` (not a `HarnessError`) is masked.
+    expect(errorChunk?.errorText).toBe("An error occurred.");
+
+    const record = await waitForStatus(app, thread.id, "error");
+    // The thread record is local single-user data, so it keeps the raw message
+    // for debugging even though the SSE stream only saw the masked text.
+    expect(record.error).toBe("HTTP 401: authentication_failed");
+    expect(record.error).not.toBe(errorChunk?.errorText);
+    // The partial assistant message is kept as built.
+    expect(JSON.stringify(record.messages)).toContain("开始");
+  });
+
+  it("releases the slot when a stopped engine ignores its abort signal", async () => {
+    const dir = await tempDir();
+    let release = () => {};
+    const factory: EngineFactory = {
+      async create() {
+        return {
+          hasUnfinishedTurn: () => false,
+          async finish() {},
+          async destroy() {},
+          async stream() {
+            return {
+              stream: new ReadableStream<TextStreamPart<ToolSet>>({
+                start(controller) {
+                  controller.enqueue({ type: "start" });
+                  // Deliberately never closed until the test lets it go.
+                  release = () => controller.close();
+                },
+              }),
+            };
+          },
+        } satisfies EngineRunner;
+      },
+    };
+    const app = makeApp(dir, factory, 100);
+    const thread = await setupThread(app, dir);
+
+    const post = postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "跑个久的")] });
+    for (let attempt = 0; attempt < 100 && (await request(app, `/api/chat/${thread.id}/stream`)).status !== 200; attempt++) {
+      await sleep(10);
+    }
+
+    const started = Date.now();
+    expect((await postJson(app, `/api/chat/${thread.id}/stop`, {})).status).toBe(204);
+    expect(Date.now() - started).toBeLessThan(3000);
+    // Slot forced open: no live run is left holding the thread.
+    expect((await request(app, `/api/chat/${thread.id}/stream`)).status).toBe(204);
+    expect((await getThread(app, thread.id)).status).toBe("interrupted");
+
+    release();
+    await readSse(await post);
+  });
+
+  it("serves the replay stream while a finished run is still persisting", async () => {
+    const dir = await tempDir();
+    const threads = createThreadStore(dir);
+    const projects = createProjectStore(dir);
+    const project = await projects.create({ repoPath: dir });
+    const thread = await threads.create({ projectId: project.id, engine: "claude-code", permissionMode: "allow-reads" });
+
+    let hold: (() => void) | undefined;
+    const gated = {
+      ...threads,
+      update: async (id: string, patch: Parameters<typeof threads.update>[1]) => {
+        if (patch.status === "idle" && hold == null) {
+          await new Promise<void>((resolve) => {
+            hold = resolve;
+          });
+        }
+        return threads.update(id, patch);
+      },
+    };
+
+    const engine = createApprovalEngine();
+    const runs = createRunManager({ threads: gated, projects, registry: createEngineRegistry({ "claude-code": engine.factory }), dataDir: dir });
+    const hub = await runs.start(thread.id, [userMessage("u1", "你好")]);
+    for await (const _chunk of hub.subscribe()) {
+      // drain until the hub closes, which is exactly the finalizing window
+    }
+
+    expect(hub.closed).toBe(true);
+    const replay = runs.subscribe(thread.id);
+    expect(replay).toBeDefined();
+    const replayed: unknown[] = [];
+    for await (const chunk of replay!) replayed.push(chunk);
+    expect(replayed.length).toBeGreaterThan(0);
+
+    for (let attempt = 0; attempt < 100 && hold == null; attempt++) await sleep(10);
+    hold?.();
+    await runs.stopAll();
+    // Once the run entry is gone there is nothing to subscribe to.
+    for (let attempt = 0; attempt < 100 && runs.subscribe(thread.id) != null; attempt++) await sleep(10);
+    expect(runs.subscribe(thread.id)).toBeUndefined();
+  });
+});

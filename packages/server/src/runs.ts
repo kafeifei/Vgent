@@ -1,0 +1,470 @@
+import { randomUUID } from "node:crypto";
+import { getHarnessErrorMessage } from "@ai-sdk/harness/agent";
+import {
+  convertToModelMessages,
+  isToolUIPart,
+  readUIMessageStream,
+  toUIMessageStream,
+  validateUIMessages,
+  type UIMessage,
+  type UIMessageChunk,
+} from "ai";
+import type { ChunkHub } from "./chunk-hub.js";
+import { createChunkHub } from "./chunk-hub.js";
+import { BadRequestError, ConflictError, NotFoundError, VgentServerError } from "./errors.js";
+import type { EngineRegistry, EngineRunner } from "./engines/registry.js";
+import type { ProjectStore } from "./store/projects.js";
+import type { ThreadStore } from "./store/threads.js";
+import type { Logger, ThreadRecord, ThreadStatus } from "./types.js";
+import { silentLogger } from "./types.js";
+
+/** Mid-turn persists are at least this far apart; the final one always lands. */
+const PERSIST_INTERVAL_MS = 1000;
+
+/** How long `stop()` waits for a run to wind down before it forces the slot open. */
+const DEFAULT_STOP_TIMEOUT_MS = 10_000;
+
+/** Cap on the raw error text persisted to a thread record. */
+const RAW_ERROR_TEXT_MAX_LEN = 2000;
+
+/**
+ * The unmasked error text for a thread record. `getHarnessErrorMessage`
+ * (used as `toUIMessageStream`'s `onError`) produces a client-safe string —
+ * right for the SSE stream, but the thread record is local single-user data,
+ * so it keeps the real message for debugging and later display.
+ */
+function rawErrorText(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error);
+  return text.trim().slice(0, RAW_ERROR_TEXT_MAX_LEN);
+}
+
+export const RESTART_INTERRUPT_TEXT = "服务已重启";
+export const RESTART_PENDING_TOOL_TEXT = "服务已重启，请重新发送";
+export const STOP_INTERRUPT_TEXT = "已停止";
+export const ABANDONED_TURN_TEXT = "该轮已被新的提问取代";
+
+interface LiveRun {
+  hub: ChunkHub;
+  abort: AbortController;
+  done: Promise<void>;
+  stopped: boolean;
+}
+
+export interface RunManager {
+  start(threadId: string, uiMessages: unknown): Promise<ChunkHub>;
+  stop(threadId: string): Promise<void>;
+  subscribe(threadId: string, signal?: AbortSignal): ReadableStream<UIMessageChunk> | undefined;
+  isRunning(threadId: string): boolean;
+  /** Stop every live run and destroy every parked engine. For shutdown. */
+  stopAll(): Promise<void>;
+}
+
+export function createRunManager(options: {
+  threads: ThreadStore;
+  projects: ProjectStore;
+  registry: EngineRegistry;
+  dataDir: string;
+  log?: Logger;
+  stopTimeoutMs?: number;
+}): RunManager {
+  const { threads, projects, registry, dataDir } = options;
+  const log = options.log ?? silentLogger;
+  const stopTimeoutMs = options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS;
+  const runs = new Map<string, LiveRun>();
+  /**
+   * A finished run releases its slot before it stops its engine, so a crash in
+   * cleanup can never wedge a thread. The next turn still has to wait for that
+   * cleanup, or it would start from stale resume state.
+   */
+  const finishing = new Map<string, Promise<void>>();
+  /**
+   * Engines whose turn ended waiting on the human. They are *not* stopped: the
+   * harness answers `stop()` on an unfinished turn with a continuation payload
+   * addressed to the bridge the same call kills, which is unresumable. The next
+   * turn on the thread either continues on this very session (tool message) or
+   * destroys it and starts over (new user prompt).
+   */
+  const parked = new Map<string, EngineRunner>();
+
+  /**
+   * Fold the client's latest message into the stored thread. `useChat` posts
+   * the whole array; only its tail is new — either a fresh user message, or the
+   * assistant message re-sent with approval responses / client tool outputs.
+   */
+  const mergeIncoming = (stored: UIMessage[], incoming: UIMessage[]): UIMessage[] => {
+    const last = incoming.at(-1);
+    if (last == null) return stored;
+    const position = stored.findIndex((message) => message.id === last.id);
+    if (position >= 0) {
+      const next = [...stored];
+      next[position] = last;
+      return next;
+    }
+    return [...stored, last];
+  };
+
+  const deriveStatus = (assistant: UIMessage | undefined): ThreadStatus => {
+    if (assistant == null) return "idle";
+    for (const part of assistant.parts) {
+      if (isToolUIPart(part) && part.state === "approval-requested") return "awaiting-approval";
+    }
+    for (const part of assistant.parts) {
+      // A tool call with an input but no output and no execute on the server
+      // (`askUserQuestions`) is waiting for the human, not for the engine.
+      if (isToolUIPart(part) && part.state === "input-available") return "awaiting-input";
+    }
+    return "idle";
+  };
+
+  /** Release a parked engine and close the tool parts its turn left hanging. */
+  const releaseParked = async (threadId: string, toolErrorText: string, threadError?: string): Promise<void> => {
+    const runner = parked.get(threadId);
+    if (runner == null) return;
+    parked.delete(threadId);
+    await runner.destroy().catch((error) => log.warn(`销毁挂起的引擎失败 (thread ${threadId})`, error));
+    const record = await threads.get(threadId).catch(() => undefined);
+    if (record == null) return;
+    await threads
+      .update(threadId, {
+        messages: closePendingToolParts(record.messages, toolErrorText),
+        status: "interrupted",
+        error: threadError,
+      })
+      .catch((error) => log.warn(`标记线程 ${threadId} 中断失败`, error));
+  };
+
+  const runTurn = async (thread: ThreadRecord, incoming: UIMessage[], run: LiveRun): Promise<void> => {
+    const project = await projects.get(thread.projectId);
+    if (project == null) throw new NotFoundError(`项目不存在: ${thread.projectId}`, "project_not_found");
+
+    const factory = registry[thread.engine];
+    if (factory == null) throw new BadRequestError(`未知引擎: ${thread.engine}`, "unknown_engine");
+
+    let messages = incoming;
+    let runner: EngineRunner | undefined;
+    let assistant: UIMessage | undefined;
+    let lastPersistedAt = 0;
+    /** Set from the first `error` chunk the engine stream produced, if any. */
+    let streamError: string | undefined;
+    /** The same error's raw, unmasked message — for the persisted thread record. */
+    let rawStreamError: string | undefined;
+    let park = false;
+
+    /**
+     * The history with this turn's assistant message folded in — or unchanged
+     * when the turn produced nothing renderable. A turn that only errors out
+     * still yields a message from `readUIMessageStream`, and storing that empty
+     * shell leaves the thread with an assistant bubble that renders nothing,
+     * converts to nothing, and confuses every later read of the history.
+     */
+    const withAssistant = (message: UIMessage | undefined): UIMessage[] =>
+      message != null && message.parts.length > 0 ? mergeIncoming(messages, [message]) : messages;
+
+    const persist = async (message: UIMessage) => {
+      if (message.parts.length === 0) return;
+      await threads.saveMessages(thread.id, mergeIncoming(messages, [message]));
+    };
+
+    // A turn that continues the last assistant message (an approval answer, a
+    // client tool result) streams chunks that address parts that message
+    // already holds — `toUIMessageStream` reuses its id for exactly that
+    // reason. The server rebuilds the same message the client does, so its
+    // reader has to start from it, not from a blank one.
+    const previous = incoming.at(-1);
+    const resumed = previous?.role === "assistant" ? previous : undefined;
+
+    // Subscribe before the engine starts: the hub replays from chunk 0 anyway,
+    // but this way the reader is already draining while the turn runs.
+    const reader = (async () => {
+      for await (const message of readUIMessageStream({
+        stream: run.hub.subscribe(),
+        ...(resumed != null ? { message: resumed } : {}),
+        onError: (error) => log.warn(`重建线程 ${thread.id} 的助手消息出错`, error),
+      })) {
+        assistant = message;
+        const now = Date.now();
+        if (now - lastPersistedAt >= PERSIST_INTERVAL_MS) {
+          lastPersistedAt = now;
+          await persist(message).catch((error) => log.warn(`中途保存线程 ${thread.id} 失败`, error));
+        }
+      }
+    })();
+
+    try {
+      let modelMessages = await convertToModelMessages(messages);
+      // The harness itself decides "continue the open turn" vs "start a new
+      // one" by whether the last model message is `role: 'tool'` (approval
+      // responses / tool results), so the run manager reads it the same way.
+      const continuesTurn = modelMessages.at(-1)?.role === "tool";
+      const parkedRunner = parked.get(thread.id);
+
+      if (parkedRunner != null && continuesTurn) {
+        parked.delete(thread.id);
+        runner = parkedRunner;
+      } else {
+        if (parkedRunner != null) {
+          // A fresh prompt abandons the parked turn. The session cannot take a
+          // new prompt while its turn is unfinished (`requirePromptableTurn`
+          // throws), so it is destroyed and a new one starts from the last
+          // *finished* turn's resume state. The stored history has to be closed
+          // too, or the client keeps rendering an approval button for a turn
+          // that no longer exists. Closing to `output-error` is also what makes
+          // the history convertible: `convertToModelMessages` emits the closed
+          // parts as a `tool` message *before* the new user message, so the
+          // trailing message stays `user` and the harness starts a prompt turn.
+          parked.delete(thread.id);
+          await parkedRunner.destroy().catch((error) => log.warn(`销毁挂起的引擎失败 (thread ${thread.id})`, error));
+          messages = closePendingToolParts(messages, ABANDONED_TURN_TEXT);
+          modelMessages = await convertToModelMessages(messages);
+        }
+        const harnessState = await threads.loadHarnessState(thread.id);
+        runner = await factory.create({
+          thread,
+          project,
+          dataDir,
+          ...(harnessState != null ? { harnessState } : {}),
+          saveHarnessState: (state) => threads.saveHarnessState(thread.id, state),
+          log,
+        });
+      }
+
+      const result = await runner.stream({ messages: modelMessages, abortSignal: run.abort.signal });
+
+      const uiStream = toUIMessageStream({
+        stream: result.stream,
+        originalMessages: messages,
+        generateMessageId: () => randomUUID(),
+        // Called with the raw error of every `error` chunk the engine stream
+        // produces. The masked text goes to the client; the raw text is kept
+        // for the thread record below.
+        onError: (error) => {
+          rawStreamError ??= rawErrorText(error);
+          return getHarnessErrorMessage(error);
+        },
+      });
+
+      const streamReader = uiStream.getReader();
+      for (;;) {
+        const { done, value } = await streamReader.read();
+        if (done) break;
+        // An `error` part inside an otherwise well-formed stream still means the
+        // turn failed; without this the thread would settle as a clean `idle`.
+        if (value.type === "error") streamError ??= value.errorText;
+        run.hub.publish(value);
+      }
+      run.hub.close();
+      await reader;
+
+      const status = streamError != null ? "error" : deriveStatus(assistant);
+      park = !run.stopped && (status === "awaiting-approval" || status === "awaiting-input");
+
+      if (!run.stopped) {
+        await threads
+          .update(thread.id, {
+            messages: withAssistant(assistant),
+            status,
+            error: rawStreamError ?? streamError,
+          })
+          .catch(async (error) => {
+            // Never let a failed final write leave the thread stuck `running`.
+            log.error(`保存线程 ${thread.id} 的最终状态失败`, error);
+            park = false;
+            await threads
+              .update(thread.id, { status: "error", error: getHarnessErrorMessage(error) })
+              .catch((fallback) => log.error(`记录线程 ${thread.id} 的错误状态也失败`, fallback));
+          });
+      } else if (assistant != null && assistant.parts.length > 0) {
+        await threads.update(thread.id, { messages: withAssistant(assistant) });
+      }
+    } catch (error) {
+      park = false;
+      const message = error instanceof VgentServerError ? error.message : getHarnessErrorMessage(error);
+      // The masked `message` above is what the client sees; the thread record
+      // keeps the raw text for debugging (see `rawErrorText`).
+      const rawMessage = error instanceof VgentServerError ? error.message : rawErrorText(error);
+      log.error(`线程 ${thread.id} 运行失败: ${message}`);
+      // A failure before or during the turn reaches the client as an `error`
+      // chunk; `useChat` surfaces it instead of ending on a silent close.
+      run.hub.publish({ type: "error", errorText: message });
+      run.hub.interrupt(message);
+      run.hub.close();
+      await reader.catch(() => {});
+      await threads
+        .update(thread.id, {
+          messages: withAssistant(assistant),
+          status: run.stopped ? "interrupted" : "error",
+          ...(run.stopped ? {} : { error: rawMessage }),
+        })
+        .catch((updateError) => log.error(`记录线程 ${thread.id} 的错误状态失败`, updateError));
+    } finally {
+      // Release the slot first: whatever happens to the engine, the thread must
+      // be startable again.
+      runs.delete(thread.id);
+      run.hub.close();
+      if (runner != null) {
+        if (park && !run.stopped) {
+          // Alive on purpose, and no harness file is written: `<id>.harness.json`
+          // must keep the last *finished* turn's state.
+          parked.set(thread.id, runner);
+        } else {
+          // `finish()` persists resume state, which only a runtime with no turn
+          // in flight can produce; anything else is torn down and the previous
+          // file is kept.
+          const engine = runner;
+          const cleanup = (engine.hasUnfinishedTurn() ? engine.destroy() : engine.finish()).catch((error) =>
+            log.warn(`结束引擎失败 (thread ${thread.id})`, error),
+          );
+          finishing.set(thread.id, cleanup);
+          await cleanup;
+          if (finishing.get(thread.id) === cleanup) finishing.delete(thread.id);
+        }
+      }
+    }
+  };
+
+  return {
+    async start(threadId, uiMessages) {
+      const thread = await threads.get(threadId);
+      if (thread == null) throw new NotFoundError(`线程不存在: ${threadId}`, "thread_not_found");
+      const active = runs.get(threadId);
+      if (active != null) {
+        if (!active.hub.closed) throw new ConflictError(`线程已在运行: ${threadId}`, "thread_running");
+        // The turn is over — the client saw the stream close — and the run is
+        // only finishing its bookkeeping. Answering an approval that fast is
+        // normal, so wait for the slot instead of rejecting it.
+        await active.done.catch(() => {});
+      }
+      const factory = registry[thread.engine];
+      if (factory == null) throw new BadRequestError(`未知引擎: ${thread.engine}`, "unknown_engine");
+      factory.ensureAvailable?.();
+      // The previous turn's engine may still be persisting its resume state.
+      await finishing.get(threadId);
+
+      let validated: UIMessage[];
+      try {
+        validated = await validateUIMessages({ messages: uiMessages });
+      } catch (error) {
+        throw new BadRequestError(`消息格式不合法: ${error instanceof Error ? error.message : String(error)}`, "invalid_messages");
+      }
+      if (validated.length === 0) throw new BadRequestError("消息为空", "invalid_messages");
+
+      const messages = mergeIncoming(thread.messages, validated);
+      const updated = await threads.update(threadId, { messages, status: "running", error: undefined });
+
+      const run: LiveRun = { hub: createChunkHub(), abort: new AbortController(), done: Promise.resolve(), stopped: false };
+      runs.set(threadId, run);
+      // Detached on purpose: an HTTP client disconnecting must not cancel the turn.
+      run.done = runTurn(updated, messages, run);
+      run.done.catch((error) => log.error(`线程 ${threadId} 的运行崩溃`, error));
+
+      return run.hub;
+    },
+
+    async stop(threadId) {
+      await releaseParked(threadId, STOP_INTERRUPT_TEXT);
+      const run = runs.get(threadId);
+      if (run == null) return;
+      run.stopped = true;
+      run.abort.abort();
+      run.hub.interrupt(STOP_INTERRUPT_TEXT);
+      run.hub.close();
+      await threads.update(threadId, { status: "interrupted" }).catch((error) => log.warn(`标记线程 ${threadId} 中断失败`, error));
+      // An engine that ignores its abort signal must not hold the slot — and
+      // with it SIGTERM — forever. After the deadline the run keeps draining in
+      // the background, but the thread is startable again.
+      const timedOut = await Promise.race([
+        run.done.then(
+          () => false,
+          () => false,
+        ),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(true), stopTimeoutMs).unref?.()),
+      ]);
+      if (timedOut) {
+        log.warn(`线程 ${threadId} 在 ${stopTimeoutMs}ms 内没有停下，强制释放槽位`);
+        if (runs.get(threadId) === run) runs.delete(threadId);
+      }
+    },
+
+    subscribe(threadId, signal) {
+      // A run entry that is still finalizing counts: the hub replays what it
+      // buffered and then closes, which is exactly what a reconnecting client
+      // needs. Only "no run at all" is a 204.
+      const run = runs.get(threadId);
+      if (run == null) return undefined;
+      return run.hub.subscribe(signal);
+    },
+
+    isRunning(threadId) {
+      const run = runs.get(threadId);
+      return run != null && !run.hub.closed;
+    },
+
+    async stopAll() {
+      await Promise.all([...runs.keys()].map((threadId) => this.stop(threadId)));
+      // Parked engines cannot survive this process: their turn lives in a bridge
+      // that dies with us, so the pending approval has to be closed or the
+      // client would answer a turn that no longer exists.
+      await Promise.all([...parked.keys()].map((threadId) => releaseParked(threadId, RESTART_PENDING_TOOL_TEXT, RESTART_INTERRUPT_TEXT)));
+    },
+  };
+}
+
+const UNFINISHED_STATUSES: readonly ThreadStatus[] = ["running", "awaiting-approval", "awaiting-input"];
+
+/**
+ * A thread left mid-turn on disk with no live run means the server died. Mark
+ * it interrupted and close the tool parts its last assistant message left open,
+ * so the client renders a finished turn instead of a spinner that never
+ * resolves.
+ *
+ * `awaiting-approval` / `awaiting-input` are closed too, even though they are
+ * resting states waiting on the human: the unfinished turn only exists inside
+ * the parked engine's bridge, which does not survive this process. Leaving the
+ * approval open would only let the client answer a turn that is gone.
+ */
+export async function recoverInterruptedThreads(threads: ThreadStore, log: Logger = silentLogger): Promise<void> {
+  const summaries = await threads.list();
+  for (const summary of summaries) {
+    if (!UNFINISHED_STATUSES.includes(summary.status)) continue;
+    const record = await threads.get(summary.id);
+    if (record == null) continue;
+    await threads
+      .update(summary.id, {
+        messages: closePendingToolParts(record.messages, RESTART_PENDING_TOOL_TEXT),
+        status: "interrupted",
+        error: RESTART_INTERRUPT_TEXT,
+      })
+      .catch((error) => log.warn(`恢复线程 ${summary.id} 失败`, error));
+  }
+}
+
+/**
+ * Close every tool part the history left hanging. Terminal parts are untouched,
+ * so this is idempotent and does not care where the open turn sits — the
+ * abandoning prompt is already appended after it by the time this runs.
+ */
+export function closePendingToolParts(messages: readonly UIMessage[], errorText: string): UIMessage[] {
+  return messages.map((message) => (message.role === "assistant" ? closeOpenToolParts(message, errorText) : message));
+}
+
+function closeOpenToolParts(message: UIMessage, errorText: string): UIMessage {
+  return {
+    ...message,
+    parts: message.parts.map((part) => {
+      if (!isToolUIPart(part)) return part;
+      if (part.state === "output-available" || part.state === "output-error" || part.state === "output-denied") return part;
+      // The union's `output-error` variant forbids the fields the open states
+      // carry (`approval`, `output`), so the closed part is rebuilt, not spread.
+      // Dropping `approval` is deliberate: it also stops
+      // `convertToModelMessages` from emitting a stale `tool-approval-response`
+      // the next engine session could not resolve.
+      return {
+        type: part.type,
+        toolCallId: part.toolCallId,
+        state: "output-error",
+        input: part.input,
+        errorText,
+      } as unknown as typeof part;
+    }),
+  };
+}

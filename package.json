@@ -10,6 +10,7 @@
     "build": "tsc -b",
     "typecheck": "tsc -b",
     "test": "vitest run",
+    "server": "node packages/server/dist/main.js",
     "test:watch": "vitest",
     "clean": "rm -rf packages/*/dist apps/*/dist"
   },

@@ -169,6 +169,86 @@ describe("@vgent/server (smoke)", () => {
     15 * 60 * 1000,
   );
 
+  smoke(
+    "freezes a Claude Code approval over a restart and finishes the turn afterwards",
+    async () => {
+      const dataDir = await mkdtemp(join(tmpdir(), "vgent-server-smoke-suspend-"));
+      const repoPath = await tempRepo();
+      const target = join(repoPath, "restart-probe.txt");
+      const harnessFile = join(dataDir, "threads");
+
+      const appA = createApp({ dataDir, token: TOKEN, log: consoleLogger });
+      let threadId: string;
+      try {
+        const project = (await (await postJson(appA, "/api/projects", { repoPath })).json()) as Project;
+        const thread = (await (
+          await postJson(appA, "/api/threads", {
+            projectId: project.id,
+            title: "重启续跑冒烟",
+            engine: "claude-code",
+            // Gates every shell command, so the turn has to stop and ask.
+            permissionMode: "allow-reads",
+          })
+        ).json()) as ThreadRecord;
+        threadId = thread.id;
+
+        const response = await postJson(appA, `/api/chat/${threadId}`, {
+          id: threadId,
+          messages: [
+            {
+              id: "u1",
+              role: "user",
+              parts: [{ type: "text", text: "用 Bash 工具执行这一条命令：date > restart-probe.txt。只执行这一条，不要做别的。" }],
+            },
+          ],
+        });
+        expect(response.status).toBe(200);
+        await response.text();
+
+        const parked = await waitForStatus(appA, threadId, "awaiting-approval");
+        console.log(`[smoke][suspend] 停在审批，待批工具: ${parked.messages.at(-1)?.parts.filter(isToolUIPart).map((part) => part.type).join(", ")}`);
+        expect(await stat(target).catch(() => undefined)).toBeUndefined();
+      } finally {
+        // A graceful shutdown must freeze the turn instead of killing it.
+        await appA.shutdown();
+      }
+
+      const frozen = await waitForHarnessFile(join(harnessFile, `${threadId}.harness.json`));
+      expect(frozen.continueFrom).toBeDefined();
+
+      const appB = createApp({ dataDir, token: TOKEN, log: consoleLogger });
+      try {
+        const restored = (await (await request(appB, `/api/threads/${threadId}`)).json()) as ThreadRecord;
+        // The recovery pass left it alone: the bridge is still holding the turn.
+        expect(restored.status).toBe("awaiting-approval");
+
+        const approved = approve(restored.messages.at(-1)!);
+        const response = await postJson(appB, `/api/chat/${threadId}`, {
+          id: threadId,
+          messages: [...restored.messages.slice(0, -1), approved],
+        });
+        expect(response.status).toBe(200);
+        await response.text();
+
+        const done = await waitForStatus(appB, threadId, "idle");
+        console.log(`[smoke][suspend] 审批后文件内容: ${JSON.stringify(await readFile(target, "utf8"))}`);
+        expect((await readFile(target, "utf8")).length).toBeGreaterThan(0);
+        expect(done.messages.length).toBeGreaterThanOrEqual(2);
+      } finally {
+        await appB.shutdown();
+      }
+
+      // The finished turn superseded the frozen one.
+      const finished = JSON.parse(await readFile(join(harnessFile, `${threadId}.harness.json`), "utf8")) as HarnessState;
+      expect(finished.resumeFrom).toBeDefined();
+      expect(finished.continueFrom).toBeUndefined();
+
+      await rm(dataDir, { recursive: true, force: true, maxRetries: 5 });
+      await rm(repoPath, { recursive: true, force: true, maxRetries: 5 });
+    },
+    15 * 60 * 1000,
+  );
+
   codexSmoke(
     "runs a turn on the Codex engine and resumes it after a simulated restart",
     async () => {

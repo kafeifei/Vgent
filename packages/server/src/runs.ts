@@ -13,7 +13,7 @@ import {
 } from "ai";
 import type { ChunkHub } from "./chunk-hub.js";
 import { createChunkHub } from "./chunk-hub.js";
-import { BadRequestError, ConflictError, NotFoundError, VgentServerError } from "./errors.js";
+import { BadRequestError, ConflictError, NotFoundError, TurnResumeFailedError, VgentServerError } from "./errors.js";
 import type { EngineRegistry, EngineRunner } from "./engines/registry.js";
 import { statelessEngines } from "./engines/registry.js";
 import type { ProjectStore } from "./store/projects.js";
@@ -63,6 +63,8 @@ export function deriveThreadTitle(messages: readonly UIMessage[]): string | unde
 
 export const RESTART_INTERRUPT_TEXT = "服务已重启";
 export const RESTART_PENDING_TOOL_TEXT = "服务已重启，请重新发送";
+/** A turn that was frozen for the restart but could not be picked up again. */
+export const RESUME_FAILED_TEXT = "服务重启后未能恢复这一轮，请重新发送";
 export const STOP_INTERRUPT_TEXT = "已停止";
 export const ABANDONED_TURN_TEXT = "该轮已被新的提问取代";
 /** A call the engine started announcing but never ran — the turn ended first. */
@@ -157,12 +159,29 @@ export function createRunManager(options: {
     return "idle";
   };
 
+  /**
+   * Forget a suspended turn. `continueFrom` on disk is a promise that some
+   * bridge is still holding the turn open; once its runner is destroyed — or
+   * once attaching to it failed — that promise is false and the file must not
+   * tempt the next turn into attaching again. Whatever `resumeFrom` the file
+   * carries is kept: that one is still the last finished turn.
+   */
+  const clearContinueFrom = async (threadId: string): Promise<void> => {
+    const state = await threads.loadHarnessState(threadId).catch(() => undefined);
+    if (state?.continueFrom == null) return;
+    const { continueFrom: _dropped, ...rest } = state;
+    await threads
+      .saveHarnessState(threadId, { ...rest, updatedAt: new Date().toISOString() })
+      .catch((error) => log.warn(`清除线程 ${threadId} 的续跑状态失败`, error));
+  };
+
   /** Release a parked engine and close the tool parts its turn left hanging. */
   const releaseParked = async (threadId: string, toolErrorText: string, threadError?: string): Promise<void> => {
     const entry = parked.get(threadId);
     if (entry == null) return;
     parked.delete(threadId);
     await entry.runner.destroy().catch((error) => log.warn(`销毁挂起的引擎失败 (thread ${threadId})`, error));
+    await clearContinueFrom(threadId);
     const record = await threads.get(threadId).catch(() => undefined);
     if (record == null) return;
     await threads
@@ -268,15 +287,21 @@ export function createRunManager(options: {
           // trailing message stays `user` and the harness starts a prompt turn.
           parked.delete(thread.id);
           await parkedRunner.destroy().catch((error) => log.warn(`销毁挂起的引擎失败 (thread ${thread.id})`, error));
+          await clearContinueFrom(thread.id);
           messages = closePendingToolParts(messages, ABANDONED_TURN_TEXT);
           modelMessages = await convertToModelMessages(messages);
         }
+        // Read after the abandon path above, so a cleared `continueFrom` is
+        // really gone by the time the runner could act on it.
         const harnessState = await threads.loadHarnessState(thread.id);
         runner = await factory.create({
           thread,
           project,
           dataDir,
           ...(harnessState != null ? { harnessState } : {}),
+          // A parked runner was reused above, so reaching here with
+          // `continuesTurn` means the open turn lives in another process.
+          continuesTurn,
           saveHarnessState: (state) => threads.saveHarnessState(thread.id, state),
           log,
         });
@@ -344,6 +369,12 @@ export function createRunManager(options: {
       }
     } catch (error) {
       park = false;
+      // The frozen turn is gone. That is not an engine failure to report as
+      // one: the thread settles into the same interrupted shape a hard restart
+      // leaves behind, with every pending call closed, so the client stops
+      // offering to answer a turn nobody holds any more.
+      const resumeFailed = error instanceof TurnResumeFailedError;
+      if (resumeFailed) await clearContinueFrom(thread.id);
       const message = error instanceof VgentServerError ? error.message : getHarnessErrorMessage(error);
       // The masked `message` above is what the client sees; the thread record
       // keeps the raw text for debugging (see `rawErrorText`).
@@ -357,8 +388,10 @@ export function createRunManager(options: {
       await reader.catch(() => {});
       await threads
         .update(thread.id, {
-          messages: withAssistant(run.stopped ? assistant : settleStreamingToolParts(assistant, seed?.dropped)),
-          status: run.stopped ? "interrupted" : "error",
+          messages: resumeFailed
+            ? closePendingToolParts(withAssistant(assistant), RESUME_FAILED_TEXT)
+            : withAssistant(run.stopped ? assistant : settleStreamingToolParts(assistant, seed?.dropped)),
+          status: run.stopped || resumeFailed ? "interrupted" : "error",
           ...(run.stopped ? {} : { error: rawMessage }),
         })
         .catch((updateError) => log.error(`记录线程 ${thread.id} 的错误状态失败`, updateError));
@@ -480,20 +513,37 @@ export function createRunManager(options: {
 
     async stopAll() {
       await Promise.all([...runs.keys()].map((threadId) => this.stop(threadId)));
-      // A stateful engine's parked turn cannot survive this process: it lives in
-      // a bridge that dies with us, so the pending approval has to be closed or
-      // the client would answer a turn that no longer exists. A stateless
-      // engine holds nothing — the pending approval is just an open tool part in
-      // the stored messages, and the next `start` builds a fresh runner from
-      // them — so its runner is dropped and the thread is left exactly as it is.
+      // A stateless engine holds nothing — the pending approval is just an open
+      // tool part in the stored messages, and the next `start` builds a fresh
+      // runner from them — so its runner is dropped and the thread is left
+      // exactly as it is. A stateful one keeps its turn inside a runtime that
+      // can outlive this process: `suspend()` freezes the turn and leaves that
+      // runtime up, and the state it returns is what the next process attaches
+      // to. Only when there is no such state — no `suspend`, or it failed — is
+      // the pending approval closed, because then the client really would be
+      // answering a turn that no longer exists.
       await Promise.all(
         [...parked.entries()].map(async ([threadId, entry]) => {
-          if (!entry.stateless) {
-            await releaseParked(threadId, RESTART_PENDING_TOOL_TEXT, RESTART_INTERRUPT_TEXT);
+          if (entry.stateless) {
+            parked.delete(threadId);
+            await entry.runner.destroy().catch((error) => log.warn(`销毁挂起的引擎失败 (thread ${threadId})`, error));
             return;
           }
-          parked.delete(threadId);
-          await entry.runner.destroy().catch((error) => log.warn(`销毁挂起的引擎失败 (thread ${threadId})`, error));
+          if (entry.runner.suspend != null) {
+            try {
+              const state = await entry.runner.suspend();
+              await threads.saveHarnessState(threadId, state);
+              parked.delete(threadId);
+              log.info(`线程 ${threadId} 的未完成轮次已挂起，重启后可继续`);
+              return;
+            } catch (error) {
+              // The runner is spent either way (`suspend()` detaches before it
+              // can fail on persistence), so fall through to the old path: it
+              // closes the pending call and marks the thread interrupted.
+              log.warn(`挂起线程 ${threadId} 的未完成轮次失败，改为中断`, error);
+            }
+          }
+          await releaseParked(threadId, RESTART_PENDING_TOOL_TEXT, RESTART_INTERRUPT_TEXT);
         }),
       );
     },
@@ -509,12 +559,14 @@ const UNFINISHED_STATUSES: readonly ThreadStatus[] = ["running", "awaiting-appro
  * resolves.
  *
  * `awaiting-approval` / `awaiting-input` are resting states waiting on the
- * human, and whether they survive depends on the engine. On a stateful one the
- * unfinished turn only exists inside the parked engine's bridge, which does not
- * survive this process, so leaving the approval open would only let the client
- * answer a turn that is gone — it is closed like the rest. On a *stateless*
- * engine (`EngineFactory.statelessTurns`) the whole turn is in the stored
- * messages, so the thread is left untouched and the client's answer still lands.
+ * human, and whether they survive depends on what is left of the turn. On a
+ * *stateless* engine (`EngineFactory.statelessTurns`) the whole turn is in the
+ * stored messages, so the thread is left untouched and the client's answer
+ * still lands. On a stateful one it survives only if the previous process shut
+ * down gracefully and froze it: its harness file then carries a `continueFrom`
+ * naming a runtime that is still up, and the next turn attaches to it. Without
+ * that the turn died with its process, and leaving the approval open would only
+ * let the client answer something that is gone — it is closed like the rest.
  * A `running` thread is interrupted either way: its turn was mid-flight.
  */
 export async function recoverInterruptedThreads(threads: ThreadStore, registry: EngineRegistry, log: Logger = silentLogger): Promise<void> {
@@ -523,6 +575,10 @@ export async function recoverInterruptedThreads(threads: ThreadStore, registry: 
   for (const summary of summaries) {
     if (!UNFINISHED_STATUSES.includes(summary.status)) continue;
     if (summary.status !== "running" && stateless.has(summary.engine)) continue;
+    if (summary.status !== "running" && (await threads.loadHarnessState(summary.id).catch(() => undefined))?.continueFrom != null) {
+      log.info(`线程 ${summary.id} 的未完成轮次已挂起，等待续跑`);
+      continue;
+    }
     const record = await threads.get(summary.id);
     if (record == null) continue;
     await threads

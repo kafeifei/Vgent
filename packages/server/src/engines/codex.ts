@@ -40,7 +40,8 @@ export function createCodexEngineFactory(): EngineFactory {
         permissionMode: ctx.thread.permissionMode,
         ...(ctx.thread.model != null ? { model: ctx.thread.model } : {}),
         sessionId: ctx.thread.id,
-        ...(ctx.harnessState != null ? { resumeFrom: ctx.harnessState.resumeFrom } : {}),
+        // Codex turns never park, so a `continueFrom` can never be there to honour.
+        ...(ctx.harnessState?.resumeFrom != null ? { resumeFrom: ctx.harnessState.resumeFrom } : {}),
       });
 
       let ended = false;

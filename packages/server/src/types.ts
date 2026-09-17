@@ -1,5 +1,5 @@
 import type { McpServerConfig } from "@vgent/engine";
-import type { HarnessAgentResumeSessionState } from "@vgent/engines";
+import type { HarnessAgentContinueTurnState, HarnessAgentResumeSessionState } from "@vgent/engines";
 import type { UIMessage } from "ai";
 
 export type EngineId = "claude-code" | "codex" | "vgent";
@@ -69,7 +69,15 @@ export interface Settings {
 export interface HarnessState {
   version: 1;
   sessionId: string;
-  resumeFrom: HarnessAgentResumeSessionState;
+  /** The last *finished* turn's session, written by the engine runner's `finish()`. */
+  resumeFrom?: HarnessAgentResumeSessionState;
+  /**
+   * An *unfinished* turn frozen by `EngineRunner.suspend()` on graceful
+   * shutdown. Its bridge is still running, so this is only ever valid while
+   * that process group lives; the next turn on the thread either attaches to it
+   * or clears it.
+   */
+  continueFrom?: HarnessAgentContinueTurnState;
   updatedAt: string;
 }
 

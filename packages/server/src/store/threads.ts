@@ -59,8 +59,13 @@ const isRecord = (value: unknown): value is ThreadRecord =>
 const isIndexFile = (value: unknown): value is ThreadIndexFile =>
   typeof value === "object" && value !== null && Array.isArray((value as ThreadIndexFile).threads);
 
+/**
+ * Both payloads are optional: a file may carry the last finished turn's
+ * `resumeFrom`, a suspended turn's `continueFrom`, both, or — right after a
+ * suspended turn was given up on — neither. Only the session id is structural.
+ */
 const isHarnessState = (value: unknown): value is HarnessState =>
-  typeof value === "object" && value !== null && typeof (value as HarnessState).sessionId === "string" && (value as HarnessState).resumeFrom != null;
+  typeof value === "object" && value !== null && typeof (value as HarnessState).sessionId === "string";
 
 /** Approvals the UI still has to answer: tool parts parked in `approval-requested`. */
 export function countPendingApprovals(messages: readonly UIMessage[]): number {

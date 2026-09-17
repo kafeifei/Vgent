@@ -22,6 +22,17 @@ export interface EngineRunner {
   tools?: ToolSet;
   /** End the turn: stop the runtime and persist whatever resume state it hands back. */
   finish(): Promise<void>;
+  /**
+   * Freeze the unfinished turn instead of tearing it down, and hand back the
+   * state that reattaches to it. The runtime, its bridge and its sandbox stay
+   * up — that is the whole point, and why this is only ever called on a
+   * *graceful* shutdown. The caller persists the returned state; this runner is
+   * dead afterwards (`finish()` / `destroy()` become no-ops).
+   *
+   * Only a stateful engine whose runtime can outlive this process implements
+   * it. Absent, or rejected, means the parked turn has to be interrupted.
+   */
+  suspend?(): Promise<HarnessState>;
   /** Tear the runtime down and discard resumability. Never persists state. */
   destroy(): Promise<void>;
   /**
@@ -38,6 +49,13 @@ export interface EngineContext {
   project: Project;
   dataDir: string;
   harnessState?: HarnessState;
+  /**
+   * True when this turn continues the open one (the converted history ends in a
+   * `role: 'tool'` message: an approval answer or a client tool result). Only
+   * then may a runner attach to a persisted `continueFrom` — a fresh prompt
+   * abandons that turn and has to start from the last finished state instead.
+   */
+  continuesTurn: boolean;
   /** Where `finish()` writes the resume state. Injected so the factory never reaches for the store. */
   saveHarnessState(state: HarnessState): Promise<void>;
   log: Logger;

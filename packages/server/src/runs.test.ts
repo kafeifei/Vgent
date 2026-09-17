@@ -8,12 +8,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createApp, type VgentApp } from "./app.js";
 import { createEngineRegistry, type EngineContext, type EngineFactory, type EngineRunner } from "./engines/registry.js";
 import { createVgentEngineFactory } from "./engines/vgent.js";
+import { TurnResumeFailedError } from "./errors.js";
 import {
   ABANDONED_TURN_TEXT,
   AUTO_TITLE_MAX_LEN,
   createRunManager,
   deriveThreadTitle,
   RESTART_PENDING_TOOL_TEXT,
+  RESUME_FAILED_TEXT,
   UNEXECUTED_TOOL_TEXT,
 } from "./runs.js";
 import { createProjectStore } from "./store/projects.js";
@@ -169,16 +171,29 @@ interface FakeRunner extends EngineRunner {
   readonly streams: ModelMessage[][];
 }
 
+/** What a frozen turn's payload looks like: adapter-opaque, naming a live bridge. */
+const CONTINUE_FROM = {
+  type: "continue-turn",
+  harnessId: "fake",
+  specificationVersion: "harness-v1",
+  data: { bridge: { port: 51234, token: "bridge-token" } },
+};
+
 /**
  * A runner that asks for approval on any prompt containing 「工具」 and answers
  * with plain text otherwise. It reports an unfinished turn exactly while an
  * approval is outstanding, like the real harness session does.
+ *
+ * `suspend` picks what a stateful engine does on a graceful shutdown: freeze
+ * the parked turn (`"ok"`), fail to (`"fail"`), or not support it at all
+ * (omitted, which is what the Codex runner looks like).
  */
-function createApprovalEngine() {
+function createApprovalEngine(options: { suspend?: "ok" | "fail" } = {}) {
   const runners: FakeRunner[] = [];
   const created: EngineContext[] = [];
   const finished: number[] = [];
   const destroyed: number[] = [];
+  const suspended: number[] = [];
 
   const factory: EngineFactory = {
     async create(ctx) {
@@ -213,13 +228,27 @@ function createApprovalEngine() {
         async destroy() {
           destroyed.push(id);
         },
+        ...(options.suspend == null
+          ? {}
+          : {
+              async suspend() {
+                suspended.push(id);
+                if (options.suspend === "fail") throw new Error("桥接进程已经不在了");
+                return {
+                  version: 1,
+                  sessionId: ctx.thread.id,
+                  continueFrom: CONTINUE_FROM,
+                  updatedAt: new Date().toISOString(),
+                } as unknown as HarnessState;
+              },
+            }),
       };
       runners.push(runner);
       return runner;
     },
   };
 
-  return { factory, runners, created, finished, destroyed };
+  return { factory, runners, created, finished, destroyed, suspended };
 }
 
 /** Flip a pending approval part to what `useChat`'s `addToolApprovalResponse` produces. */
@@ -516,6 +545,123 @@ describe("approval parking", () => {
     expect(write[0]?.state).toBe("output-error");
     expect((write[0] as { errorText?: string }).errorText).toBe(UNEXECUTED_TOOL_TEXT);
     expect(partsOf(done.messages.at(-1), "call-edit")[0]?.state).toBe("output-denied");
+  });
+
+  /**
+   * The graceful-restart path: a stateful engine that can freeze its parked
+   * turn leaves the thread waiting instead of interrupting it, and the next
+   * process picks the turn up from `continueFrom`.
+   */
+  describe("suspending a parked turn across a graceful restart", () => {
+    /** Runs a turn up to its approval and shuts the app down the way SIGTERM does. */
+    async function parkThenShutdown(dir: string, engine: ReturnType<typeof createApprovalEngine>): Promise<ThreadRecord> {
+      const app = makeApp(dir, engine.factory);
+      const thread = await setupThread(app, dir);
+      await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "用工具跑一下 uname")] }));
+      const parked = await waitForStatus(app, thread.id, "awaiting-approval");
+      await waitForSlotReleased(app, thread.id);
+      await app.shutdown();
+      return parked;
+    }
+
+    const readHarnessState = async (dir: string, threadId: string): Promise<HarnessState> =>
+      JSON.parse(await readFile(join(dir, "threads", `${threadId}.harness.json`), "utf8")) as HarnessState;
+
+    it("persists `continueFrom`, leaves the thread waiting, and continues the turn in the next process", async () => {
+      const dir = await tempDir();
+      const first = createApprovalEngine({ suspend: "ok" });
+      const parked = await parkThenShutdown(dir, first);
+
+      expect(first.suspended).toEqual([1]);
+      // Frozen, not torn down: the bridge is what the next process attaches to.
+      expect(first.destroyed).toEqual([]);
+      expect(first.finished).toEqual([]);
+      expect((await readHarnessState(dir, parked.id)).continueFrom).toMatchObject(CONTINUE_FROM);
+
+      // A brand new app over the same data dir is what a restart looks like:
+      // the recovery pass must leave the waiting thread and its open call alone.
+      const second = createApprovalEngine({ suspend: "ok" });
+      const app = makeApp(dir, second.factory);
+      const restored = await getThread(app, parked.id);
+      expect(restored.status).toBe("awaiting-approval");
+      expect(restored.messages.at(-1)?.parts.find(isToolUIPart)?.state).toBe("approval-requested");
+
+      const approved = approve(restored.messages.at(-1)!);
+      await readSse(await postJson(app, `/api/chat/${parked.id}`, { messages: [...restored.messages.slice(0, -1), approved] }));
+      const done = await waitForStatus(app, parked.id, "idle");
+
+      // The fresh runner was handed the frozen turn, and knew it was continuing it.
+      expect(second.created).toHaveLength(1);
+      expect(second.created[0]?.continuesTurn).toBe(true);
+      expect(second.created[0]?.harnessState?.continueFrom).toMatchObject(CONTINUE_FROM);
+      expect(done.messages.at(-1)?.parts.find(isToolUIPart)?.state).toBe("output-available");
+      // And the finished turn dropped the continuation: nothing points at a
+      // bridge that is now gone. (`finish()` writes after the slot is released,
+      // so the file lags the status, as everywhere else in these tests.)
+      let after = await readHarnessState(dir, parked.id);
+      for (let attempt = 0; attempt < 200 && after.resumeFrom == null; attempt++) {
+        await sleep(10);
+        after = await readHarnessState(dir, parked.id);
+      }
+      expect(after.resumeFrom).toMatchObject({ data: { runner: 1 } });
+      expect(after.continueFrom).toBeUndefined();
+    });
+
+    it("falls back to the interrupted path when suspending fails", async () => {
+      const dir = await tempDir();
+      const engine = createApprovalEngine({ suspend: "fail" });
+      const parked = await parkThenShutdown(dir, engine);
+
+      expect(engine.suspended).toEqual([1]);
+      expect(engine.destroyed).toEqual([1]);
+
+      const app = makeApp(dir, createApprovalEngine({ suspend: "ok" }).factory);
+      const restored = await getThread(app, parked.id);
+      expect(restored.status).toBe("interrupted");
+      const part = restored.messages.at(-1)?.parts.find(isToolUIPart);
+      expect(part?.state).toBe("output-error");
+      expect((part as { errorText?: string }).errorText).toBe(RESTART_PENDING_TOOL_TEXT);
+      expect(await exists(join(dir, "threads", `${parked.id}.harness.json`))).toBe(false);
+    });
+
+    it("interrupts the thread when the next process cannot attach to the frozen turn", async () => {
+      const dir = await tempDir();
+      const parked = await parkThenShutdown(dir, createApprovalEngine({ suspend: "ok" }));
+
+      // The bridge died with the machine: `create` rejects for the attaching turn.
+      const attempted: EngineContext[] = [];
+      const app = makeApp(dir, {
+        async create(ctx) {
+          attempted.push(ctx);
+          throw new TurnResumeFailedError(RESUME_FAILED_TEXT);
+        },
+      });
+      const restored = await getThread(app, parked.id);
+      expect(restored.status).toBe("awaiting-approval");
+
+      const approved = approve(restored.messages.at(-1)!);
+      const chunks = await readSse(await postJson(app, `/api/chat/${parked.id}`, { messages: [...restored.messages.slice(0, -1), approved] }));
+      expect(chunks.find((chunk) => chunk.type === "error")?.errorText).toBe(RESUME_FAILED_TEXT);
+
+      const after = await waitForStatus(app, parked.id, "interrupted");
+      expect(attempted[0]?.harnessState?.continueFrom).toMatchObject(CONTINUE_FROM);
+      // The turn is closed out, so the client stops offering to answer it, and
+      // the dead continuation is gone from disk.
+      const part = after.messages.at(-1)?.parts.find(isToolUIPart);
+      expect(part?.state).toBe("output-error");
+      expect((part as { errorText?: string }).errorText).toBe(RESUME_FAILED_TEXT);
+      expect((await readHarnessState(dir, parked.id)).continueFrom).toBeUndefined();
+    });
+
+    it("still interrupts a parked turn when the engine cannot freeze it at all", async () => {
+      const dir = await tempDir();
+      const engine = createApprovalEngine();
+      const parked = await parkThenShutdown(dir, engine);
+
+      expect(engine.destroyed).toEqual([1]);
+      const app = makeApp(dir, createApprovalEngine().factory);
+      expect((await getThread(app, parked.id)).status).toBe("interrupted");
+    });
   });
 
   it("never stores an assistant message with no parts", async () => {

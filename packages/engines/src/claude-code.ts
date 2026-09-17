@@ -1,7 +1,9 @@
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import type { HarnessV1Authentication } from "@ai-sdk/harness";
 import {
   HarnessAgent,
+  type HarnessAgentContinueTurnState,
   type HarnessAgentPermissionMode,
   type HarnessAgentResumeSessionState,
   type HarnessAgentSession,
@@ -41,6 +43,18 @@ export interface ClaudeCodeEngineOptions {
    * validates it against the adapter before handing it to the runtime.
    */
   resumeFrom?: HarnessAgentResumeSessionState;
+  /**
+   * Continuation payload returned by a previous `suspend()`, naming the bridge
+   * that still holds the unfinished turn. Must be paired with the `sessionId`
+   * that produced it, and is mutually exclusive with `resumeFrom`. The turn is
+   * then driven by `harnessAgent.continueStream()`, not by `stream()`.
+   */
+  continueFrom?: HarnessAgentContinueTurnState;
+  /**
+   * What the adapter authenticates the runtime with. Defaults to
+   * `defaultClaudeCodeAuth()`; see there for why it is never `'auto'`.
+   */
+  auth?: HarnessV1Authentication;
 }
 
 export interface ClaudeCodeEngine {
@@ -59,10 +73,60 @@ export interface ClaudeCodeEngine {
    * call with the same `sessionId`.
    */
   stop(): Promise<HarnessAgentResumeSessionState>;
+  /**
+   * Freeze the unfinished turn and hand back the payload that reattaches to it.
+   * The runtime, the bridge and the sandbox keep running — only this handle
+   * dies, so the next process can pick the turn up with `continueFrom`.
+   * Throws when the session has no unfinished turn.
+   */
+  suspend(): Promise<HarnessAgentContinueTurnState>;
   dispose(): Promise<void>;
 }
 
 export const DEFAULT_CLAUDE_CODE_DATA_DIR = join(homedir(), ".vgent", "harness", "claude-code");
+
+/**
+ * Credential variables copied out of the caller's environment, when there are
+ * any. `ANTHROPIC_*` is what an API-key or custom-endpoint user sets;
+ * `AI_GATEWAY_API_KEY` / `VERCEL_OIDC_TOKEN` / `AI_GATEWAY_BASE_URL` are what
+ * the adapter's gateway detection reads. `CLAUDE_CODE_OAUTH_TOKEN` is
+ * deliberately absent — see `defaultClaudeCodeAuth`.
+ */
+const FORWARDED_CREDENTIAL_ENV = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "AI_GATEWAY_API_KEY",
+  "AI_GATEWAY_BASE_URL",
+  "VERCEL_OIDC_TOKEN",
+] as const;
+
+/**
+ * The authentication environment the engine hands the adapter by default.
+ *
+ * `auth: 'auto'` looks right and is wrong for a long-lived session: the adapter
+ * resolves the subscription OAuth token *once*, when the bridge starts, and
+ * forwards it as a static `CLAUDE_CODE_OAUTH_TOKEN`. A turn parked at an
+ * approval keeps that bridge alive, so a token that expires while the human is
+ * away turns the continuation into a 401 the bridge treats as unrecoverable.
+ *
+ * Supplying an environment instead short-circuits the subscription read
+ * entirely (`isHarnessAuthenticationEnvironment`), so no OAuth token is
+ * forwarded at all. The sandbox keeps the caller's real `HOME`, and the
+ * `claude` CLI inside the bridge then reads `~/.claude` / the macOS keychain
+ * itself and refreshes its own token — exactly as it does when a human runs it.
+ *
+ * API-key and gateway users are unaffected: their variables are forwarded, and
+ * the adapter still finds them on the object it was handed.
+ */
+export function defaultClaudeCodeAuth(processEnv: NodeJS.ProcessEnv = process.env): Readonly<Record<string, string>> {
+  const env: Record<string, string> = {};
+  for (const name of FORWARDED_CREDENTIAL_ENV) {
+    const value = processEnv[name];
+    if (value != null && value !== "") env[name] = value;
+  }
+  return env;
+}
 
 /**
  * True when a resume payload still names a running bridge (`data.bridge`).
@@ -94,15 +158,16 @@ function namesLiveBridge(state: HarnessAgentResumeSessionState): boolean {
  * - `repoPath` reaches the runtime as `sessionWorkDir`. `HarnessAgent` always
  *   composes that path underneath the sandbox directory, so the adapter is
  *   wrapped to override it.
- * - The sandbox keeps the caller's real `HOME`. `auth: 'auto'` reuses the
- *   machine's existing Claude Code login (`~/.claude`, macOS keychain), and the
- *   `claude` CLI reads its settings from the same place.
- * - The sandbox has no request-transformation proxy, so the adapter forwards the
- *   real credential into the bridge environment and warns about it. Nothing in
- *   this module logs the environment it builds.
+ * - The sandbox keeps the caller's real `HOME`, and authentication defaults to
+ *   `defaultClaudeCodeAuth()`: no OAuth token is forwarded, so the `claude` CLI
+ *   inside the bridge reuses and refreshes the machine's own login
+ *   (`~/.claude`, macOS keychain). Only an explicit API key / gateway
+ *   credential is passed through, and nothing here logs the environment it
+ *   builds.
  * - The harness session owns its own conversation history. To keep it across
  *   processes, end a turn with `stop()` and feed the state it returns back in
- *   as `resumeFrom` together with the same `sessionId`.
+ *   as `resumeFrom` together with the same `sessionId`. An *unfinished* turn
+ *   goes the other way: `suspend()` and `continueFrom`.
  */
 export async function createClaudeCodeEngine(options: ClaudeCodeEngineOptions): Promise<ClaudeCodeEngine> {
   const repoPath = await resolveRepoPath(options.repoPath, "Claude Code");
@@ -114,6 +179,11 @@ export async function createClaudeCodeEngine(options: ClaudeCodeEngineOptions): 
     pathExtensions: [dirname(process.execPath), resolvePnpmDir()],
     env: {
       HOME: homedir(),
+      // The login the bridge is meant to reuse lives in the macOS keychain
+      // under the current account name, and the CLI looks it up with
+      // `security … -a $USER`. Without this the lookup runs with an empty
+      // account and the runtime reports "Not logged in".
+      USER: userInfo().username,
       DISABLE_AUTOUPDATER: "1",
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     },
@@ -123,7 +193,7 @@ export async function createClaudeCodeEngine(options: ClaudeCodeEngineOptions): 
   });
 
   const harness = createClaudeCode({
-    auth: "auto",
+    auth: options.auth ?? defaultClaudeCodeAuth(),
     port: 0,
     env: {
       DISABLE_AUTOUPDATER: "1",
@@ -147,13 +217,22 @@ export async function createClaudeCodeEngine(options: ClaudeCodeEngineOptions): 
 
   let session: HarnessAgentSession;
   try {
-    session = await agent.createSession({
-      ...(options.sessionId != null ? { sessionId: options.sessionId } : {}),
-      ...(options.resumeFrom != null ? { resumeFrom: options.resumeFrom } : {}),
-    });
-    if (options.sessionId != null && options.resumeFrom != null && !namesLiveBridge(options.resumeFrom)) {
-      const detached = await session.detach();
-      session = await agent.createSession({ sessionId: options.sessionId, resumeFrom: detached });
+    if (options.continueFrom != null) {
+      // Attaching to the live bridge named by the payload. No `detach()` dance:
+      // the continuation already carries bridge coordinates, which is exactly
+      // what clears `rerunContinue` in the adapter.
+      if (options.sessionId == null) throw new Error("Claude Code engine: `continueFrom` requires the `sessionId` that produced it.");
+      if (options.resumeFrom != null) throw new Error("Claude Code engine: pass either `resumeFrom` or `continueFrom`, not both.");
+      session = await agent.createSession({ sessionId: options.sessionId, continueFrom: options.continueFrom });
+    } else {
+      session = await agent.createSession({
+        ...(options.sessionId != null ? { sessionId: options.sessionId } : {}),
+        ...(options.resumeFrom != null ? { resumeFrom: options.resumeFrom } : {}),
+      });
+      if (options.sessionId != null && options.resumeFrom != null && !namesLiveBridge(options.resumeFrom)) {
+        const detached = await session.detach();
+        session = await agent.createSession({ sessionId: options.sessionId, resumeFrom: detached });
+      }
     }
   } catch (error) {
     await stopHandedOut();
@@ -166,6 +245,7 @@ export async function createClaudeCodeEngine(options: ClaudeCodeEngineOptions): 
     harnessAgent: agent,
     session,
     stop: () => session.stop(),
+    suspend: () => session.suspendTurn(),
     dispose: () => session.destroy(),
   };
 }

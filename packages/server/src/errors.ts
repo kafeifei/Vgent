@@ -55,6 +55,20 @@ export class EngineUnavailableError extends VgentServerError {
   }
 }
 
+/**
+ * A turn frozen by `EngineRunner.suspend()` could not be picked up again: the
+ * runtime that was holding it is gone (the machine rebooted, the bridge was
+ * killed, the port moved). Nothing about the request is wrong, so the run
+ * manager converts the thread to the ordinary interrupted state instead of
+ * letting the failure surface as a raw engine error.
+ */
+export class TurnResumeFailedError extends VgentServerError {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super({ message, status: 503, code: "turn_resume_failed" });
+    if (options?.cause !== undefined) this.cause = options.cause;
+  }
+}
+
 /** The project's `repoPath` is not (inside) a git work tree, so there is nothing to diff. */
 export class NotAGitRepoError extends VgentServerError {
   constructor(message: string, code = "not_a_git_repo") {

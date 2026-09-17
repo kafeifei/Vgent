@@ -26,7 +26,7 @@ Vgent 是一个 **Web 优先**的本地 coding agent 工作台，底下可换引
 - `host: "0.0.0.0"` 硬编码在两个 bridge 的 `WebSocketServer` 构造里，没有配置项。我们**不改源码**：`sandbox-local` 的 `loopbackOnly` 选项给 spawn 出的进程注入 `NODE_OPTIONS=--import=<loopback-preload.js>`，预加载脚本 monkeypatch `net.Server.prototype.listen`，把 `0.0.0.0` / `::` 改写为 `127.0.0.1`。对 bridge 升级免疫，且只影响我们自己 spawn 的进程。同时向上游提 issue 要 bind 选项。
 - adapter 把 bootstrap 装进 `<sandbox 默认工作目录>/.harness-bootstrap/<harness>/`（`pnpm install --frozen-lockfile`，只跑一次），session 数据写 `<默认工作目录>/.agent-runs/<id>/`。所以 **sandbox 的 cwd 必须是 `~/.vgent/harness/<harness>/`**，用户仓库通过 `sessionWorkDir` 单独传。freecode 是覆写 `getBootstrap` 用符号链接跳过安装，我们用官方 bootstrap 原样跑，只是给它一个持久目录。
 - bridge 端口用 `port: 0` 让 bridge 自选，sandbox 开 `allowDynamicPorts`。
-- 认证 `auth: 'auto'`：adapter 自己读 macOS Keychain 的 "Claude Code-credentials"，复用本机已登录的 Claude 订阅；本地 sandbox 没有请求改写代理，adapter 会把真实凭据直接放进 bridge 环境变量并打一条 warning，这是预期行为。
+- 认证**不用** `auth: 'auto'`：那样 adapter 会自己读 macOS Keychain 的 "Claude Code-credentials"，把解析到的 OAuth token 当静态环境变量塞进 bridge（本地 sandbox 没有请求改写代理，只能裸转发），停在审批上的一轮吊着 bridge 时 token 会过期成 401。改成传一个显式的认证环境（见「阶段四进度」），bridge 里的 `claude` CLI 自己读钥匙串、自己刷新。
 
 ### 自研引擎 `@vgent/engine`
 
@@ -220,13 +220,19 @@ docs/
 - 验证：`pnpm build && pnpm test` → 32 文件 / 231 测试全绿；`VGENT_SMOKE=1` 的服务端冒烟（`server.smoke.test.ts`）：Claude Code 跑一轮 + 模拟重启续上，Codex 跑一轮 + 模拟重启续上（harness 文件被重写），自研引擎写文件卡在审批 → 重启 → 审批续跑真的写了文件，全程没有 harness 文件。浏览器实测（2026-09-18，dev server）：空状态选 vgent 引擎 + allow-reads 起任务，bash `date > now.txt` 停下等审批，刷新页面，点批准，3 步跑完并读回了文件内容；Codex 任务起时权限自动锁 allow-all，`cat hello.txt` 有回应，刷新后历史还在；给有消息的线程切引擎弹出 409 的中文提示。
 - 已知未修：**shutdown 竞态**——一轮结束时最终状态先落盘，隔一拍才释放运行槽位、把引擎 park 起来，这个窗口期里如果撞上 `stopAll()`，一个本该继续等审批的无状态线程会被错误标成 `interrupted`（`runs.test.ts` 的 `waitForSlotReleased` 就是绕开它）。`NotImplementedError` 现在没人抛了，类还留着。`EmptyState` 的引擎默认值只在挂载时读一次，settings 如果之后才从 SSE 到达不会重新同步。
 
+### 阶段四进度
+
+- 2026-09-18：**parked 的 Claude Code session 晾久了 401** 修了。根因是 `auth: 'auto'`：适配器在 `doStart` 里把订阅 OAuth token 解析一次，当成静态 `CLAUDE_CODE_OAUTH_TOKEN` 塞进 bridge 环境（本地 sandbox 没有 `addRequestTransformations`，走的是裸转发分支），停在审批上的一轮把那个 bridge 一直吊着，token 过期后续跑就是 401。改成显式传一个认证环境（`defaultClaudeCodeAuth()`，`packages/engines/src/claude-code.ts`）：只转发 `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL` / `AI_GATEWAY_API_KEY` / `AI_GATEWAY_BASE_URL` / `VERCEL_OIDC_TOKEN`，**绝不转发 `CLAUDE_CODE_OAUTH_TOKEN`**；传了环境以后 `isHarnessAuthenticationEnvironment` 会短路掉订阅读取，bridge 里的 `claude` CLI 自己读 `~/.claude` / 钥匙串并自己刷新，跟人手跑一样。顺带发现 sandbox 环境白名单里缺 `USER`：钥匙串条目是按 `security … -a $USER` 找的，没有 `USER` 就是「Not logged in」，所以 `createLocalSandboxProvider` 的 `env` 补上了 `USER`。`auth` 现在是 `createClaudeCodeEngine` 的可选项，想退回 `'auto'` 也行。
+- 2026-09-18：**harness 未跑完的一轮活过优雅重启**。`HarnessAgentSession.suspendTurn()` 冻结当前轮、留着 runtime / bridge / sandbox 不动，返回可 JSON 序列化的 `continueFrom`（带 `pendingToolApprovals`）。落地：`EngineRunner.suspend?()`（只有 Claude Code 实现，Codex 从不 park）；`HarnessState` 变成 `{ resumeFrom?, continueFrom? }`；`stopAll()` 对有状态的 parked runner 先试 `suspend()` → `saveHarnessState`，线程留在 `awaiting-approval`、工具部件不动，失败才退回原来的 destroy + `interrupted`；`recoverInterruptedThreads` 对带 `continueFrom` 的 `awaiting-*` 线程不动；下一轮 `start()` 里 `continuesTurn` 为真才拿 `continueFrom` 去 `createSession({ sessionId, continueFrom })`，并且第一次 `stream()` 改走 `agent.continueStream({ toolApprovalContinuations, toolResultContinuations })`（用 `collectHarnessAgentTool*Continuations` 从同一份 `ModelMessage[]` 里取）。attach 失败（bridge 真死了）是 typed error `TurnResumeFailedError`，线程收成 `interrupted`、悬着的调用写「服务重启后未能恢复这一轮，请重新发送」，并把 `continueFrom` 从 harness 文件里清掉；`finish()` 写 `resumeFrom` 时也自然把它顶掉。本地 sandbox 的 bridge 本来就是 `detached: true` 起的，实测服务器 SIGTERM 退出后 bridge 和 `claude` CLI 都还活着（stdout 是管道，但它没有在那之后写，没有 EPIPE）。
+- 验证：`pnpm build && pnpm test` → 38 文件 / 271 测试全绿；`VGENT_SMOKE=1` 的 `@vgent/engines`（5 个）和 `@vgent/server`（84 个）全绿，其中新增的 `server.smoke.test.ts` 真机跑「allow-reads 下 `date > restart-probe.txt` 停在审批 → `app.shutdown()` → 同 dataDir 新建 app → 还是 `awaiting-approval` → 批准 → 文件写出来了」。真·两进程也实测过：`node packages/server/dist/main.js --port 7413`，curl 驱动到审批、SIGTERM、bridge 进程存活、重启后批准、`restart-probe.txt` 落盘，harness 文件从 `continueFrom` 变回 `resumeFrom`。
+
 ### 明确未做（阶段三之后）
 
 - **自研引擎的 session 管理**：server 把存好的 UI 消息喂回 agent（每轮 `convertToModelMessages` 重放），JSONL 的 `sessionFile` 路径现在只有 `apps/cli` 在用。
 - `server` 未做：实例锁（`instance-lock.ts` 还没搬）、harness 引擎用 `detach()` 代替 `stop()` 保温 sandbox、worktree。
-- **未跑完的一轮活不过重启（harness 引擎）**：parked session 只在本进程内存里，重启后 bridge 已死。所以 shutdown 和启动恢复都把 `running`（以及 harness 引擎的 `awaiting-approval` / `awaiting-input`）的线程收成 `interrupted`，并把悬着的工具调用写成 `output-error`「服务已重启，请重新发送」——否则客户端会对一个不存在的 turn 提交审批（无状态引擎已经绕开这条，见阶段三进度）。用 `detach()` + `continueStream()` 做跨进程续跑是后续工作。
+- ~~未跑完的一轮活不过重启（harness 引擎）~~：**阶段四已修**，见下。
 - `askUserQuestions` 在 TUI 里不可用（需要 Web `useChat`）。
 - 子代理、MCP + toolSearch、skills 索引、记忆、手动 compact、`@ai-sdk/otel`。
 - Web 已做出工作台骨架（见上），**明确留到后面的**：右栏的文件 / 终端 / 计划三个 tab（现在是「下一步接入」占位）、`@` 引用、context ring、composer 上方的「审查 +N −M」pill、checkpoint / 回退、麦克风、侧聊 `/side`、worktree pill、运行位置下拉（写死「本机」）、模式 chip（写死 `Agent`）、子代理的嵌套流、虚拟滚动、无障碍焦点管理。
 
-下一步：阶段四——排序是 (1) 先做 Tauri 桌面壳（搬 freecode `backend.rs` 和 `prepare-desktop.mjs` 的 Node pin + hash 校验），让工作台变成一个能双击打开、用户愿意日常挂着的 app；(2) 每个任务一个 worktree 的隔离；(3) 给自研引擎补子代理 / MCP + tool search / skills；然后才是 UI 抛光清单：右栏的文件 / 终端 / 计划三个 tab、`@` 引用、context ring、composer 上方的「审查 +N −M」pill、「本任务内一直允许」。顺路修两个已知 bug：parked 的 Claude Code session 晾久了凭据过期（401，见阶段二真机副作用）、harness 的未跑完一轮活不过重启（`detach()` + `continueStream()`）。
+下一步：阶段四——排序是 (1) 先做 Tauri 桌面壳（搬 freecode `backend.rs` 和 `prepare-desktop.mjs` 的 Node pin + hash 校验），让工作台变成一个能双击打开、用户愿意日常挂着的 app；(2) 每个任务一个 worktree 的隔离；(3) 给自研引擎补子代理 / MCP + tool search / skills；然后才是 UI 抛光清单：右栏的文件 / 终端 / 计划三个 tab、`@` 引用、context ring、composer 上方的「审查 +N −M」pill、「本任务内一直允许」。两个顺路的已知 bug——parked 的 Claude Code session 晾久了凭据过期（401）、harness 未跑完的一轮活不过重启——已经修掉，见「阶段四进度」。

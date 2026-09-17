@@ -121,6 +121,9 @@ export function useWorkbench(token: string) {
         setProjectId(project.id);
       },
 
+      /** Native folder chooser, run by the server so desktop and browser share it. */
+      pickFolder: () => client.pickFolder(),
+
       /** Empty state: create the thread, select it, send the first message. */
       startThread: (text: string, engine: EngineId) => {
         if (activeProjectId == null) {

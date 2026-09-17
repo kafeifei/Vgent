@@ -48,6 +48,18 @@ export function reportUnauthorized(): void {
 
 export const UNAUTHORIZED_MESSAGE = "token 无效或已过期";
 
+/** Carries the server's typed `{ code, status }` so callers can branch on it. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 /**
  * Whether a token still works. `EventSource` hides the status code of a failed
  * connection, so the SSE hook asks this before it schedules another reconnect.
@@ -85,13 +97,17 @@ export async function api<T>(
 
   if (response.status === 401) {
     reportUnauthorized();
-    throw new Error(UNAUTHORIZED_MESSAGE);
+    throw new ApiError(UNAUTHORIZED_MESSAGE, 401, "unauthorized");
   }
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as
       | { error?: { code?: string; message?: string } }
       | null;
-    throw new Error(body?.error?.message ?? `${response.status} ${response.statusText}`);
+    throw new ApiError(
+      body?.error?.message ?? `${response.status} ${response.statusText}`,
+      response.status,
+      body?.error?.code,
+    );
   }
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
@@ -110,6 +126,9 @@ export function createClient(token: string) {
         json: { repoPath, ...(name != null ? { name } : {}) },
       }),
     deleteProject: (id: string) => api<void>(`/projects/${id}`, token, { method: "DELETE" }),
+    /** Native folder chooser on the server; `null` means the user cancelled. */
+    pickFolder: () =>
+      api<{ path: string } | undefined>("/projects/pick", token, { method: "POST" }).then((body) => body?.path ?? null),
 
     listChanges: (projectId: string) => api<ChangesSnapshot>(`/projects/${projectId}/changes`, token),
     getFileDiff: (projectId: string, path: string) =>

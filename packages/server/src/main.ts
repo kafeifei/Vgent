@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { serve } from "@hono/node-server";
 import { createApp } from "./app.js";
 import { resolveDataDir } from "./paths.js";
@@ -23,15 +23,22 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   const portRaw = flagValue(argv, "port") ?? process.env.VGENT_PORT;
   const port = portRaw != null ? Number.parseInt(portRaw, 10) : DEFAULT_PORT;
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error(`端口不合法: ${portRaw}`);
+  const webDistRaw = flagValue(argv, "web-dist") ?? process.env.VGENT_WEB_DIST;
+  const webDist = webDistRaw != null && webDistRaw.length > 0 ? resolve(webDistRaw) : undefined;
+  // The desktop shell drains our stdio into its own log; the token must not land there.
+  const desktop = process.env.VGENT_DESKTOP === "1";
 
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
   const token = randomBytes(32).toString("hex");
-  const { app, shutdown } = createApp({ dataDir, token, log: consoleLogger });
+  const { app, shutdown } = createApp({ dataDir, token, log: consoleLogger, ...(webDist != null ? { webDist } : {}) });
   const connectionPath = join(dataDir, "connection.json");
 
-  const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port });
-  const address = server.address();
-  const boundPort = typeof address === "object" && address !== null ? address.port : port;
+  // `--port 0` is the desktop shell's normal case, so the bound port — not the
+  // requested one — is what goes into the URL and `connection.json`.
+  let server!: ReturnType<typeof serve>;
+  const boundPort = await new Promise<number>((resolve_) => {
+    server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port }, (info) => resolve_(info.port));
+  });
   const url = `http://127.0.0.1:${boundPort}`;
 
   await writeJsonAtomic(
@@ -41,7 +48,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   );
 
   console.log(`vgent server listening on ${url}  (token in ${connectionPath})`);
-  console.log(`web: ${DEV_WEB_URL}/#token=${token}`);
+  if (!desktop) console.log(`web: ${webDist == null ? DEV_WEB_URL : url}/#token=${token}`);
 
   let shuttingDown = false;
   const stop = () => {
@@ -50,7 +57,15 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     void (async () => {
       // Stopping the runs first lets each engine persist its resume state.
       await shutdown().catch((error) => console.error("停止运行中的任务失败", error));
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        // `close` only stops accepting; it then waits for every open socket. The
+        // state SSE stream never ends on its own, so without this the process
+        // would hang until whoever supervises it loses patience and SIGKILLs —
+        // which would also leave `connection.json` behind. Every run is already
+        // stopped by now, so dropping the sockets loses nothing.
+        (server as { closeAllConnections?: () => void }).closeAllConnections?.();
+      });
       await rm(connectionPath, { force: true }).catch(() => {});
       process.exit(0);
     })();

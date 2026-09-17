@@ -1,0 +1,6 @@
+# 构建产物：由 scripts/prepare-desktop.mjs 和 cargo 生成
+.local/
+src-tauri/binaries/
+src-tauri/resources/
+src-tauri/target/
+src-tauri/gen/schemas/

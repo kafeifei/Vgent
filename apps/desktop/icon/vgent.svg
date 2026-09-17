@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Vgent">
+  <title>Vgent</title>
+  <!-- 颜色取自 apps/web/src/tokens.css：底是 neutral-900 (#151311)，V 是品牌色 amber-400 (#FAAB35)。 -->
+  <rect width="1024" height="1024" rx="220" ry="220" fill="#151311"/>
+  <!-- 主体：粗几何 V，round join 让 16px 下仍是一个实心楔形。 -->
+  <path d="M330 330 L512 700 L694 330" fill="none" stroke="#FAAB35" stroke-width="100" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 分支暗示 agent：从右臂岔出一条细线到一个节点，小尺寸下自然淡出，不破坏 V 的轮廓。 -->
+  <path d="M628 478 L800 394" fill="none" stroke="#FAAB35" stroke-width="28" stroke-linecap="round" opacity="0.55"/>
+  <circle cx="836" cy="376" r="34" fill="#FAAB35" opacity="0.55"/>
+</svg>

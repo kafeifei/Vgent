@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -68,11 +68,12 @@ function createFakeEngine(options?: { text?: string; deltaDelayMs?: number }) {
   return { factory, created, streamed };
 }
 
-function makeApp(dataDir: string, factory?: EngineFactory): VgentApp {
+function makeApp(dataDir: string, factory?: EngineFactory, webDist?: string): VgentApp {
   const instance = createApp({
     dataDir,
     token: TOKEN,
     ...(factory != null ? { registry: createEngineRegistry({ "claude-code": factory }) } : {}),
+    ...(webDist != null ? { webDist } : {}),
   });
   apps.push(instance);
   return instance;
@@ -450,5 +451,29 @@ describe("createApp", () => {
     expect(await (await request(app, "/api/settings")).json()).toMatchObject({ defaultEngine: "claude-code" });
     const updated = await request(app, "/api/settings", { method: "PUT", body: JSON.stringify({ defaultPermissionMode: "allow-edits" }) });
     expect(await updated.json()).toMatchObject({ defaultPermissionMode: "allow-edits" });
+  });
+
+  it("serves a built web app at / with an SPA fallback, without touching /api", async () => {
+    const webDist = await tempDir();
+    await mkdir(join(webDist, "assets"), { recursive: true });
+    await writeFile(join(webDist, "index.html"), "<!doctype html><title>Vgent</title>");
+    await writeFile(join(webDist, "assets", "x.js"), "export const x = 1;\n");
+    const app = makeApp(await tempDir(), undefined, webDist);
+
+    const root = await app.app.request(`${ORIGIN}/`);
+    expect(root.status).toBe(200);
+    expect(await root.text()).toContain("<title>Vgent</title>");
+
+    // A client-rendered route is not a file, so it gets the shell.
+    expect(await (await app.app.request(`${ORIGIN}/threads/abc`)).text()).toContain("<title>Vgent</title>");
+
+    const asset = await app.app.request(`${ORIGIN}/assets/x.js`);
+    expect(asset.headers.get("content-type")).toContain("javascript");
+    expect(await asset.text()).toBe("export const x = 1;\n");
+
+    // `/api` keeps its auth and its 404s; it never falls back to index.html.
+    expect((await app.app.request(`${ORIGIN}/api/projects`)).status).toBe(401);
+    expect((await request(app, "/api/nope")).status).toBe(404);
+    expect((await app.app.request("http://evil.example.com/")).status).toBe(403);
   });
 });

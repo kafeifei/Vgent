@@ -21,6 +21,7 @@ export function EmptyState({
   settings,
   onSelectProject,
   onAddProject,
+  onPickFolder,
   onStart,
 }: {
   projects: Project[];
@@ -28,6 +29,7 @@ export function EmptyState({
   settings: Settings | null;
   onSelectProject: (projectId: string) => void;
   onAddProject: (repoPath: string) => Promise<void>;
+  onPickFolder: () => Promise<string | null>;
   onStart: (text: string, engine: EngineId) => void;
 }) {
   const toast = useToast();
@@ -64,6 +66,7 @@ export function EmptyState({
             selectedId={projectId}
             onSelect={onSelectProject}
             onAdd={onAddProject}
+            onPickFolder={onPickFolder}
             trigger={(props) => (
               <button
                 type="button"

@@ -15,6 +15,7 @@ export {
   UnauthorizedError,
   VgentServerError,
 } from "./errors.js";
+export { pickFolder, type ExecFileFn, type PickFolderOptions } from "./folder-picker.js";
 export {
   createGit,
   type ChangeStatus,

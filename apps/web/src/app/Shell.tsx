@@ -50,6 +50,7 @@ export function Shell({ token }: { token: string }) {
         projectId={activeProjectId}
         onSelectProject={actions.selectProject}
         onAddProject={actions.addProject}
+        onPickFolder={actions.pickFolder}
         onOpenPalette={actions.openPalette}
         connected={state.connected}
       />
@@ -85,6 +86,7 @@ export function Shell({ token }: { token: string }) {
                 settings={state.settings}
                 onSelectProject={actions.selectProject}
                 onAddProject={actions.addProject}
+                onPickFolder={actions.pickFolder}
                 onStart={actions.startThread}
               />
             </div>

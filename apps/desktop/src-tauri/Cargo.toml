@@ -1,0 +1,25 @@
+[package]
+name = "vgent-desktop"
+version = "0.0.1"
+description = "Vgent 桌面壳：启动内置 Node 服务并加载本机 Web 工作台"
+edition = "2021"
+rust-version = "1.85"
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+tauri = { version = "2.11.5", features = ["devtools"] }
+tauri-plugin-dialog = "2.7.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+open = "5.4.4"
+libc = "0.2"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true

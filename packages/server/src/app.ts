@@ -7,10 +7,12 @@ import type { EngineRegistry } from "./engines/registry.js";
 import { createEngineRegistry } from "./engines/registry.js";
 import type { Git } from "./git.js";
 import { createGit } from "./git.js";
+import { pickFolder } from "./folder-picker.js";
 import { createRunManager, recoverInterruptedThreads } from "./runs.js";
 import { createProjectStore } from "./store/projects.js";
 import { createSettingsStore, type SettingsPatch } from "./store/settings.js";
 import { createThreadStore } from "./store/threads.js";
+import { registerStatic } from "./static.js";
 import type { EngineId, Logger, PermissionMode } from "./types.js";
 import { silentLogger } from "./types.js";
 
@@ -18,6 +20,7 @@ export const VGENT_SERVER_VERSION = "0.0.1";
 
 /** Local-only listener: anything but a loopback Host header is a DNS-rebinding attempt. */
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
+const isLoopbackHostname = (hostname: string): boolean => LOOPBACK_HOSTNAMES.has(hostname);
 const STATE_DEBOUNCE_MS = 50;
 const KEEPALIVE_MS = 15_000;
 
@@ -31,6 +34,8 @@ export interface CreateAppOptions {
   /** The `git diff` backend behind the changes routes. Tests inject a shorter-fused one. */
   git?: Git;
   log?: Logger;
+  /** A built `apps/web` to serve at `/`; unset leaves the server API-only. */
+  webDist?: string;
   /** How long a stop waits for a run to wind down before forcing its slot open. Tests shorten it. */
   stopTimeoutMs?: number;
 }
@@ -101,7 +106,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     // `Request` (tests, fetch handlers) carries the host only in the URL.
     const host = c.req.header("host") ?? new URL(c.req.url).host;
     const hostname = host.replace(/:\d+$/, "");
-    if (!LOOPBACK_HOSTNAMES.has(hostname)) {
+    if (!isLoopbackHostname(hostname)) {
       return c.json({ error: { code: "forbidden_host", message: "只接受来自本机的请求" } }, 403);
     }
     if (c.req.path === "/api/health") return next();
@@ -128,6 +133,14 @@ export function createApp(options: CreateAppOptions): VgentApp {
     if (typeof repoPath !== "string" || repoPath.length === 0) throw new BadRequestError("缺少 repoPath", "invalid_repo_path");
     const name = (body as { name?: unknown }).name;
     return c.json(await projects.create({ repoPath, ...(typeof name === "string" ? { name } : {}) }));
+  });
+
+  // Adding a repo should never mean typing a path, so the native chooser runs
+  // here: one implementation for the browser and the desktop shell alike.
+  app.post("/api/projects/pick", async (c) => {
+    const path = await pickFolder();
+    if (path == null) return c.body(null, 204);
+    return c.json({ path });
   });
 
   app.delete("/api/projects/:id", async (c) => {
@@ -322,6 +335,8 @@ export function createApp(options: CreateAppOptions): VgentApp {
       clients.delete(client);
     }),
   );
+
+  if (options.webDist != null) registerStatic(app, options.webDist, isLoopbackHostname);
 
   return {
     app,

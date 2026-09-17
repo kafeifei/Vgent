@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "工作台是远端 http://127.0.0.1 页面，不暴露任何 Tauri IPC；原生对话框只从 Rust 侧调用。",
+  "windows": ["main"],
+  "permissions": []
+}

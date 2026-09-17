@@ -12,6 +12,7 @@ export function TitleBar({
   projectId,
   onSelectProject,
   onAddProject,
+  onPickFolder,
   onOpenPalette,
   connected,
 }: {
@@ -19,6 +20,7 @@ export function TitleBar({
   projectId: string | null;
   onSelectProject: (projectId: string) => void;
   onAddProject: (repoPath: string) => Promise<void>;
+  onPickFolder: () => Promise<string | null>;
   onOpenPalette: () => void;
   connected: boolean;
 }) {
@@ -40,6 +42,7 @@ export function TitleBar({
         selectedId={projectId}
         onSelect={onSelectProject}
         onAdd={onAddProject}
+        onPickFolder={onPickFolder}
         trigger={(props) => (
           <button
             type="button"

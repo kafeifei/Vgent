@@ -1,11 +1,13 @@
-import { useState } from "react";
 import { FileDiff, FolderTree, ListChecks, ListTodo, Terminal, X } from "lucide-react";
+import { ChangesPanel } from "@/features/changes/ChangesPanel";
+import { useChanges } from "@/features/changes/useChanges";
 import type { QueueItem } from "@/features/worklog/queue";
+import type { ApiClient } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-type TabId = "changes" | "files" | "term" | "plan" | "queue";
+export type RightTab = "changes" | "files" | "term" | "plan" | "queue";
 
-const TABS: ReadonlyArray<{ id: TabId; label: string; Icon: typeof FileDiff }> = [
+const TABS: ReadonlyArray<{ id: RightTab; label: string; Icon: typeof FileDiff }> = [
   { id: "changes", label: "变更", Icon: FileDiff },
   { id: "files", label: "文件", Icon: FolderTree },
   { id: "term", label: "终端", Icon: Terminal },
@@ -23,34 +25,74 @@ function jumpTo(anchor: string): void {
 }
 
 /**
- * Right column. Only 队列 has content this step; 变更 / 文件 / 终端 / 计划 are
- * placeholders, with the diff panel as the declared next step.
+ * Right column. 队列 and 变更 have content; 文件 / 终端 / 计划 are placeholders.
+ *
+ * The changes snapshot is loaded here rather than inside `ChangesPanel` so the
+ * 变更 tab can carry its file count — and so a collapsed pane, which stays
+ * mounted at zero width, does not keep asking git for one.
  */
-export function RightPane({ queue, onClose }: { queue: QueueItem[]; onClose: () => void }) {
-  const [tab, setTab] = useState<TabId>("queue");
+export function RightPane({
+  queue,
+  open,
+  tab,
+  onTab,
+  onClose,
+  client,
+  projectId,
+  file,
+  onSelectFile,
+  refreshKey,
+  toast,
+}: {
+  queue: QueueItem[];
+  open: boolean;
+  tab: RightTab;
+  onTab: (tab: RightTab) => void;
+  onClose: () => void;
+  client: ApiClient;
+  projectId: string | null;
+  file: string | null;
+  onSelectFile: (path: string | null) => void;
+  /** The thread's `updatedAt`: a new one means the engine wrote to disk. */
+  refreshKey: string;
+  toast: (text: string) => void;
+}) {
+  const changes = useChanges({
+    client,
+    projectId,
+    active: open && tab === "changes",
+    refreshKey,
+    selected: file,
+    onSelect: onSelectFile,
+    toast,
+  });
+  const changeCount = changes.snapshot?.files.length ?? 0;
 
   return (
     <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-border border-l bg-bg-elevated">
       <div role="tablist" className="flex flex-none items-center gap-3xs border-border border-b px-xs py-2xs">
-        {TABS.map(({ id, label, Icon }) => (
-          <button
-            key={id}
-            role="tab"
-            type="button"
-            title={label}
-            aria-selected={tab === id}
-            onClick={() => setTab(id)}
-            className={cn(
-              "relative inline-flex h-xl items-center gap-3xs rounded-sm px-xs text-fg-faint hover:bg-bg-hover hover:text-fg-muted",
-              tab === id && "text-fg after:absolute after:right-2xs after:bottom-[calc(-1*var(--spacing-2xs)-1px)] after:left-2xs after:h-[2px] after:rounded-full after:bg-fg after:content-['']",
-            )}
-          >
-            <Icon className="size-lg" />
-            {id === "queue" && queue.length > 0 && (
-              <span className="rounded-full bg-bg-inset px-2xs font-mono text-2xs text-fg-faint">{queue.length}</span>
-            )}
-          </button>
-        ))}
+        {TABS.map(({ id, label, Icon }) => {
+          const count = id === "queue" ? queue.length : id === "changes" ? changeCount : 0;
+          return (
+            <button
+              key={id}
+              role="tab"
+              type="button"
+              title={label}
+              aria-selected={tab === id}
+              onClick={() => onTab(id)}
+              className={cn(
+                "relative inline-flex h-xl items-center gap-3xs rounded-sm px-xs text-fg-faint hover:bg-bg-hover hover:text-fg-muted",
+                tab === id && "text-fg after:absolute after:right-2xs after:bottom-[calc(-1*var(--spacing-2xs)-1px)] after:left-2xs after:h-3xs after:rounded-full after:bg-fg after:content-['']",
+              )}
+            >
+              <Icon className="size-lg" />
+              {count > 0 && (
+                <span className="rounded-full bg-bg-inset px-2xs font-mono text-2xs text-fg-faint">{count}</span>
+              )}
+            </button>
+          );
+        })}
         <button
           type="button"
           aria-label="收起 ⌘J"
@@ -88,6 +130,8 @@ export function RightPane({ queue, onClose }: { queue: QueueItem[]; onClose: () 
               ))
             )}
           </>
+        ) : tab === "changes" ? (
+          <ChangesPanel changes={changes} />
         ) : (
           <p className="text-fg-faint text-xs">下一步接入</p>
         )}

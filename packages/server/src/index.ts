@@ -6,11 +6,23 @@ export { createChunkHub, type ChunkHub } from "./chunk-hub.js";
 export {
   BadRequestError,
   ConflictError,
+  GitError,
+  GitUnavailableError,
+  NotAGitRepoError,
   NotFoundError,
   NotImplementedError,
   UnauthorizedError,
   VgentServerError,
 } from "./errors.js";
+export {
+  createGit,
+  type ChangeStatus,
+  type ChangedFile,
+  type ChangesSnapshot,
+  type CreateGitOptions,
+  type FileDiff,
+  type Git,
+} from "./git.js";
 export { createEngineRegistry, type EngineContext, type EngineFactory, type EngineRegistry, type EngineRunner } from "./engines/registry.js";
 export { AUTO_TITLE_MAX_LEN, createRunManager, deriveThreadTitle, recoverInterruptedThreads, type RunManager } from "./runs.js";
 export { readJsonOrQuarantine, writeJsonAtomic } from "./store/atomic-file.js";

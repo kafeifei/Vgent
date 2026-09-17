@@ -5,10 +5,21 @@ import { useServerState } from "@/lib/useServerState";
 import { useToast } from "@/lib/toast";
 import type { PermissionMode, ThreadSummary } from "@/lib/types";
 import { LIVE_STATUSES } from "@/lib/types";
+import { repoRelative } from "@/features/changes/paths";
 import type { Grouping } from "@/features/sidebar/grouping";
+import type { RightTab } from "@/features/rightpane/RightPane";
 
 export type LeftMode = "on" | "rail";
 export type View = "thread" | "empty";
+
+/** The right column: which tab, and which changed file that tab has open. */
+export interface RightState {
+  open: boolean;
+  tab: RightTab;
+  file: string | null;
+}
+
+const RIGHT_CLOSED: RightState = { open: false, tab: "queue", file: null };
 
 const readThreadFromUrl = (): string | null => new URLSearchParams(window.location.search).get("thread");
 
@@ -41,7 +52,7 @@ export function useWorkbench(token: string) {
   const [projectId, setProjectId] = useState<string | null>(null);
   const [view, setView] = useState<View>(() => (readThreadFromUrl() == null ? "empty" : "thread"));
   const [left, setLeft] = useState<LeftMode>("on");
-  const [right, setRight] = useState(false);
+  const [right, setRight] = useState<RightState>(RIGHT_CLOSED);
   const [palette, setPalette] = useState(false);
   const [grouping, setGrouping] = useState<Grouping>("project");
 
@@ -84,8 +95,24 @@ export function useWorkbench(token: string) {
       },
       setGrouping,
       toggleLeft: () => setLeft((mode) => (mode === "on" ? "rail" : "on")),
-      toggleRight: () => setRight((open) => !open),
-      openRight: () => setRight(true),
+      toggleRight: () => setRight((state) => ({ ...state, open: !state.open })),
+      openRight: () => setRight((state) => ({ ...state, open: true })),
+      setRightTab: (tab: RightTab) => setRight((state) => ({ ...state, tab })),
+      /** The 变更 tab's selection, from the panel's own file rows. */
+      selectChange: (file: string | null) => setRight((state) => ({ ...state, file })),
+
+      /**
+       * A file chip in the work log. The engines report absolute paths and the
+       * changes API takes repo-relative ones, so the project's `repoPath` is
+       * what turns the one into the other.
+       */
+      openChanges: (file?: string) => {
+        const repoPath = state.projects.find((project) => project.id === activeProjectId)?.repoPath ?? null;
+        const relative = file == null || repoPath == null ? null : repoRelative(file, repoPath);
+        setRight({ open: true, tab: "changes", file: relative });
+        if (file != null && relative == null) toast("文件不在项目仓库内");
+      },
+
       openPalette: () => setPalette(true),
       closePalette: () => setPalette(false),
 
@@ -133,7 +160,7 @@ export function useWorkbench(token: string) {
       whenReady: (threadId: string) => chats.whenReady(threadId),
       toast,
     }),
-    [activeProjectId, chats, client, selectThread, toast],
+    [activeProjectId, chats, client, selectThread, state.projects, toast],
   );
 
   // ⌘K / ⌘N / ⌘J / ⌘B
@@ -149,7 +176,7 @@ export function useWorkbench(token: string) {
         actions.newTask();
       } else if (key === "j") {
         event.preventDefault();
-        setRight((open) => !open);
+        setRight((state) => ({ ...state, open: !state.open }));
       } else if (key === "b") {
         event.preventDefault();
         setLeft((mode) => (mode === "on" ? "rail" : "on"));
@@ -161,6 +188,7 @@ export function useWorkbench(token: string) {
 
   return {
     state,
+    client,
     thread,
     selectedThreadId,
     activeProjectId,

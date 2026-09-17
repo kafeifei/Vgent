@@ -36,7 +36,15 @@ function blocksOf(message: UIMessage): Block[] {
     const key = `${message.id}:${index}`;
     if (part.type === "text") blocks.push({ kind: "text", key, part });
     else if (part.type === "reasoning") blocks.push({ kind: "reasoning", key, part });
-    else if (isToolUIPart(part)) blocks.push({ kind: "tool", key, part });
+    else if (isToolUIPart(part)) {
+      // A call the engine re-issues after an approval pause arrives as a second
+      // part with the same id — the SDK only reconciles `tool-input-start`
+      // inside the current step — and the stale one is stuck `input-streaming`
+      // forever. Only the last part of a `toolCallId` is the real one.
+      const stale = blocks.findIndex((block) => block.kind === "tool" && block.part.toolCallId === part.toolCallId);
+      if (stale >= 0) blocks.splice(stale, 1);
+      blocks.push({ kind: "tool", key, part });
+    }
   });
   return blocks;
 }

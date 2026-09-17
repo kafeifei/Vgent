@@ -6,7 +6,14 @@ import { isToolUIPart, type ModelMessage, type TextStreamPart, type ToolSet, typ
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp, type VgentApp } from "./app.js";
 import { createEngineRegistry, type EngineContext, type EngineFactory, type EngineRunner } from "./engines/registry.js";
-import { ABANDONED_TURN_TEXT, AUTO_TITLE_MAX_LEN, createRunManager, deriveThreadTitle, RESTART_PENDING_TOOL_TEXT } from "./runs.js";
+import {
+  ABANDONED_TURN_TEXT,
+  AUTO_TITLE_MAX_LEN,
+  createRunManager,
+  deriveThreadTitle,
+  RESTART_PENDING_TOOL_TEXT,
+  UNEXECUTED_TOOL_TEXT,
+} from "./runs.js";
 import { createProjectStore } from "./store/projects.js";
 import { createThreadStore, DEFAULT_THREAD_TITLE } from "./store/threads.js";
 import type { HarnessState, Project, ThreadRecord } from "./types.js";
@@ -198,16 +205,18 @@ function createApprovalEngine() {
 }
 
 /** Flip a pending approval part to what `useChat`'s `addToolApprovalResponse` produces. */
-function approve(message: UIMessage): UIMessage {
+function respond(message: UIMessage, approved: boolean): UIMessage {
   return {
     ...message,
     parts: message.parts.map((part) =>
       isToolUIPart(part) && part.state === "approval-requested"
-        ? { ...part, state: "approval-responded", approval: { ...part.approval, approved: true } }
+        ? { ...part, state: "approval-responded", approval: { ...part.approval, approved } }
         : part,
     ),
   } as UIMessage;
 }
+
+const approve = (message: UIMessage): UIMessage => respond(message, true);
 
 /** Seed a thread's stored history directly; `POST /api/chat` only ever appends its own tail. */
 async function seedHistory(dataDir: string, threadId: string, messages: UIMessage[]): Promise<void> {
@@ -362,6 +371,133 @@ describe("approval parking", () => {
     expect(collectHarnessAgentToolApprovalContinuations({ messages: continuation! })).toMatchObject([
       { type: "tool-approval-response", approvalId: "ap-1", approved: true },
     ]);
+  });
+
+  /**
+   * What a real Claude Code step looks like when two calls go out together and
+   * the first one needs an approval: the harness pauses mid-step, so the second
+   * call is left with nothing but its `tool-input-start`.
+   */
+  const EDIT_CALL = {
+    type: "tool-call" as const,
+    toolCallId: "call-edit",
+    toolName: "edit",
+    input: { path: "a.ts" },
+    providerExecuted: true,
+  };
+  const WRITE_CALL = {
+    type: "tool-call" as const,
+    toolCallId: "call-write",
+    toolName: "write",
+    input: { path: "b.ts" },
+    providerExecuted: true,
+  };
+  const writeInputStart = { type: "tool-input-start", id: "call-write", toolName: "write", providerExecuted: true };
+
+  const pausedStepParts = (): TextStreamPart<ToolSet>[] =>
+    [
+      { type: "start" },
+      { type: "start-step" },
+      { type: "tool-input-start", id: "call-edit", toolName: "edit", providerExecuted: true },
+      EDIT_CALL,
+      { type: "tool-approval-request", approvalId: "ap-edit", toolCall: EDIT_CALL },
+      // The harness paused here: this call never got past its input.
+      writeInputStart,
+    ] as unknown as TextStreamPart<ToolSet>[];
+
+  /** The approved continuation: a new step that re-issues `write` from the top. */
+  const approvedStepParts = (): TextStreamPart<ToolSet>[] =>
+    [
+      { type: "start" },
+      { type: "start-step" },
+      { ...EDIT_CALL, type: "tool-result", output: { ok: true } },
+      writeInputStart,
+      WRITE_CALL,
+      { ...WRITE_CALL, type: "tool-result", output: { written: true } },
+      ...textParts("两个文件都改好了").slice(1),
+    ] as unknown as TextStreamPart<ToolSet>[];
+
+  /** The denied continuation: the engine gives up without re-issuing `write`. */
+  const deniedStepParts = (): TextStreamPart<ToolSet>[] =>
+    [
+      { type: "start" },
+      { type: "start-step" },
+      { type: "tool-output-denied", toolCallId: "call-edit" },
+      ...textParts("好的，不改了").slice(1),
+    ] as unknown as TextStreamPart<ToolSet>[];
+
+  /** Pauses on the first turn, then plays `continuation` once the human answers. */
+  function createPausedStepEngine(continuation: () => TextStreamPart<ToolSet>[]): EngineFactory {
+    return {
+      async create() {
+        let unfinished = false;
+        return {
+          hasUnfinishedTurn: () => unfinished,
+          async stream({ messages }) {
+            if (messages.at(-1)?.role === "tool") {
+              unfinished = false;
+              return { stream: toStream(continuation()) };
+            }
+            unfinished = true;
+            return { stream: toStream(pausedStepParts()) };
+          },
+          async finish() {},
+          async destroy() {},
+        } satisfies EngineRunner;
+      },
+    };
+  }
+
+  const partsOf = (message: UIMessage | undefined, toolCallId: string) =>
+    (message?.parts ?? []).filter(isToolUIPart).filter((part) => part.toolCallId === toolCallId);
+
+  /** Drive a paused step through its approval answer and return both records. */
+  async function runPausedStep(
+    continuation: () => TextStreamPart<ToolSet>[],
+    approved: boolean,
+  ): Promise<{ parked: ThreadRecord; done: ThreadRecord; chunks: { type: string }[] }> {
+    const dir = await tempDir();
+    const app = makeApp(dir, createPausedStepEngine(continuation));
+    const thread = await setupThread(app, dir);
+
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "改两个文件")] }));
+    const parked = await waitForStatus(app, thread.id, "awaiting-approval");
+
+    const answered = respond(parked.messages.at(-1)!, approved);
+    const chunks = await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [...parked.messages.slice(0, -1), answered] }));
+    const done = await waitForStatus(app, thread.id, "idle");
+    return { parked, done, chunks };
+  }
+
+  it("keeps a half-streamed call open while the turn is parked", async () => {
+    const { parked } = await runPausedStep(approvedStepParts, true);
+    const write = partsOf(parked.messages.at(-1), "call-write");
+    expect(write).toHaveLength(1);
+    expect(write[0]?.state).toBe("input-streaming");
+  });
+
+  it("does not duplicate a call the continuation re-issues in a new step", async () => {
+    const { done, chunks } = await runPausedStep(approvedStepParts, true);
+    const write = partsOf(done.messages.at(-1), "call-write");
+    expect(write).toHaveLength(1);
+    expect(write[0]?.state).toBe("output-available");
+    expect(write[0]).toMatchObject({ output: { written: true } });
+    expect(partsOf(done.messages.at(-1), "call-edit")).toHaveLength(1);
+    // The client-facing stream is untouched: the seed fix only changes what the
+    // server rebuilds from it.
+    expect(chunks.map((chunk) => chunk.type)).toEqual(
+      expect.arrayContaining(["start-step", "tool-input-start", "tool-input-available", "tool-output-available"]),
+    );
+  });
+
+  it("closes a call the denied turn never ran", async () => {
+    const { done } = await runPausedStep(deniedStepParts, false);
+    expect(done.status).toBe("idle");
+    const write = partsOf(done.messages.at(-1), "call-write");
+    expect(write).toHaveLength(1);
+    expect(write[0]?.state).toBe("output-error");
+    expect((write[0] as { errorText?: string }).errorText).toBe(UNEXECUTED_TOOL_TEXT);
+    expect(partsOf(done.messages.at(-1), "call-edit")[0]?.state).toBe("output-denied");
   });
 
   it("never stores an assistant message with no parts", async () => {

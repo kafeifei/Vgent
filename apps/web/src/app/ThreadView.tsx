@@ -65,7 +65,7 @@ function ThreadChatView({
     () => ({
       respondToApproval: (id, approved) => void addToolApprovalResponse({ id, approved }),
       answerQuestions: (toolCallId, output) => void addToolOutput({ tool: "askUserQuestions", toolCallId, output }),
-      openFile: () => actions.toast("diff 面板下一步"),
+      openFile: (file) => actions.openChanges(file),
     }),
     [actions, addToolApprovalResponse, addToolOutput],
   );

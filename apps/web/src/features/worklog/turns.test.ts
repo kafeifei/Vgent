@@ -9,6 +9,8 @@ const assistant = (id: string, parts: UIMessage["parts"]): UIMessage => ({ id, r
 const toolPart = (toolCallId: string, state: string) =>
   ({ type: "tool-bash", toolCallId, state, input: { command: "ls" }, ...(state === "approval-requested" ? { approval: { id: `ap-${toolCallId}` } } : {}) }) as unknown as UIMessage["parts"][number];
 
+const stepStart = { type: "step-start" } as UIMessage["parts"][number];
+
 describe("buildTurns", () => {
   it("opens a turn per user message and folds the assistant messages into it", () => {
     const turns = buildTurns([
@@ -26,6 +28,27 @@ describe("buildTurns", () => {
     const turns = buildTurns([assistant("a1", [{ type: "text", text: "续流" }])]);
     expect(turns).toHaveLength(1);
     expect(turns[0]?.user).toBeUndefined();
+  });
+
+  /**
+   * A call the engine only half-announced before pausing for an approval comes
+   * back as a second part with the same id in the next step; the stale one never
+   * leaves `input-streaming` and would render as a row that runs forever.
+   */
+  it("keeps only the last part of a re-issued tool call", () => {
+    const turns = buildTurns([
+      user("u1", "改文件"),
+      assistant("a1", [
+        stepStart,
+        toolPart("c1", "output-available"),
+        toolPart("c2", "input-streaming"),
+        stepStart,
+        toolPart("c2", "output-available"),
+      ]),
+    ]);
+    const blocks = turns[0]?.blocks ?? [];
+    expect(blocks.map((block) => (block.kind === "tool" ? block.part.toolCallId : block.kind))).toEqual(["c1", "c2"]);
+    expect(blocks[1]?.kind === "tool" && blocks[1].part.state).toBe("output-available");
   });
 });
 

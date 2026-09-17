@@ -1,13 +1,7 @@
 import { Chat } from "@ai-sdk/react";
-import {
-  DefaultChatTransport,
-  lastAssistantMessageIsCompleteWithApprovalResponses,
-  lastAssistantMessageIsCompleteWithToolCalls,
-  type ChatRequestOptions,
-  type UIMessage,
-  type UIMessageChunk,
-} from "ai";
+import { DefaultChatTransport, type ChatRequestOptions, type UIMessage, type UIMessageChunk } from "ai";
 import { api, authHeaders, reportUnauthorized } from "./api";
+import { shouldSendAutomatically } from "./autoSend";
 import { withResumePrelude } from "./resumeChunks";
 import type { ThreadRecord, ThreadStatus, ThreadSummary } from "./types";
 import { LIVE_STATUSES } from "./types";
@@ -113,9 +107,7 @@ export class ThreadChats {
       // This belongs on the `Chat`, not on `useChat`: when `useChat` is handed
       // an existing instance it ignores every other `ChatInit` field, so an
       // approval answered in the UI would never be posted back.
-      sendAutomaticallyWhen: ({ messages }) =>
-        lastAssistantMessageIsCompleteWithApprovalResponses({ messages }) ||
-        lastAssistantMessageIsCompleteWithToolCalls({ messages }),
+      sendAutomaticallyWhen: shouldSendAutomatically,
       onError: (error) => {
         if (generation !== this.generation) return;
         this.onError(error);

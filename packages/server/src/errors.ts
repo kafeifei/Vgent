@@ -43,3 +43,24 @@ export class NotImplementedError extends VgentServerError {
     super({ message, status: 501, code });
   }
 }
+
+/** The project's `repoPath` is not (inside) a git work tree, so there is nothing to diff. */
+export class NotAGitRepoError extends VgentServerError {
+  constructor(message: string, code = "not_a_git_repo") {
+    super({ message, status: 409, code });
+  }
+}
+
+/** No `git` on PATH: the machine, not the request, is at fault. */
+export class GitUnavailableError extends VgentServerError {
+  constructor(message = "找不到 git 可执行文件", code = "git_unavailable") {
+    super({ message, status: 503, code });
+  }
+}
+
+/** Any other git failure; the message carries the trimmed stderr. */
+export class GitError extends VgentServerError {
+  constructor(message: string, code = "git_failed") {
+    super({ message, status: 500, code });
+  }
+}

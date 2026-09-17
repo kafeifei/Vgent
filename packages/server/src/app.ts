@@ -5,6 +5,8 @@ import { streamSSE } from "hono/streaming";
 import { BadRequestError, ConflictError, NotFoundError, UnauthorizedError, VgentServerError } from "./errors.js";
 import type { EngineRegistry } from "./engines/registry.js";
 import { createEngineRegistry } from "./engines/registry.js";
+import type { Git } from "./git.js";
+import { createGit } from "./git.js";
 import { createRunManager, recoverInterruptedThreads } from "./runs.js";
 import { createProjectStore } from "./store/projects.js";
 import { createSettingsStore, type SettingsPatch } from "./store/settings.js";
@@ -26,6 +28,8 @@ export interface CreateAppOptions {
   dataDir: string;
   token: string;
   registry?: EngineRegistry;
+  /** The `git diff` backend behind the changes routes. Tests inject a shorter-fused one. */
+  git?: Git;
   log?: Logger;
   /** How long a stop waits for a run to wind down before forcing its slot open. Tests shorten it. */
   stopTimeoutMs?: number;
@@ -58,6 +62,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
   const threads = createThreadStore(dataDir, log);
   const settings = createSettingsStore(dataDir, log);
   const registry = options.registry ?? createEngineRegistry();
+  const git = options.git ?? createGit();
   const runs = createRunManager({
     threads,
     projects,
@@ -117,6 +122,30 @@ export function createApp(options: CreateAppOptions): VgentApp {
   app.delete("/api/projects/:id", async (c) => {
     await projects.remove(c.req.param("id"));
     return c.body(null, 204);
+  });
+
+  // --- changes ----------------------------------------------------------
+
+  const repoPathOf = async (id: string): Promise<string> => {
+    const project = await projects.get(id);
+    if (project == null) throw new NotFoundError(`项目不存在: ${id}`, "project_not_found");
+    return project.repoPath;
+  };
+
+  app.get("/api/projects/:id/changes", async (c) => c.json(await git.changes(await repoPathOf(c.req.param("id")))));
+
+  app.get("/api/projects/:id/changes/file", async (c) => {
+    const repoPath = await repoPathOf(c.req.param("id"));
+    const path = c.req.query("path");
+    if (path == null || path.length === 0) throw new BadRequestError("缺少 path", "invalid_path");
+    return c.json(await git.fileDiff(repoPath, path));
+  });
+
+  app.post("/api/projects/:id/changes/revert", async (c) => {
+    const repoPath = await repoPathOf(c.req.param("id"));
+    const body = (await c.req.json().catch(() => undefined)) as { path?: unknown } | undefined;
+    if (typeof body?.path !== "string" || body.path.length === 0) throw new BadRequestError("缺少 path", "invalid_path");
+    return c.json(await git.revert(repoPath, body.path));
   });
 
   // --- threads ----------------------------------------------------------

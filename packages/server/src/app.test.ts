@@ -1,11 +1,15 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import type { ModelMessage, TextStreamPart, ToolSet, UIMessage } from "ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp, type VgentApp } from "./app.js";
 import { createEngineRegistry, type EngineContext, type EngineFactory } from "./engines/registry.js";
 import type { HarnessState, Project, ThreadRecord, ThreadSummary } from "./types.js";
+
+const execFileAsync = promisify(execFile);
 
 const TOKEN = "test-token-0123456789";
 const ORIGIN = "http://127.0.0.1:7412";
@@ -339,6 +343,43 @@ describe("createApp", () => {
     expect((await request(app, `/api/threads/${thread.id}`)).status).toBe(404);
     expect((await request(app, `/api/projects/${project.id}`, { method: "DELETE" })).status).toBe(204);
     expect((await request(app, `/api/projects/${project.id}`, { method: "DELETE" })).status).toBe(404);
+  });
+
+  it("serves the change list, a file diff and a revert for a real repo", async () => {
+    const dir = await tempDir();
+    const repo = await tempDir();
+    await execFileAsync("git", ["init", "-q", "-b", "main"], { cwd: repo });
+    await execFileAsync("git", ["config", "user.email", "test@vgent.local"], { cwd: repo });
+    await execFileAsync("git", ["config", "user.name", "Vgent Test"], { cwd: repo });
+    await writeFile(join(repo, "tracked.txt"), "line1\nline2\n");
+    await execFileAsync("git", ["add", "-A"], { cwd: repo });
+    await execFileAsync("git", ["commit", "-q", "-m", "初始"], { cwd: repo });
+    await writeFile(join(repo, "tracked.txt"), "line1\n改了\n");
+
+    const app = makeApp(dir);
+    const project = (await (await postJson(app, "/api/projects", { repoPath: repo })).json()) as Project;
+
+    const changes = (await (await request(app, `/api/projects/${project.id}/changes`)).json()) as {
+      branch: string | null;
+      files: { path: string; status: string; additions: number }[];
+    };
+    expect(changes.branch).toBe("main");
+    expect(changes.files).toMatchObject([{ path: "tracked.txt", status: "modified", additions: 1 }]);
+
+    const diff = (await (await request(app, `/api/projects/${project.id}/changes/file?path=tracked.txt`)).json()) as { diff: string };
+    expect(diff.diff).toContain("+改了");
+
+    const reverted = await postJson(app, `/api/projects/${project.id}/changes/revert`, { path: "tracked.txt" });
+    expect(await reverted.json()).toEqual({ path: "tracked.txt" });
+    expect(await readFile(join(repo, "tracked.txt"), "utf8")).toBe("line1\nline2\n");
+
+    // Missing `path`, an unknown project, and a path that is not actually changed.
+    expect((await request(app, `/api/projects/${project.id}/changes/file`)).status).toBe(400);
+    expect((await postJson(app, `/api/projects/${project.id}/changes/revert`, {})).status).toBe(400);
+    expect((await request(app, `/api/projects/nope/changes`)).status).toBe(404);
+    const missing = await request(app, `/api/projects/${project.id}/changes/file?path=tracked.txt`);
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toMatchObject({ error: { code: "file_not_changed" } });
   });
 
   it("reads and writes settings", async () => {

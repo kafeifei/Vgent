@@ -8,7 +8,11 @@ import type { UIMessage } from "ai";
  * into the bundle. Nothing below may be imported without `import type`.
  */
 export type {
+  ChangedFile,
+  ChangeStatus,
+  ChangesSnapshot,
   EngineId,
+  FileDiff,
   PermissionMode,
   Project,
   Settings,

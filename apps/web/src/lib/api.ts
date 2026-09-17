@@ -1,4 +1,6 @@
 import type {
+  ChangesSnapshot,
+  FileDiff,
   PermissionMode,
   Project,
   Settings,
@@ -107,6 +109,12 @@ export function createClient(token: string) {
         json: { repoPath, ...(name != null ? { name } : {}) },
       }),
     deleteProject: (id: string) => api<void>(`/projects/${id}`, token, { method: "DELETE" }),
+
+    listChanges: (projectId: string) => api<ChangesSnapshot>(`/projects/${projectId}/changes`, token),
+    getFileDiff: (projectId: string, path: string) =>
+      api<FileDiff>(`/projects/${projectId}/changes/file?path=${encodeURIComponent(path)}`, token),
+    revertFile: (projectId: string, path: string) =>
+      api<{ path: string }>(`/projects/${projectId}/changes/revert`, token, { method: "POST", json: { path } }),
 
     listThreads: () => api<{ threads: ThreadSummary[] }>("/threads", token).then((body) => body.threads),
     createThread: (input: { projectId: string; title?: string; permissionMode?: PermissionMode; model?: string }) =>

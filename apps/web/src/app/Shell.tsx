@@ -14,7 +14,8 @@ import { useWorkbench } from "./useWorkbench";
 /** The three-column grid. Widths come straight from the spacing tokens. */
 export function Shell({ token }: { token: string }) {
   const workbench = useWorkbench(token);
-  const { state, thread, selectedThreadId, activeProjectId, view, left, right, palette, grouping, actions } = workbench;
+  const { state, client, thread, selectedThreadId, activeProjectId, view, left, right, palette, grouping, actions } =
+    workbench;
   const { toggleTheme, toggleDensity } = usePrefs();
   const [queue, setQueue] = useState<QueueItem[]>([]);
 
@@ -36,9 +37,10 @@ export function Shell({ token }: { token: string }) {
       { id: "theme", label: "切换主题", run: toggleTheme },
       { id: "density", label: "切换密度", run: toggleDensity },
       { id: "left", label: left === "on" ? "收起侧栏" : "展开侧栏", hint: "⌘B", run: actions.toggleLeft },
-      { id: "right", label: right ? "收起右栏" : "展开右栏", hint: "⌘J", run: actions.toggleRight },
+      { id: "right", label: right.open ? "收起右栏" : "展开右栏", hint: "⌘J", run: actions.toggleRight },
+      { id: "changes", label: "查看变更", run: () => actions.openChanges() },
     ],
-    [actions, left, right, state.threads, toggleDensity, toggleTheme],
+    [actions, left, right.open, state.threads, toggleDensity, toggleTheme],
   );
 
   return (
@@ -56,7 +58,7 @@ export function Shell({ token }: { token: string }) {
         className="grid min-h-0 transition-[grid-template-columns] duration-[var(--duration-base)]"
         style={{
           gridTemplateColumns: `${left === "rail" ? "var(--spacing-sidebar-rail)" : "var(--spacing-sidebar)"} minmax(0,1fr) ${
-            right ? "var(--spacing-rightpane)" : "0px"
+            right.open ? "var(--spacing-rightpane)" : "0px"
           }`,
         }}
       >
@@ -74,7 +76,7 @@ export function Shell({ token }: { token: string }) {
 
         <main className="grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto]">
           {view === "thread" && thread != null ? (
-            <ThreadView thread={thread} actions={actions} rightOpen={right} onQueue={onQueue} />
+            <ThreadView thread={thread} actions={actions} rightOpen={right.open} onQueue={onQueue} />
           ) : (
             <div className="row-span-3 min-h-0 overflow-y-auto">
               <EmptyState
@@ -88,7 +90,19 @@ export function Shell({ token }: { token: string }) {
           )}
         </main>
 
-        <RightPane queue={queue} onClose={actions.toggleRight} />
+        <RightPane
+          queue={queue}
+          open={right.open}
+          tab={right.tab}
+          onTab={actions.setRightTab}
+          onClose={actions.toggleRight}
+          client={client}
+          projectId={activeProjectId}
+          file={right.file}
+          onSelectFile={actions.selectChange}
+          refreshKey={thread?.updatedAt ?? ""}
+          toast={actions.toast}
+        />
       </div>
 
       {palette && <CommandPalette commands={commands} onClose={actions.closePalette} />}

@@ -6,6 +6,8 @@ import {
   readUIMessageStream,
   toUIMessageStream,
   validateUIMessages,
+  type DynamicToolUIPart,
+  type ToolUIPart,
   type UIMessage,
   type UIMessageChunk,
 } from "ai";
@@ -62,6 +64,17 @@ export const RESTART_INTERRUPT_TEXT = "服务已重启";
 export const RESTART_PENDING_TOOL_TEXT = "服务已重启，请重新发送";
 export const STOP_INTERRUPT_TEXT = "已停止";
 export const ABANDONED_TURN_TEXT = "该轮已被新的提问取代";
+/** A call the engine started announcing but never ran — the turn ended first. */
+export const UNEXECUTED_TOOL_TEXT = "未执行";
+
+type AnyToolUIPart = ToolUIPart | DynamicToolUIPart;
+
+/** A half-streamed tool part lifted out of a continuation seed, and where it sat. */
+interface DroppedToolPart {
+  /** Its index in the *stripped* part list, so putting it back restores its place. */
+  index: number;
+  part: AnyToolUIPart;
+}
 
 interface LiveRun {
   hub: ChunkHub;
@@ -192,13 +205,23 @@ export function createRunManager(options: {
     // reader has to start from it, not from a blank one.
     const previous = incoming.at(-1);
     const resumed = previous?.role === "assistant" ? previous : undefined;
+    // The paused step can leave a call half-announced (`tool-input-start` but no
+    // input yet). The harness re-issues it in the continuation's *new* step, and
+    // the SDK's reader only reconciles a `tool-input-start` against the parts of
+    // the current step — so a seed still carrying the old `input-streaming` part
+    // ends up with two parts for one `toolCallId`. They are dropped from the
+    // seed (a copy; the stored history is untouched) and kept aside: whatever
+    // the continuation never re-issues is closed when the turn ends.
+    // `convertToModelMessages` skips `input-streaming` parts anyway, so nothing
+    // about the messages the engine sees changes.
+    const seed = resumed != null ? dropStreamingToolParts(resumed) : undefined;
 
     // Subscribe before the engine starts: the hub replays from chunk 0 anyway,
     // but this way the reader is already draining while the turn runs.
     const reader = (async () => {
       for await (const message of readUIMessageStream({
         stream: run.hub.subscribe(),
-        ...(resumed != null ? { message: resumed } : {}),
+        ...(seed != null ? { message: seed.message } : {}),
         onError: (error) => log.warn(`重建线程 ${thread.id} 的助手消息出错`, error),
       })) {
         assistant = message;
@@ -277,11 +300,16 @@ export function createRunManager(options: {
 
       const status = streamError != null ? "error" : deriveStatus(assistant);
       park = !run.stopped && (status === "awaiting-approval" || status === "awaiting-input");
+      // A turn that is over has nothing left that could finish a half-streamed
+      // call: either the engine re-issued it in a later step, or it never will
+      // (a denied approval ends the turn on the spot). A parked turn keeps its
+      // open parts — its step is still running inside the engine.
+      const settled = park || run.stopped ? assistant : settleStreamingToolParts(assistant, seed?.dropped);
 
       if (!run.stopped) {
         await threads
           .update(thread.id, {
-            messages: withAssistant(assistant),
+            messages: withAssistant(settled),
             status,
             error: rawStreamError ?? streamError,
           })
@@ -294,7 +322,7 @@ export function createRunManager(options: {
               .catch((fallback) => log.error(`记录线程 ${thread.id} 的错误状态也失败`, fallback));
           });
       } else if (assistant != null && assistant.parts.length > 0) {
-        await threads.update(thread.id, { messages: withAssistant(assistant) });
+        await threads.update(thread.id, { messages: withAssistant(settled) });
       }
     } catch (error) {
       park = false;
@@ -311,7 +339,7 @@ export function createRunManager(options: {
       await reader.catch(() => {});
       await threads
         .update(thread.id, {
-          messages: withAssistant(assistant),
+          messages: withAssistant(run.stopped ? assistant : settleStreamingToolParts(assistant, seed?.dropped)),
           status: run.stopped ? "interrupted" : "error",
           ...(run.stopped ? {} : { error: rawMessage }),
         })
@@ -480,18 +508,58 @@ function closeOpenToolParts(message: UIMessage, errorText: string): UIMessage {
     parts: message.parts.map((part) => {
       if (!isToolUIPart(part)) return part;
       if (part.state === "output-available" || part.state === "output-error" || part.state === "output-denied") return part;
-      // The union's `output-error` variant forbids the fields the open states
-      // carry (`approval`, `output`), so the closed part is rebuilt, not spread.
-      // Dropping `approval` is deliberate: it also stops
-      // `convertToModelMessages` from emitting a stale `tool-approval-response`
-      // the next engine session could not resolve.
-      return {
-        type: part.type,
-        toolCallId: part.toolCallId,
-        state: "output-error",
-        input: part.input,
-        errorText,
-      } as unknown as typeof part;
+      return toClosedToolPart(part, errorText);
     }),
   };
+}
+
+/**
+ * The `output-error` rebuild of an open tool part. The union's `output-error`
+ * variant forbids the fields the open states carry (`approval`, `output`), so
+ * the closed part is rebuilt, not spread. Dropping `approval` is deliberate: it
+ * also stops `convertToModelMessages` from emitting a stale
+ * `tool-approval-response` the next engine session could not resolve.
+ */
+function toClosedToolPart<T extends AnyToolUIPart>(part: T, errorText: string): T {
+  return {
+    type: part.type,
+    toolCallId: part.toolCallId,
+    state: "output-error",
+    input: part.input,
+    errorText,
+  } as unknown as T;
+}
+
+/**
+ * Lift every half-streamed tool part out of a continuation seed. The message is
+ * copied, never mutated — the stored history keeps the parts as they were until
+ * the turn ends and decides what to do with them.
+ */
+function dropStreamingToolParts(message: UIMessage): { message: UIMessage; dropped: DroppedToolPart[] } {
+  const dropped: DroppedToolPart[] = [];
+  const parts: UIMessage["parts"] = [];
+  for (const part of message.parts) {
+    if (isToolUIPart(part) && part.state === "input-streaming") dropped.push({ index: parts.length, part });
+    else parts.push(part);
+  }
+  return dropped.length === 0 ? { message, dropped } : { message: { ...message, parts }, dropped };
+}
+
+/**
+ * Close what a finished turn left half-streamed: the calls whose input the
+ * engine never finished sending, plus the ones dropped from the continuation
+ * seed that it never re-issued (what a denied approval looks like). Anything the
+ * continuation did re-issue is already in the message and is left alone.
+ */
+function settleStreamingToolParts(message: UIMessage | undefined, dropped: readonly DroppedToolPart[] = []): UIMessage | undefined {
+  if (message == null) return message;
+  const parts = message.parts.map((part) =>
+    isToolUIPart(part) && part.state === "input-streaming" ? toClosedToolPart(part, UNEXECUTED_TOOL_TEXT) : part,
+  );
+  // Ascending by index, so each reinsertion restores the offset for the next.
+  for (const { index, part } of dropped) {
+    if (parts.some((existing) => isToolUIPart(existing) && existing.toolCallId === part.toolCallId)) continue;
+    parts.splice(Math.min(index, parts.length), 0, toClosedToolPart(part, UNEXECUTED_TOOL_TEXT));
+  }
+  return { ...message, parts };
 }

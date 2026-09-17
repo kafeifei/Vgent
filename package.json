@@ -10,6 +10,7 @@
     "build": "tsc -b",
     "typecheck": "tsc -b",
     "test": "vitest run",
+    "start": "pnpm build && pnpm --filter @vgent/web build && node packages/server/dist/main.js",
     "server": "node packages/server/dist/main.js",
     "desktop:build": "pnpm --filter @vgent/desktop build",
     "desktop:dev": "pnpm --filter @vgent/desktop dev",

@@ -11,7 +11,7 @@ import { pickFolder } from "./folder-picker.js";
 import { createModelCatalog } from "./models.js";
 import { createRunManager, recoverInterruptedThreads } from "./runs.js";
 import { registerStatic } from "./static.js";
-import { createProjectStore } from "./store/projects.js";
+import { createProjectStore, type ProjectStore } from "./store/projects.js";
 import { asMcpServers, createSettingsStore, type SettingsPatch } from "./store/settings.js";
 import { createThreadStore } from "./store/threads.js";
 import type { EngineId, Logger, PermissionMode, Project, ThreadRecord, ThreadWorkspace } from "./types.js";
@@ -44,6 +44,8 @@ export interface CreateAppOptions {
 
 export interface VgentApp {
   app: Hono;
+  /** Exposed so `main.ts` can auto-register the caller's repo at startup without a second store. */
+  projects: ProjectStore;
   shutdown(): Promise<void>;
 }
 
@@ -427,6 +429,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   return {
     app,
+    projects,
     async shutdown() {
       if (debounce != null) clearTimeout(debounce);
       for (const unsubscribe of unsubscribes) unsubscribe();

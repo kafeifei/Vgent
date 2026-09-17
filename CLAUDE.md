@@ -29,6 +29,7 @@
 ### 常用命令
 
 ```bash
+pnpm start                                  # 一条命令：build + 起 server（自带 web）+ 开浏览器 + 注册当前仓库
 pnpm build && pnpm test                     # 全量，冒烟默认跳过
 VGENT_SMOKE=1 pnpm --filter @vgent/engines test     # 真跑 Claude Code 引擎（用本机登录）
 VGENT_SMOKE=1 pnpm --filter @vgent/providers test   # 真跑 Codex 订阅 provider

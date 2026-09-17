@@ -26,6 +26,17 @@
 - `.claude/skills/ai-sdk/` — 官方使用 skill，写 AI SDK 相关代码时先加载
 - `.claude/skills/migrate-ai-sdk-v6-to-v7/` — 升级迁移用
 
+### 常用命令
+
+```bash
+pnpm build && pnpm test                     # 全量，冒烟默认跳过
+VGENT_SMOKE=1 pnpm --filter @vgent/engines test     # 真跑 Claude Code 引擎（用本机登录）
+VGENT_SMOKE=1 pnpm --filter @vgent/providers test   # 真跑 Codex 订阅 provider
+node apps/cli/dist/index.js --engine claude-code --repo <path> --permission allow-reads
+```
+
+代码改动一律派 Coder 子代理做（机械活 Sonnet，接线和难点 Opus），主线只读结论、不读大文件。
+
 ### 更新本地资料
 
 ```bash

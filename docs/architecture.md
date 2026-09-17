@@ -8,6 +8,8 @@ Vgent 是一个 **Web 优先**的本地 coding agent 工作台，底下可换引
 
 ## 三个决策
 
+**0. 主线只有三条边界清楚的路。** Claude Code 原生、Codex 原生、自研引擎（API key / Gateway / Codex 订阅）。每条路里循环、工具、模型属于同一方，不做跨方混搭。
+
 **1. 壳只认 AI SDK 的 `Agent` 接口。** `ToolLoopAgent` 直接实现它；Claude Code / Codex 走官方 `HarnessV1` 适配器 + `HarnessAgent`，用官方文档那 20 行 session 闭包包成 `Agent`。自研引擎就是一个裸 `ToolLoopAgent`，**不包成 HarnessV1**。freecode 的 `tool-loop-adapter.ts` 为了对齐 harness 契约自己重写了整个循环，绕开了 SDK 的审批、prepareStep、子代理，是反面教材。
 
 **2. UI 分三层，SDK 只给下两层。** 状态和协议层用 `@ai-sdk/react` 的 `useChat` / `Chat` / `DefaultChatTransport`；组件层用 AI Elements（官方 shadcn 式源码分发，React + Tailwind）；应用层（布局、侧栏、项目任务、设置、diff、切引擎、审批组织）自己写。终端用 `@ai-sdk/tui` 的 `runAgentTUI`，不改。
@@ -20,7 +22,11 @@ Vgent 是一个 **Web 优先**的本地 coding agent 工作台，底下可换引
 
 `HarnessAgent` 要求 `HarnessV1SandboxProvider`。官方只有 Vercel 云端和内存虚拟盘。**直接搬 freecode 的 `server/harness/local-sandbox.ts`**（296 行，进程组 SIGTERM→SIGKILL 升级、abort 全链路、输出字节上限、环境变量白名单），改中文错误文案，补一个 `HarnessV1SandboxProvider` 外壳。它不是安全边界，安全靠 `permissionMode` + `toolApproval`。换成 `createVercelSandbox` 就是云端模式，壳不改。
 
-已知坑：官方 bridge 默认监听 `0.0.0.0`。freecode 是读 bridge 的 `index.mjs` 做字符串替换，升版本就断。我们的做法：先向上游要 bind 地址选项；拿不到就在 `sandbox-local` 的 `spawn` 层给 bridge 进程注入环境变量或包一层只监听 loopback 的代理，**不做源码 string replace**。bridge 首次启动会 `npm install` 依赖，给它 `~/.vgent/bridges/<harness>/` 隔离目录，不进用户仓库。认证复用 `@ai-sdk/harness/utils` 的 keychain 读取器，用本机已登录订阅。
+已查明的 bridge 细节（2026-09-17，harness-claude-code 1.0.119 / harness-codex 1.0.117）：
+- `host: "0.0.0.0"` 硬编码在两个 bridge 的 `WebSocketServer` 构造里，没有配置项。我们**不改源码**：`sandbox-local` 的 `loopbackOnly` 选项给 spawn 出的进程注入 `NODE_OPTIONS=--import=<loopback-preload.js>`，预加载脚本 monkeypatch `net.Server.prototype.listen`，把 `0.0.0.0` / `::` 改写为 `127.0.0.1`。对 bridge 升级免疫，且只影响我们自己 spawn 的进程。同时向上游提 issue 要 bind 选项。
+- adapter 把 bootstrap 装进 `<sandbox 默认工作目录>/.harness-bootstrap/<harness>/`（`pnpm install --frozen-lockfile`，只跑一次），session 数据写 `<默认工作目录>/.agent-runs/<id>/`。所以 **sandbox 的 cwd 必须是 `~/.vgent/harness/<harness>/`**，用户仓库通过 `sessionWorkDir` 单独传。freecode 是覆写 `getBootstrap` 用符号链接跳过安装，我们用官方 bootstrap 原样跑，只是给它一个持久目录。
+- bridge 端口用 `port: 0` 让 bridge 自选，sandbox 开 `allowDynamicPorts`。
+- 认证 `auth: 'auto'`：adapter 自己读 macOS Keychain 的 "Claude Code-credentials"，复用本机已登录的 Claude 订阅；本地 sandbox 没有请求改写代理，adapter 会把真实凭据直接放进 bridge 环境变量并打一条 warning，这是预期行为。
 
 ### 自研引擎 `@vgent/engine`
 
@@ -38,6 +44,17 @@ Vgent 是一个 **Web 优先**的本地 coding agent 工作台，底下可换引
 | 压缩 | `prepareStep` 按估算 token 触发 `pruneMessages`；手动 /compact 用 `generateText` 摘要 |
 | 模型 | 默认 AI Gateway `provider/model` 字串；也支持直连 `@ai-sdk/anthropic` / `@ai-sdk/openai` |
 | 观测 | `@ai-sdk/otel`；开发期 `@ai-sdk/devtools` |
+
+### 模型接入 `@vgent/providers`
+
+自研引擎的模型来源分两类：
+
+1. **API key / AI Gateway**：AI SDK 一方 provider（`@ai-sdk/anthropic`、`@ai-sdk/openai`、`@ai-sdk/google` 等十几家，`@ai-sdk/openai-compatible` 兜底所有兼容接口）或 Gateway 的 `provider/model` 字串。零自研代码。
+2. **订阅账号（用户的核心诉求）**：让自研引擎用订阅登录态。厂商态度不同，处理也不同：
+   - **Codex / ChatGPT 订阅：做。** Codex CLI 开源且官方支持 ChatGPT 登录，第三方复用登录态的容忍度高。`createOpenAI({ baseURL: chatgpt.com/backend-api/codex, fetch })` 配注入 OAuth Bearer 的 fetch，token 读 `~/.codex/auth.json`（尊重 `CODEX_HOME`），刷新和过期判断用 `@ai-sdk/harness/utils` 的 `refreshOAuthAccessToken` / `isAccessTokenExpiringSoon`。独立包 `@vgent/providers`，默认关闭，UI 明示"非官方支持"。
+   - **Claude 订阅：不做 token 直连。** Anthropic 条款把 Claude Code 的 OAuth 凭据限定在 Claude Code 内使用，2025 年有第三方 agent 因此被封的先例，用户判断风险过高。Claude 订阅**只通过 Claude Code harness 引擎原生使用**。
+   - **不进主线的实验项：Claude Code 精简模式**（官方 harness + `inactiveTools` 关掉全部内建工具 + 挂我们的工具、skills、审批，等于借 Claude Code 当模型入口）。技术上只是一段配置，但它是两个系统的接缝：模型带着原生工具的先验会去调被关的工具白烧步数；宿主工具每次经 bridge 往返；Claude Code 自带的 compaction / todo / Task 子代理 / 权限提示与我们的机制撞车；且是 experimental 家族里被踩得最少的路。用户和我一致判断 bug 会多，**先不做**，留作将来有明确需求时的一两天实验。
+   - 通用原则：引擎和 UI 只依赖 `LanguageModel` 类型；token 不落日志、不落我们自己的存储。
 
 ## 后端 `@vgent/server`（Hono）
 
@@ -114,6 +131,7 @@ packages/
   sandbox-local/   HarnessV1SandboxProvider，跑在宿主机（搬 freecode）
   tools/           内建工具执行体，基于 Experimental_SandboxSession
   engine/          自研引擎：ToolLoopAgent + 工具 + 权限 + 子代理，本身是 Agent
+  providers/       模型接入：Codex 订阅 provider（opt-in）+ API key / Gateway 工厂
   engines/         三种引擎统一注册为 Agent（HarnessAgent 闭包、ToolLoopAgent）
   server/          Hono 服务：chat stream、状态 SSE、持久化、worktree
 apps/
@@ -144,3 +162,16 @@ docs/
 - harness 全家桶 experimental，patch 可能 break；`@ai-sdk/harness` 把 `ai` 锁精确版本，整条链锁版本一起升。
 - 本地 sandbox 跑 Claude Code bridge 官方无先例，freecode 证明可行但用了脏办法，我们要找干净的。
 - 自研引擎不走 HarnessV1，resume / compact / permissionMode 是自己的实现，和官方引擎语义可能有差；壳用统一配置抽象盖住。
+
+## 当前状态（2026-09-17 晚）
+
+阶段一完成，commit 见 git log。
+
+- `packages/sandbox-local`：freecode 移植完成，`createLocalSandboxProvider`，`loopbackOnly` 预加载已验证 bridge 只绑 127.0.0.1。18 测试。
+- `packages/engines`：`createClaudeCodeEngine({ repoPath, dataDir?, permissionMode?, ... })` → `{ agent, session, dispose }`；`toTUIAgent` 通用闭包。冒烟测试（`VGENT_SMOKE=1`）用本机 Claude 登录真跑过，5 秒通过。仓库路径靠覆写 `doStart` 传 `sessionWorkDir`。保留真实 HOME 以复用登录，副作用是 `~/.claude/CLAUDE.md` 会影响回复。
+- `packages/providers`：`createCodexSubscriptionModel`（ChatGPT 订阅，真跑通，接口只支持流式、无 content-type、`response.completed` 的 output 为空需从 `output_item.done` 拼；header 带 `originator: codex_cli_rs` 可配）、`createApiKeyModel`（Gateway 默认路）、`describeSubscriptionAuth`。无任何 Claude 凭据代码。
+- `packages/tools`：`createCodingTools({ sandbox?, workDir })` → read/write/edit/bash/grep/glob，路径安全搬 freecode。grep/glob 走宿主 fs（sandbox 接口没有目录列举）。45 测试。
+- `apps/cli`：`vgent --engine claude-code --repo <path> --permission <mode>` 起 `runAgentTUI`。
+- `packages/engine`（自研 ToolLoopAgent 引擎）：**还是空壳，下一步。**
+
+下一步顺序：Codex 引擎接进 `engines`（复用 `toTUIAgent`）→ `engine` 自研引擎（ToolLoopAgent + `@vgent/tools` + `toolApproval` 权限映射 + `@vgent/providers` 模型）→ Web MVP 的低保真原型。

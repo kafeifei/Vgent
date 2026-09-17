@@ -15,11 +15,16 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -b"
+    "build": "tsc -b",
+    "test": "vitest run"
   },
   "dependencies": {
-    "ai": "7.0.105",
+    "@ai-sdk/provider": "4.0.17",
     "@ai-sdk/provider-utils": "5.0.43",
+    "ai": "7.0.105",
     "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@ai-sdk/sandbox-just-bash": "1.0.115"
   }
 }

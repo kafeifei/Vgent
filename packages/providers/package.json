@@ -1,5 +1,5 @@
 {
-  "name": "@vgent/engines",
+  "name": "@vgent/providers",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -16,14 +16,12 @@
   ],
   "scripts": {
     "build": "tsc -b",
-    "test": "vitest run --root ../.. --project @vgent/engines"
+    "test": "vitest run"
   },
   "dependencies": {
-    "ai": "7.0.105",
     "@ai-sdk/harness": "1.0.115",
-    "@ai-sdk/harness-claude-code": "1.0.119",
-    "@ai-sdk/harness-codex": "1.0.117",
-    "@vgent/sandbox-local": "workspace:*",
-    "@vgent/engine": "workspace:*"
+    "@ai-sdk/openai": "4.0.69",
+    "@ai-sdk/provider-utils": "5.0.43",
+    "ai": "7.0.105"
   }
 }

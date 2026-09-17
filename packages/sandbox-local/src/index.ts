@@ -1,7 +1,15 @@
 /**
- * @vgent/sandbox-local — stub.
- *
- * Will provide a `HarnessV1SandboxProvider` that runs on the host machine
- * (ported from freecode's `server/harness/local-sandbox.ts`). No real logic yet.
+ * `@vgent/sandbox-local` — a `HarnessV1SandboxProvider` that runs harness
+ * bridges on the host machine, with every server they open pinned to loopback.
  */
-export const SANDBOX_LOCAL_PACKAGE_NAME = "@vgent/sandbox-local";
+export {
+  createLocalSandboxSession,
+  loopbackPreloadUrl,
+  localProcessEnvironment,
+  type LocalSandboxOptions,
+} from "./session.js";
+export {
+  BOOTSTRAP_MARKER,
+  createLocalSandboxProvider,
+  type LocalSandboxProviderOptions,
+} from "./provider.js";

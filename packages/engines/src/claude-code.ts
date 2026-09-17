@@ -1,11 +1,10 @@
-import { execFileSync } from "node:child_process";
-import { mkdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { HarnessAgent, type HarnessAgentPermissionMode, type HarnessAgentSession, type HarnessAgentSkill } from "@ai-sdk/harness/agent";
 import { createClaudeCode } from "@ai-sdk/harness-claude-code";
 import { createLocalSandboxProvider } from "@vgent/sandbox-local";
 import type { ToolSet } from "ai";
+import { ensureDirectory, resolvePnpmDir, resolveRepoPath, withRepoWorkDir } from "./shared.js";
 import { toTUIAgent, type TUIAgent } from "./to-tui-agent.js";
 
 export interface ClaudeCodeEngineOptions {
@@ -37,25 +36,6 @@ export interface ClaudeCodeEngine {
 export const DEFAULT_CLAUDE_CODE_DATA_DIR = join(homedir(), ".vgent", "harness", "claude-code");
 
 /**
- * Directory holding a `pnpm` executable. The adapter's bootstrap runs
- * `pnpm install --frozen-lockfile`, and the sandbox inherits no PATH from this
- * process, so the directory has to be put on it explicitly.
- */
-function resolvePnpmDir(): string {
-  const found = execFileSync("/bin/sh", ["-c", "command -v pnpm || true"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-  }).trim();
-  if (found) return dirname(found);
-  throw new Error("pnpm was not found on PATH; the Claude Code bridge bootstrap needs it.");
-}
-
-async function ensureDirectory(path: string, mode?: number): Promise<string> {
-  await mkdir(path, { recursive: true, ...(mode != null ? { mode } : {}) });
-  return path;
-}
-
-/**
  * Claude Code as an AI SDK `Agent`, driven by the official harness adapter over
  * a host-local sandbox.
  *
@@ -73,10 +53,7 @@ async function ensureDirectory(path: string, mode?: number): Promise<string> {
  *   this module logs the environment it builds.
  */
 export async function createClaudeCodeEngine(options: ClaudeCodeEngineOptions): Promise<ClaudeCodeEngine> {
-  const repoPath = resolve(options.repoPath);
-  if (!(await stat(repoPath).catch(() => null))?.isDirectory()) {
-    throw new Error(`Claude Code engine repoPath is not a directory: ${repoPath}`);
-  }
+  const repoPath = await resolveRepoPath(options.repoPath, "Claude Code");
   const dataDir = await ensureDirectory(resolve(options.dataDir ?? DEFAULT_CLAUDE_CODE_DATA_DIR), 0o700);
 
   const sandbox = createLocalSandboxProvider({
@@ -102,18 +79,9 @@ export async function createClaudeCodeEngine(options: ClaudeCodeEngineOptions): 
     },
   });
 
-  // `HarnessAgent` always composes `sessionWorkDir` underneath the sandbox's
-  // default working directory, and `sandboxConfig.workDir` must stay inside it.
-  // Overriding the adapter entry point is the only way to point the runtime at
-  // a repository outside the sandbox directory.
-  const scopedHarness: typeof harness = {
-    ...harness,
-    doStart: startOptions => harness.doStart({ ...startOptions, sessionWorkDir: repoPath }),
-  };
-
   const agent = new HarnessAgent({
     id: "vgent-claude-code",
-    harness: scopedHarness,
+    harness: withRepoWorkDir(harness, repoPath),
     sandbox,
     permissionMode: options.permissionMode ?? "allow-edits",
     ...(options.model != null ? { model: options.model } : {}),

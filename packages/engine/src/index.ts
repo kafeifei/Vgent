@@ -1,7 +1,26 @@
 /**
- * @vgent/engine — stub.
+ * `@vgent/engine` — Vgent's own coding engine.
  *
- * Will be the in-house engine: a `ToolLoopAgent` wired up with `@vgent/tools`,
- * permission mapping, and subagents. No real logic yet.
+ * A plain AI SDK `ToolLoopAgent`: the SDK owns the loop, tool approvals and
+ * context pruning; this package supplies the tools (`@vgent/tools`), the model
+ * (`@vgent/providers`), the permission policy and the system prompt.
  */
-export const ENGINE_PACKAGE_NAME = "@vgent/engine";
+export { createVgentEngine, resolveModel, CODEX_SUBSCRIPTION_PREFIX } from "./engine.js";
+export type { VgentEngine, VgentEngineOptions, VgentEngineEvent } from "./engine.js";
+export {
+  createToolApproval,
+  decideApproval,
+  isReadOnlyCommand,
+  splitShellSegments,
+  type ApprovalDecision,
+  type PermissionMode,
+} from "./permissions.js";
+export { buildInstructions, type BuildInstructionsOptions } from "./instructions.js";
+export {
+  askUserQuestionsTool,
+  askUserQuestionsInputSchema,
+  askUserQuestionsOutputSchema,
+  type AskUserQuestionsInput,
+  type AskUserQuestionsOutput,
+} from "./ask-user-questions.js";
+export { appendSession, loadSession, type SessionRecord, type LoadSessionOptions } from "./session-store.js";

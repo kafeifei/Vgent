@@ -9,6 +9,9 @@
   ],
   "references": [
     {
+      "path": "../../packages/engine"
+    },
+    {
       "path": "../../packages/engines"
     }
   ],

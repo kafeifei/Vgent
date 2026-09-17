@@ -7,4 +7,10 @@ export {
   type ClaudeCodeEngine,
   type ClaudeCodeEngineOptions,
 } from "./claude-code.js";
+export {
+  createCodexEngine,
+  DEFAULT_CODEX_DATA_DIR,
+  type CodexEngine,
+  type CodexEngineOptions,
+} from "./codex.js";
 export { toTUIAgent, type TUIAgent } from "./to-tui-agent.js";

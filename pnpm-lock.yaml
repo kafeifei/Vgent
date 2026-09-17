@@ -26,6 +26,9 @@ importers:
       '@ai-sdk/tui':
         specifier: 1.0.106
         version: 1.0.106(zod@4.6.5)
+      '@vgent/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
       '@vgent/engines':
         specifier: workspace:*
         version: link:../../packages/engines
@@ -35,6 +38,9 @@ importers:
 
   packages/engine:
     dependencies:
+      '@vgent/providers':
+        specifier: workspace:*
+        version: link:../providers
       '@vgent/tools':
         specifier: workspace:*
         version: link:../tools

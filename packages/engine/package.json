@@ -15,11 +15,13 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -b"
+    "build": "tsc -b",
+    "test": "vitest run"
   },
   "dependencies": {
     "ai": "7.0.105",
     "zod": "4.6.5",
-    "@vgent/tools": "workspace:*"
+    "@vgent/tools": "workspace:*",
+    "@vgent/providers": "workspace:*"
   }
 }

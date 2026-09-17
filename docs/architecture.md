@@ -163,15 +163,22 @@ docs/
 - 本地 sandbox 跑 Claude Code bridge 官方无先例，freecode 证明可行但用了脏办法，我们要找干净的。
 - 自研引擎不走 HarnessV1，resume / compact / permissionMode 是自己的实现，和官方引擎语义可能有差；壳用统一配置抽象盖住。
 
-## 当前状态（2026-09-17 晚）
+## 当前状态（2026-09-17 晚，阶段一完成）
 
-阶段一完成，commit 见 git log。
+三条引擎路全部本地跑通并有真实冒烟测试（`VGENT_SMOKE=1`）。全仓构建绿，约 150 测试。
 
-- `packages/sandbox-local`：freecode 移植完成，`createLocalSandboxProvider`，`loopbackOnly` 预加载已验证 bridge 只绑 127.0.0.1。18 测试。
-- `packages/engines`：`createClaudeCodeEngine({ repoPath, dataDir?, permissionMode?, ... })` → `{ agent, session, dispose }`；`toTUIAgent` 通用闭包。冒烟测试（`VGENT_SMOKE=1`）用本机 Claude 登录真跑过，5 秒通过。仓库路径靠覆写 `doStart` 传 `sessionWorkDir`。保留真实 HOME 以复用登录，副作用是 `~/.claude/CLAUDE.md` 会影响回复。
-- `packages/providers`：`createCodexSubscriptionModel`（ChatGPT 订阅，真跑通，接口只支持流式、无 content-type、`response.completed` 的 output 为空需从 `output_item.done` 拼；header 带 `originator: codex_cli_rs` 可配）、`createApiKeyModel`（Gateway 默认路）、`describeSubscriptionAuth`。无任何 Claude 凭据代码。
-- `packages/tools`：`createCodingTools({ sandbox?, workDir })` → read/write/edit/bash/grep/glob，路径安全搬 freecode。grep/glob 走宿主 fs（sandbox 接口没有目录列举）。45 测试。
-- `apps/cli`：`vgent --engine claude-code --repo <path> --permission <mode>` 起 `runAgentTUI`。
-- `packages/engine`（自研 ToolLoopAgent 引擎）：**还是空壳，下一步。**
+- `packages/sandbox-local`：freecode 移植，`createLocalSandboxProvider`，`loopbackOnly` 预加载已验证 bridge 只绑 127.0.0.1。
+- `packages/engines`：`createClaudeCodeEngine` / `createCodexEngine` → `{ agent, session, dispose }`，`toTUIAgent`，共享逻辑在 `shared.ts`。仓库路径靠覆写 `doStart` 传 `sessionWorkDir`。Claude 保留真实 HOME 复用登录（副作用：`~/.claude/CLAUDE.md` 影响回复）；Codex 用隔离 `CODEX_HOME`（真实 `~/.codex/config.toml` 与 pinned SDK 不兼容），登录态走 env 转发不受影响。Codex 的 permissionMode 只能 `allow-all`，SDK 构造时自己抛错。
+- `packages/providers`：`createCodexSubscriptionModel`（真跑通；接口只支持流式、无 content-type、`response.completed` 的 output 为空需从 `output_item.done` 拼；`originator: codex_cli_rs` 可配）、`createApiKeyModel`（Gateway）、`describeSubscriptionAuth`。无任何 Claude 凭据代码。
+- `packages/tools`：`createCodingTools({ sandbox?, workDir })` → read/write/edit/bash/grep/glob。grep/glob 走宿主 fs（sandbox 接口没有目录列举）。
+- `packages/engine`：`createVgentEngine({ model, repoPath, permissionMode, sessionFile })` → 裸 `ToolLoopAgent`。权限映射 `toolApproval`（bash 分段白名单），超预算 `pruneMessages`，`askUserQuestions` 无 execute（TUI 不支持，Web 用）。冒烟用 `codex-subscription:gpt-5.5` 通过。
+- `apps/cli`：`vgent --engine claude-code|codex|vgent [--model] [--repo] [--permission] [--session]` → `runAgentTUI`。
 
-下一步顺序：Codex 引擎接进 `engines`（复用 `toTUIAgent`）→ `engine` 自研引擎（ToolLoopAgent + `@vgent/tools` + `toolApproval` 权限映射 + `@vgent/providers` 模型）→ Web MVP 的低保真原型。
+### 明确未做（阶段二起点）
+
+- **Session 管理**：自研引擎只有 JSONL 追加，`loadSession` 未接回 agent；harness 引擎的 `detach()/stop()` 恢复状态未落盘、无 resume。按方案在 `server` 层做：一任务一文件 + harness resume state + 可重放流。
+- `askUserQuestions` 在 TUI 里不可用（需要 Web `useChat`）。
+- 子代理、MCP + toolSearch、skills 索引、记忆、手动 compact、`@ai-sdk/otel`。
+- Web 全部。
+
+下一步：Web MVP 低保真原型（Cursor 式布局 + token）→ Hono server（chat stream、续流、session 落盘）→ 前端。

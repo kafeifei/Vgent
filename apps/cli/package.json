@@ -15,6 +15,7 @@
   "dependencies": {
     "ai": "7.0.105",
     "@ai-sdk/tui": "1.0.106",
-    "@vgent/engines": "workspace:*"
+    "@vgent/engines": "workspace:*",
+    "@vgent/engine": "workspace:*"
   }
 }

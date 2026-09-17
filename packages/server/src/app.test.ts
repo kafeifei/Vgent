@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { ModelMessage, TextStreamPart, ToolSet, UIMessage } from "ai";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp, type VgentApp } from "./app.js";
 import { createEngineRegistry, type EngineContext, type EngineFactory } from "./engines/registry.js";
 import { EngineUnavailableError } from "./errors.js";
@@ -19,6 +19,7 @@ const dirs: string[] = [];
 const apps: VgentApp[] = [];
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(apps.splice(0).map((app) => app.shutdown()));
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 5 })));
 });
@@ -83,6 +84,19 @@ async function tempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "vgent-app-"));
   dirs.push(dir);
   return dir;
+}
+
+/** A repo with one commit and a local git identity, for the changes routes. */
+async function gitRepo(): Promise<string> {
+  const repo = await tempDir();
+  await execFileAsync("git", ["init", "-q", "-b", "main"], { cwd: repo });
+  await execFileAsync("git", ["config", "user.email", "test@vgent.local"], { cwd: repo });
+  await execFileAsync("git", ["config", "user.name", "Vgent Test"], { cwd: repo });
+  await execFileAsync("git", ["config", "commit.gpgsign", "false"], { cwd: repo });
+  await writeFile(join(repo, "tracked.txt"), "line1\nline2\n");
+  await execFileAsync("git", ["add", "-A"], { cwd: repo });
+  await execFileAsync("git", ["commit", "-q", "-m", "初始"], { cwd: repo });
+  return repo;
 }
 
 const auth = { authorization: `Bearer ${TOKEN}` };
@@ -411,39 +425,71 @@ describe("createApp", () => {
 
   it("serves the change list, a file diff and a revert for a real repo", async () => {
     const dir = await tempDir();
-    const repo = await tempDir();
-    await execFileAsync("git", ["init", "-q", "-b", "main"], { cwd: repo });
-    await execFileAsync("git", ["config", "user.email", "test@vgent.local"], { cwd: repo });
-    await execFileAsync("git", ["config", "user.name", "Vgent Test"], { cwd: repo });
-    await writeFile(join(repo, "tracked.txt"), "line1\nline2\n");
-    await execFileAsync("git", ["add", "-A"], { cwd: repo });
-    await execFileAsync("git", ["commit", "-q", "-m", "初始"], { cwd: repo });
+    const repo = await gitRepo();
     await writeFile(join(repo, "tracked.txt"), "line1\n改了\n");
 
     const app = makeApp(dir);
-    const project = (await (await postJson(app, "/api/projects", { repoPath: repo })).json()) as Project;
+    const { thread } = await setupThread(app, repo);
 
-    const changes = (await (await request(app, `/api/projects/${project.id}/changes`)).json()) as {
+    const changes = (await (await request(app, `/api/threads/${thread.id}/changes`)).json()) as {
       branch: string | null;
       files: { path: string; status: string; additions: number }[];
     };
     expect(changes.branch).toBe("main");
     expect(changes.files).toMatchObject([{ path: "tracked.txt", status: "modified", additions: 1 }]);
 
-    const diff = (await (await request(app, `/api/projects/${project.id}/changes/file?path=tracked.txt`)).json()) as { diff: string };
+    const diff = (await (await request(app, `/api/threads/${thread.id}/changes/file?path=tracked.txt`)).json()) as { diff: string };
     expect(diff.diff).toContain("+改了");
 
-    const reverted = await postJson(app, `/api/projects/${project.id}/changes/revert`, { path: "tracked.txt" });
+    const reverted = await postJson(app, `/api/threads/${thread.id}/changes/revert`, { path: "tracked.txt" });
     expect(await reverted.json()).toEqual({ path: "tracked.txt" });
     expect(await readFile(join(repo, "tracked.txt"), "utf8")).toBe("line1\nline2\n");
 
-    // Missing `path`, an unknown project, and a path that is not actually changed.
-    expect((await request(app, `/api/projects/${project.id}/changes/file`)).status).toBe(400);
-    expect((await postJson(app, `/api/projects/${project.id}/changes/revert`, {})).status).toBe(400);
-    expect((await request(app, `/api/projects/nope/changes`)).status).toBe(404);
-    const missing = await request(app, `/api/projects/${project.id}/changes/file?path=tracked.txt`);
+    // Missing `path`, an unknown thread, and a path that is not actually changed.
+    expect((await request(app, `/api/threads/${thread.id}/changes/file`)).status).toBe(400);
+    expect((await postJson(app, `/api/threads/${thread.id}/changes/revert`, {})).status).toBe(400);
+    expect((await request(app, `/api/threads/nope/changes`)).status).toBe(404);
+    const missing = await request(app, `/api/threads/${thread.id}/changes/file?path=tracked.txt`);
     expect(missing.status).toBe(404);
     expect(await missing.json()).toMatchObject({ error: { code: "file_not_changed" } });
+  });
+
+  it("runs a task in its own worktree and takes the directory back on delete", async () => {
+    const dir = await tempDir();
+    const repo = await gitRepo();
+    const engine = createFakeEngine();
+    const app = makeApp(dir, engine.factory);
+
+    const project = (await (await postJson(app, "/api/projects", { repoPath: repo })).json()) as Project;
+    const thread = (await (
+      await postJson(app, "/api/threads", { projectId: project.id, engine: "claude-code", workspace: "worktree" })
+    ).json()) as ThreadRecord;
+
+    expect(thread.workspace).toMatchObject({ mode: "worktree", branch: `vgent/${thread.id.slice(0, 8)}` });
+    const workspacePath = thread.workspace?.path ?? "";
+    expect(workspacePath).toContain(join("worktrees", thread.id));
+    expect((await stat(workspacePath)).isDirectory()).toBe(true);
+    // The summary the web reads carries it too.
+    const listed = (await (await request(app, "/api/threads")).json()) as { threads: ThreadSummary[] };
+    expect(listed.threads[0]?.workspace?.path).toBe(workspacePath);
+
+    // The engine is pointed at the worktree, not at the project.
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "开始")] }));
+    expect(engine.created[0]?.project.repoPath).toBe(workspacePath);
+
+    // A file written in the worktree shows up for the thread and nowhere else.
+    await writeFile(join(workspacePath, "tracked.txt"), "line1\n在 worktree 里改的\n");
+    const changes = (await (await request(app, `/api/threads/${thread.id}/changes`)).json()) as {
+      branch: string | null;
+      files: { path: string }[];
+    };
+    expect(changes.branch).toBe(`vgent/${thread.id.slice(0, 8)}`);
+    expect(changes.files).toMatchObject([{ path: "tracked.txt" }]);
+    expect((await execFileAsync("git", ["status", "--porcelain"], { cwd: repo })).stdout).toBe("");
+
+    expect((await request(app, `/api/threads/${thread.id}`, { method: "DELETE" })).status).toBe(204);
+    await expect(stat(workspacePath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await execFileAsync("git", ["worktree", "list", "--porcelain"], { cwd: repo })).stdout).not.toContain(workspacePath);
   });
 
   it("reads and writes settings", async () => {
@@ -475,5 +521,23 @@ describe("createApp", () => {
     expect((await app.app.request(`${ORIGIN}/api/projects`)).status).toBe(401);
     expect((await request(app, "/api/nope")).status).toBe(404);
     expect((await app.app.request("http://evil.example.com/")).status).toBe(403);
+  });
+
+  it("serves a model catalog per engine and rejects an unknown one", async () => {
+    // Without a key the Claude Code catalog is the builtin alias list, so the
+    // route answers without touching the network.
+    vi.stubEnv("ANTHROPIC_API_KEY", "");
+    const app = makeApp(await tempDir());
+
+    const unknown = await request(app, "/api/engines/nope/models");
+    expect(unknown.status).toBe(400);
+    expect(await unknown.json()).toMatchObject({ error: { code: "unknown_engine" } });
+
+    const response = await request(app, "/api/engines/claude-code/models");
+    expect(response.status).toBe(200);
+    const catalog = (await response.json()) as { engine: string; models: Array<{ id: string }>; source: string };
+    expect(catalog.engine).toBe("claude-code");
+    expect(Array.isArray(catalog.models)).toBe(true);
+    expect(catalog.models.map((entry) => entry.id)).toContain("sonnet");
   });
 });

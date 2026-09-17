@@ -1,0 +1,180 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { createModelCatalog, type CodexCatalogModel, type GatewayModelSource } from "./models.js";
+
+const dirs: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 5 })));
+});
+
+async function tempDir(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "vgent-models-"));
+  dirs.push(dir);
+  return dir;
+}
+
+const base64url = (value: unknown): string => Buffer.from(JSON.stringify(value)).toString("base64url");
+
+/** `toCodexCredential` reads the expiry out of the access token's JWT `exp`. */
+function fakeJwt(expiresAtSeconds: number): string {
+  return `${base64url({ alg: "none", typ: "JWT" })}.${base64url({ exp: expiresAtSeconds })}.signature`;
+}
+
+/** A `CODEX_HOME` that `describeSubscriptionAuth` reports as logged in. */
+async function loggedInCodexHome(models?: unknown[], clientVersion = "9.9.9"): Promise<string> {
+  const dir = await tempDir();
+  await writeFile(
+    join(dir, "auth.json"),
+    JSON.stringify({
+      auth_mode: "chatgpt",
+      tokens: {
+        access_token: fakeJwt(Math.floor(Date.now() / 1000) + 3600),
+        refresh_token: "refresh",
+        account_id: "acct_1",
+      },
+    }),
+  );
+  if (models != null) {
+    await writeFile(
+      join(dir, "models_cache.json"),
+      JSON.stringify({ fetched_at: "2026-09-17T19:03:38Z", client_version: clientVersion, models }),
+    );
+  }
+  return dir;
+}
+
+const CACHED_MODELS = [
+  { slug: "gpt-6-astra", display_name: "GPT-6-Astra", description: "最强", visibility: "list", priority: 1 },
+  { slug: "gpt-5.5", display_name: "GPT-5.5", visibility: "list", priority: 3 },
+  { slug: "gpt-5.5-codex-mini", display_name: "Mini", visibility: "hide", priority: 2 },
+];
+
+const rejectRemote = () => Promise.reject(new Error("offline"));
+
+describe("createModelCatalog", () => {
+  it("falls back to the builtin list with a warning when Codex is not logged in", async () => {
+    const catalog = createModelCatalog({ env: { CODEX_HOME: await tempDir() }, fetchCodexRemote: rejectRemote });
+
+    const result = await catalog.list("codex");
+
+    expect(result).toMatchObject({ engine: "codex", source: "builtin" });
+    expect(result.models.map((entry) => entry.id)).toEqual(["gpt-5.5"]);
+    expect(result.warning).toContain("Codex 未登录");
+  });
+
+  it("reads the Codex cache, drops hidden models and sorts by priority", async () => {
+    const catalog = createModelCatalog({
+      env: { CODEX_HOME: await loggedInCodexHome(CACHED_MODELS) },
+      fetchCodexRemote: rejectRemote,
+    });
+
+    const result = await catalog.list("codex");
+
+    expect(result.source).toBe("codex-cache");
+    expect(result.models).toEqual([
+      { id: "gpt-6-astra", label: "GPT-6-Astra", description: "最强" },
+      { id: "gpt-5.5", label: "GPT-5.5" },
+    ]);
+    expect(result.warning).toContain("在线目录不可用");
+  });
+
+  it("prefers the remote catalog and passes the cache's client_version", async () => {
+    const seen: string[] = [];
+    const remote: CodexCatalogModel[] = [{ slug: "gpt-7", display_name: "GPT-7", priority: 1 }];
+    const catalog = createModelCatalog({
+      env: { CODEX_HOME: await loggedInCodexHome(CACHED_MODELS, "1.2.3") },
+      fetchCodexRemote: async ({ clientVersion }) => {
+        seen.push(clientVersion);
+        return remote;
+      },
+    });
+
+    const result = await catalog.list("codex");
+
+    expect(seen).toEqual(["1.2.3"]);
+    expect(result.source).toBe("codex-remote");
+    expect(result.warning).toBeUndefined();
+    expect(result.models.map((entry) => entry.id)).toEqual(["gpt-7"]);
+  });
+
+  it("merges the prefixed Codex models with the gateway's language models for vgent", async () => {
+    const gateway: GatewayModelSource = {
+      getAvailableModels: async () => ({
+        models: [
+          { id: "anthropic/claude-sonnet-5", name: "Claude Sonnet 5", modelType: "language" },
+          { id: "openai/text-embedding-3", name: "Embedding", modelType: "embedding" },
+        ],
+      }),
+    };
+    const catalog = createModelCatalog({
+      env: { CODEX_HOME: await loggedInCodexHome(CACHED_MODELS), AI_GATEWAY_API_KEY: "k" },
+      fetchCodexRemote: rejectRemote,
+      gateway,
+    });
+
+    const result = await catalog.list("vgent");
+
+    expect(result.source).toBe("codex-cache+gateway");
+    expect(result.models.map((entry) => entry.id)).toEqual([
+      "codex-subscription:gpt-6-astra",
+      "codex-subscription:gpt-5.5",
+      "anthropic/claude-sonnet-5",
+    ]);
+  });
+
+  it("skips the gateway when no gateway credential is in the environment", async () => {
+    let called = false;
+    const catalog = createModelCatalog({
+      env: { CODEX_HOME: await tempDir() },
+      fetchCodexRemote: rejectRemote,
+      gateway: {
+        getAvailableModels: async () => {
+          called = true;
+          return { models: [] };
+        },
+      },
+    });
+
+    const result = await catalog.list("vgent");
+
+    expect(called).toBe(false);
+    expect(result).toMatchObject({ source: "builtin" });
+    expect(result.models.map((entry) => entry.id)).toEqual(["codex-subscription:gpt-5.5"]);
+  });
+
+  it("serves the builtin Claude Code aliases without an API key", async () => {
+    const catalog = createModelCatalog({ env: {}, fetchCodexRemote: rejectRemote });
+
+    const result = await catalog.list("claude-code");
+
+    expect(result).toMatchObject({ engine: "claude-code", source: "builtin" });
+    expect(result.warning).toBeUndefined();
+    expect(result.models.map((entry) => entry.id)).toEqual(["sonnet", "opus", "haiku"]);
+  });
+
+  it("caches per engine for ten minutes, and `refresh` bypasses the cache", async () => {
+    let clock = 1_000_000;
+    let calls = 0;
+    const catalog = createModelCatalog({
+      env: { CODEX_HOME: await loggedInCodexHome(CACHED_MODELS) },
+      now: () => clock,
+      fetchCodexRemote: async () => {
+        calls += 1;
+        return [{ slug: `gpt-${calls}`, priority: 1 }];
+      },
+    });
+
+    expect((await catalog.list("codex")).models[0]?.id).toBe("gpt-1");
+    expect((await catalog.list("codex")).models[0]?.id).toBe("gpt-1");
+    expect(calls).toBe(1);
+
+    expect((await catalog.list("codex", { refresh: true })).models[0]?.id).toBe("gpt-2");
+
+    clock += 10 * 60_000;
+    expect((await catalog.list("codex")).models[0]?.id).toBe("gpt-3");
+    expect(calls).toBe(3);
+  });
+});

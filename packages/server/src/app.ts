@@ -8,13 +8,15 @@ import { createEngineRegistry } from "./engines/registry.js";
 import type { Git } from "./git.js";
 import { createGit } from "./git.js";
 import { pickFolder } from "./folder-picker.js";
+import { createModelCatalog } from "./models.js";
 import { createRunManager, recoverInterruptedThreads } from "./runs.js";
-import { createProjectStore } from "./store/projects.js";
-import { createSettingsStore, type SettingsPatch } from "./store/settings.js";
-import { createThreadStore } from "./store/threads.js";
 import { registerStatic } from "./static.js";
-import type { EngineId, Logger, PermissionMode } from "./types.js";
+import { createProjectStore } from "./store/projects.js";
+import { asMcpServers, createSettingsStore, type SettingsPatch } from "./store/settings.js";
+import { createThreadStore } from "./store/threads.js";
+import type { EngineId, Logger, PermissionMode, Project, ThreadRecord, ThreadWorkspace } from "./types.js";
 import { silentLogger } from "./types.js";
+import { createWorktree, reclaimWorktree, removeWorktree, restoreWorktree } from "./workspace.js";
 
 export const VGENT_SERVER_VERSION = "0.0.1";
 
@@ -67,6 +69,15 @@ function asPermissionMode(value: unknown): PermissionMode | undefined {
 function assertEngineSupportsMode(engine: EngineId, permissionMode: PermissionMode): void {
   if (engine === "codex" && permissionMode !== "allow-all") {
     throw new BadRequestError("Codex 引擎没有内建工具审批，只支持 allow-all 权限模式", "codex_permission_mode");
+  }
+}
+
+/** `mcpServers` from a request body, as a 400 instead of an exception. */
+function readMcpServers(value: unknown) {
+  try {
+    return asMcpServers(value);
+  } catch (error) {
+    throw new BadRequestError(`mcpServers 不合法: ${error instanceof Error ? error.message : String(error)}`, "invalid_mcp_servers");
   }
 }
 
@@ -150,26 +161,69 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   // --- changes ----------------------------------------------------------
 
-  const repoPathOf = async (id: string): Promise<string> => {
-    const project = await projects.get(id);
-    if (project == null) throw new NotFoundError(`项目不存在: ${id}`, "project_not_found");
-    return project.repoPath;
+  const threadOf = async (id: string): Promise<ThreadRecord> => {
+    const thread = await threads.get(id);
+    if (thread == null) throw new NotFoundError(`线程不存在: ${id}`, "thread_not_found");
+    return thread;
   };
 
-  app.get("/api/projects/:id/changes", async (c) => c.json(await git.changes(await repoPathOf(c.req.param("id")))));
+  const projectOf = async (thread: ThreadRecord): Promise<Project> => {
+    const project = await projects.get(thread.projectId);
+    if (project == null) throw new NotFoundError(`项目不存在: ${thread.projectId}`, "project_not_found");
+    return project;
+  };
 
-  app.get("/api/projects/:id/changes/file", async (c) => {
+  /** The directory this task actually edits: its own worktree, or the project. */
+  const repoPathOf = async (threadId: string): Promise<string> => {
+    const thread = await threadOf(threadId);
+    if (thread.workspace == null) return (await projectOf(thread)).repoPath;
+    if (thread.workspace.reclaimed === true) throw new ConflictError("此任务的工作目录已回收", "workspace_reclaimed");
+    return thread.workspace.path;
+  };
+
+  app.get("/api/threads/:id/changes", async (c) => c.json(await git.changes(await repoPathOf(c.req.param("id")))));
+
+  app.get("/api/threads/:id/changes/file", async (c) => {
     const repoPath = await repoPathOf(c.req.param("id"));
     const path = c.req.query("path");
     if (path == null || path.length === 0) throw new BadRequestError("缺少 path", "invalid_path");
     return c.json(await git.fileDiff(repoPath, path));
   });
 
-  app.post("/api/projects/:id/changes/revert", async (c) => {
+  app.post("/api/threads/:id/changes/revert", async (c) => {
     const repoPath = await repoPathOf(c.req.param("id"));
     const body = (await c.req.json().catch(() => undefined)) as { path?: unknown } | undefined;
     if (typeof body?.path !== "string" || body.path.length === 0) throw new BadRequestError("缺少 path", "invalid_path");
     return c.json(await git.revert(repoPath, body.path));
+  });
+
+  // --- workspace --------------------------------------------------------
+
+  app.post("/api/threads/:id/workspace/reclaim", async (c) => {
+    const id = c.req.param("id");
+    if (runs.isRunning(id)) throw new ConflictError(`线程正在运行，无法回收工作目录: ${id}`, "thread_running");
+    const thread = await threadOf(id);
+    if (thread.workspace == null) throw new ConflictError("此任务没有独立工作目录", "workspace_not_worktree");
+    if (thread.workspace.reclaimed === true) return c.json(thread);
+    const { snapshotPath } = await reclaimWorktree({ dataDir, project: await projectOf(thread), thread });
+    return c.json(await threads.update(id, { workspace: { ...thread.workspace, reclaimed: true, snapshotPath } }));
+  });
+
+  app.post("/api/threads/:id/workspace/restore", async (c) => {
+    const id = c.req.param("id");
+    const thread = await threadOf(id);
+    const workspace = thread.workspace;
+    if (workspace?.reclaimed !== true || workspace.snapshotPath == null) {
+      throw new ConflictError("此任务的工作目录没有被回收，无需恢复", "workspace_not_reclaimed");
+    }
+    const { branch } = await restoreWorktree({
+      dataDir,
+      project: await projectOf(thread),
+      thread,
+      snapshotPath: workspace.snapshotPath,
+    });
+    const restored: ThreadWorkspace = { mode: "worktree", path: workspace.path, branch, baseCommit: workspace.baseCommit };
+    return c.json(await threads.update(id, { workspace: restored }));
   });
 
   // --- threads ----------------------------------------------------------
@@ -184,7 +238,11 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const body = (await c.req.json().catch(() => undefined)) as Record<string, unknown> | undefined;
     const projectId = body?.projectId;
     if (typeof projectId !== "string") throw new BadRequestError("缺少 projectId", "invalid_project");
-    if ((await projects.get(projectId)) == null) throw new NotFoundError(`项目不存在: ${projectId}`, "project_not_found");
+    const project = await projects.get(projectId);
+    if (project == null) throw new NotFoundError(`项目不存在: ${projectId}`, "project_not_found");
+    if (body?.workspace != null && body.workspace !== "project" && body.workspace !== "worktree") {
+      throw new BadRequestError("workspace 只能是 project 或 worktree", "invalid_workspace");
+    }
     const defaults = await settings.get();
     const model = body?.model ?? defaults.defaultModel;
     const engine = asEngine(body?.engine) ?? defaults.defaultEngine;
@@ -197,7 +255,16 @@ export function createApp(options: CreateAppOptions): VgentApp {
       ...(typeof model === "string" ? { model } : {}),
       permissionMode,
     });
-    return c.json(record);
+    if (body?.workspace !== "worktree") return c.json(record);
+    // The worktree is named after the thread, so the record has to exist
+    // first — and must not survive a worktree that failed to materialize.
+    try {
+      const workspace = await createWorktree({ dataDir, project, threadId: record.id });
+      return c.json(await threads.update(record.id, { workspace }));
+    } catch (error) {
+      await threads.remove(record.id).catch((failure) => log.warn(`回滚线程 ${record.id} 失败`, failure));
+      throw error;
+    }
   });
 
   app.get("/api/threads/:id", async (c) => {
@@ -235,6 +302,11 @@ export function createApp(options: CreateAppOptions): VgentApp {
   app.delete("/api/threads/:id", async (c) => {
     const id = c.req.param("id");
     await runs.stop(id);
+    const thread = await threads.get(id);
+    // A failed ownership check aborts the delete: a thread record is the only
+    // thing that still points at a worktree, so it outlives a directory we
+    // refused to touch.
+    if (thread?.workspace != null) await removeWorktree({ dataDir, project: await projectOf(thread), thread });
     await threads.remove(id);
     return c.body(null, 204);
   });
@@ -251,8 +323,23 @@ export function createApp(options: CreateAppOptions): VgentApp {
         ? { defaultPermissionMode: asPermissionMode(body?.defaultPermissionMode)! }
         : {}),
       ...("defaultModel" in (body ?? {}) ? { defaultModel: typeof body?.defaultModel === "string" ? body.defaultModel : undefined } : {}),
+      // Unlike the scalars above, a malformed server list is rejected rather
+      // than dropped: silently ignoring it would look exactly like an MCP
+      // server whose tools never showed up.
+      ...("mcpServers" in (body ?? {}) ? { mcpServers: readMcpServers(body?.mcpServers) } : {}),
     };
     return c.json(await settings.update(patch));
+  });
+
+  // --- model catalog ----------------------------------------------------
+
+  const modelCatalog = createModelCatalog({ log });
+
+  app.get("/api/engines/:engine/models", async (c) => {
+    const raw = c.req.param("engine");
+    const engine = asEngine(raw);
+    if (engine == null) throw new BadRequestError(`未知引擎: ${JSON.stringify(raw)}`, "unknown_engine");
+    return c.json(await modelCatalog.list(engine, { refresh: c.req.query("refresh") === "1" }));
   });
 
   // --- chat -------------------------------------------------------------

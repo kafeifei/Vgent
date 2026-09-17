@@ -1,3 +1,4 @@
+import type { McpServerConfig } from "@vgent/engine";
 import type { HarnessAgentResumeSessionState } from "@vgent/engines";
 import type { UIMessage } from "ai";
 
@@ -12,6 +13,23 @@ export interface Project {
   createdAt: string;
 }
 
+/**
+ * Where a task's files live, when that is not the project's own working tree.
+ * Absent means the task edits the project directly.
+ */
+export interface ThreadWorkspace {
+  mode: "worktree";
+  /** `<dataDir>/worktrees/<threadId>`, with its parent fully resolved. */
+  path: string;
+  branch: string;
+  /** The project commit the worktree started from. */
+  baseCommit: string;
+  /** Set once the directory has been snapshotted and removed. */
+  reclaimed?: boolean;
+  /** The snapshot a reclaimed worktree can be restored from. */
+  snapshotPath?: string;
+}
+
 /** One task. Persisted whole in `threads/<id>.json`. */
 export interface ThreadRecord {
   version: 1;
@@ -23,6 +41,8 @@ export interface ThreadRecord {
   permissionMode: PermissionMode;
   status: ThreadStatus;
   error?: string;
+  /** Present only for a task running in its own git worktree. */
+  workspace?: ThreadWorkspace;
   createdAt: string;
   updatedAt: string;
   messages: UIMessage[];
@@ -38,6 +58,8 @@ export interface Settings {
   defaultEngine: EngineId;
   defaultPermissionMode: PermissionMode;
   defaultModel?: string;
+  /** MCP servers the `vgent` engine connects to per turn. Their tools are deferred; see `connectMcpServers`. */
+  mcpServers?: McpServerConfig[];
 }
 
 /**

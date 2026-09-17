@@ -13,8 +13,12 @@ export type PermissionMode = "allow-reads" | "allow-edits" | "allow-all";
 /** Subset of `ToolApprovalStatus` this module produces. */
 export type ApprovalDecision = "not-applicable" | "user-approval";
 
-/** Tools that only observe the workspace. Never need approval in any mode. */
-const READ_ONLY_TOOLS = new Set(["read", "grep", "glob"]);
+/**
+ * Tools that only observe the workspace. Never need approval in any mode.
+ * `explore` is a read-only subagent (its child's tools are read-only too) and
+ * `toolSearch` only looks up tool definitions — neither touches anything.
+ */
+const READ_ONLY_TOOLS = new Set(["read", "grep", "glob", "explore", "toolSearch"]);
 
 /**
  * Tools that only surface a question to the human and have no `execute` of
@@ -24,8 +28,13 @@ const READ_ONLY_TOOLS = new Set(["read", "grep", "glob"]);
  */
 const HUMAN_INPUT_TOOLS = new Set(["askUserQuestions"]);
 
-/** Tools that change files on disk. Approved outright from `allow-edits` up. */
-const EDIT_TOOLS = new Set(["write", "edit"]);
+/**
+ * Tools that change files on disk. Approved outright from `allow-edits` up.
+ * `coder` is the editing subagent: launching it is approved exactly like the
+ * `write` it is going to perform, and inside it the same policy applies by
+ * denial, since a subagent has no human to ask.
+ */
+const EDIT_TOOLS = new Set(["write", "edit", "coder"]);
 
 /**
  * Commands `bash` may run unattended in `allow-edits`. Deliberately tiny: it

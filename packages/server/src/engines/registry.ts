@@ -12,6 +12,14 @@ import { createVgentEngineFactory } from "./vgent.js";
  */
 export interface EngineRunner {
   stream(input: { messages: ModelMessage[]; abortSignal: AbortSignal }): Promise<{ stream: ReadableStream<TextStreamPart<ToolSet>> }>;
+  /**
+   * The tool set this runner's messages have to be converted with, when it has
+   * one. `toModelOutput` — how a subagent tool hands the model a summary
+   * instead of its whole transcript — is applied by `convertToModelMessages`,
+   * and only when it is given the very tools the engine runs with. The harness
+   * engines run their tools out of process and leave this undefined.
+   */
+  tools?: ToolSet;
   /** End the turn: stop the runtime and persist whatever resume state it hands back. */
   finish(): Promise<void>;
   /** Tear the runtime down and discard resumability. Never persists state. */

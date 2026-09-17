@@ -37,4 +37,32 @@ describe("createVgentEngine (smoke)", () => {
     },
     5 * 60_000,
   );
+
+  smoke(
+    "delegates a search to the explore subagent",
+    async () => {
+      const repoPath = await mkdtemp(join(tmpdir(), "vgent-engine-smoke-"));
+      await writeFile(join(repoPath, "engine.ts"), "export function createVgentEngine() {}\n");
+      await writeFile(join(repoPath, "index.ts"), 'export { createVgentEngine } from "./engine.js";\n');
+
+      const { agent, dispose } = createVgentEngine({
+        model: "codex-subscription:gpt-5.5",
+        repoPath,
+        permissionMode: "allow-reads",
+      });
+      try {
+        const result = await agent.generate({
+          prompt:
+            "Use the `explore` subagent (do not search yourself) to find which file defines createVgentEngine, " +
+            "then reply with that file name only.",
+        });
+        console.log(`[smoke] assistant reply: ${JSON.stringify(result.text)}`);
+        expect(result.toolCalls.map((call) => call.toolName)).toContain("explore");
+        expect(result.text).toContain("engine.ts");
+      } finally {
+        await dispose();
+      }
+    },
+    5 * 60_000,
+  );
 });

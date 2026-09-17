@@ -67,12 +67,14 @@ describe("createVgentEngine", () => {
     await dispose();
   });
 
-  it("exposes the built-in tools plus askUserQuestions, and askUserQuestions has no execute", async () => {
+  it("exposes the built-in tools plus askUserQuestions and the subagents, and askUserQuestions has no execute", async () => {
     const { agent } = createVgentEngine({ model: readThenAnswer("done"), repoPath });
     expect(Object.keys(agent.tools ?? {}).sort()).toEqual([
       "askUserQuestions",
       "bash",
+      "coder",
       "edit",
+      "explore",
       "glob",
       "grep",
       "read",

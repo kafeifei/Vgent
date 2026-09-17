@@ -123,6 +123,9 @@ importers:
 
   packages/engine:
     dependencies:
+      '@ai-sdk/mcp':
+        specifier: 2.0.52
+        version: 2.0.52(zod@4.6.5)
       '@vgent/providers':
         specifier: workspace:*
         version: link:../providers

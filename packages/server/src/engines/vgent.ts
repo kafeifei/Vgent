@@ -1,7 +1,10 @@
-import { CODEX_SUBSCRIPTION_PREFIX, createVgentEngine } from "@vgent/engine";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { CODEX_SUBSCRIPTION_PREFIX, connectMcpServers, createVgentEngine, loadSkillsIndex } from "@vgent/engine";
 import { describeSubscriptionAuth } from "@vgent/providers";
 import type { LanguageModel, TextStreamPart, ToolSet } from "ai";
 import { BadRequestError, EngineUnavailableError } from "../errors.js";
+import { createSettingsStore } from "../store/settings.js";
 import type { EngineContext, EngineFactory, EngineRunner } from "./registry.js";
 
 /** What a `vgent` thread runs on when it names no model of its own. */
@@ -78,20 +81,36 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
     },
 
     async create(ctx: EngineContext): Promise<EngineRunner> {
+      // Both are re-read per turn, so editing settings or adding a skill takes
+      // effect on the next message instead of on the next server restart.
+      const settings = await createSettingsStore(ctx.dataDir, ctx.log).get();
+      const mcp = await connectMcpServers(settings.mcpServers ?? [], { log: ctx.log });
+      const skills = await loadSkillsIndex([
+        join(ctx.project.repoPath, ".claude", "skills"),
+        join(homedir(), ".vgent", "skills"),
+      ]);
+
       const engine = createVgentEngine({
         model: override ?? ctx.thread.model ?? DEFAULT_VGENT_MODEL,
         repoPath: ctx.project.repoPath,
         permissionMode: ctx.thread.permissionMode,
+        extraTools: mcp.tools,
+        skills,
       });
 
       let ended = false;
       const release = async () => {
         if (ended) return;
         ended = true;
+        await mcp.close().catch((error) => ctx.log.warn(`关闭 MCP 连接失败 (thread ${ctx.thread.id})`, error));
         await engine.dispose().catch((error) => ctx.log.warn(`释放 Vgent 引擎失败 (thread ${ctx.thread.id})`, error));
       };
 
       return {
+        // What `convertToModelMessages` needs to turn a subagent's stored
+        // transcript back into the one-paragraph summary the model saw.
+        tools: engine.tools,
+
         // The agent holds no runtime between calls: a paused turn is only the
         // open tool part in the stored messages.
         hasUnfinishedTurn: () => false,

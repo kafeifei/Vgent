@@ -1,11 +1,14 @@
 import { resolve } from "node:path";
 import { createApiKeyModel, createCodexSubscriptionModel } from "@vgent/providers";
 import { createCodingTools } from "@vgent/tools";
-import { ToolLoopAgent, isStepCount, pruneMessages, type LanguageModel, type ModelMessage, type ToolSet } from "ai";
+import { ToolLoopAgent, isStepCount, pruneMessages, toolSearch, type LanguageModel, type ModelMessage, type ToolSet } from "ai";
 import { askUserQuestionsTool } from "./ask-user-questions.js";
 import { buildInstructions } from "./instructions.js";
+import { hasDeferredTools } from "./mcp.js";
 import { createToolApproval, type PermissionMode } from "./permissions.js";
 import { appendSession } from "./session-store.js";
+import type { SkillSummary } from "./skills.js";
+import { createSubagentTools } from "./subagents.js";
 
 /** Prefix that routes a model string to the machine's ChatGPT/Codex login instead of the gateway. */
 export const CODEX_SUBSCRIPTION_PREFIX = "codex-subscription:";
@@ -39,6 +42,18 @@ export interface VgentEngineOptions {
   contextTokenBudget?: number;
   /** Lifecycle summaries, for logging. */
   onEvent?: (event: VgentEngineEvent) => void;
+  /** Whether the `explore` / `coder` subagent tools are offered. Defaults to true. */
+  subagents?: boolean;
+  /** The model the subagents run on. Defaults to `model`. */
+  subagentModel?: LanguageModel | string;
+  /**
+   * Tools merged in on top of the built-ins — MCP servers, in practice (see
+   * `connectMcpServers`). When any of them is `deferLoading`, `toolSearch` is
+   * added so the model can still find them.
+   */
+  extraTools?: ToolSet;
+  /** The skills index for the system prompt. Names and descriptions only; see `loadSkillsIndex`. */
+  skills?: readonly SkillSummary[];
 }
 
 /**
@@ -50,6 +65,12 @@ export type VgentAgent = ToolLoopAgent<unknown, ToolSet>;
 
 export interface VgentEngine {
   agent: VgentAgent;
+  /**
+   * The exact tool set the agent runs with. Callers that store the turn as UI
+   * messages need it: `toModelOutput` (the subagents' summaries) is applied by
+   * `convertToModelMessages`, and only when it is given these same tools.
+   */
+  tools: ToolSet;
   /** Symmetry with the harness engines, which hold processes. Nothing to release here yet. */
   dispose(): Promise<void>;
 }
@@ -86,12 +107,25 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
   const permissionMode: PermissionMode = options.permissionMode ?? "allow-edits";
   const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
   const contextTokenBudget = options.contextTokenBudget ?? DEFAULT_CONTEXT_TOKEN_BUDGET;
-  const { sessionFile, onEvent } = options;
+  const { sessionFile, onEvent, skills } = options;
+  const model = resolveModel(options.model);
+  const subagents = options.subagents !== false;
 
   const tools: ToolSet = {
     ...createCodingTools({ workDir: repoPath }),
     askUserQuestions: askUserQuestionsTool,
+    ...(subagents
+      ? createSubagentTools({
+          model: options.subagentModel == null ? model : resolveModel(options.subagentModel),
+          repoPath,
+          permissionMode,
+        })
+      : {}),
+    ...options.extraTools,
   };
+  // Deferred tools are invisible to the model until something looks them up.
+  const deferred = hasDeferredTools(tools);
+  if (deferred) tools.toolSearch = toolSearch();
 
   // The TUI and the web UI both hand the agent a prompt, not a message list, so
   // there is no call site that could persist a turn. The hooks have to live on
@@ -102,10 +136,13 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
   let persisted = 0;
 
   const agent = new ToolLoopAgent({
-    model: resolveModel(options.model),
+    model,
     instructions: buildInstructions({
       repoPath,
       permissionMode,
+      subagents,
+      toolSearch: deferred,
+      ...(skills == null ? {} : { skills }),
       ...(options.instructions == null ? {} : { extra: options.instructions }),
     }),
     tools,
@@ -152,6 +189,7 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
 
   return {
     agent,
+    tools,
     dispose: async () => {},
   };
 }

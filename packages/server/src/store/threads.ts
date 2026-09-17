@@ -3,7 +3,7 @@ import { mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { isToolUIPart, type UIMessage } from "ai";
 import { NotFoundError } from "../errors.js";
-import type { EngineId, HarnessState, Logger, PermissionMode, ThreadRecord, ThreadStatus, ThreadSummary } from "../types.js";
+import type { EngineId, HarnessState, Logger, PermissionMode, ThreadRecord, ThreadStatus, ThreadSummary, ThreadWorkspace } from "../types.js";
 import { silentLogger } from "../types.js";
 import { readJsonOrQuarantine, writeJsonAtomic } from "./atomic-file.js";
 
@@ -31,6 +31,8 @@ export type ThreadPatch = Partial<{
   permissionMode: PermissionMode;
   status: ThreadStatus;
   error: string | undefined;
+  /** Attached right after the worktree is created, cleared when it is removed. */
+  workspace: ThreadWorkspace | undefined;
   messages: UIMessage[];
 }>;
 
@@ -206,6 +208,10 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
         if ("error" in patch) {
           if (patch.error == null) delete next.error;
           else next.error = patch.error;
+        }
+        if ("workspace" in patch) {
+          if (patch.workspace == null) delete next.workspace;
+          else next.workspace = patch.workspace;
         }
         await writeJsonAtomic(recordPath(id), next);
         return next;

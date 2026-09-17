@@ -14,3 +14,5 @@ export type {
   SubscriptionAuthStatus,
   SubscriptionCredentialSource,
 } from "./codex-credentials.js";
+export { createCodexFetch } from "./codex-fetch.js";
+export type { CodexFetchOptions } from "./codex-fetch.js";

@@ -1,9 +1,10 @@
 import { useState } from "react";
+import { GitBranch } from "lucide-react";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ProjectPicker } from "@/components/ProjectPicker";
 import { Composer } from "@/features/composer/Composer";
 import { useToast } from "@/lib/toast";
-import type { EngineId, Project, Settings } from "@/lib/types";
+import type { EngineId, Project, Settings, WorkspaceMode } from "@/lib/types";
 
 const ENGINES: ReadonlyArray<{ id: EngineId; label: string }> = [
   { id: "claude-code", label: "Claude Code" },
@@ -30,13 +31,14 @@ export function EmptyState({
   onSelectProject: (projectId: string) => void;
   onAddProject: (repoPath: string) => Promise<void>;
   onPickFolder: () => Promise<string | null>;
-  onStart: (text: string, engine: EngineId) => void;
+  onStart: (text: string, engine: EngineId, workspace: WorkspaceMode) => void;
 }) {
   const toast = useToast();
   const [draft, setDraft] = useState("");
   // Local only, no persistence: seeded from the server default once, not kept
   // in sync if the setting changes later while this screen is open.
   const [engine, setEngine] = useState<EngineId>(() => settings?.defaultEngine ?? "claude-code");
+  const [workspace, setWorkspace] = useState<WorkspaceMode>("project");
   const project = projects.find((entry) => entry.id === projectId);
 
   const submit = () => {
@@ -45,7 +47,7 @@ export function EmptyState({
       toast("先选一个项目");
       return;
     }
-    onStart(draft.trim(), engine);
+    onStart(draft.trim(), engine, workspace);
     setDraft("");
   };
 
@@ -111,6 +113,21 @@ export function EmptyState({
               </>
             )}
           </Popover>
+          {/* One click, two states: where this task's edits land. */}
+          <button
+            type="button"
+            title={
+              workspace === "worktree"
+                ? "任务在自己的 git worktree 里改文件，不碰项目当前的工作区"
+                : "任务直接改项目目录，和你手上的文件是同一份"
+            }
+            aria-pressed={workspace === "worktree"}
+            onClick={() => setWorkspace((mode) => (mode === "worktree" ? "project" : "worktree"))}
+            className="inline-flex h-xl items-center gap-3xs rounded-sm px-xs text-fg-muted text-sm hover:bg-bg-hover hover:text-fg"
+          >
+            <GitBranch className="size-md" />
+            <span>{workspace === "worktree" ? "独立 worktree" : "主工作区"}</span>
+          </button>
         </div>
       </div>
 

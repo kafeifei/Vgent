@@ -3,7 +3,7 @@ import { createClient } from "@/lib/api";
 import { ThreadChats } from "@/lib/threadChats";
 import { useServerState } from "@/lib/useServerState";
 import { useToast } from "@/lib/toast";
-import type { EngineId, PermissionMode, ThreadSummary } from "@/lib/types";
+import type { EngineId, PermissionMode, ThreadSummary, WorkspaceMode } from "@/lib/types";
 import { LIVE_STATUSES } from "@/lib/types";
 import { repoRelative } from "@/features/changes/paths";
 import type { Grouping } from "@/features/sidebar/grouping";
@@ -107,10 +107,13 @@ export function useWorkbench(token: string) {
        * what turns the one into the other.
        */
       openChanges: (file?: string) => {
-        const repoPath = state.projects.find((project) => project.id === activeProjectId)?.repoPath ?? null;
+        // A worktree task's engine writes inside its own checkout, so that is
+        // the root the chip's absolute path is relative to.
+        const repoPath =
+          thread?.workspace?.path ?? state.projects.find((project) => project.id === activeProjectId)?.repoPath ?? null;
         const relative = file == null || repoPath == null ? null : repoRelative(file, repoPath);
         setRight({ open: true, tab: "changes", file: relative });
-        if (file != null && relative == null) toast("文件不在项目仓库内");
+        if (file != null && relative == null) toast("文件不在任务工作目录内");
       },
 
       openPalette: () => setPalette(true),
@@ -125,7 +128,7 @@ export function useWorkbench(token: string) {
       pickFolder: () => client.pickFolder(),
 
       /** Empty state: create the thread, select it, send the first message. */
-      startThread: (text: string, engine: EngineId) => {
+      startThread: (text: string, engine: EngineId, workspace: WorkspaceMode) => {
         if (activeProjectId == null) {
           toast("先添加一个项目");
           return;
@@ -134,6 +137,7 @@ export function useWorkbench(token: string) {
           .createThread({
             projectId: activeProjectId,
             engine,
+            workspace,
             ...(engine === "codex" ? { permissionMode: "allow-all" as const } : {}),
           })
           .then(async (record) => {
@@ -176,7 +180,7 @@ export function useWorkbench(token: string) {
       whenReady: (threadId: string) => chats.whenReady(threadId),
       toast,
     }),
-    [activeProjectId, chats, client, selectThread, state.projects, toast],
+    [activeProjectId, chats, client, selectThread, state.projects, thread, toast],
   );
 
   // ⌘K / ⌘N / ⌘J / ⌘B

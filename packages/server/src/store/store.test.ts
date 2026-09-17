@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { HarnessState, ThreadRecord } from "../types.js";
 import { readJsonOrQuarantine, writeJsonAtomic } from "./atomic-file.js";
 import { createProjectStore } from "./projects.js";
-import { createSettingsStore } from "./settings.js";
+import { asMcpServers, createSettingsStore } from "./settings.js";
 import { createThreadStore } from "./threads.js";
 
 const dirs: string[] = [];
@@ -154,5 +154,23 @@ describe("createProjectStore / createSettingsStore", () => {
     await store.update({ defaultModel: "sonnet", defaultPermissionMode: "allow-edits" });
     expect(await createSettingsStore(dir).get()).toMatchObject({ defaultModel: "sonnet", defaultPermissionMode: "allow-edits" });
     expect(await store.update({ defaultModel: undefined })).not.toHaveProperty("defaultModel");
+  });
+
+  it("stores a validated MCP server list and clears it when emptied", async () => {
+    const dir = await tempDir();
+    const store = createSettingsStore(dir);
+
+    const servers = asMcpServers([{ name: "local", command: "node", args: ["server.js"] }]);
+    await store.update({ mcpServers: servers });
+    expect(await createSettingsStore(dir).get()).toMatchObject({ mcpServers: servers });
+
+    expect(await store.update({ mcpServers: [] })).not.toHaveProperty("mcpServers");
+  });
+
+  it("rejects a malformed MCP server list rather than dropping it", () => {
+    expect(asMcpServers(undefined)).toBeUndefined();
+    expect(asMcpServers(null)).toBeUndefined();
+    expect(() => asMcpServers([{ name: "x" }])).toThrow(/command/);
+    expect(() => asMcpServers("nope")).toThrow(/数组/);
   });
 });

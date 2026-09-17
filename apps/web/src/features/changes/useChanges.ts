@@ -19,8 +19,9 @@ export interface ChangesView {
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 /**
- * The 变更 tab's data: one working-tree snapshot per project plus the selected
- * file's diff.
+ * The 变更 tab's data: one working-tree snapshot for the selected task plus
+ * the selected file's diff. The server resolves which directory that is — the
+ * task's own worktree, or the project — so there is nothing to pick here.
  *
  * The selection itself lives in the workbench (the work log's file chips open
  * the pane on a file), so it comes in as `selected` / `onSelect` — this hook
@@ -32,14 +33,14 @@ const message = (error: unknown): string => (error instanceof Error ? error.mess
  */
 export function useChanges(options: {
   client: ApiClient;
-  projectId: string | null;
+  threadId: string | null;
   active: boolean;
   refreshKey: string;
   selected: string | null;
   onSelect: (path: string | null) => void;
   toast: (text: string) => void;
 }): ChangesView {
-  const { client, projectId, active, refreshKey, selected, onSelect, toast } = options;
+  const { client, threadId, active, refreshKey, selected, onSelect, toast } = options;
 
   const [snapshot, setSnapshot] = useState<ChangesSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
@@ -49,7 +50,7 @@ export function useChanges(options: {
 
   const load = useCallback(async (): Promise<ChangesSnapshot | null> => {
     const mine = ++generation.current;
-    if (projectId == null) {
+    if (threadId == null) {
       setSnapshot(null);
       setError(null);
       setLoading(false);
@@ -57,7 +58,7 @@ export function useChanges(options: {
     }
     setLoading(true);
     try {
-      const next = await client.listChanges(projectId);
+      const next = await client.listChanges(threadId);
       if (mine !== generation.current) return null;
       setSnapshot(next);
       setError(null);
@@ -70,7 +71,7 @@ export function useChanges(options: {
     } finally {
       if (mine === generation.current) setLoading(false);
     }
-  }, [client, projectId]);
+  }, [client, threadId]);
 
   useEffect(() => {
     if (active) void load();
@@ -87,7 +88,7 @@ export function useChanges(options: {
 
   useEffect(() => {
     const mine = ++diffGeneration.current;
-    if (!active || projectId == null || selected == null || !changed) {
+    if (!active || threadId == null || selected == null || !changed) {
       setFileDiff(null);
       setDiffError(null);
       setDiffLoading(false);
@@ -95,7 +96,7 @@ export function useChanges(options: {
     }
     setDiffLoading(true);
     client
-      .getFileDiff(projectId, selected)
+      .getFileDiff(threadId, selected)
       .then((next) => {
         if (mine !== diffGeneration.current) return;
         setFileDiff(next);
@@ -111,16 +112,16 @@ export function useChanges(options: {
       });
     // `snapshot`: a refreshed snapshot means the engine wrote again, so the
     // open diff is stale too.
-  }, [active, changed, client, projectId, selected, snapshot]);
+  }, [active, changed, client, threadId, selected, snapshot]);
 
   const refresh = useCallback(() => void load(), [load]);
 
   const revert = useCallback(
     (path: string) => {
-      if (projectId == null) return;
+      if (threadId == null) return;
       void (async () => {
         try {
-          await client.revertFile(projectId, path);
+          await client.revertFile(threadId, path);
           toast("已还原");
         } catch (failure) {
           toast(message(failure));
@@ -129,7 +130,7 @@ export function useChanges(options: {
         if (next != null && selected === path && !next.files.some((file) => file.path === path)) onSelect(null);
       })();
     },
-    [client, load, onSelect, projectId, selected, toast],
+    [client, load, onSelect, threadId, selected, toast],
   );
 
   return { snapshot, loading, error, refresh, selected, select: onSelect, fileDiff, diffLoading, diffError, revert };

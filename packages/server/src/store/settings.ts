@@ -1,3 +1,4 @@
+import { parseMcpServers, type McpServerConfig } from "@vgent/engine";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { EngineId, Logger, PermissionMode, Settings } from "../types.js";
@@ -14,6 +15,18 @@ export interface SettingsPatch {
   defaultEngine?: EngineId;
   defaultPermissionMode?: PermissionMode;
   defaultModel?: string | undefined;
+  mcpServers?: McpServerConfig[] | undefined;
+}
+
+/**
+ * Validates an incoming `mcpServers` value. `undefined` (the field was not
+ * sent) and `null` (clear it) both mean "no list"; anything else has to be a
+ * well-formed server array, because a silently dropped server is
+ * indistinguishable from one whose tools the model never found.
+ */
+export function asMcpServers(value: unknown): McpServerConfig[] | undefined {
+  if (value == null) return undefined;
+  return parseMcpServers(value);
 }
 
 export interface SettingsStore {
@@ -50,6 +63,10 @@ export function createSettingsStore(dataDir: string, log: Logger = silentLogger)
       const next: Settings = { ...(settings ?? DEFAULT_SETTINGS) };
       if (patch.defaultEngine != null) next.defaultEngine = patch.defaultEngine;
       if (patch.defaultPermissionMode != null) next.defaultPermissionMode = patch.defaultPermissionMode;
+      if ("mcpServers" in patch) {
+        if (patch.mcpServers == null || patch.mcpServers.length === 0) delete next.mcpServers;
+        else next.mcpServers = patch.mcpServers;
+      }
       if ("defaultModel" in patch) {
         if (patch.defaultModel == null) delete next.defaultModel;
         else next.defaultModel = patch.defaultModel;

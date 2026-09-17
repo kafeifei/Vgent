@@ -2,11 +2,13 @@ import type {
   ChangesSnapshot,
   EngineId,
   FileDiff,
+  ModelCatalog,
   PermissionMode,
   Project,
   Settings,
   ThreadRecord,
   ThreadSummary,
+  WorkspaceMode,
 } from "./types";
 
 const TOKEN_KEY = "vgent.token";
@@ -130,11 +132,13 @@ export function createClient(token: string) {
     pickFolder: () =>
       api<{ path: string } | undefined>("/projects/pick", token, { method: "POST" }).then((body) => body?.path ?? null),
 
-    listChanges: (projectId: string) => api<ChangesSnapshot>(`/projects/${projectId}/changes`, token),
-    getFileDiff: (projectId: string, path: string) =>
-      api<FileDiff>(`/projects/${projectId}/changes/file?path=${encodeURIComponent(path)}`, token),
-    revertFile: (projectId: string, path: string) =>
-      api<{ path: string }>(`/projects/${projectId}/changes/revert`, token, { method: "POST", json: { path } }),
+    // Changes are keyed by thread: a task in its own worktree diffs that
+    // directory, every other task diffs the project's working tree.
+    listChanges: (threadId: string) => api<ChangesSnapshot>(`/threads/${threadId}/changes`, token),
+    getFileDiff: (threadId: string, path: string) =>
+      api<FileDiff>(`/threads/${threadId}/changes/file?path=${encodeURIComponent(path)}`, token),
+    revertFile: (threadId: string, path: string) =>
+      api<{ path: string }>(`/threads/${threadId}/changes/revert`, token, { method: "POST", json: { path } }),
 
     listThreads: () => api<{ threads: ThreadSummary[] }>("/threads", token).then((body) => body.threads),
     createThread: (input: {
@@ -143,6 +147,8 @@ export function createClient(token: string) {
       engine?: EngineId;
       permissionMode?: PermissionMode;
       model?: string;
+      /** `worktree` gives the task its own checkout; the default edits the project. */
+      workspace?: WorkspaceMode;
     }) => api<ThreadRecord>("/threads", token, { method: "POST", json: input }),
     getThread: (id: string) => api<ThreadRecord>(`/threads/${id}`, token),
     patchThread: (
@@ -150,6 +156,10 @@ export function createClient(token: string) {
       patch: { title?: string; engine?: EngineId; permissionMode?: PermissionMode; model?: string | null },
     ) => api<ThreadRecord>(`/threads/${id}`, token, { method: "PATCH", json: patch }),
     deleteThread: (id: string) => api<void>(`/threads/${id}`, token, { method: "DELETE" }),
+
+    /** The engine's model list. `refresh` skips the server's 10-minute cache. */
+    listModels: (engine: EngineId, refresh = false) =>
+      api<ModelCatalog>(`/engines/${engine}/models${refresh ? "?refresh=1" : ""}`, token),
 
     getSettings: () => api<Settings>("/settings", token),
     putSettings: (patch: Partial<Settings>) => api<Settings>("/settings", token, { method: "PUT", json: patch }),

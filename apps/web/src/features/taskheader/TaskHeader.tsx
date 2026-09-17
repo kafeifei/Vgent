@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { PanelRight, Square } from "lucide-react";
+import { GitBranch, PanelRight, Square } from "lucide-react";
 import { ModelPicker, modelLabel } from "@/components/ModelPicker";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import type { EngineId, PermissionMode, ThreadSummary } from "@/lib/types";
@@ -13,21 +13,31 @@ const ENGINES: ReadonlyArray<{ id: EngineId; label: string }> = [
 
 const PERMISSIONS: readonly PermissionMode[] = ["allow-reads", "allow-edits", "allow-all"];
 
+const PILL_CLASS =
+  "inline-flex h-xl min-w-0 flex-none items-center gap-2xs overflow-hidden rounded-full border border-border bg-bg-elevated px-xs text-fg-muted text-xs";
+
 function Pill({
   label,
   value,
   ...props
 }: { label: string; value: string } & React.ComponentProps<"button">) {
   return (
-    <button
-      type="button"
-      {...props}
-      className="inline-flex h-xl min-w-0 flex-none items-center gap-2xs overflow-hidden rounded-full border border-border bg-bg-elevated px-xs text-fg-muted text-xs hover:border-border-strong hover:text-fg"
-    >
+    <button type="button" {...props} className={cn(PILL_CLASS, "hover:border-border-strong hover:text-fg")}>
       <span className="flex-none text-fg-faint">{label}</span>
       <span className="min-w-0 truncate font-mono text-fg">{value}</span>
       <span className="flex-none opacity-60">▾</span>
     </button>
+  );
+}
+
+/** The same pill with nothing to open: a worktree is fixed for the task's life. */
+function StaticPill({ value, title, muted }: { value: string; title?: string; muted?: string }) {
+  return (
+    <span className={PILL_CLASS} {...(title != null ? { title } : {})}>
+      <GitBranch className="size-md flex-none text-fg-faint" />
+      <span className="min-w-0 truncate font-mono text-fg">{value}</span>
+      {muted != null && <span className="flex-none text-fg-faint">{muted}</span>}
+    </span>
   );
 }
 
@@ -155,6 +165,14 @@ export function TaskHeader({
           </>
         )}
       </Popover>
+
+      {thread.workspace != null && (
+        <StaticPill
+          value={thread.workspace.branch}
+          title={thread.workspace.path}
+          {...(thread.workspace.reclaimed === true ? { muted: "已回收" } : {})}
+        />
+      )}
 
       <span className="flex-1" />
 

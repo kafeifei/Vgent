@@ -1,8 +1,18 @@
+import type { UIMessage } from "ai";
 import { useState } from "react";
 import { CodeBlock } from "@/components/ai-elements/code-block";
 import { baseName } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { describeTool, diffStatOf, exitCodeOf, isToolStreaming, outputText, type ToolPart } from "./toolMeta";
+import {
+  asChildMessage,
+  asChildToolPart,
+  describeTool,
+  diffStatOf,
+  exitCodeOf,
+  isToolStreaming,
+  outputText,
+  type ToolPart,
+} from "./toolMeta";
 
 /** The running indicator: the only spinner in the log. */
 export function Spinner() {
@@ -34,6 +44,40 @@ export function FileChip({
 }
 
 /**
+ * A subagent's transcript: its own text, and for every tool it called the same
+ * one-liner the parent's rows use. It is shown inline rather than folded away,
+ * because it is the only place the child's work is ever visible — the parent
+ * model itself receives nothing but the closing summary.
+ */
+function ChildTranscript({ parts, preliminary }: { parts: UIMessage["parts"]; preliminary: boolean }) {
+  return (
+    <div className="mt-2xs ml-lg border-border border-l pl-sm">
+      {parts.map((part, index) => {
+        const tool = asChildToolPart(part);
+        if (tool != null) {
+          const display = describeTool(tool);
+          return (
+            <div key={index} className="flex h-row-tool items-center gap-xs text-fg-faint text-sm">
+              <span className={cn("flex-none", display.kind === "bash" && "font-mono text-code")}>{display.verb}</span>
+              <span className="min-w-0 truncate font-mono text-code">{display.target}</span>
+            </div>
+          );
+        }
+        if (part.type === "text" && part.text.trim() !== "") {
+          return (
+            <p key={index} className="whitespace-pre-wrap py-3xs text-fg-muted text-sm">
+              {part.text}
+            </p>
+          );
+        }
+        return null;
+      })}
+      {preliminary && <div className="py-3xs text-fg-faint text-sm">进行中…</div>}
+    </div>
+  );
+}
+
+/**
  * One tool call as one muted line (the prototype's "去卡片化" rule). Clicking it
  * opens an inset body with the raw input and output.
  */
@@ -43,7 +87,8 @@ export function ToolRow({ part, onOpenFile }: { part: ToolPart; onOpenFile: (fil
   const streaming = isToolStreaming(part);
   const exitCode = part.state === "output-available" ? exitCodeOf(part.output) : undefined;
   const stat = part.state === "output-available" ? diffStatOf(part.output) : undefined;
-  const body = part.state === "output-available" ? outputText(part.output) : undefined;
+  const child = part.state === "output-available" ? asChildMessage(part.output) : undefined;
+  const body = part.state === "output-available" && child == null ? outputText(part.output) : undefined;
 
   return (
     <div>
@@ -73,6 +118,10 @@ export function ToolRow({ part, onOpenFile }: { part: ToolPart; onOpenFile: (fil
           ) : null}
         </span>
       </button>
+
+      {child != null && (
+        <ChildTranscript parts={child} preliminary={part.state === "output-available" && part.preliminary === true} />
+      )}
 
       {display.file != null && part.state === "output-available" && (
         <div className="flex flex-wrap gap-2xs px-2xs py-3xs">

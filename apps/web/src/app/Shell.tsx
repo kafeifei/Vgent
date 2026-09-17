@@ -100,7 +100,7 @@ export function Shell({ token }: { token: string }) {
           onTab={actions.setRightTab}
           onClose={actions.toggleRight}
           client={client}
-          projectId={activeProjectId}
+          threadId={selectedThreadId}
           file={right.file}
           onSelectFile={actions.selectChange}
           refreshKey={thread?.updatedAt ?? ""}

@@ -13,13 +13,19 @@ export type {
   ChangesSnapshot,
   EngineId,
   FileDiff,
+  ModelCatalog,
+  ModelEntry,
   PermissionMode,
   Project,
   Settings,
   ThreadRecord,
   ThreadStatus,
   ThreadSummary,
+  ThreadWorkspace,
 } from "@vgent/server";
+
+/** What a new task asks for: the project's working tree, or its own worktree. */
+export type WorkspaceMode = "project" | "worktree";
 
 /** Payload of the `state` event on `GET /api/state`. */
 export type StateEvent = {

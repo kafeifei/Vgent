@@ -1,4 +1,4 @@
-import { getToolName, type DynamicToolUIPart, type ToolUIPart } from "ai";
+import { getToolName, type DynamicToolUIPart, type ToolUIPart, type UIMessage } from "ai";
 import { oneLine } from "@/lib/format";
 
 export type ToolPart = ToolUIPart | DynamicToolUIPart;
@@ -55,6 +55,10 @@ export function describeTool(part: ToolPart): ToolDisplay {
       const file = field(input, "file_path", "path");
       return { kind: "edit", verb: "编辑", target: file ?? "", ...(file != null ? { file } : {}) };
     }
+    case "explore":
+      return { kind: "agent", verb: "子代理·探索", target: oneLine(field(input, "prompt") ?? "", 100) };
+    case "coder":
+      return { kind: "agent", verb: "子代理·编码", target: oneLine(field(input, "task") ?? "", 100) };
     case "agent":
     case "task":
       return {
@@ -99,6 +103,20 @@ export function outputText(output: unknown): string | undefined {
   }
   return undefined;
 }
+
+/**
+ * A subagent tool's output is the child's own `UIMessage`, streamed part by
+ * part. Anything else — a plain object, a string — is not one.
+ */
+export function asChildMessage(output: unknown): UIMessage["parts"] | undefined {
+  if (typeof output !== "object" || output === null) return undefined;
+  const parts = (output as { parts?: unknown }).parts;
+  return Array.isArray(parts) ? (parts as UIMessage["parts"]) : undefined;
+}
+
+/** A child transcript part that is a tool call, as opposed to text or reasoning. */
+export const asChildToolPart = (part: UIMessage["parts"][number]): ToolPart | undefined =>
+  part.type === "dynamic-tool" || part.type.startsWith("tool-") ? (part as ToolPart) : undefined;
 
 /** True while the call is still waiting on the engine rather than on the human. */
 export const isToolStreaming = (part: ToolPart): boolean =>

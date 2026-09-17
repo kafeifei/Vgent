@@ -175,8 +175,11 @@ export function createRunManager(options: {
   };
 
   const runTurn = async (thread: ThreadRecord, incoming: UIMessage[], run: LiveRun): Promise<void> => {
-    const project = await projects.get(thread.projectId);
-    if (project == null) throw new NotFoundError(`项目不存在: ${thread.projectId}`, "project_not_found");
+    const stored = await projects.get(thread.projectId);
+    if (stored == null) throw new NotFoundError(`项目不存在: ${thread.projectId}`, "project_not_found");
+    // A worktree task sees its own directory as the repo. Nothing below the
+    // engine factories knows the difference — they all read `repoPath` only.
+    const project = thread.workspace != null ? { ...stored, repoPath: thread.workspace.path } : stored;
 
     const factory = registry[thread.engine];
     if (factory == null) throw new BadRequestError(`未知引擎: ${thread.engine}`, "unknown_engine");
@@ -278,6 +281,13 @@ export function createRunManager(options: {
           log,
         });
       }
+
+      // A runner with its own in-process tools has to convert the history with
+      // them: `toModelOutput` is what turns a stored subagent transcript back
+      // into the summary the model actually saw, and it only runs here. The
+      // first conversion above cannot do it — the runner does not exist yet,
+      // and picking it needs `continuesTurn`, which needs the conversion.
+      if (runner.tools != null) modelMessages = await convertToModelMessages(messages, { tools: runner.tools });
 
       const result = await runner.stream({ messages: modelMessages, abortSignal: run.abort.signal });
 
@@ -382,6 +392,9 @@ export function createRunManager(options: {
     async start(threadId, uiMessages) {
       const thread = await threads.get(threadId);
       if (thread == null) throw new NotFoundError(`线程不存在: ${threadId}`, "thread_not_found");
+      if (thread.workspace?.reclaimed === true) {
+        throw new ConflictError("此任务的工作目录已回收，请先恢复后再运行", "workspace_reclaimed");
+      }
       const active = runs.get(threadId);
       if (active != null) {
         if (!active.hub.closed) throw new ConflictError(`线程已在运行: ${threadId}`, "thread_running");

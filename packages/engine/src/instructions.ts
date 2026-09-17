@@ -1,4 +1,5 @@
 import type { PermissionMode } from "./permissions.js";
+import type { SkillSummary } from "./skills.js";
 
 const PERMISSION_DESCRIPTIONS: Record<PermissionMode, string> = {
   "allow-reads":
@@ -15,14 +16,48 @@ export interface BuildInstructionsOptions {
   permissionMode: PermissionMode;
   /** Caller-supplied guidance, appended verbatim after the built-in prompt. */
   extra?: string;
+  /** Whether the `explore` / `coder` subagent tools are in the tool set. */
+  subagents?: boolean;
+  /** Whether deferred tools (MCP servers) are reachable through `toolSearch`. */
+  toolSearch?: boolean;
+  /** Names and descriptions of the skills on this machine. Bodies are never inlined. */
+  skills?: readonly SkillSummary[];
+}
+
+const SUBAGENTS_SECTION = `Subagents:
+- \`explore\` runs a read-only research task in its own context and returns a summary. Use it when answering
+  would mean reading or searching many files: it keeps that cost out of this conversation. Say what you
+  already know so it does not repeat your work.
+- \`coder\` carries out one already-decided, mechanical change and returns a report. Decide the design
+  yourself first and hand it everything it needs — it cannot see this conversation and will stop and ask
+  rather than choose.
+- Both return only a summary, not their transcript. If you need a detail they did not report, ask again or
+  look yourself. Neither can ask the user anything; a step that would need approval fails inside them.`;
+
+const TOOL_SEARCH_SECTION = `Extra tools:
+- More tools than the ones described here are available but hidden. Call \`toolSearch\` with a few keywords
+  to find them by name and description; what it finds becomes callable on your next step.`;
+
+function skillsSection(skills: readonly SkillSummary[]): string {
+  const lines = skills.map((skill) => `- ${skill.name}: ${skill.description}（${skill.path}）`);
+  return `Available skills — instructions for specific kinds of work. This is only the index; \`read\` a
+skill's SKILL.md before relying on it, and only when the task actually matches it.
+${lines.join("\n")}`;
 }
 
 /**
  * The engine's system prompt. Kept deliberately short: rules the model can
  * actually follow beat an exhaustive policy it will skim.
  */
-export function buildInstructions({ repoPath, permissionMode, extra }: BuildInstructionsOptions): string {
-  const base = `You are Vgent, a coding agent working directly in a user's repository.
+export function buildInstructions({
+  repoPath,
+  permissionMode,
+  extra,
+  subagents,
+  toolSearch,
+  skills,
+}: BuildInstructionsOptions): string {
+  const head = `You are Vgent, a coding agent working directly in a user's repository.
 
 Working directory: ${repoPath}
 All tool paths are resolved relative to it and cannot escape it.
@@ -47,10 +82,18 @@ How to work:
   of several files they meant). Do not use it to narrate progress or to ask permission for a tool call —
   the permission system already handles that.
 - Prefer doing the work over describing it. Do not ask for confirmation of something you can just verify.
-- Verify what you changed when you can: run the narrowest relevant test or typecheck.
+- Verify what you changed when you can: run the narrowest relevant test or typecheck.`;
 
-When you are done, reply with a short summary: what changed, in which files, and anything the user still
+  const tail = `When you are done, reply with a short summary: what changed, in which files, and anything the user still
 has to decide. No preamble, no restating the request, no pasted diffs.`;
 
-  return extra == null || extra.trim() === "" ? base : `${base}\n\n${extra.trim()}`;
+  const sections = [
+    head,
+    ...(subagents === true ? [SUBAGENTS_SECTION] : []),
+    ...(toolSearch === true ? [TOOL_SEARCH_SECTION] : []),
+    ...(skills != null && skills.length > 0 ? [skillsSection(skills)] : []),
+    tail,
+    ...(extra == null || extra.trim() === "" ? [] : [extra.trim()]),
+  ];
+  return sections.join("\n\n");
 }

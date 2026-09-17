@@ -38,7 +38,7 @@ export function RightPane({
   onTab,
   onClose,
   client,
-  projectId,
+  threadId,
   file,
   onSelectFile,
   refreshKey,
@@ -50,7 +50,8 @@ export function RightPane({
   onTab: (tab: RightTab) => void;
   onClose: () => void;
   client: ApiClient;
-  projectId: string | null;
+  /** The task whose directory the 变更 tab diffs; nothing to show without one. */
+  threadId: string | null;
   file: string | null;
   onSelectFile: (path: string | null) => void;
   /** The thread's `updatedAt`: a new one means the engine wrote to disk. */
@@ -59,7 +60,7 @@ export function RightPane({
 }) {
   const changes = useChanges({
     client,
-    projectId,
+    threadId,
     active: open && tab === "changes",
     refreshKey,
     selected: file,

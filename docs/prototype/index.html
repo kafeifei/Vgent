@@ -1,0 +1,786 @@
+<!doctype html>
+<html lang="zh-CN" data-density="comfortable">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vgent 工作台原型</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="prototype.css">
+<script>
+  // 深色优先：默认永远深色，只有存过 vgent.theme === 'light' 才切浅色。不跟随系统。
+  try {
+    var t = localStorage.getItem('vgent.theme');
+    var d = localStorage.getItem('vgent.density');
+    if (t === 'light') document.documentElement.dataset.theme = 'light';
+    document.documentElement.dataset.density = d || 'comfortable';
+  } catch (e) {}
+</script>
+</head>
+<body>
+
+<!-- ══ 图标 sprite：零图片、零外部请求 ══════════════════════════════════ -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <g id="i-file"><path d="M4 2h5l3 3v9H4z"/><path d="M9 2v3h3"/></g>
+    <g id="i-search"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 14 14"/></g>
+    <g id="i-edit"><path d="M11.4 2.6a1.6 1.6 0 0 1 2.2 2.2L6.4 12 3 13l1-3.4z"/></g>
+    <g id="i-newfile"><path d="M4 2h5l3 3v9H4z"/><path d="M9 2v3h3"/><path d="M8 8v4M6 10h4"/></g>
+    <g id="i-term"><path d="M2.5 3h11v10h-11z"/><path d="m5 6.5 2 2-2 2M8.8 10.6H11"/></g>
+    <g id="i-agent"><circle cx="4" cy="4" r="1.6"/><circle cx="12" cy="8" r="1.6"/><circle cx="4" cy="12" r="1.6"/><path d="M5.4 4.8 10.6 7.4M5.4 11.2 10.6 8.6"/></g>
+    <g id="i-check"><path d="m3 8.4 3.2 3.2L13 5"/></g>
+    <g id="i-x"><path d="M4 4l8 8M12 4l-8 8"/></g>
+    <g id="i-undo"><path d="M3 8a5 5 0 1 0 1.6-3.7"/><path d="M3 3v3.2h3.2"/></g>
+    <g id="i-stop"><rect x="4.5" y="4.5" width="7" height="7" rx="1"/></g>
+    <g id="i-up"><path d="M8 13V3.5M3.8 7.7 8 3.5l4.2 4.2"/></g>
+    <g id="i-plus"><path d="M8 3.5v9M3.5 8h9"/></g>
+    <g id="i-gear"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.6v1.6M8 12.8v1.6M14.4 8h-1.6M3.2 8H1.6M12.5 3.5l-1.1 1.1M4.6 11.4l-1.1 1.1M12.5 12.5l-1.1-1.1M4.6 4.6 3.5 3.5"/></g>
+    <g id="i-sun"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.8M8 12.7v1.8M14.5 8h-1.8M3.3 8H1.5M12.6 3.4l-1.3 1.3M4.7 11.3l-1.3 1.3M12.6 12.6l-1.3-1.3M4.7 4.7 3.4 3.4"/></g>
+    <g id="i-moon"><path d="M13 9.5A5.6 5.6 0 0 1 6.5 3a5.6 5.6 0 1 0 6.5 6.5z"/></g>
+    <g id="i-density"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></g>
+    <g id="i-panel-r"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M10 3v10"/></g>
+    <g id="i-panel-l"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M6 3v10"/></g>
+    <g id="i-folder"><path d="M2 4.5h4l1.2 1.5H14v6.5H2z"/></g>
+    <!-- Cursor 3 版新增 -->
+    <g id="i-branch"><circle cx="4.5" cy="3.6" r="1.6"/><circle cx="4.5" cy="12.4" r="1.6"/><circle cx="11.5" cy="5.6" r="1.6"/><path d="M4.5 5.2v5.6M6.1 5.6h3.8c0 2-1.6 2.6-3.4 2.9"/></g>
+    <g id="i-cloud"><path d="M4.6 12.5a3 3 0 0 1-.2-6 4 4 0 0 1 7.6.9 2.6 2.6 0 0 1-.5 5.1z"/></g>
+    <g id="i-mic"><rect x="6" y="2" width="4" height="7.5" rx="2"/><path d="M3.6 8a4.4 4.4 0 0 0 8.8 0M8 12.4V14"/></g>
+    <g id="i-changes"><path d="M3 4.5h10M3 8h10M3 11.5h6"/><path d="M12 10.2v3.2M10.4 11.8h3.2"/></g>
+    <g id="i-tree"><path d="M3 3.2h4M3 6.4h4M5.5 9.6h4M5.5 12.8h4"/><path d="M3.5 3.2v9.6"/></g>
+    <g id="i-plan"><rect x="2.5" y="2.5" width="11" height="11" rx="2"/><path d="m5.2 8 1.6 1.6 3.6-3.6"/></g>
+    <g id="i-queue"><path d="M2.5 9.5h3l1 2h3l1-2h3"/><path d="M2.5 9.5 4.4 3.6h7.2l1.9 5.9v3.5a.9.9 0 0 1-.9.9H3.4a.9.9 0 0 1-.9-.9z"/></g>
+    <g id="i-chev-l"><path d="M10 3.5 5.5 8l4.5 4.5"/></g>
+    <g id="i-chev-r"><path d="M6 3.5 10.5 8 6 12.5"/></g>
+    <g id="i-sidechat"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z"/><path d="M8 5.2v3.6M6.2 7h3.6"/></g>
+  </defs>
+</svg>
+
+<div class="app" id="app" data-left="on" data-right="off">
+
+  <!-- ══ 窗口条 36px：只剩品牌 / 项目分支 / 密度 / 主题 / ⌘K（设置搬到左栏底） ══ -->
+  <header class="titlebar">
+    <span class="brand"><span class="brand-mark">V</span>Vgent</span>
+    <span class="tb-sep"></span>
+    <button class="repo-switch" data-act="pop" data-pop="repo">
+      <svg class="icon icon-sm"><use href="#i-folder"/></svg>
+      <b data-slot>vgent</b><span class="branch">feat/web-proto</span><span class="caret faint">▾</span>
+    </button>
+
+    <span class="tb-spacer"></span>
+
+    <button class="tb-btn" data-act="density" title="密度（舒适 / 紧凑）">
+      <svg class="icon icon-sm"><use href="#i-density"/></svg><span id="density-label">舒适</span>
+    </button>
+    <button class="tb-btn" data-act="theme" title="主题">
+      <svg class="icon icon-sm" id="theme-icon"><use href="#i-moon"/></svg><span id="theme-label">深色</span>
+    </button>
+    <button class="tb-btn" data-act="cmdk"><kbd>⌘K</kbd></button>
+  </header>
+
+  <div class="shell">
+
+    <!-- ══ 左栏 240px / 48px 图标条 ═══════════════════════════════════ -->
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <button class="btn-new" data-act="new-task" data-title="新任务">
+          <svg class="icon icon-sm"><use href="#i-plus"/></svg><span class="lbl">新任务</span>
+          <span class="kbd-hint">⌘N</span>
+        </button>
+      </div>
+
+      <div class="list-ctl">
+        <button class="groupby" data-act="pop" data-pop="groupby">
+          <span class="lbl">分组</span><span class="v" data-slot>按项目</span><span class="caret">▾</span>
+        </button>
+      </div>
+
+      <!-- 分组标题由 JS 依据 data-repo / data-state / data-ts 重排生成 -->
+      <nav class="task-list" id="task-list">
+
+        <button class="task" aria-current="true" data-act="select-task"
+                data-repo="kafeifei/vgent" data-state="running" data-env="worktree" data-ts="2"
+                data-title="给 Web 端定三栏布局和 design token">
+          <span class="task-top">
+            <span class="dot" data-state="running"></span>
+            <span class="task-title trunc">给 Web 端定三栏布局和 design token</span>
+            <svg class="icon icon-sm env"><use href="#i-branch"/></svg>
+          </span>
+          <span class="task-meta">
+            <span class="act trunc">正在读 docs/architecture.md</span>
+            <span class="dur mono">2m 14s</span>
+          </span>
+        </button>
+
+        <button class="task" data-act="select-task"
+                data-repo="kafeifei/vgent" data-state="approval" data-env="local" data-ts="14"
+                data-title="清掉 dist 重新全量构建">
+          <span class="task-top">
+            <span class="dot" data-state="approval"></span>
+            <span class="task-title trunc">清掉 dist 重新全量构建</span>
+          </span>
+          <span class="task-meta">
+            <span class="act trunc">等待批准 rm -rf dist</span>
+            <span class="dur mono">14m</span>
+          </span>
+        </button>
+
+        <button class="task" data-act="select-task"
+                data-repo="kafeifei/vgent" data-state="question" data-env="worktree" data-ts="22"
+                data-title="续流断点存储方案调研">
+          <span class="task-top">
+            <span class="dot" data-state="question"></span>
+            <span class="task-title trunc">续流断点存储方案调研</span>
+            <svg class="icon icon-sm env"><use href="#i-branch"/></svg>
+          </span>
+          <span class="task-meta">
+            <span class="act trunc">等待回答 · 2 个问题</span>
+            <span class="dur mono">22m</span>
+          </span>
+        </button>
+
+        <button class="task" data-act="select-task"
+                data-repo="kafeifei/vgent" data-state="done" data-env="local" data-ts="60"
+                data-title="把 local-sandbox 的错误文案换成中文">
+          <span class="task-top">
+            <span class="dot" data-state="done"></span>
+            <span class="task-title trunc">把 local-sandbox 的错误文案换成中文</span>
+          </span>
+          <span class="task-meta">
+            <span>1 小时前</span>
+            <span class="stat"><span class="add">+48</span><span class="del">−12</span></span>
+          </span>
+        </button>
+
+        <button class="task" data-act="select-task"
+                data-repo="kafeifei/freecode" data-state="running" data-env="worktree" data-ts="6"
+                data-title="抽出 taskChats 的续流逻辑">
+          <span class="task-top">
+            <span class="dot" data-state="running"></span>
+            <span class="task-title trunc">抽出 taskChats 的续流逻辑</span>
+            <svg class="icon icon-sm env"><use href="#i-branch"/></svg>
+          </span>
+          <span class="task-meta">
+            <span class="act trunc">正在跑 pnpm test</span>
+            <span class="dur mono">5m 02s</span>
+          </span>
+        </button>
+
+        <button class="task" data-act="select-task"
+                data-repo="kafeifei/freecode" data-state="done" data-env="worktree" data-ts="1140"
+                data-title="线程持久化改成一线程一文件">
+          <span class="task-top">
+            <span class="dot" data-state="done"></span>
+            <span class="task-title trunc">线程持久化改成一线程一文件</span>
+            <svg class="icon icon-sm env"><use href="#i-branch"/></svg>
+          </span>
+          <span class="task-meta">
+            <span>昨天 17:02</span>
+            <span class="stat"><span class="add">+212</span><span class="del">−77</span></span>
+          </span>
+        </button>
+
+        <button class="task" data-act="select-task"
+                data-repo="vercel/ai" data-state="running" data-env="local" data-ts="1"
+                data-title="升级 ToolLoopAgent 到 v7">
+          <span class="task-top">
+            <span class="dot" data-state="running"></span>
+            <span class="task-title trunc">升级 ToolLoopAgent 到 v7</span>
+          </span>
+          <span class="task-meta">
+            <span class="act trunc">正在编辑 packages/ai/src/agent.ts</span>
+            <span class="dur mono">38s</span>
+          </span>
+        </button>
+
+        <button class="task" data-act="select-task"
+                data-repo="vercel/ai" data-state="failed" data-env="local" data-ts="1160"
+                data-title="接 Codex 订阅 provider 的 token 刷新">
+          <span class="task-top">
+            <span class="dot" data-state="failed"></span>
+            <span class="task-title trunc">接 Codex 订阅 provider 的 token 刷新</span>
+          </span>
+          <span class="task-meta">
+            <span>昨天 21:40 · 失败</span>
+            <span class="stat"><span class="add">+9</span><span class="del">−4</span></span>
+          </span>
+        </button>
+
+        <button class="task" data-act="select-task"
+                data-repo="vercel/ai" data-state="done" data-env="worktree" data-ts="7200"
+                data-title="试装 @ai-sdk/tui 到 apps/cli">
+          <span class="task-top">
+            <span class="dot" data-state="done"></span>
+            <span class="task-title trunc">试装 @ai-sdk/tui 到 apps/cli</span>
+            <svg class="icon icon-sm env"><use href="#i-branch"/></svg>
+          </span>
+          <span class="task-meta">
+            <span>5 天前</span>
+          </span>
+        </button>
+
+      </nav>
+
+      <div class="sidebar-foot">
+        <span class="avatar">K</span>
+        <span class="me trunc">kafeifei</span>
+        <button class="icon-btn" data-act="settings" title="设置" data-title="设置">
+          <svg class="icon icon-sm"><use href="#i-gear"/></svg>
+        </button>
+      </div>
+    </aside>
+
+    <!-- ══ 中栏 ═══════════════════════════════════════════════════════ -->
+    <main class="main" id="main">
+
+      <!-- ─ 任务头 ─ -->
+      <div class="task-head" id="task-head">
+        <span class="task-head-title trunc" contenteditable="true" spellcheck="false">给 Web 端定三栏布局和 design token</span>
+
+        <button class="pill" data-act="pop" data-pop="engine">
+          <span class="k">引擎</span><span class="v" data-slot>Claude Code</span><span class="caret">▾</span>
+        </button>
+        <button class="pill" data-act="pop" data-pop="model">
+          <span class="k">模型</span><span class="v" data-slot>claude-sonnet-4.5</span><span class="caret">▾</span>
+        </button>
+        <button class="pill" data-act="pop" data-pop="perm">
+          <span class="k">权限</span><span class="v" data-slot>allow-reads</span><span class="caret">▾</span>
+        </button>
+        <button class="pill" data-act="pop" data-pop="worktree">
+          <span class="k">worktree</span><span class="v" data-slot>feat/web-proto</span><span class="caret">▾</span>
+        </button>
+
+        <span class="spacer"></span>
+
+        <button class="icon-btn" data-act="pop" data-pop="sidechat" title="侧聊 /side">
+          <svg class="icon"><use href="#i-plus"/></svg>
+        </button>
+        <button class="btn-stop" data-act="stop" id="btn-stop">
+          <svg class="icon icon-sm"><use href="#i-stop"/></svg>停止
+        </button>
+        <button class="icon-btn" data-act="toggle-right" aria-pressed="false" title="右栏 ⌘J">
+          <svg class="icon"><use href="#i-panel-r"/></svg>
+          <span class="badge">3</span>
+        </button>
+      </div>
+
+      <!-- ─ 工作日志 ─ -->
+      <div class="log" id="log">
+        <div class="log-inner" id="log-inner">
+
+          <!-- ── 第一轮：已收口 ───────────────────────────────────── -->
+          <section class="turn">
+            <div class="usermsg" data-role="usermsg">
+              <p>把 Web 端的三栏布局和 design token 定下来。参考
+                <span class="ref-chip">@docs/architecture.md</span>
+                的前端章节，别继承
+                <span class="ref-chip">@../freecode</span>
+                的视觉。</p>
+              <button class="ckpt" data-act="checkpoint">回退到此处</button>
+            </div>
+
+            <details class="reason">
+              <summary><span class="tri">▸</span>思考了 4s</summary>
+              <div class="reason-body">
+                先确认 architecture.md 里对布局的既有约定，再看现有包里有没有已经落过 token 的地方。
+                用户明确要求不复用 freecode 的视觉，所以只读它的线程状态逻辑，不看它的样式文件。
+              </div>
+            </details>
+
+            <!-- 一轮结束后，工具行全部折进这一行 -->
+            <div class="fold" data-open="false">
+              <button class="fold-sum" data-act="fold">
+                <span class="tri">▸</span><span>工作了 5m 38s</span>
+              </button>
+              <div class="fold-body">
+
+                <div class="trow" data-open="false">
+                  <button class="trow-sum" data-act="trow">
+                    <span class="tri">▸</span><span class="verb">读取</span>
+                    <span class="target trunc">docs/architecture.md</span>
+                    <span class="right">1.2s</span>
+                  </button>
+                  <div class="trow-body">
+                    读取 <span class="mono">L70–L121</span>（共 214 行），只取「前端 <span class="mono">@vgent/web</span>」一节。
+                  </div>
+                </div>
+
+                <div class="trow" data-open="false">
+                  <button class="trow-sum" data-act="trow">
+                    <span class="tri">▸</span><span class="verb">读取</span>
+                    <span class="target trunc">packages/engine/src/index.ts</span>
+                    <span class="right">0.4s</span>
+                  </button>
+                  <div class="trow-body">读取 <span class="mono">L1–L48</span>（共 186 行）。</div>
+                </div>
+
+                <div class="trow" data-open="false">
+                  <button class="trow-sum" data-act="trow">
+                    <span class="tri">▸</span><span class="verb">搜索</span>
+                    <span class="target trunc">"createVgentEngine"</span>
+                    <span class="right">12 个结果 · 0.3s</span>
+                  </button>
+                  <div class="trow-body">
+                    <div class="hits">
+                      <div class="hit"><span class="loc">packages/engine/src/index.ts:24</span><span class="trunc">export function <mark>createVgentEngine</mark>(opts: EngineOptions) {</span></div>
+                      <div class="hit"><span class="loc">packages/engine/src/index.ts:91</span><span class="trunc">return <mark>createVgentEngine</mark>({ ...opts, sandbox })</span></div>
+                      <div class="hit"><span class="loc">packages/engines/src/registry.ts:12</span><span class="trunc">import { <mark>createVgentEngine</mark> } from '@vgent/engine'</span></div>
+                      <div class="hit"><span class="loc">packages/server/src/chat.ts:31</span><span class="trunc">const agent = await <mark>createVgentEngine</mark>(...)</span></div>
+                      <div class="hit faint"><span class="loc">… 还有 8 处</span></div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 文件改动不是文字行，是 chip -->
+                <div class="fchips">
+                  <button class="fchip" data-act="open-diff" data-file="tokens">
+                    <span class="fname mono">tokens.css</span><span class="add">+84</span>
+                  </button>
+                  <button class="fchip" data-act="open-diff" data-file="chat">
+                    <span class="fname mono">chat.ts</span><span class="add">+12</span><span class="del">−3</span>
+                  </button>
+                  <button class="fchip" data-act="open-diff" data-file="app">
+                    <span class="fname mono">App.tsx</span><span class="add">+6</span><span class="del">−6</span>
+                  </button>
+                </div>
+
+                <div class="trow" data-open="false">
+                  <button class="trow-sum" data-act="trow">
+                    <span class="tri">▸</span><span class="verb mono">$</span>
+                    <span class="target trunc">pnpm build</span>
+                    <span class="right">exit 0 · 3.4s</span>
+                  </button>
+                  <div class="trow-body">
+<pre class="term">$ pnpm build
+<span class="faint">Scope: 7 of 8 workspace projects</span>
+packages/tools      build: <span class="ok">done</span>   0.9s
+packages/engine     build: <span class="ok">done</span>   1.2s
+apps/web            build: <span class="ok">done</span>   0.4s
+<span class="ok">✔ 7 packages built in 3.4s</span></pre>
+                  </div>
+                </div>
+
+                <!-- 子代理：一行，展开后嵌套子工具行 -->
+                <div class="trow" data-open="false">
+                  <button class="trow-sum" data-act="trow">
+                    <span class="tri">▸</span><span class="verb">子代理</span>
+                    <span class="target trunc">Explore · 查找续流实现</span>
+                    <span class="right">4 步 · 51s</span>
+                  </button>
+                  <div class="trow-body">
+                    <div class="subflow">
+                      <div class="subrow"><span class="verb">搜索</span><span class="target trunc">"prepareReconnectToStreamRequest"</span><span class="right">4 个结果</span></div>
+                      <div class="subrow"><span class="verb">读取</span><span class="target trunc">../freecode/src/taskChats.ts</span><span class="right">L120–L210</span></div>
+                      <div class="subrow"><span class="verb">读取</span><span class="target trunc">node_modules/ai/docs/04-ai-sdk-ui/03-chatbot-resume.mdx</span><span class="right">0.3s</span></div>
+                    </div>
+                  </div>
+                </div>
+
+              </div><!-- /fold-body -->
+            </div><!-- /fold -->
+
+            <!-- 收口后的总结正文 -->
+            <div class="prose">
+              <p><strong>总结</strong></p>
+              <ul>
+                <li>把全部视觉常量收进 <button class="fref mono" data-act="open-diff" data-file="tokens">tokens.css:1-84</button>，
+                  分原始色阶和语义层两层，组件只许引用语义层。</li>
+                <li>三栏骨架落在 <button class="fref mono" data-act="open-diff" data-file="app">App.tsx:12-18</button>，
+                  左栏 240px、右栏 380px 默认收起。</li>
+                <li>主题 / 密度偏好随流下发，改的是
+                  <button class="fref mono" data-act="open-diff" data-file="chat">chat.ts:88-120</button> 的
+                  <code>messageMetadata</code>。</li>
+                <li>accent 只留琥珀一个，状态色压低彩度避免和 diff 红绿打架。</li>
+              </ul>
+              <p><strong>测试</strong></p>
+              <ul class="tests">
+                <li><span class="tick">✅</span> <code>pnpm build</code> —— 7 个包全过，产物里能看到 tokens 文件。
+                  <button class="fref mono" data-act="open-term">terminal:1-14</button></li>
+                <li><span class="tick">✅</span> <code>pnpm --filter @vgent/server test</code> —— 续流用例没被这次改动影响。
+                  <button class="fref mono" data-act="open-term">terminal:15-31</button></li>
+                <li><span class="tick">⚠️</span> 浅色主题只在 Chrome 里肉眼看过，没有对比度自动校验；
+                  真接上 Tailwind 后要补一次 <code>@theme inline</code> 的快照测试。</li>
+              </ul>
+            </div>
+          </section>
+
+          <!-- ── 第二轮：运行中，不折叠 ──────────────────────────────── -->
+          <section class="turn">
+            <div class="usermsg" data-role="usermsg">
+              <p>顺手把 <span class="ref-chip">@dist</span> 清掉重新构建一次，确认 token 文件进了产物。
+                顺带回答我一下续流那两个问题。</p>
+              <button class="ckpt" data-act="checkpoint">回退到此处</button>
+            </div>
+
+            <!-- 审批卡片：就地，warning 弱底 + 三按钮（Cursor 没有，是我们引擎需要的） -->
+            <article class="tool" data-open="true" data-status="await" id="tool-approval">
+              <button class="tool-sum" data-act="tool">
+                <span class="tri">▸</span>
+                <svg class="icon icon-sm"><use href="#i-term"/></svg>
+                <span class="verb mono">$</span>
+                <span class="target trunc">rm -rf dist &amp;&amp; pnpm build</span>
+                <span class="right"><span data-slot="status">等待批准</span></span>
+              </button>
+              <div class="tool-body">
+                <div data-role="await">
+                  <div class="approve-hint">
+                    当前权限模式 <span class="mono">allow-reads</span> 不放行写操作。
+                    这条命令会删除 <span class="mono">dist/</span>（4 个包，约 2.1 MB）。
+                  </div>
+                  <div class="approve-row">
+                    <button class="btn btn-primary" data-act="approve">允许</button>
+                    <button class="btn btn-danger" data-act="deny">拒绝</button>
+                    <button class="btn" data-act="approve-always">本任务内一直允许</button>
+                  </div>
+                </div>
+                <div data-role="done" hidden>
+<pre class="term">$ rm -rf dist &amp;&amp; pnpm build
+<span class="faint">Scope: 7 of 8 workspace projects</span>
+<span class="ok">✔ 7 packages built in 4.1s</span>
+apps/web/dist/assets/tokens-8f2a1c.css   6.4 kB</pre>
+                </div>
+              </div>
+            </article>
+
+            <!-- 提问卡片：Cursor 式编号选项 + 翻页 -->
+            <article class="ask" id="ask-card" data-i="1">
+              <div data-role="form">
+                <div class="ask-head">
+                  <span class="ask-title">问题 <span data-slot="i">1</span> / 2</span>
+                  <span class="ask-nav">
+                    <button data-act="ask-prev" aria-label="上一个"><svg class="icon icon-sm"><use href="#i-chev-l"/></svg></button>
+                    <button data-act="ask-next" aria-label="下一个"><svg class="icon icon-sm"><use href="#i-chev-r"/></svg></button>
+                  </span>
+                </div>
+
+                <div class="ask-page" data-page="1">
+                  <div class="ask-q">续流断点用哪种存储？</div>
+                  <label class="ask-opt"><input type="radio" name="q1" value="内存 chunk hub" checked>
+                    <span class="num">1</span>
+                    <span class="txt">内存 chunk hub<span class="sub">每轮一个，进程重启后丢；最简单，和 freecode 现在一致</span></span></label>
+                  <label class="ask-opt"><input type="radio" name="q1" value="一线程一文件追加">
+                    <span class="num">2</span>
+                    <span class="txt">一线程一文件追加<span class="sub">写 <span class="mono">~/.vgent/threads/&lt;id&gt;.jsonl</span>，重启可续；多一次 fsync</span></span></label>
+                  <label class="ask-opt"><input type="radio" name="q1" value="SQLite WAL">
+                    <span class="num">3</span>
+                    <span class="txt">SQLite WAL<span class="sub">最稳，但要引依赖，和"无数据库"的定位冲突</span></span></label>
+                  <input class="ask-free" placeholder="或者自己写一句…">
+                </div>
+
+                <div class="ask-page" data-page="2" hidden>
+                  <div class="ask-q">断点保留多久？</div>
+                  <label class="ask-opt"><input type="radio" name="q2" value="只留当前轮" checked>
+                    <span class="num">1</span>
+                    <span class="txt">只留当前轮<span class="sub">新一轮开始就丢弃，占用最小</span></span></label>
+                  <label class="ask-opt"><input type="radio" name="q2" value="留 24 小时">
+                    <span class="num">2</span>
+                    <span class="txt">留 24 小时<span class="sub">关掉浏览器第二天还能接上；要一个清理定时器</span></span></label>
+                  <label class="ask-opt"><input type="radio" name="q2" value="跟线程同生命周期">
+                    <span class="num">3</span>
+                    <span class="txt">跟线程同生命周期<span class="sub">线程删了才删；磁盘会慢慢涨</span></span></label>
+                  <input class="ask-free" placeholder="或者自己写一句…">
+                </div>
+
+                <div class="ask-foot">
+                  <button class="btn" data-act="ask-skip">跳过</button>
+                  <button class="btn btn-primary" data-act="ask-submit">继续</button>
+                </div>
+              </div>
+
+              <div class="ask-answered" data-role="answered" hidden>
+                <svg class="icon icon-sm"><use href="#i-check"/></svg>
+                <span>你回答了：<span data-slot="answer"></span></span>
+                <button class="btn btn-xs" data-act="ask-reopen">改</button>
+              </div>
+            </article>
+
+            <!-- 运行中的一轮：工具行直接露着，最后一行带 spinner -->
+            <div class="trow" data-open="false">
+              <button class="trow-sum" data-act="trow">
+                <span class="tri">▸</span><span class="verb">读取</span>
+                <span class="target trunc">packages/server/src/chat-stream.ts</span>
+                <span class="right">0.3s</span>
+              </button>
+              <div class="trow-body">读取 <span class="mono">L1–L96</span>（共 240 行）。</div>
+            </div>
+
+            <div class="trow" data-open="false">
+              <button class="trow-sum" data-act="trow">
+                <span class="tri">▸</span><span class="verb">搜索</span>
+                <span class="target trunc">"resumeStream"</span>
+                <span class="right">5 个结果 · 0.2s</span>
+              </button>
+              <div class="trow-body">命中集中在 <span class="mono">chat-stream.ts</span> 和它的测试里。</div>
+            </div>
+
+            <div class="trow" data-open="false" id="trow-running">
+              <button class="trow-sum" data-act="trow">
+                <span class="tri">▸</span><span class="spin"></span><span class="verb mono">$</span>
+                <span class="target trunc">pnpm test</span>
+                <span class="right">12s</span>
+              </button>
+              <div class="trow-body">
+<pre class="term">$ pnpm test
+ ✓ packages/tools/test/resolve-path.test.ts (14)
+ ✓ packages/engine/test/approval.test.ts (9)
+ <span class="warn">↻ packages/server/test/chat-stream.test.ts</span>  运行中…</pre>
+              </div>
+            </div>
+
+          </section>
+
+        </div><!-- /log-inner -->
+      </div><!-- /log -->
+
+      <!-- 新内容浮标 -->
+      <button class="fab" id="fab" data-act="to-bottom" hidden>↓ 有新内容</button>
+
+      <!-- ─ Composer（上方常驻审查条） ─ -->
+      <div class="composer-wrap">
+        <div class="composer-stack">
+
+          <div class="review-bar">
+            <button class="rpill" data-act="open-right">
+              <span>审查</span><span class="add">+1180</span><span class="del">−21</span>
+            </button>
+            <button class="mini" data-act="pop" data-pop="runloc">
+              <span class="v" data-slot>本机</span><span class="caret">▾</span>
+            </button>
+            <span class="spacer"></span>
+            <span class="ctxring" tabindex="0" aria-label="上下文窗口占用 42%">
+              <svg class="ring" viewBox="0 0 16 16" aria-hidden="true">
+                <circle class="ring-bg" cx="8" cy="8" r="6"/>
+                <circle class="ring-fg" cx="8" cy="8" r="6"/>
+              </svg>
+              <span class="ring-n mono">42%</span>
+              <span class="tip">
+                <b>上下文窗口 42%</b>
+                <span><span>系统提示</span><span class="mono">6%</span></span>
+                <span><span>工具</span><span class="mono">11%</span></span>
+                <span><span>对话</span><span class="mono">25%</span></span>
+              </span>
+            </span>
+          </div>
+
+          <div class="composer" id="composer">
+            <textarea id="input" rows="2" placeholder="规划、构建，/ 输入命令，@ 引用上下文"></textarea>
+
+            <div class="composer-bar">
+              <button class="round-btn" data-act="pop" data-pop="attach" aria-label="添加上下文">
+                <svg class="icon icon-sm"><use href="#i-plus"/></svg>
+              </button>
+              <button class="mini" data-act="pop" data-pop="mode"><span class="v" data-slot>Agent</span><span class="caret">▾</span></button>
+              <button class="mini" data-act="pop" data-pop="model2">
+                <span class="v" data-slot>sonnet-4.5</span><span class="sep-dot">◑</span><span class="speed" data-slot2>快速</span><span class="caret">▾</span>
+              </button>
+              <span class="spacer"></span>
+              <button class="icon-btn" data-act="mic" aria-label="语音输入"><svg class="icon icon-sm"><use href="#i-mic"/></svg></button>
+              <button class="btn-send" data-act="send" id="btn-send" data-running="true" aria-label="发送">
+                <svg class="icon i-send"><use href="#i-up"/></svg>
+                <svg class="icon i-halt"><use href="#i-stop"/></svg>
+              </button>
+            </div>
+
+            <div class="at-menu" id="at-menu" hidden></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ─ 空状态上半：品牌一行 + 三个 picker（点「新任务」切过来） ─ -->
+      <div class="empty" id="empty" hidden>
+        <div class="brandline">
+          <span class="brand-mark">V</span>
+          <span>Vgent · 描述一个目标，它在你选的运行位置里做完</span>
+        </div>
+        <div class="pickers">
+          <button class="epick" data-act="pop" data-pop="repo"><span class="v" data-slot>vgent</span><span class="caret">▾</span></button>
+          <button class="epick" data-act="pop" data-pop="runloc2"><span class="v" data-slot>本机</span><span class="caret">▾</span></button>
+          <span class="spacer"></span>
+          <button class="epick" data-act="pop" data-pop="branch"><span class="v mono" data-slot>main</span><span class="caret">▾</span></button>
+        </div>
+      </div>
+
+      <!-- ─ 空状态下半：两个建议按钮（grid order 排到 composer 之后） ─ -->
+      <div class="empty-sug" id="empty-sug" hidden>
+        <button class="sug" data-act="use-sug">规划一个想法<span class="kbd-hint">⇧Tab</span></button>
+        <button class="sug" data-act="open-editor">打开编辑器</button>
+      </div>
+
+    </main>
+
+    <!-- ══ 右栏 380px，默认收起，图标 tab ═════════════════════════════ -->
+    <aside class="rightpane" id="rightpane">
+      <div class="tabs" role="tablist">
+        <button class="tab" role="tab" aria-selected="true" data-act="tab" data-tab="changes" data-title="变更">
+          <svg class="icon"><use href="#i-changes"/></svg><span class="cnt">3</span>
+        </button>
+        <button class="tab" role="tab" aria-selected="false" data-act="tab" data-tab="files" data-title="文件">
+          <svg class="icon"><use href="#i-tree"/></svg>
+        </button>
+        <button class="tab" role="tab" aria-selected="false" data-act="tab" data-tab="term" data-title="终端">
+          <svg class="icon"><use href="#i-term"/></svg>
+        </button>
+        <button class="tab" role="tab" aria-selected="false" data-act="tab" data-tab="plan" data-title="计划">
+          <svg class="icon"><use href="#i-plan"/></svg>
+        </button>
+        <button class="tab" role="tab" aria-selected="false" data-act="tab" data-tab="queue" data-title="队列">
+          <svg class="icon"><use href="#i-queue"/></svg><span class="cnt">2</span>
+        </button>
+        <button class="icon-btn close" data-act="toggle-right" aria-label="收起 ⌘J"><svg class="icon"><use href="#i-x"/></svg></button>
+      </div>
+
+      <!-- 变更 -->
+      <div class="pane" data-pane="changes">
+        <div class="pane-head">
+          <span class="t">3 个文件 · <span class="add">+1180</span> <span class="del">−21</span></span>
+          <span class="right">
+            <button class="btn btn-xs" data-act="pop" data-pop="commit">提交<span class="caret">▾</span></button>
+          </span>
+        </div>
+
+        <div class="tree-dir" data-depth="0">apps/web/src</div>
+        <div class="pane-file" aria-expanded="false" data-depth="1">
+          <div class="file-row" data-act="pane-file" data-file="tokens">
+            <span class="path trunc mono">tokens.css</span>
+            <span class="stat"><span class="add">+84</span></span>
+          </div>
+          <div class="diff-wrap" hidden>
+            <div class="diff-head">
+              <span class="mono trunc">apps/web/src/tokens.css</span>
+              <button class="btn btn-xs btn-danger" data-act="revert-file">还原此文件</button>
+            </div>
+            <div class="diff pane-diff">
+              <div class="dl" data-k="hunk"><span class="ln">@@</span><span class="tx">@@ -0,0 +1,84 @@</span></div>
+              <div class="dl" data-k="add"><span class="ln">1</span><span class="tx">+:root {</span></div>
+              <div class="dl" data-k="add"><span class="ln">2</span><span class="tx">+  --color-bg: var(--neutral-950);</span></div>
+              <div class="dl" data-k="add"><span class="ln">3</span><span class="tx">+  --color-fg: var(--neutral-100);</span></div>
+              <div class="dl" data-k="add"><span class="ln">4</span><span class="tx">+  --color-accent: var(--amber-400);</span></div>
+              <div class="dl" data-k="add"><span class="ln">5</span><span class="tx">+}</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="pane-file" aria-expanded="false" data-depth="1">
+          <div class="file-row" data-act="pane-file" data-file="app">
+            <span class="path trunc mono">App.tsx</span>
+            <span class="stat"><span class="add">+6</span><span class="del">−6</span></span>
+          </div>
+          <div class="diff-wrap" hidden>
+            <div class="diff-head">
+              <span class="mono trunc">apps/web/src/App.tsx</span>
+              <button class="btn btn-xs btn-danger" data-act="revert-file">还原此文件</button>
+            </div>
+            <div class="diff pane-diff">
+              <div class="dl" data-k="hunk"><span class="ln">@@</span><span class="tx">@@ -12,6 +12,6 @@</span></div>
+              <div class="dl" data-k="del"><span class="ln">12</span><span class="tx">-import './index.css'</span></div>
+              <div class="dl" data-k="add"><span class="ln">12</span><span class="tx">+import './tokens.css'</span></div>
+              <div class="dl" data-k="add"><span class="ln">13</span><span class="tx">+import './index.css'</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tree-dir" data-depth="0">packages/server/src</div>
+        <div class="pane-file" aria-expanded="false" data-depth="1">
+          <div class="file-row" data-act="pane-file" data-file="chat">
+            <span class="path trunc mono">chat.ts</span>
+            <span class="stat"><span class="add">+12</span><span class="del">−3</span></span>
+          </div>
+          <div class="diff-wrap" hidden>
+            <div class="diff-head">
+              <span class="mono trunc">packages/server/src/chat.ts</span>
+              <button class="btn btn-xs btn-danger" data-act="revert-file">还原此文件</button>
+            </div>
+            <div class="diff pane-diff">
+              <div class="dl" data-k="hunk"><span class="ln">@@</span><span class="tx">@@ -28,9 +28,18 @@</span></div>
+              <div class="dl" data-k="del"><span class="ln">29</span><span class="tx">-  return createAgentUIStreamResponse({ agent })</span></div>
+              <div class="dl" data-k="add"><span class="ln">29</span><span class="tx">+  const prefs = await ctx.settings.readUiPrefs()</span></div>
+              <div class="dl" data-k="add"><span class="ln">30</span><span class="tx">+  return createAgentUIStreamResponse({ agent, messageMetadata })</span></div>
+            </div>
+          </div>
+        </div>
+
+        <p class="pane-note faint">引擎直接写盘，这里没有「接受」——只有还原。</p>
+      </div>
+
+      <!-- 文件（只读树 + 预览） -->
+      <div class="pane" data-pane="files" hidden>
+        <div class="pane-head"><span class="t">工作区文件</span></div>
+        <div class="ftree">
+          <div class="tree-dir" data-depth="0">docs/prototype</div>
+          <button class="tree-file" data-depth="1" data-act="noop"><span class="mono trunc">index.html</span></button>
+          <button class="tree-file" data-depth="1" data-act="noop" aria-current="true"><span class="mono trunc">tokens.css</span></button>
+          <button class="tree-file" data-depth="1" data-act="noop"><span class="mono trunc">prototype.css</span></button>
+          <div class="tree-dir" data-depth="0">packages/server/src</div>
+          <button class="tree-file" data-depth="1" data-act="noop"><span class="mono trunc">chat.ts</span></button>
+          <button class="tree-file" data-depth="1" data-act="noop"><span class="mono trunc">chat-stream.ts</span></button>
+        </div>
+        <div class="preview">
+          <div class="preview-head mono trunc">docs/prototype/tokens.css</div>
+          <div class="code">
+            <div class="cl"><span class="ln">1</span><span class="tx">:root {</span></div>
+            <div class="cl"><span class="ln">2</span><span class="tx">  --neutral-950: oklch(0.158 0.005 75);</span></div>
+            <div class="cl"><span class="ln">3</span><span class="tx">  --amber-400:   oklch(0.800 0.155 72);</span></div>
+            <div class="cl"><span class="ln">4</span><span class="tx"></span></div>
+            <div class="cl"><span class="ln">5</span><span class="tx">  --color-bg:          var(--neutral-950);</span></div>
+            <div class="cl"><span class="ln">6</span><span class="tx">  --color-bg-elevated: var(--neutral-900);</span></div>
+            <div class="cl"><span class="ln">7</span><span class="tx">  --color-fg:          var(--neutral-100);</span></div>
+            <div class="cl"><span class="ln">8</span><span class="tx">  --color-accent:      var(--amber-400);</span></div>
+            <div class="cl"><span class="ln">9</span><span class="tx">}</span></div>
+            <div class="cl"><span class="ln">10</span><span class="tx"></span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 终端 -->
+      <div class="pane" data-pane="term" hidden>
+        <div class="pane-head"><span class="t">最近命令</span></div>
+<pre class="term">$ pnpm build
+<span class="ok">✔ 7 packages built in 3.4s</span>
+
+$ pnpm test
+ ✓ packages/tools/test/resolve-path.test.ts (14)
+ ✓ packages/engine/test/approval.test.ts (9)
+ <span class="warn">↻ packages/server/test/chat-stream.test.ts</span> 运行中…</pre>
+      </div>
+
+      <!-- 计划：Cursor 式计划文档 -->
+      <div class="pane" data-pane="plan" hidden>
+        <div class="pane-head">
+          <span class="t">计划</span>
+          <span class="right"><button class="btn btn-xs btn-primary" data-act="build-plan">构建</button></span>
+        </div>
+        <h2 class="plan-title">Web 端三栏工作台</h2>
+        <p class="plan-desc">
+          先把视觉常量锁进一个 token 文件，再搭三栏骨架，最后把 token 映射成 Tailwind v4 的
+          <code>@theme inline</code>。这一步只做壳，不接真实引擎流。
+        </p>
+        <div class="plan-sec">任务</div>
+        <div class="plan">
+          <div class="plan-item" data-s="done"><span class="box"></span>读 architecture.md 前端章节</div>
+          <div class="plan-item" data-s="done"><span class="box"></span>定语义色层和命名空间</div>
+          <div class="plan-item" data-s="done"><span class="box"></span>写 tokens.css（深色 + 浅色 + 密度）</div>
+          <div class="plan-item" data-s="doing"><span class="box"></span>三栏骨架和工具行</div>
+          <div class="plan-item" data-s="todo"><span class="box"></span>接 Tailwind v4 @theme inline</div>
+          <div class="plan-item" data-s="todo"><span class="box"></span>把原型 token 搬进 apps/web</div>
+        </div>
+      </div>
+
+      <!-- 队列 -->
+      <div class="pane" data-pane="queue" hidden>
+        <div class="pane-head"><span class="t">待处理</span></div>
+        <button class="queue-item" data-act="jump" data-target="tool-approval">
+          <span class="lab" data-k="approval">审批</span>
+          <span class="mono trunc">rm -rf dist &amp;&amp; pnpm build</span>
+        </button>
+        <button class="queue-item" data-act="jump" data-target="ask-card">
+          <span class="lab" data-k="question">提问</span>
+          <span class="trunc">续流断点用哪种存储？</span>
+        </button>
+      </div>
+    </aside>
+
+  </div><!-- /shell -->
+</div><!-- /app -->
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="prototype.js"></script>
+</body>
+</html>

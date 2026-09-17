@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="zh-CN" data-density="comfortable">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vgent design tokens</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="prototype.css">
+<script>
+  // 深色优先：默认永远深色，只有存过 vgent.theme === 'light' 才切浅色。不跟随系统。
+  try {
+    var t = localStorage.getItem('vgent.theme');
+    var d = localStorage.getItem('vgent.density');
+    if (t === 'light') document.documentElement.dataset.theme = 'light';
+    document.documentElement.dataset.density = d || 'comfortable';
+  } catch (e) {}
+</script>
+<style>
+  /* 只用 var()，不写裸值。
+     prototype.css 是给固定高度的工作台写的（html,body 都 100% 且禁滚动），
+     这一页是长文档，改回正常的文档流滚动。 */
+  html, body { height: auto; overflow: visible; }
+  .page { max-width: var(--spacing-log-max); margin: 0 auto; padding: var(--spacing-xl) var(--spacing-lg) var(--spacing-3xl); }
+  h1 { font-size: var(--text-xl); margin: 0 0 var(--spacing-2xs); }
+  h2 {
+    font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--color-fg-faint); margin: var(--spacing-2xl) 0 var(--spacing-sm);
+    border-top: 1px solid var(--color-border); padding-top: var(--spacing-sm);
+  }
+  h3 { font-size: var(--text-sm); color: var(--color-fg-muted); margin: var(--spacing-md) 0 var(--spacing-xs); font-weight: 600; }
+  .lede { color: var(--color-fg-muted); margin: 0 0 var(--spacing-lg); }
+  .bar { display: flex; align-items: center; gap: var(--spacing-xs); position: sticky; top: 0; z-index: 2;
+         background: var(--color-bg); padding: var(--spacing-sm) 0; border-bottom: 1px solid var(--color-border); margin-bottom: var(--spacing-lg); }
+  .bar .spacer { flex: 1; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(calc(var(--spacing-3xl) * 3.6), 1fr)); gap: var(--spacing-sm); }
+  .sw { border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow: hidden; background: var(--color-bg-elevated); }
+  .sw .chip { height: var(--spacing-3xl); border-bottom: 1px solid var(--color-border); }
+  .sw .chip.checker {
+    background-image:
+      linear-gradient(45deg, var(--color-bg-inset) 25%, transparent 25%),
+      linear-gradient(-45deg, var(--color-bg-inset) 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, var(--color-bg-inset) 75%),
+      linear-gradient(-45deg, transparent 75%, var(--color-bg-inset) 75%);
+    background-size: var(--spacing-md) var(--spacing-md);
+    background-position: 0 0, 0 var(--spacing-xs), var(--spacing-xs) calc(-1 * var(--spacing-xs)), calc(-1 * var(--spacing-xs)) 0;
+  }
+  .sw .chip .fill { width: 100%; height: 100%; }
+  .sw .meta { padding: var(--spacing-2xs) var(--spacing-xs); }
+  .sw .name { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--color-fg); }
+  .sw .val { font-family: var(--font-mono); font-size: var(--text-2xs); color: var(--color-fg-faint); word-break: break-all; }
+  .sw .use { font-size: var(--text-2xs); color: var(--color-fg-muted); margin-top: var(--spacing-3xs); }
+
+  .rows { display: flex; flex-direction: column; gap: var(--spacing-2xs); }
+  .row { display: flex; align-items: center; gap: var(--spacing-sm); font-size: var(--text-sm); }
+  .row .name { font-family: var(--font-mono); font-size: var(--text-xs); width: calc(var(--spacing-3xl) * 3); flex: none; color: var(--color-fg); }
+  .row .val  { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--color-fg-faint); width: var(--spacing-3xl); flex: none; }
+  .row .vis  { flex: 1; min-width: 0; }
+  .ruler { height: var(--spacing-md); background: var(--color-accent-bg); border-left: 2px solid var(--color-accent); }
+  .radius-box { width: var(--spacing-2xl); height: var(--spacing-2xl); background: var(--color-bg-elevated); border: 1px solid var(--color-border-strong); }
+  .shadow-box { width: calc(var(--spacing-3xl) * 2); height: var(--spacing-2xl); background: var(--color-bg-elevated); border-radius: var(--radius-md); }
+  .shadow-cell { padding: var(--spacing-md); }
+  .demo { display: flex; gap: var(--spacing-sm); align-items: center; flex-wrap: wrap; }
+  .card-demo { border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-bg-elevated); padding: var(--spacing-sm) var(--spacing-md); }
+  .note { font-size: var(--text-sm); color: var(--color-fg-muted); background: var(--color-bg-elevated);
+          border-left: 3px solid var(--color-accent); border-radius: var(--radius-sm);
+          padding: var(--spacing-sm) var(--spacing-md); margin-bottom: var(--spacing-lg); }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="bar">
+    <span class="brand"><span class="brand-mark">V</span>Vgent</span>
+    <span class="tb-sep"></span>
+    <span class="muted" style="font-size:var(--text-sm)">design tokens</span>
+    <span class="spacer"></span>
+    <button class="btn" id="b-density">密度：<span id="density-label">舒适</span></button>
+    <button class="btn" id="b-theme">主题：<span id="theme-label">深色</span></button>
+    <a class="btn" href="index.html">打开工作台原型 →</a>
+  </div>
+
+  <h1>Vgent design tokens</h1>
+  <p class="lede">
+    对着这一页拍板。所有值来自 <span class="mono">tokens.css</span>，那是唯一来源；
+    这一页只做展示，不定义任何新值。右上角切主题和密度，两套都要看过再定。
+  </p>
+
+  <div class="note">
+    <b>组件只许引用语义层。</b> 下面「语义色」一节里的名字是组件唯一可以写的颜色；
+    「原始色阶」只给 <span class="mono">tokens.css</span> 内部消费，组件里出现即算违规。
+    accent 的用途被限死在五处：品牌标记、主按钮、焦点环、"运行中"指示、当前选中任务的左侧标记。
+  </div>
+
+  <h2>语义色 · 背景与描边</h2>
+  <div class="grid" id="g-surface"></div>
+
+  <h2>语义色 · 前景</h2>
+  <div class="grid" id="g-fg"></div>
+
+  <h2>语义色 · 主色 accent（琥珀）</h2>
+  <div class="grid" id="g-accent"></div>
+
+  <h2>语义色 · 状态</h2>
+  <div class="grid" id="g-status"></div>
+
+  <h2>语义色 · diff / 选区 / 焦点</h2>
+  <div class="grid" id="g-misc"></div>
+
+  <h2>原始色阶（组件不许引用）</h2>
+  <h3>neutral</h3>
+  <div class="grid" id="g-neutral"></div>
+  <h3>accent + 状态原色</h3>
+  <div class="grid" id="g-raw"></div>
+
+  <h2>间距</h2>
+  <div class="rows" id="r-space"></div>
+
+  <h2>布局与密度常量（随密度变化，切到紧凑看差别）</h2>
+  <div class="rows" id="r-layout"></div>
+
+  <h2>圆角</h2>
+  <div class="rows" id="r-radius"></div>
+
+  <h2>字号阶梯（随密度变化）</h2>
+  <div class="rows" id="r-text"></div>
+
+  <h2>行高</h2>
+  <div class="rows" id="r-lead"></div>
+
+  <h2>字体</h2>
+  <div class="rows">
+    <div class="row"><span class="name">--font-sans</span><span class="vis">正文 · 中英混排 The quick brown fox 0123456789</span></div>
+    <div class="row"><span class="name">--font-mono</span><span class="vis mono">packages/server/src/chat.ts:31 · claude-sonnet-4.5 · +12 −3</span></div>
+  </div>
+
+  <h2>阴影</h2>
+  <div class="grid" id="g-shadow"></div>
+
+  <h2>动效时长</h2>
+  <div class="rows" id="r-dur"></div>
+
+  <h2>组件用法示例</h2>
+
+  <h3>按钮</h3>
+  <div class="demo">
+    <button class="btn btn-primary">主按钮</button>
+    <button class="btn">次按钮</button>
+    <button class="btn btn-danger">危险</button>
+    <button class="btn btn-xs">小号</button>
+    <button class="icon-btn"><svg class="icon" stroke="currentColor" fill="none" stroke-width="1.5"><circle cx="8" cy="8" r="5"/></svg></button>
+  </div>
+
+  <h3>胶囊与 chip</h3>
+  <div class="demo" style="margin-top:var(--spacing-sm)">
+    <span class="pill"><span class="k">引擎</span><span class="v">Claude Code</span><span class="caret">▾</span></span>
+    <span class="pill"><span class="k">模型</span><span class="v">claude-sonnet-4.5</span><span class="caret">▾</span></span>
+    <span class="ctx-chip">@packages/engine</span>
+    <span class="ref-chip">@docs/architecture.md</span>
+  </div>
+
+  <h3>状态点</h3>
+  <div class="demo" style="margin-top:var(--spacing-sm)">
+    <span class="row"><span class="dot" data-state="running"></span>&nbsp;运行中</span>
+    <span class="row"><span class="dot" data-state="approval"></span>&nbsp;等审批（空心环）</span>
+    <span class="row"><span class="dot" data-state="question"></span>&nbsp;等回答（空心环）</span>
+    <span class="row"><span class="dot" data-state="done"></span>&nbsp;完成</span>
+    <span class="row"><span class="dot" data-state="failed"></span>&nbsp;失败</span>
+  </div>
+  <p class="note" style="margin-top:var(--spacing-2xs);color:var(--color-fg-muted);font-size:var(--text-xs)">
+    等审批 / 等回答 = 空心环（同形状，靠色相区分）；运行中 = 实心 + 呼吸动画；完成 / 失败 = 实心小圆。
+  </p>
+
+  <h3>工具卡片（折叠态 / 展开态 / 等审批）</h3>
+  <div style="margin-top:var(--spacing-sm);display:flex;flex-direction:column;gap:var(--spacing-sm)">
+    <article class="tool" data-open="false">
+      <span class="tool-sum"><span class="tri">▸</span><span class="verb">读取</span>
+        <span class="target trunc">packages/engine/src/index.ts</span>
+        <span class="right"><span>1.2s</span></span></span>
+    </article>
+    <article class="tool" data-open="true">
+      <span class="tool-sum"><span class="tri">▸</span><span class="verb">编辑</span>
+        <span class="target trunc">packages/server/src/chat.ts</span>
+        <span class="right"><span class="add">+12</span><span class="del">−3</span><span>0.6s</span></span></span>
+      <div class="tool-body">
+        <div class="diff">
+          <div class="dl" data-k="hunk"><span class="ln">@@</span><span class="tx">@@ -28,9 +28,18 @@</span></div>
+          <div class="dl"><span class="ln">28</span><span class="tx"> const agent = await resolveEngine(ctx, thread)</span></div>
+          <div class="dl" data-k="del"><span class="ln">29</span><span class="tx">-  return createAgentUIStreamResponse({ agent })</span></div>
+          <div class="dl" data-k="add"><span class="ln">29</span><span class="tx">+  const prefs = await ctx.settings.readUiPrefs()</span></div>
+          <div class="dl" data-k="add"><span class="ln">30</span><span class="tx">+  return createAgentUIStreamResponse({ agent, messageMetadata })</span></div>
+        </div>
+      </div>
+    </article>
+    <article class="tool" data-open="true" data-status="await">
+      <span class="tool-sum"><span class="tri">▸</span><span class="verb mono">$</span>
+        <span class="target trunc">rm -rf dist &amp;&amp; pnpm build</span>
+        <span class="right"><span>等待批准</span></span></span>
+      <div class="tool-body">
+        <div class="approve-hint">当前权限模式 <span class="mono">allow-reads</span> 不放行写操作。</div>
+        <div class="approve-row">
+          <button class="btn btn-primary">允许</button>
+          <button class="btn btn-danger">拒绝</button>
+          <button class="btn">本任务内一直允许</button>
+        </div>
+      </div>
+    </article>
+  </div>
+
+  <h3>终端块</h3>
+<pre class="term" style="margin-top:var(--spacing-sm)">$ pnpm build
+<span class="ok">✔ 7 packages built in 3.4s</span>
+<span class="warn">↻ packages/server/test/chat-stream.test.ts</span> 运行中…
+<span class="err">✖ 1 test failed</span></pre>
+
+  <h3>正文 · 当前密度下的实际观感</h3>
+  <div class="card-demo prose" style="margin-top:var(--spacing-sm)">
+    <p>架构文档要求第一周就把 token 锁死在一个文件里。我先建
+      <code>docs/prototype/tokens.css</code>，语义层和原始色阶分两层。</p>
+    <ul>
+      <li>路径、命令、diff、模型 ID 一律 <code>mono</code>。</li>
+      <li>正文默认 13px / 行高 1.45，比聊天软件紧一档。</li>
+      <li>紧凑模式再收：12.5px / 1.38，工具卡片行高 28 → 24px。</li>
+    </ul>
+  </div>
+
+</div>
+
+<script>
+(() => {
+  const root = document.documentElement;
+  const cs = () => getComputedStyle(root);
+  const val = n => cs().getPropertyValue(n).trim();
+
+  const SEM = {
+    'g-surface': [
+      ['--color-bg', '页面底'],
+      ['--color-bg-elevated', '面板 / 卡片 / 浮层'],
+      ['--color-bg-inset', '终端 / 输入框 / 代码块'],
+      ['--color-bg-hover', 'hover（半透明叠加）'],
+      ['--color-bg-active', '选中 / 按下'],
+      ['--color-bg-scrim', '浮层遮罩'],
+      ['--color-border', '默认描边'],
+      ['--color-border-strong', 'hover / 强调描边'],
+    ],
+    'g-fg': [
+      ['--color-fg', '正文'],
+      ['--color-fg-muted', '次要信息、元数据'],
+      ['--color-fg-faint', '最弱：行号、耗时、分组标题'],
+    ],
+    'g-accent': [
+      ['--color-accent', '品牌标记 / 主按钮 / 运行中 / 选中标记'],
+      ['--color-accent-hover', '主按钮 hover'],
+      ['--color-accent-fg', 'accent 底上的文字'],
+      ['--color-accent-bg', 'accent 弱底（角标、搜索高亮）'],
+    ],
+    'g-status': [
+      ['--color-success', '完成'], ['--color-success-bg', '完成弱底'],
+      ['--color-warning', '等审批'], ['--color-warning-bg', '审批卡片弱底'],
+      ['--color-danger', '失败 / 拒绝 / 撤销'], ['--color-danger-bg', '失败弱底'],
+      ['--color-info', '等回答'], ['--color-info-bg', '提问卡片弱底'],
+    ],
+    'g-misc': [
+      ['--color-diff-add-bg', 'diff 加行底'], ['--color-diff-add-fg', 'diff 加行字'],
+      ['--color-diff-del-bg', 'diff 减行底'], ['--color-diff-del-fg', 'diff 减行字'],
+      ['--color-selection', '文本选区'], ['--color-focus-ring', '焦点环'],
+    ],
+    'g-neutral': [1000, 975, 950, 900, 850, 800, 700, 600, 500, 400, 300, 200, 100, 50, 25, 0]
+      .map(n => ['--neutral-' + n, '']),
+    'g-raw': [
+      '--amber-300', '--amber-400', '--amber-500', '--amber-600', '--amber-700', '--amber-800',
+      '--green-400', '--green-500', '--green-600',
+      '--yellow-400', '--yellow-500', '--yellow-600',
+      '--red-400', '--red-500', '--red-600',
+      '--blue-400', '--blue-500', '--blue-600',
+    ].map(n => [n, '']),
+  };
+
+  const swatch = ([name, use]) =>
+    `<div class="sw"><div class="chip checker"><div class="fill" style="background:var(${name})"></div></div>` +
+    `<div class="meta"><div class="name">${name}</div><div class="val" data-v="${name}"></div>` +
+    (use ? `<div class="use">${use}</div>` : '') + '</div></div>';
+
+  for (const [id, list] of Object.entries(SEM)) {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = list.map(swatch).join('');
+  }
+
+  const SPACE = ['--spacing-3xs','--spacing-2xs','--spacing-xs','--spacing-sm','--spacing-md',
+                 '--spacing-lg','--spacing-xl','--spacing-2xl','--spacing-3xl'];
+  const LAYOUT = ['--spacing-topbar','--spacing-row-tool','--spacing-row-task','--spacing-row-file',
+                  '--spacing-block-gap','--spacing-card-pad','--spacing-sidebar','--spacing-rightpane','--spacing-log-max'];
+  const RADIUS = ['--radius-xs','--radius-sm','--radius-md','--radius-lg','--radius-xl','--radius-full'];
+  const TEXT   = ['--text-2xs','--text-xs','--text-sm','--text-code','--text-body','--text-md','--text-lg','--text-xl'];
+  const LEAD   = ['--leading-none','--leading-tight','--leading-body','--leading-code'];
+  const DUR    = ['--duration-fast','--duration-base','--duration-slow','--duration-pulse'];
+  const SHADOW = ['--shadow-xs','--shadow-sm','--shadow-md','--shadow-lg','--shadow-popover'];
+
+  const row = (n, vis) =>
+    `<div class="row"><span class="name">${n}</span><span class="val" data-v="${n}"></span><span class="vis">${vis}</span></div>`;
+
+  document.getElementById('r-space').innerHTML =
+    SPACE.map(n => row(n, `<div class="ruler" style="width:var(${n})"></div>`)).join('');
+  document.getElementById('r-layout').innerHTML =
+    LAYOUT.map(n => row(n, `<div class="ruler" style="width:var(${n});max-width:100%"></div>`)).join('');
+  document.getElementById('r-radius').innerHTML =
+    RADIUS.map(n => row(n, `<div class="radius-box" style="border-radius:var(${n})"></div>`)).join('');
+  document.getElementById('r-text').innerHTML =
+    TEXT.map(n => row(n, `<span style="font-size:var(${n})">Vgent 工作台 · chat.ts:31</span>`)).join('');
+  document.getElementById('r-lead').innerHTML =
+    LEAD.map(n => row(n, `<span style="line-height:var(${n});display:block">两行示例文本，看行距。<br>第二行在这里。</span>`)).join('');
+  document.getElementById('r-dur').innerHTML =
+    DUR.map(n => row(n, '')).join('');
+  document.getElementById('g-shadow').innerHTML =
+    SHADOW.map(n => `<div class="shadow-cell"><div class="shadow-box" style="box-shadow:var(${n})"></div>` +
+      `<div class="name" style="margin-top:var(--spacing-xs)">${n}</div>` +
+      `<div class="val" data-v="${n}"></div></div>`).join('');
+
+  function refresh() {
+    document.querySelectorAll('[data-v]').forEach(el => { el.textContent = val(el.dataset.v); });
+    // 深色优先：没有显式 data-theme="light" 时永远是深色，不跟随系统。
+    const light = root.dataset.theme === 'light';
+    document.getElementById('theme-label').textContent = light ? '浅色' : '深色';
+    document.getElementById('density-label').textContent =
+      root.dataset.density === 'compact' ? '紧凑' : '舒适';
+  }
+
+  document.getElementById('b-theme').onclick = () => {
+    const light = root.dataset.theme === 'light';
+    root.dataset.theme = light ? 'dark' : 'light';
+    try { localStorage.setItem('vgent.theme', root.dataset.theme); } catch (e) {}
+    refresh();
+  };
+  document.getElementById('b-density').onclick = () => {
+    root.dataset.density = root.dataset.density === 'compact' ? 'comfortable' : 'compact';
+    try { localStorage.setItem('vgent.density', root.dataset.density); } catch (e) {}
+    refresh();
+  };
+
+  refresh();
+})();
+</script>
+</body>
+</html>

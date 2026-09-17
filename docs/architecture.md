@@ -71,16 +71,18 @@ Vgent 是一个 **Web 优先**的本地 coding agent 工作台，底下可换引
 
 ### 定位：编码工作台，不是聊天软件
 
-freecode 的界面是通用聊天软件的皮（左侧聊天列表、右对齐气泡、底部输入框），看不出在写代码。用户对它的场景定位、视觉、信息架构、交互四方面都不满意。**Vgent 的 UI 不继承 freecode 任何视觉和布局，只搬 `taskChats.ts` 的线程状态逻辑。** **主参照物是 Cursor 的 agent 面板**：用户认为 Codex App 做得最好但太复杂，Cursor 在精简和完整之间取得了最好的平衡。对话是"工作日志"，文件变更和工具动作是一等公民。
+freecode 的界面是通用聊天软件的皮（左侧聊天列表、右对齐气泡、底部输入框），看不出在写代码。用户对它的场景定位、视觉、信息架构、交互四方面都不满意。**Vgent 的 UI 不继承 freecode 任何视觉和布局，只搬 `taskChats.ts` 的线程状态逻辑。** **主参照物是 Cursor 3 Agents Window（2026-04 起）**：用户认为 Codex App 做得最好但太复杂，Cursor 在精简和完整之间取得了最好的平衡。对话是"工作日志"，文件变更和工具动作是一等公民。
 
-Cursor 式具体指：
-- 单列工作日志为主，不默认铺三栏；右栏（diff、终端、审批队列）是可收起的辅助面板，默认收起或窄。
-- 工具动作是内嵌卡片：文件读写一行摘要（路径 + `+12 −3`），点开看 diff；命令执行一行摘要，点开看输出；搜索、grep 一行摘要。
-- 每轮结束有收口：`N 个文件改动 · 查看 · 全部接受 / 撤销`，按文件可单独接受或还原。
-- 思考默认折叠成一行，可展开。
-- 输入框自带模型选择、模式（ask / agent / plan）、权限模式，不用跳设置。
-- 上下文引用用 `@文件` `@文件夹`，输入框内联。
-- 侧栏极简：任务历史列表 + 新任务，项目切换放顶部。
+Cursor 3 Agents Window 式具体指：
+- 侧栏按项目（仓库）分组，可切按状态 / 更新时间；条目 = 状态图标 + 标题 + 环境标记（本机 / worktree / 云），运行中显示当前动作 + 耗时，完成显示时间 + `+N −M`；可缩成图标条。
+- 工具调用是一行淡灰文字（读取 / 搜索 / 命令），不是带边框卡片；文件改动是 `file +N −M` chip；一轮结束折叠成"工作了 5m 38s" + 总结 / 测试 Markdown，带文件:行、terminal:行 引用链接。
+- 用户消息是圆角盒子，滚动时粘顶；hover 可回退到该检查点。
+- 上下文：`@` 内联 pill，`+` 按钮加文件 / 图片 / 终端输出，context ring 显示窗口占用；没有输入框上方的 chip 行。
+- Composer 内：模式 chip（Agent / Plan / Ask）、模型 + 速度档、麦克风；权限模式在任务头，不在 composer。
+- 改动收口 = composer 上方常驻 `审查 +N −M` pill + 运行位置切换；右栏 diffs 视图只有"还原此文件"没有"接受"（引擎直接写盘），可提交 / 开 PR。
+- 右栏是工作区：变更、文件、终端、计划（带"构建"按钮和任务清单）、队列（审批 / 提问，Vgent 特有），图标 tab。
+- 提问卡片：编号选项 + 跳过 / 继续 + 翻页。空状态有仓库 / 运行位置 / 分支三个 picker。
+- 暂不做但布局留余地：多 agent 平铺（3.1）、侧聊 `/side`（3.11）、Projects（2026-09）。
 
 ### 信息架构
 
@@ -91,7 +93,7 @@ Cursor 式具体指：
 ```
 
 - 左栏（窄，可收起）：项目切换 + 该项目的任务列表，任务带状态（运行中 / 等审批 / 等回答 / 完成 / 失败）和改动文件数。
-- 中栏（主体）：当前任务的工作日志。工具调用默认折叠成一行卡片（图标 + 动作 + 目标 + 耗时），diff 类工具卡片可展开看 diff；每轮结束有改动文件收口；用户输入不做气泡，做左侧带标记的区块；reasoning 折叠。
+- 中栏（主体）：当前任务的工作日志。工具调用是一行文字（图标 + 动作 + 目标 + 耗时），diff 类工具卡片可展开看 diff；改动收口是 composer 上方常驻的审查 pill；用户输入是圆角盒子，滚动粘顶；reasoning 折叠。
 - 右栏（默认收起）：本任务的**变更文件列表 + 完整 diff**、终端输出、计划 / 待办、待处理的审批和提问队列。中栏的收口和右栏是同一份数据两个入口。
 - 任务头部：引擎、模型、权限模式、worktree 分支，都可就地切换。
 - 设置是独立页面，不塞进侧栏。
@@ -174,11 +176,19 @@ docs/
 - `packages/engine`：`createVgentEngine({ model, repoPath, permissionMode, sessionFile })` → 裸 `ToolLoopAgent`。权限映射 `toolApproval`（bash 分段白名单），超预算 `pruneMessages`，`askUserQuestions` 无 execute（TUI 不支持，Web 用）。冒烟用 `codex-subscription:gpt-5.5` 通过。
 - `apps/cli`：`vgent --engine claude-code|codex|vgent [--model] [--repo] [--permission] [--session]` → `runAgentTUI`。
 
+### 阶段二进度
+
+- 2026-09-17：Web 低保真原型完成，在 `docs/prototype/`（静态 HTML，零依赖，`python3 -m http.server --directory docs/prototype` 或 `.claude/launch.json` 的 `prototype` 配置打开；`tokens.html` 看 token，`index.html` 看工作台）。2026-09-17 晚按用户要求改为对齐 Cursor 3 Agents Window（第一版参照的是 2025 侧栏 Composer，已废弃），观察笔记在 `docs/prototype/cursor3-notes.md`。
+- `docs/prototype/tokens.css` 是 design token **唯一来源**，按 Tailwind v4 `@theme` 命名空间命名，颜色分原始色阶 + 语义层，组件只许引用语义层；之后原样搬到 `apps/web/src/tokens.css`。accent 定为琥珀（oklch 0.80 0.155 72），全局唯一响亮色，用途限五处；深色默认，浅色单独调过；密度 comfortable / compact 两档。
+- 已定布局：左栏 240 可收起、中栏自适应、右栏默认收起展开 380；顶部 36px 窗口条；中栏 = 粘顶任务头 + 滚动日志 + 粘底 composer，日志正文最大宽 860。
+- token 相关的五个待拍板问题已于 2026-09-17 定稿，见 `docs/prototype/README.md` 的
+  "已拍板（2026-09-17）"一节；状态点形状区分已落地到 `prototype.css`。
+
 ### 明确未做（阶段二起点）
 
 - **Session 管理**：自研引擎只有 JSONL 追加，`loadSession` 未接回 agent；harness 引擎的 `detach()/stop()` 恢复状态未落盘、无 resume。按方案在 `server` 层做：一任务一文件 + harness resume state + 可重放流。
 - `askUserQuestions` 在 TUI 里不可用（需要 Web `useChat`）。
 - 子代理、MCP + toolSearch、skills 索引、记忆、手动 compact、`@ai-sdk/otel`。
-- Web 全部。
+- Web：原型已定，组件和 server 全部未做。
 
-下一步：Web MVP 低保真原型（Cursor 式布局 + token）→ Hono server（chat stream、续流、session 落盘）→ 前端。
+下一步：Hono server（chat stream、续流、session 落盘）→ 前端 `apps/web`（Vite + React + Tailwind v4 + AI Elements，接 `tokens.css`）。

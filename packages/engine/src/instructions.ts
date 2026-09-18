@@ -9,9 +9,35 @@ const PERMISSION_DESCRIPTIONS: Record<PermissionMode, string> = {
   "allow-all": "allow-all — every tool runs immediately without approval. Be correspondingly careful.",
 };
 
+/**
+ * Who and where the agent is. Everything here is knowledge the process has and
+ * the model cannot derive: which model string the host picked for it, which
+ * front end it is answering through, and whether the working directory is the
+ * project itself or a worktree cut from it. Without it the model guesses —
+ * real transcripts had it claim to be someone else's model and ask the user
+ * where the rest of the code lives instead of running `git worktree list`.
+ */
+export interface VgentContext {
+  /** The model string the host resolved, verbatim — what "which model are you" should answer. */
+  modelId?: string;
+  /** The front end this run is answering through, in prose, e.g. `Vgent desktop app (macOS)`. */
+  host?: string;
+  /** Present only when the working directory is a git worktree cut from the project. */
+  workspace?: {
+    /** The worktree itself — the same directory as `repoPath`. */
+    path: string;
+    /** The project's own checkout, which this worktree's edits never touch. */
+    projectPath: string;
+    branch: string;
+    baseCommit: string;
+  };
+}
+
 export interface BuildInstructionsOptions {
   /** Absolute path the tools are confined to. */
   repoPath: string;
+  /** Who and where the agent is. Omitted, the prompt falls back to the generic opening. */
+  context?: VgentContext;
   /** The mode whose rules are spelled out to the model. */
   permissionMode: PermissionMode;
   /** Caller-supplied guidance, appended verbatim after the built-in prompt. */
@@ -45,22 +71,41 @@ skill's SKILL.md before relying on it, and only when the task actually matches i
 ${lines.join("\n")}`;
 }
 
+/** The opening sentence: what the model is and what it is running inside. */
+function identityLine(context: VgentContext | undefined): string {
+  const { modelId, host } = context ?? {};
+  if (modelId == null && host == null) return "You are Vgent, a coding agent working directly in a user's repository.";
+  const where = host == null ? "the Vgent workbench" : `the Vgent workbench (host: ${host})`;
+  if (modelId == null) return `You are Vgent, a coding agent running inside ${where}.`;
+  // One line per sentence: the interpolations vary in length, so hard-wrapping
+  // the source would put the breaks in arbitrary places in the actual prompt.
+  return `You are Vgent, a coding agent running inside ${where} as the model \`${modelId}\`. When asked what model you are, answer with that identifier.`;
+}
+
+/** What the working directory *is* — the project, or a worktree cut from it. */
+function workspaceLine(workspace: VgentContext["workspace"]): string {
+  if (workspace == null) return "This is the project's main working tree.";
+  return `This directory is a dedicated git worktree of the project at \`${workspace.projectPath}\`, on branch \`${workspace.branch}\`, created from commit \`${workspace.baseCommit}\`. Edits here never touch the project's main working tree. The code you can read is whatever that commit contains — if the user talks about code you cannot find, check \`git log\` / \`git worktree list\` / \`git branch -a\` in the project before concluding it does not exist.`;
+}
+
 /**
  * The engine's system prompt. Kept deliberately short: rules the model can
  * actually follow beat an exhaustive policy it will skim.
  */
 export function buildInstructions({
   repoPath,
+  context,
   permissionMode,
   extra,
   subagents,
   toolSearch,
   skills,
 }: BuildInstructionsOptions): string {
-  const head = `You are Vgent, a coding agent working directly in a user's repository.
+  const head = `${identityLine(context)}
 
 Working directory: ${repoPath}
 All tool paths are resolved relative to it and cannot escape it.
+${workspaceLine(context?.workspace)}
 
 Permission mode: ${PERMISSION_DESCRIPTIONS[permissionMode]}
 
@@ -81,6 +126,8 @@ How to work:
 - Use \`askUserQuestions\` when a decision is genuinely the user's to make (an API shape, a tradeoff, which
   of several files they meant). Do not use it to narrate progress or to ask permission for a tool call —
   the permission system already handles that.
+- When the user's statements and what you see disagree, investigate with tools (git, grep) before asking the
+  user to explain; ask only when the tools cannot settle it.
 - Prefer doing the work over describing it. Do not ask for confirmation of something you can just verify.
 - Verify what you changed when you can: run the narrowest relevant test or typecheck.`;
 

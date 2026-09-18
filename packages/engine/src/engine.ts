@@ -3,7 +3,7 @@ import { createApiKeyModel, createCodexSubscriptionModel } from "@vgent/provider
 import { createCodingTools } from "@vgent/tools";
 import { ToolLoopAgent, isStepCount, pruneMessages, toolSearch, type LanguageModel, type ModelMessage, type ToolSet } from "ai";
 import { askUserQuestionsTool } from "./ask-user-questions.js";
-import { buildInstructions } from "./instructions.js";
+import { buildInstructions, type VgentContext } from "./instructions.js";
 import { hasDeferredTools } from "./mcp.js";
 import { createToolApproval, type PermissionMode } from "./permissions.js";
 import { appendSession } from "./session-store.js";
@@ -30,6 +30,12 @@ export interface VgentEngineOptions {
   model: LanguageModel | string;
   /** Repository the agent works in. Tools are confined to it. */
   repoPath: string;
+  /**
+   * Who and where the agent is — the model string the host picked, the front
+   * end it answers through, the worktree it sits in. Goes into the system
+   * prompt; see `VgentContext`.
+   */
+  context?: VgentContext;
   /** What may run without asking. Defaults to `allow-edits`. */
   permissionMode?: PermissionMode;
   /** Extra guidance appended to the engine's own system prompt. */
@@ -139,6 +145,7 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
     model,
     instructions: buildInstructions({
       repoPath,
+      ...(options.context == null ? {} : { context: options.context }),
       permissionMode,
       subagents,
       toolSearch: deferred,

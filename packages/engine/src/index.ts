@@ -15,7 +15,7 @@ export {
   type ApprovalDecision,
   type PermissionMode,
 } from "./permissions.js";
-export { buildInstructions, type BuildInstructionsOptions } from "./instructions.js";
+export { buildInstructions, type BuildInstructionsOptions, type VgentContext } from "./instructions.js";
 export {
   askUserQuestionsTool,
   askUserQuestionsInputSchema,

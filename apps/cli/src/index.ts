@@ -80,6 +80,7 @@ async function createEngine(): Promise<{ agent: TUIAgent; dispose(): Promise<voi
         model: values.model,
         repoPath,
         permissionMode,
+        context: { modelId: values.model, host: "Vgent CLI" },
         extraTools: mcp.tools,
         skills: await loadSkillsIndex(skillDirs),
         ...(values.session == null ? {} : { sessionFile: resolve(values.session) }),

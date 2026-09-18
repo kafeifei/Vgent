@@ -47,6 +47,12 @@ export interface EngineRunner {
 export interface EngineContext {
   thread: ThreadRecord;
   project: Project;
+  /**
+   * The project's *own* checkout. `project.repoPath` is the thread's working
+   * directory, which for a worktree task is the worktree — so this is the only
+   * way back to the repository it was cut from.
+   */
+  projectPath: string;
   dataDir: string;
   harnessState?: HarnessState;
   /**

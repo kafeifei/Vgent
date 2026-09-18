@@ -31,13 +31,16 @@ export function EmptyState({
   onSelectProject: (projectId: string) => void;
   onAddProject: (repoPath: string) => Promise<void>;
   onPickFolder: () => Promise<string | null>;
-  onStart: (text: string, engine: EngineId, workspace: WorkspaceMode) => void;
+  onStart: (text: string, engine: EngineId, workspace: WorkspaceMode, model: string | null) => void;
 }) {
   const toast = useToast();
   const [draft, setDraft] = useState("");
   // Local only, no persistence: seeded from the server default once, not kept
   // in sync if the setting changes later while this screen is open.
   const [engine, setEngine] = useState<EngineId>(() => settings?.defaultEngine ?? "claude-code");
+  // `null` means「用默认」: the server picks `settings.defaultModel`. Reset when
+  // the engine changes, since a model id only means something to one engine.
+  const [model, setModel] = useState<string | null>(null);
   const [workspace, setWorkspace] = useState<WorkspaceMode>("project");
   const project = projects.find((entry) => entry.id === projectId);
 
@@ -47,7 +50,7 @@ export function EmptyState({
       toast("先选一个项目");
       return;
     }
-    onStart(draft.trim(), engine, workspace);
+    onStart(draft.trim(), engine, workspace, model);
     setDraft("");
   };
 
@@ -104,6 +107,7 @@ export function EmptyState({
                     selected={entry.id === engine}
                     onClick={() => {
                       setEngine(entry.id);
+                      setModel(null);
                       close();
                     }}
                   >
@@ -138,8 +142,8 @@ export function EmptyState({
           onSubmit={submit}
           live={false}
           engine={engine}
-          model={undefined}
-          onPickModel={() => toast("新任务用默认模型，创建后可改")}
+          model={model ?? undefined}
+          onPickModel={setModel}
           autoFocus
           big
         />

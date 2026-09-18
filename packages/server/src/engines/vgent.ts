@@ -90,12 +90,32 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
         join(homedir(), ".vgent", "skills"),
       ]);
 
+      const model = override ?? ctx.thread.model ?? DEFAULT_VGENT_MODEL;
+      const { workspace } = ctx.thread;
+
       const engine = createVgentEngine({
-        model: override ?? ctx.thread.model ?? DEFAULT_VGENT_MODEL,
+        model,
         repoPath: ctx.project.repoPath,
         permissionMode: ctx.thread.permissionMode,
         extraTools: mcp.tools,
         skills,
+        // Everything the model cannot work out for itself: which model it is,
+        // which front end it is answering through, and whether this directory
+        // is the project or a worktree cut from it.
+        context: {
+          modelId: typeof model === "string" ? model : model.modelId,
+          host: process.env.VGENT_DESKTOP === "1" ? "Vgent desktop app (macOS)" : "Vgent web",
+          ...(workspace == null
+            ? {}
+            : {
+                workspace: {
+                  path: workspace.path,
+                  projectPath: ctx.projectPath,
+                  branch: workspace.branch,
+                  baseCommit: workspace.baseCommit,
+                },
+              }),
+        },
       });
 
       let ended = false;

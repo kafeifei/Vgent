@@ -297,6 +297,7 @@ export function createRunManager(options: {
         runner = await factory.create({
           thread,
           project,
+          projectPath: stored.repoPath,
           dataDir,
           ...(harnessState != null ? { harnessState } : {}),
           // A parked runner was reused above, so reaching here with

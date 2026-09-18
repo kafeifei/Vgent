@@ -262,6 +262,21 @@ describe("createApp", () => {
     expect((await postJson(app, `/api/chat/${thread.id}`, { messages: [{ role: "user" }] })).status).toBe(400);
   });
 
+  it("stores the model the creator asked for and falls back to the default without one", async () => {
+    const dir = await tempDir();
+    const app = makeApp(dir, createFakeEngine().factory);
+    const project = (await (await postJson(app, "/api/projects", { repoPath: dir })).json()) as Project;
+    await request(app, "/api/settings", { method: "PUT", body: JSON.stringify({ defaultModel: "openai/gpt-5.5" }) });
+
+    const picked = (await (
+      await postJson(app, "/api/threads", { projectId: project.id, engine: "vgent", model: "codex-subscription:gpt-5.5" })
+    ).json()) as ThreadRecord;
+    expect(picked.model).toBe("codex-subscription:gpt-5.5");
+
+    const defaulted = (await (await postJson(app, "/api/threads", { projectId: project.id, engine: "vgent" })).json()) as ThreadRecord;
+    expect(defaulted.model).toBe("openai/gpt-5.5");
+  });
+
   it("refuses a codex thread in any permission mode but allow-all", async () => {
     const dir = await tempDir();
     const app = makeApp(dir, createFakeEngine().factory);

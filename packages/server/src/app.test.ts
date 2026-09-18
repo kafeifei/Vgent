@@ -504,6 +504,79 @@ describe("createApp", () => {
     expect(await missing.json()).toMatchObject({ error: { code: "file_not_changed" } });
   });
 
+  it("lists the working tree, ranks a query and serves one file's content", async () => {
+    const repo = await gitRepo();
+    await mkdir(join(repo, "src", "deep"), { recursive: true });
+    await writeFile(join(repo, "src", "deep", "tracker.ts"), "export const a = 1;\n");
+    await writeFile(join(repo, "src", "untracked.ts"), "// 新文件\n");
+    await writeFile(join(repo, ".gitignore"), "ignored.txt\n");
+    await writeFile(join(repo, "ignored.txt"), "看不见\n");
+    await writeFile(join(repo, "blob.bin"), Buffer.from([0x41, 0x00, 0x42]));
+
+    const app = makeApp(await tempDir());
+    const { thread } = await setupThread(app, repo);
+    const listing = (await (await request(app, `/api/threads/${thread.id}/files`)).json()) as {
+      root: string;
+      entries: { path: string; kind: string }[];
+      truncated: boolean;
+    };
+    const paths = listing.entries.map((entry) => entry.path);
+
+    expect(listing.root).toBe(repo);
+    expect(listing.truncated).toBe(false);
+    expect(paths).toContain("tracked.txt");
+    expect(paths).toContain("src/untracked.ts");
+    expect(paths).not.toContain("ignored.txt");
+    // Directories exist only as prefixes of the files git listed.
+    expect(listing.entries).toContainEqual({ path: "src", kind: "dir" });
+    expect(listing.entries).toContainEqual({ path: "src/deep", kind: "dir" });
+    expect(paths).toEqual([...paths].sort());
+
+    // 「tracke」: the basename prefix wins over the basename substring, and
+    // both win over the path-wide subsequence match.
+    const ranked = (await (
+      await request(app, `/api/threads/${thread.id}/files?q=tracke&limit=2`)
+    ).json()) as { entries: { path: string }[]; truncated: boolean };
+    expect(ranked.entries.map((entry) => entry.path)).toEqual(["tracked.txt", "src/deep/tracker.ts"]);
+    expect(ranked.truncated).toBe(true);
+
+    const content = (await (
+      await request(app, `/api/threads/${thread.id}/files/content?path=src%2Funtracked.ts`)
+    ).json()) as { content: string; binary: boolean; truncated: boolean };
+    expect(content).toEqual({ path: "src/untracked.ts", content: "// 新文件\n", truncated: false, binary: false });
+
+    const binary = (await (await request(app, `/api/threads/${thread.id}/files/content?path=blob.bin`)).json()) as {
+      binary: boolean;
+      content: string;
+    };
+    expect(binary).toMatchObject({ binary: true, content: "" });
+
+    // Escapes, absolute paths, a directory and a missing name are all refused.
+    for (const path of ["..%2Fescape.txt", "%2Fetc%2Fpasswd", "src%2F..%2F..%2Fx"]) {
+      const response = await request(app, `/api/threads/${thread.id}/files/content?path=${path}`);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { code: "invalid_path" } });
+    }
+    expect((await request(app, `/api/threads/${thread.id}/files/content?path=src`)).status).toBe(404);
+    expect((await request(app, `/api/threads/${thread.id}/files/content`)).status).toBe(400);
+    expect((await request(app, "/api/threads/nope/files")).status).toBe(404);
+  });
+
+  it("refuses to list files once the task's worktree is reclaimed", async () => {
+    const repo = await gitRepo();
+    const app = makeApp(await tempDir());
+    const project = (await (await postJson(app, "/api/projects", { repoPath: repo })).json()) as Project;
+    const thread = (await (
+      await postJson(app, "/api/threads", { projectId: project.id, workspace: "worktree" })
+    ).json()) as ThreadRecord;
+
+    expect((await request(app, `/api/threads/${thread.id}/files`)).status).toBe(200);
+    expect((await postJson(app, `/api/threads/${thread.id}/workspace/reclaim`, {})).status).toBe(200);
+    const reclaimed = await request(app, `/api/threads/${thread.id}/files`);
+    expect(reclaimed.status).toBe(409);
+    expect(await reclaimed.json()).toMatchObject({ error: { code: "workspace_reclaimed" } });
+  });
+
   it("runs a task in its own worktree and takes the directory back on delete", async () => {
     const dir = await tempDir();
     const repo = await gitRepo();

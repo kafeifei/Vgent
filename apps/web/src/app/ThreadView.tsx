@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import type { Chat } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
@@ -8,6 +8,7 @@ import { WorkLog } from "@/features/worklog/WorkLog";
 import { pendingQueue, type QueueItem } from "@/features/worklog/queue";
 import type { TurnActions } from "@/features/worklog/Turn";
 import { pendingAutoApprovals } from "@/lib/autoApprove";
+import type { ApiClient } from "@/lib/api";
 import type { ThreadSummary } from "@/lib/types";
 import { isLiveThread, type WorkbenchActions } from "./useWorkbench";
 
@@ -15,6 +16,7 @@ import { isLiveThread, type WorkbenchActions } from "./useWorkbench";
 export function ThreadView(props: {
   thread: ThreadSummary;
   actions: WorkbenchActions;
+  client: ApiClient;
   rightOpen: boolean;
   onQueue: (queue: QueueItem[]) => void;
 }) {
@@ -39,12 +41,14 @@ export function ThreadView(props: {
 function ThreadChatView({
   thread,
   actions,
+  client,
   rightOpen,
   onQueue,
   chat,
 }: {
   thread: ThreadSummary;
   actions: WorkbenchActions;
+  client: ApiClient;
   rightOpen: boolean;
   onQueue: (queue: QueueItem[]) => void;
   chat: Chat<UIMessage>;
@@ -75,17 +79,7 @@ function ThreadChatView({
     [actions, addToolApprovalResponse, addToolOutput, thread.id],
   );
 
-  // Every approval the task's allowlist already answers, answered once. The
-  // `Chat`'s own `sendAutomaticallyWhen` then continues the turn, exactly as it
-  // does for a click on 允许.
-  const autoApproved = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    for (const id of pendingAutoApprovals(messages, thread.alwaysAllow)) {
-      if (autoApproved.current.has(id)) continue;
-      autoApproved.current.add(id);
-      void addToolApprovalResponse({ id, approved: true });
-    }
-  }, [addToolApprovalResponse, messages, thread.alwaysAllow]);
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
   const submit = () => {
     if (draft.trim() === "") return;
@@ -130,6 +124,7 @@ function ThreadChatView({
           engine={thread.engine}
           model={thread.model}
           onPickModel={(model) => actions.setModel(thread.id, model)}
+          completeFiles={completeFiles}
         />
       </div>
     </>

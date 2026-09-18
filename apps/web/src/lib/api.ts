@@ -1,7 +1,9 @@
 import type {
   ChangesSnapshot,
   EngineId,
+  FileContent,
   FileDiff,
+  FileListing,
   ModelCatalog,
   PermissionMode,
   Project,
@@ -144,6 +146,18 @@ export function createClient(token: string) {
       api<FileDiff>(`/threads/${threadId}/changes/file?path=${encodeURIComponent(path)}`, token),
     revertFile: (threadId: string, path: string) =>
       api<{ path: string }>(`/threads/${threadId}/changes/revert`, token, { method: "POST", json: { path } }),
+
+    // Same directory as the changes routes: the whole working tree this time,
+    // for the 文件 tab and the composer's `@` completion.
+    listFiles: (threadId: string, opts?: { q?: string; limit?: number }) => {
+      const query = new URLSearchParams();
+      if (opts?.q != null && opts.q !== "") query.set("q", opts.q);
+      if (opts?.limit != null) query.set("limit", String(opts.limit));
+      const search = query.size > 0 ? `?${query.toString()}` : "";
+      return api<FileListing>(`/threads/${threadId}/files${search}`, token);
+    },
+    getFileContent: (threadId: string, path: string) =>
+      api<FileContent>(`/threads/${threadId}/files/content?path=${encodeURIComponent(path)}`, token),
 
     listThreads: () => api<{ threads: ThreadSummary[] }>("/threads", token).then((body) => body.threads),
     createThread: (input: {

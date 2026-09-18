@@ -5,6 +5,8 @@ import { streamSSE } from "hono/streaming";
 import { BadRequestError, ConflictError, NotFoundError, UnauthorizedError, VgentServerError } from "./errors.js";
 import type { EngineRegistry } from "./engines/registry.js";
 import { createEngineRegistry } from "./engines/registry.js";
+import type { Files } from "./files.js";
+import { createFiles } from "./files.js";
 import type { Git } from "./git.js";
 import { createGit } from "./git.js";
 import { pickFile, pickFolder } from "./folder-picker.js";
@@ -35,6 +37,8 @@ export interface CreateAppOptions {
   registry?: EngineRegistry;
   /** The `git diff` backend behind the changes routes. Tests inject a shorter-fused one. */
   git?: Git;
+  /** The working-tree listing backend behind the files routes. */
+  files?: Files;
   log?: Logger;
   /** A built `apps/web` to serve at `/`; unset leaves the server API-only. */
   webDist?: string;
@@ -115,6 +119,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
   const settings = createSettingsStore(dataDir, log);
   const registry = options.registry ?? createEngineRegistry();
   const git = options.git ?? createGit();
+  const files = options.files ?? createFiles();
   const runs = createRunManager({
     threads,
     projects,
@@ -223,6 +228,27 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const body = (await c.req.json().catch(() => undefined)) as { path?: unknown } | undefined;
     if (typeof body?.path !== "string" || body.path.length === 0) throw new BadRequestError("缺少 path", "invalid_path");
     return c.json(await git.revert(repoPath, body.path));
+  });
+
+  // --- files ------------------------------------------------------------
+
+  app.get("/api/threads/:id/files", async (c) => {
+    const root = await repoPathOf(c.req.param("id"));
+    const q = c.req.query("q");
+    const limit = c.req.query("limit");
+    return c.json(
+      await files.list(root, {
+        ...(q != null ? { q } : {}),
+        ...(limit != null ? { limit: Number.parseInt(limit, 10) } : {}),
+      }),
+    );
+  });
+
+  app.get("/api/threads/:id/files/content", async (c) => {
+    const root = await repoPathOf(c.req.param("id"));
+    const path = c.req.query("path");
+    if (path == null || path.length === 0) throw new BadRequestError("缺少 path", "invalid_path");
+    return c.json(await files.content(root, path));
   });
 
   // --- workspace --------------------------------------------------------

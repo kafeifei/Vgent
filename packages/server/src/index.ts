@@ -15,6 +15,15 @@ export {
   UnauthorizedError,
   VgentServerError,
 } from "./errors.js";
+export {
+  createFiles,
+  type CreateFilesOptions,
+  type FileContent,
+  type FileEntry,
+  type FileListing,
+  type Files,
+  type ListFilesOptions,
+} from "./files.js";
 export { pickFile, pickFolder, type ExecFileFn, type PickFolderOptions } from "./folder-picker.js";
 export {
   createGit,

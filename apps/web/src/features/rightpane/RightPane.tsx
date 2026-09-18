@@ -1,6 +1,7 @@
 import { FileDiff, FolderTree, ListChecks, ListTodo, Terminal, X } from "lucide-react";
 import { ChangesPanel } from "@/features/changes/ChangesPanel";
 import { useChanges } from "@/features/changes/useChanges";
+import { FilesPanel } from "@/features/files/FilesPanel";
 import type { QueueItem } from "@/features/worklog/queue";
 import type { ApiClient } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -25,7 +26,7 @@ function jumpTo(anchor: string): void {
 }
 
 /**
- * Right column. 队列 and 变更 have content; 文件 / 终端 / 计划 are placeholders.
+ * Right column. 队列 / 变更 / 文件 have content; 终端 / 计划 are placeholders.
  *
  * The changes snapshot is loaded here rather than inside `ChangesPanel` so the
  * 变更 tab can carry its file count — and so a collapsed pane, which stays
@@ -133,6 +134,8 @@ export function RightPane({
           </>
         ) : tab === "changes" ? (
           <ChangesPanel changes={changes} />
+        ) : tab === "files" ? (
+          <FilesPanel client={client} threadId={threadId} active={open} refreshKey={refreshKey} />
         ) : (
           <p className="text-fg-faint text-xs">下一步接入</p>
         )}

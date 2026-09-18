@@ -1,0 +1,313 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowLeft, ChevronDown, ChevronRight, File, RefreshCw } from "lucide-react";
+import type { BundledLanguage } from "shiki";
+import { CodeBlock } from "@/components/ai-elements/code-block";
+import type { ApiClient } from "@/lib/api";
+import { baseName } from "@/lib/format";
+import type { FileContent, FileEntry, FileListing } from "@/lib/types";
+import { cn } from "@/lib/utils";
+
+/** Up to this many entries, the tree opens fully — collapsing would hide everything. */
+const EXPAND_ALL_MAX = 8;
+
+const LANGUAGES: Record<string, BundledLanguage> = {
+  ts: "ts",
+  tsx: "tsx",
+  mts: "ts",
+  cts: "ts",
+  js: "js",
+  jsx: "jsx",
+  mjs: "js",
+  cjs: "js",
+  json: "json",
+  css: "css",
+  html: "html",
+  md: "md",
+  mdx: "md",
+  sh: "bash",
+  bash: "bash",
+  zsh: "bash",
+  yml: "yaml",
+  yaml: "yaml",
+  toml: "toml",
+  py: "py",
+  rs: "rs",
+  go: "go",
+  java: "java",
+  sql: "sql",
+  xml: "xml",
+};
+
+/** Shiki's plain-text grammar; not part of the bundled-language union. */
+const PLAIN = "text" as BundledLanguage;
+
+function languageOf(path: string): BundledLanguage {
+  const dot = path.lastIndexOf(".");
+  return (dot < 0 ? undefined : LANGUAGES[path.slice(dot + 1).toLowerCase()]) ?? PLAIN;
+}
+
+interface TreeNode extends FileEntry {
+  name: string;
+  children: TreeNode[];
+}
+
+/**
+ * The server's sorted flat list → a tree. A directory always precedes its own
+ * entries in that order, so one pass is enough.
+ */
+export function buildTree(entries: readonly FileEntry[]): TreeNode[] {
+  const roots: TreeNode[] = [];
+  const dirs = new Map<string, TreeNode>();
+  for (const entry of entries) {
+    const slash = entry.path.lastIndexOf("/");
+    const node: TreeNode = { ...entry, name: entry.path.slice(slash + 1), children: [] };
+    if (entry.kind === "dir") dirs.set(entry.path, node);
+    const parent = slash < 0 ? undefined : dirs.get(entry.path.slice(0, slash));
+    (parent?.children ?? roots).push(node);
+  }
+  return roots;
+}
+
+const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/** One row, plus its children when it is an open directory. */
+function Rows({
+  nodes,
+  expanded,
+  onToggle,
+  onOpen,
+}: {
+  nodes: TreeNode[];
+  expanded: ReadonlySet<string>;
+  onToggle: (path: string) => void;
+  onOpen: (path: string) => void;
+}) {
+  return (
+    <>
+      {nodes.map((node) => {
+        const open = expanded.has(node.path);
+        return (
+          <div key={node.path}>
+            <button
+              type="button"
+              title={node.path}
+              {...(node.kind === "dir" ? { "aria-expanded": open } : {})}
+              onClick={() => (node.kind === "dir" ? onToggle(node.path) : onOpen(node.path))}
+              className="flex h-row-file w-full items-center gap-2xs rounded-sm px-2xs text-left hover:bg-bg-hover"
+            >
+              {node.kind === "dir" ? (
+                open ? (
+                  <ChevronDown className="size-md flex-none text-fg-faint" />
+                ) : (
+                  <ChevronRight className="size-md flex-none text-fg-faint" />
+                )
+              ) : (
+                <File className="size-md flex-none text-fg-faint" />
+              )}
+              <span className={cn("min-w-0 flex-1 truncate font-mono text-code", node.kind === "dir" ? "text-fg" : "text-fg-muted")}>
+                {node.name}
+              </span>
+            </button>
+            {node.kind === "dir" && open && node.children.length > 0 && (
+              <div className="pl-sm">
+                <Rows nodes={node.children} expanded={expanded} onToggle={onToggle} onOpen={onOpen} />
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+/**
+ * 文件 tab: the task's working tree, read-only.
+ *
+ * The server decides which directory that is — the task's own worktree, or the
+ * project — exactly as it does for 变更. Selecting a file swaps the tree for
+ * its content; there is no editing here.
+ */
+export function FilesPanel({
+  client,
+  threadId,
+  active,
+  refreshKey,
+}: {
+  client: ApiClient;
+  threadId: string | null;
+  /** The pane being open on this tab; a collapsed pane must not poll. */
+  active: boolean;
+  /** The thread's `updatedAt`: a new one means the engine wrote to disk. */
+  refreshKey: string;
+}) {
+  const [listing, setListing] = useState<FileListing | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  const [selected, setSelected] = useState<string | null>(null);
+  const [content, setContent] = useState<FileContent | null>(null);
+  const [contentError, setContentError] = useState<string | null>(null);
+  /** Bumped per load; a stale response never writes state. */
+  const generation = useRef(0);
+  const [reload, setReload] = useState(0);
+
+  useEffect(() => {
+    const mine = ++generation.current;
+    if (threadId == null) setListing(null);
+    if (!active || threadId == null) return;
+    setLoading(true);
+    client
+      .listFiles(threadId)
+      .then((next) => {
+        if (mine !== generation.current) return;
+        setListing(next);
+        setError(null);
+        // Everything open when there is little to show, all closed otherwise.
+        setExpanded(
+          next.entries.length <= EXPAND_ALL_MAX
+            ? new Set(next.entries.filter((entry) => entry.kind === "dir").map((entry) => entry.path))
+            : new Set(),
+        );
+      })
+      .catch((failure: unknown) => {
+        if (mine !== generation.current) return;
+        setListing(null);
+        setError(message(failure));
+      })
+      .finally(() => {
+        if (mine === generation.current) setLoading(false);
+      });
+  }, [active, client, threadId, refreshKey, reload]);
+
+  // A thread switch invalidates the open file, not just the listing.
+  useEffect(() => {
+    setSelected(null);
+    setFilter("");
+  }, [threadId]);
+
+  const contentGeneration = useRef(0);
+
+  useEffect(() => {
+    const mine = ++contentGeneration.current;
+    if (threadId == null || selected == null) {
+      setContent(null);
+      setContentError(null);
+      return;
+    }
+    client
+      .getFileContent(threadId, selected)
+      .then((next) => {
+        if (mine !== contentGeneration.current) return;
+        setContent(next);
+        setContentError(null);
+      })
+      .catch((failure: unknown) => {
+        if (mine !== contentGeneration.current) return;
+        setContent(null);
+        setContentError(message(failure));
+      });
+  }, [client, threadId, selected]);
+
+  const entries = listing?.entries ?? [];
+  const needle = filter.trim().toLowerCase();
+  // Filtering flattens: a match whose parent directory does not match has no
+  // tree to sit in, so the hit list carries whole paths and files only.
+  const matches = useMemo(
+    () => (needle === "" ? [] : entries.filter((entry) => entry.kind === "file" && entry.path.toLowerCase().includes(needle))),
+    [entries, needle],
+  );
+  const tree = useMemo(() => (needle === "" ? buildTree(entries) : []), [entries, needle]);
+
+  const toggle = (path: string): void =>
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (!next.delete(path)) next.add(path);
+      return next;
+    });
+
+  if (selected != null) {
+    return (
+      <>
+        <div className="mb-xs flex items-center gap-2xs">
+          <button
+            type="button"
+            onClick={() => setSelected(null)}
+            className="inline-flex h-xl flex-none items-center gap-3xs rounded-sm border border-border px-xs text-fg-muted text-xs hover:bg-bg-hover hover:text-fg"
+          >
+            <ArrowLeft className="size-md" />
+            返回
+          </button>
+          <span className="min-w-0 truncate font-mono text-code text-fg-faint" title={selected}>
+            {baseName(selected)}
+          </span>
+        </div>
+
+        {contentError != null ? (
+          <p className="text-danger text-xs">{contentError}</p>
+        ) : content == null ? (
+          <p className="text-fg-faint text-xs">加载中…</p>
+        ) : content.binary ? (
+          <p className="text-fg-faint text-xs">二进制文件</p>
+        ) : (
+          <>
+            <CodeBlock code={content.content} language={languageOf(selected)} showLineNumbers />
+            {content.truncated && <p className="pt-2xs text-2xs text-fg-faint">文件过长，已截断</p>}
+          </>
+        )}
+      </>
+    );
+  }
+
+  return (
+    <>
+      <div className="mb-xs flex items-center gap-2xs">
+        <input
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+          placeholder="过滤文件"
+          className="h-xl min-w-0 flex-1 rounded-sm border border-border bg-bg px-xs text-xs outline-none placeholder:text-fg-faint focus:border-border-strong"
+        />
+        <button
+          type="button"
+          aria-label="刷新"
+          onClick={() => setReload((value) => value + 1)}
+          className="grid size-lg flex-none place-items-center rounded-sm text-fg-faint hover:bg-bg-hover hover:text-fg"
+        >
+          <RefreshCw className={cn("size-md", loading && "animate-spin")} />
+        </button>
+      </div>
+
+      {error != null ? (
+        <p className="text-danger text-xs">{error}</p>
+      ) : threadId == null ? (
+        <p className="text-fg-faint text-xs">先选一个任务</p>
+      ) : entries.length === 0 ? (
+        <p className="text-fg-faint text-xs">{loading ? "加载中…" : "没有可显示的文件"}</p>
+      ) : needle !== "" ? (
+        <>
+          {matches.length === 0 ? (
+            <p className="text-fg-faint text-xs">没有匹配的文件</p>
+          ) : (
+            matches.map((entry) => (
+              <button
+                key={entry.path}
+                type="button"
+                title={entry.path}
+                onClick={() => setSelected(entry.path)}
+                className="flex h-row-file w-full items-center gap-2xs rounded-sm px-2xs text-left hover:bg-bg-hover"
+              >
+                <File className="size-md flex-none text-fg-faint" />
+                <span className="min-w-0 flex-1 truncate font-mono text-code text-fg-muted">{entry.path}</span>
+              </button>
+            ))
+          )}
+        </>
+      ) : (
+        <Rows nodes={tree} expanded={expanded} onToggle={toggle} onOpen={setSelected} />
+      )}
+
+      {listing?.truncated === true && <p className="mt-md text-2xs text-fg-faint">文件太多，列表已截断。</p>}
+    </>
+  );
+}

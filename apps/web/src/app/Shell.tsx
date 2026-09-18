@@ -96,7 +96,7 @@ export function Shell({ token }: { token: string }) {
               <SettingsView settings={state.settings} client={client} onClose={actions.closeSettings} />
             </div>
           ) : view === "thread" && thread != null ? (
-            <ThreadView thread={thread} actions={actions} rightOpen={right.open} onQueue={onQueue} />
+            <ThreadView thread={thread} actions={actions} client={client} rightOpen={right.open} onQueue={onQueue} />
           ) : (
             <div className="row-span-3 min-h-0 overflow-y-auto">
               <EmptyState

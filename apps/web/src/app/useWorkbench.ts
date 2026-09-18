@@ -147,7 +147,7 @@ export function useWorkbench(token: string) {
         setProjectId(project.id);
       },
 
-      /** Native folder chooser, run by the server so desktop and browser share it. */
+      /** Native folder chooser: the desktop shell's own dialog, or the server's. */
       pickFolder: () => client.pickFolder(),
 
       /** Empty state: create the thread, select it, send the first message. */

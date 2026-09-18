@@ -12,6 +12,7 @@ import type {
   ThreadSummary,
   WorkspaceMode,
 } from "./types";
+import { pickNativePath } from "./nativePicker";
 
 const TOKEN_KEY = "vgent.token";
 
@@ -130,14 +131,27 @@ export function createClient(token: string) {
         json: { repoPath, ...(name != null ? { name } : {}) },
       }),
     deleteProject: (id: string) => api<void>(`/projects/${id}`, token, { method: "DELETE" }),
-    /** Native folder chooser on the server; `null` means the user cancelled. */
-    pickFolder: () =>
-      api<{ path: string } | undefined>("/projects/pick", token, { method: "POST" }).then((body) => body?.path ?? null),
+    /**
+     * Native folder chooser — the desktop shell's own dialog when there is one,
+     * the server's `osascript` panel otherwise. `null` means the user cancelled,
+     * which must not be mistaken for "no native picker here".
+     */
+    pickFolder: async () => {
+      const native = await pickNativePath("folder");
+      if (native !== undefined) return native;
+      const body = await api<{ path: string } | undefined>("/projects/pick", token, { method: "POST" });
+      return body?.path ?? null;
+    },
     /** Same chooser, restricted to a single file — for an MCP server's executable. */
-    pickFile: () =>
-      api<{ path: string } | undefined>("/projects/pick", token, { method: "POST", json: { kind: "file" } }).then(
-        (body) => body?.path ?? null,
-      ),
+    pickFile: async () => {
+      const native = await pickNativePath("file");
+      if (native !== undefined) return native;
+      const body = await api<{ path: string } | undefined>("/projects/pick", token, {
+        method: "POST",
+        json: { kind: "file" },
+      });
+      return body?.path ?? null;
+    },
 
     // Changes are keyed by thread: a task in its own worktree diffs that
     // directory, every other task diffs the project's working tree.

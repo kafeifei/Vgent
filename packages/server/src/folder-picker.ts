@@ -59,9 +59,8 @@ async function runChooser(script: readonly string[], options: PickFolderOptions)
 
 /**
  * Opens the native folder chooser and returns the picked absolute path, or
- * `null` when the user cancelled. Lives on the server so the browser and the
- * desktop shell share one code path — the desktop webview is a remote origin
- * and has no Tauri IPC of its own.
+ * `null` when the user cancelled. This is the browser's only way to pick a
+ * path; the desktop shell calls Tauri's dialog plugin directly instead.
  */
 export async function pickFolder(options: PickFolderOptions = {}): Promise<string | null> {
   const stdout = await runChooser(FOLDER_SCRIPT, options);

@@ -1,7 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "工作台是远端 http://127.0.0.1 页面，不暴露任何 Tauri IPC；原生对话框只从 Rust 侧调用。",
+  "description": "工作台是远端 http://127.0.0.1 页面，只允许它调用 dialog 插件的 open（选择仓库目录 / 可执行文件）；其余 Tauri IPC 一律不开，原生对话框只从 Rust 侧调用。",
   "windows": ["main"],
-  "permissions": []
+  "remote": {
+    "urls": ["http://127.0.0.1:*"]
+  },
+  "permissions": ["dialog:allow-open"]
 }

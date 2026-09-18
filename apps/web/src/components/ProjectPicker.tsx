@@ -7,8 +7,8 @@ import type { Project } from "@/lib/types";
 
 /**
  * The project switcher, shared by the window bar and the empty state. Adding a
- * project opens the server-side native folder chooser — typing a path is only
- * the fallback for a host that has no picker.
+ * project opens the native folder chooser — typing a path is only the fallback
+ * for a host that has no picker.
  */
 export function ProjectPicker({
   projects,

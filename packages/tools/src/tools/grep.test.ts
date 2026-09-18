@@ -57,4 +57,11 @@ describe.each([
     if (preferRg) return; // ripgrep has its own regex engine/error surface; the invalid-pattern guard is the pure-Node path's.
     await expect(makeTool().execute!({ pattern: "(unclosed" }, execOptions)).rejects.toThrow(/Invalid pattern/);
   });
+
+  it("skips directories even when the glob matches a directory name", async () => {
+    await mkdir(join(workDir, "needle"), { recursive: true }); // a dir whose own name matches the search pattern
+    const result = await makeTool().execute!({ pattern: "needle" }, execOptions);
+    expect(result.matches.every((m: { file: string }) => m.file !== "needle")).toBe(true);
+    expect(result.matches).toEqual([{ file: "a.ts", line: 1, text: "const needle = 1;" }]);
+  });
 });

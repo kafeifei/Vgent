@@ -168,7 +168,7 @@ docs/
 - 本地 sandbox 跑 Claude Code bridge 官方无先例，freecode 证明可行但用了脏办法，我们要找干净的。
 - 自研引擎不走 HarnessV1，resume / compact / permissionMode 是自己的实现，和官方引擎语义可能有差；壳用统一配置抽象盖住。
 
-## 当前状态（2026-09-18，阶段四完成）
+## 当前状态（2026-09-18，阶段五完成）
 
 三条引擎路全部本地跑通并有真实冒烟测试（`VGENT_SMOKE=1`）；桌面壳、worktree 隔离、子代理/MCP/skills、动态模型清单、`pnpm start` 全部落地。全仓构建绿，`pnpm test` 40 文件 / 289 测试通过（另 5 文件 / 11 测试是 `VGENT_SMOKE` 门控的真机冒烟，默认跳过）。
 
@@ -237,14 +237,27 @@ docs/
 - 已知未修（阶段四）：阶段三就有的 shutdown 竞态还在；suspend 成功但 `saveHarnessState` 写盘失败会孤儿掉 bridge（只记日志）；suspend 和审批回执之间 bridge 死掉算 `interrupted`；没有真实 MCP 往返测试；`tauri dev` 没有 HMR；选文件夹只支持 macOS；桌面壳和 `pnpm server` 共用 `~/.vgent`（`connection.json` 会被覆盖，用 pid 匹配 shell）；直接 `kill` Tauri 进程会孤儿掉 server；`EmptyState` 的引擎默认值只在挂载时读一次 settings。
 - 验证：`pnpm build && pnpm test` → 40 文件 / 289 测试通过（另 5 文件 / 11 测试是 `VGENT_SMOKE` 门控，默认跳过）；阶段四之前记录的 `@vgent/engines`（5 个）/ `@vgent/server`（84 个）真机冒烟、双进程重启验证（见上两条）依旧成立。新增桌面壳验证：`pnpm desktop:build` 产出的 `Vgent.app` 启动后 `connection.json` 的 `pid` 与子进程一致、`/` 返回 web 首页、⌘Q 约 2s 内退出（server 进程一起没了）、点「选择文件夹…」原生对话框前置弹出并可选中目录。
 
-### 明确未做（阶段四之后）
+### 阶段五进度
+
+- 2026-09-18：起点 `5261ee2`。五个切片各开独立 worktree 并行做完再合并；冲突几乎全是叠加型，只有一处要手工重排（`useChanges` 从 RightPane 提到 `useWorkbench` 之后 RightPane 的 props 集合）。第 7 条「记忆 + 手动 compact」没做。
+- **右栏三个 tab 落地**。「文件」：`packages/server/src/files.ts` 的 `createFiles()`，`GET /api/threads/:id/files?q=&limit=`（`git ls-files -z --cached --others --exclude-standard` 减去 `--deleted`，从文件路径推导目录条目；无 `q` 全量排序、上限 5000 带 `truncated`；有 `q` 按 basename 前缀 > basename 包含 > 全路径子序列排名，默认 50、上限 200）和 `GET /api/threads/:id/files/content?path=`（拒绝绝对路径 / `..`、realpath 必须在根内、必须是普通文件、512 KiB 截断、前 8 KiB 含 NUL 视为二进制）；目录经 `repoPathOf` 解析，所以回收后的 workspace 自然 409。Web `features/files/FilesPanel.tsx`：折叠树（≤ 8 条时展开）、过滤框、点文件用 `CodeBlock` 只读查看。「终端」：`features/terminal/terminal.ts` 的 `collectTerminalEntries(messages)` 用 `toolMeta` 同一套分类挑出 shell 工具部件（vgent `bash` / Claude Code `Bash` / Codex shell），按时间顺序显示 `$ cmd` + 输出 + exit code，只在用户贴底时跟随。「计划」：`features/plan/plan.ts` 的 `latestPlan(messages)` 归一化 Claude Code `TodoWrite`、Codex `update_plan`、自研 `updatePlan` 三种输入形状取最后一次；自研引擎新增 `updatePlan` 工具（`packages/engine/src/update-plan.ts`，整体替换的待办清单，无副作用，进 `READ_ONLY_TOOLS`，instructions 加了一句）。翻 `@ai-sdk/harness-codex@1.0.117` 的 dist 确认 Codex 的计划目前**不会**以工具部件出现（只有内部 `todo_list` 事件，没转成 UI part），所以 Codex 分支现在是不可达的前向兼容代码。
+- **Composer `@` 引用**。`features/composer/mention.ts`（`findMention` / `acceptMention` / `mentionSegments`，光标前匹配 `(^|\s)@([^\s@]*)$`）。Composer 新增 `completeFiles?: (q) => Promise<FileEntry[]>`（ThreadView 传 `client.listFiles(thread.id, { q, limit: 12 })`，EmptyState 不传所以 `@` 不动），120 ms 去抖 + 代数守卫丢弃过期响应；弹层在输入框上方最多 12 行，↑↓ / Enter / Tab / Esc，弹层开着时 Enter 不提交，mousedown 接受以保住焦点；接受后替换成 `@<path> `（目录带 `/`）。pill 视觉用镜像层：textarea 文字透明 + 同字体同内边距的 `<div aria-hidden>` 把 `@\S+` 渲染成 `bg-bg-inset` 圆角 span（`px-3xs` 配 `-mx-3xs` 抵消，避免字形位移和真实光标错位）。发出去的是纯文本，引擎自己读文件。
+- **usage 落盘 + context ring**。`toUIMessageStream` 只在 `packages/server/src/runs.ts` 调一次，所以 `messageMetadata` 加在那里、三引擎同享：`finish-step` 的 `usage` 和 `finish` 的 `totalUsage` 写进 `UIMessage.metadata`（类型 `UsageInfo` / `ThreadMessageMetadata`，`types.ts`），`readUIMessageStream` 重建时自动落盘。harness 侧按协议核实（`HarnessV1` 定义了 `finish-step { usage }` / `finish { totalUsage }`，Claude Code bridge 把 `input + cache_creation + cache_read` 合成 `inputTokens`），但没真机跑 harness 验证。`models.ts` 透传 Codex 目录的 `context_window` 为 `ModelEntry.contextWindow`（Anthropic 接口没有这项）。Web `features/composer/contextUsage.ts`：`contextUsage(messages)` 取最后一条带 `metadata.usage.inputTokens` 的助手消息，否则按字符 / 4 估算；`ContextRing.tsx` 是 16 px SVG 环，放在审查栏右端，title 形如「上下文 3.8k / 200k（2%）」，估算加「（估算）」，窗口未知加「（窗口大小未知，按 200k 计）」（`DEFAULT_CONTEXT_WINDOW = 200_000` 是唯一常量；模型选「默认」或走 Claude Code / Gateway 时分母就是未知），≥ 80% 换 warning 色。
+- **「审查 +N −M」pill**。`useChanges` 从 RightPane 提到 `useWorkbench`（返回 `changes: ChangesView`），线程 `updatedAt` 变了就拉一次快照，不再看右栏开没开；RightPane 改收 `changes` prop。pill 在审查栏 `本机` 右边，N / M 是各文件 additions / deletions 之和（`sumChanges`），0 个文件时隐藏，点击 `openChanges()`。
+- **「本任务内一直允许」**。`ThreadRecord.alwaysAllow?: string[]`（工具名）；`PATCH /api/threads/:id` 接受它（非空字符串数组、去重、空数组即删字段，否则 400 `invalid_always_allow`；运行中只改这一个字段的 PATCH 不再 409）。自研引擎：`decideApproval` / `createToolApproval(mode, alwaysAllow)` 在 `allow-all` 之后、读写集合之前查名单返回 `not-applicable`，server 的 vgent runner 传 `ctx.thread.alwaysAllow`（parked 的 runner 续跑同一轮时闭包里还是旧名单，靠下面的客户端自动审批兜住）。harness 引擎不动，审批仍由 harness 发起；客户端 `lib/autoApprove.ts` 的 `pendingAutoApprovals(messages, alwaysAllow)` 在 ThreadView 里对名单内的 `approval-requested` 部件自动 `addToolApprovalResponse({ approved: true })`（`useRef<Set>` 按 approval id 去重），续跑仍走 `sendAutomaticallyWhen`，三引擎统一。ApprovalCard 第三个按钮标「本任务内一直允许 <toolTitle>」，点了先 PATCH 再批准当前这条；权限弹层多一行「一直允许：bash · 清除」。名单按裸工具名、不分引擎（线程有消息后不能换引擎，实际串不了）。
+- **worktree 回收 / 恢复 UI**。TaskHeader 分支 pill 改成 Popover：路径、分支、基线 commit，「回收工作目录」（运行中禁用，提示「任务运行中」）/「恢复工作目录」；`api.ts` 新增 `reclaimWorkspace` / `restoreWorkspace`；toast「已回收，快照已保存」/「已恢复」/ 错误文案；状态靠 SSE 回流，无本地状态。
+- **设置页**。侧栏齿轮 → `useWorkbench.settingsOpen`，Shell 中栏换成 `features/settings/SettingsView.tsx`（右栏隐藏，Esc / 返回 / 选线程关闭）：默认引擎、默认权限模式（Codex 锁 allow-all）、默认模型（复用 `ModelPicker`）、MCP 服务器列表（编辑 / 删除 / 添加；stdio 是可执行文件 + 参数每行一个 + 环境变量 `KEY=VALUE` 每行一个，http / sse 是 URL；`settings/mcpForm.ts` 的 `toForm` / `fromForm`），一个「保存」整体 `PUT /api/settings`，400 文案显示在 MCP 段下方。`lib/engineOptions.ts` 现在是引擎 / 权限模式清单的唯一来源（TaskHeader / EmptyState / 设置页共用）。可执行文件有「选择…」：`POST /api/projects/pick` 接受 `{ kind: 'folder' | 'file' }`（`folder-picker.ts` 的 `pickFile`，同样 osascript；非 darwin 501 时按钮隐藏，文本框兜底）。
+- 顺手修：自研引擎的 `glob` 工具原来只返回文件（`packages/*` 得到空，模型据此断言「没有 packages 目录」），现在目录也返回并以 `/` 结尾（`packages/tools/src/walk.ts` 的 `walkEntries`，`grep` 仍走 `walkFiles` 只读文件）；顺带发现 Node 22 `fs.promises.glob` 的函数型 `exclude` 只在 `**` 递归路径上生效、浅层 `*` 直接跳过，改成模式字符串 `["**/node_modules", "**/.git"]` 两条路径都排除。
+- 验证：`pnpm build && pnpm test` → 48 文件 / 357 测试通过（另 5 文件 / 11 测试 `VGENT_SMOKE` 门控默认跳过）。浏览器实测（`node packages/server/dist/main.js --port 7477 --repo <本仓库>`，自研引擎 + allow-reads + 独立 worktree）：设置页改默认引擎并增删 MCP 条目落盘正确；任务里 `updatePlan` → bash 审批卡片 → 点「本任务内一直允许 命令」后 bash 直接跑（`alwaysAllow: ['bash']` 落盘，权限弹层显示名单）；审查 pill `+1 −0` 出现并能点开变更 tab；文件 tab 列出 worktree 树并查看 `now.txt`；终端 tab 有 `$ date > now.txt`；计划 tab 3 / 3 完成；输入 `@pack` 弹出补全、Tab 接受成 `@packages/` 且镜像层 span 带 pill 类；ring 的 title 是「上下文 3.8k / 200k（2%）（窗口大小未知，按 200k 计）」；回收后 pill 显示「已回收」、审查 pill 消失、worktree 目录删掉、快照留下；恢复后全部回来。每条助手消息的 `metadata.usage` / `totalUsage` 都落了盘。
+- 已知未修（阶段五）：任务头的 pill 行不换行，窄窗口 + 右栏展开时分支 pill 被右栏盖住；ring 在模型「默认」时分母未知；harness 引擎的 usage 只按协议核实、没真机跑；`alwaysAllow` 不传给 explore / coder 子代理（它们遇到需审批的操作还是直接拒）；Codex 计划分支不可达；`RightPane` 的 `open` prop 现在没人用；阶段三、四列的已知未修都还在。
+
+### 明确未做（阶段五之后）
 
 - **自研引擎的 session 管理**：server 把存好的 UI 消息喂回 agent（每轮 `convertToModelMessages` 重放），JSONL 的 `sessionFile` 路径现在只有 `apps/cli` 在用。
 - `server` 未做：实例锁（`instance-lock.ts` 还没搬）。
 - `askUserQuestions` 在 TUI 里不可用（需要 Web `useChat`）。
 - 记忆、手动 compact、`@ai-sdk/otel`。
-- worktree 的回收 / 恢复没有 UI（后端 `POST /api/threads/:id/workspace/{reclaim,restore}` 已就绪）；MCP server 列表没有设置 UI（只能直接编辑 `settings.json` 的 `mcpServers`）。
-- Web 已做出工作台骨架（见上），**明确留到后面的**：右栏的文件 / 终端 / 计划三个 tab（现在是「下一步接入」占位）、`@` 引用、context ring、composer 上方的「审查 +N −M」pill、checkpoint / 回退、麦克风、侧聊 `/side`、运行位置下拉（写死「本机」）、模式 chip（写死 `Agent`）、子代理的嵌套流、虚拟滚动、无障碍焦点管理。
+- Web：checkpoint / 回退、麦克风、侧聊 `/side`、运行位置下拉（写死「本机」）、模式 chip（写死 `Agent`）、子代理的嵌套流、虚拟滚动、无障碍焦点管理、任务头换行。
 - 桌面壳：Windows / Linux、签名与公证、自动更新、多窗口。
 
-下一步：阶段五——UI 抛光按优先级排：右栏文件 / 终端 / 计划三个 tab、`@` 引用、context ring、composer 上方「审查 +N −M」pill、「本任务内一直允许」、worktree 回收/恢复和 MCP 的设置 UI、记忆 + 手动 compact；挑着做，不追求一次做完。发布工程（签名 / 公证、自动更新、Windows）只在有明确需求时再启动。
+下一步：阶段六候选，按优先级：记忆 + 手动 compact（自研引擎）；Claude Code / Codex 真机跑一轮确认 usage 元数据和「一直允许」的客户端自动审批；`alwaysAllow` 下沉到 explore / coder 子代理；任务头 pill 行换行；实例锁。发布工程（签名 / 公证、自动更新、Windows）只在有明确需求时再启动。

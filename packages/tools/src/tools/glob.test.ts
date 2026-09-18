@@ -42,4 +42,14 @@ describe("glob tool", () => {
   it("rejects a search path outside the working directory", async () => {
     await expect(makeTool().execute!({ pattern: "*", path: "../escape" }, execOptions)).rejects.toThrow(/outside the working directory/);
   });
+
+  it("includes matching directories, marked with a trailing slash", async () => {
+    const result = await makeTool().execute!({ pattern: "*" }, execOptions);
+    expect(result.paths).toEqual(["src/"]);
+  });
+
+  it("lists subdirectories for a dir/* pattern", async () => {
+    const result = await makeTool().execute!({ pattern: "src/*" }, execOptions);
+    expect(result.paths).toEqual(["src/a/", "src/index.ts"]);
+  });
 });

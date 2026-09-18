@@ -11,7 +11,7 @@ import { pendingQueue, type QueueItem } from "@/features/worklog/queue";
 import type { TurnActions } from "@/features/worklog/Turn";
 import { pendingAutoApprovals } from "@/lib/autoApprove";
 import type { ApiClient } from "@/lib/api";
-import type { ThreadSummary } from "@/lib/types";
+import type { EngineDescriptor, PermissionMode, ThreadSummary } from "@/lib/types";
 import { isLiveThread, type WorkbenchActions } from "./useWorkbench";
 
 /** Waits for the thread's history to land before mounting the chat view. */
@@ -21,8 +21,14 @@ export function ThreadView(props: {
   client: ApiClient;
   changes: ChangesView;
   rightOpen: boolean;
+  /** 引擎能力表, for the composer's model picker and its 「不支持审批」 notice. */
+  engines: EngineDescriptor[];
   /** `settings.defaultModel`, so the 思考 chip still knows the model of a task that named none. */
   defaultModel: string | undefined;
+  /** The global 运行模式; the composer's notice reads it. */
+  runMode: PermissionMode | undefined;
+  /** The global 「一直允许」 list, which auto-answers matching approvals. */
+  allowlist: readonly string[] | undefined;
   onQueue: (queue: QueueItem[]) => void;
   onMessages: (messages: UIMessage[]) => void;
 }) {
@@ -50,7 +56,10 @@ function ThreadChatView({
   client,
   changes,
   rightOpen,
+  engines,
   defaultModel,
+  runMode,
+  allowlist,
   onQueue,
   onMessages,
   chat,
@@ -60,7 +69,10 @@ function ThreadChatView({
   client: ApiClient;
   changes: ChangesView;
   rightOpen: boolean;
+  engines: EngineDescriptor[];
   defaultModel: string | undefined;
+  runMode: PermissionMode | undefined;
+  allowlist: readonly string[] | undefined;
   onQueue: (queue: QueueItem[]) => void;
   onMessages: (messages: UIMessage[]) => void;
   chat: Chat<UIMessage>;
@@ -83,7 +95,7 @@ function ThreadChatView({
     () => ({
       respondToApproval: (id, approved) => void addToolApprovalResponse({ id, approved }),
       alwaysAllow: (id, toolName) => {
-        actions.allowTool(thread.id, toolName);
+        actions.allowTool(toolName);
         void addToolApprovalResponse({ id, approved: true });
       },
       answerQuestions: (toolCallId, output) => void addToolOutput({ tool: "askUserQuestions", toolCallId, output }),
@@ -92,17 +104,17 @@ function ThreadChatView({
     [actions, addToolApprovalResponse, addToolOutput, thread.id],
   );
 
-  // Every approval the task's allowlist already answers, answered once. The
+  // Every approval the global allowlist already answers, answered once. The
   // `Chat`'s own `sendAutomaticallyWhen` then continues the turn, exactly as it
   // does for a click on 允许.
   const autoApproved = useRef<Set<string>>(new Set());
   useEffect(() => {
-    for (const id of pendingAutoApprovals(messages, thread.alwaysAllow)) {
+    for (const id of pendingAutoApprovals(messages, allowlist)) {
       if (autoApproved.current.has(id)) continue;
       autoApproved.current.add(id);
       void addToolApprovalResponse({ id, approved: true });
     }
-  }, [addToolApprovalResponse, messages, thread.alwaysAllow]);
+  }, [addToolApprovalResponse, allowlist, messages]);
   // Stable: the composer debounces on this identity, and a streaming turn
   // re-renders this view constantly.
   const completeFiles = useCallback(
@@ -133,15 +145,10 @@ function ThreadChatView({
           pending={thread.pendingApprovals + queue.filter((item) => item.kind === "question").length}
           rightOpen={rightOpen}
           onRename={(title) => actions.rename(thread.id, title)}
-          onSetEngine={(engine) => actions.setEngine(thread.id, engine)}
-          onSetModel={(model) => actions.setModel(thread.id, model)}
-          onSetPermission={(mode) => actions.setPermission(thread.id, mode)}
-          onClearAlwaysAllow={() => actions.clearAllowedTools(thread.id)}
           onReclaimWorkspace={() => actions.reclaimWorkspace(thread.id)}
           onRestoreWorkspace={() => actions.restoreWorkspace(thread.id)}
           onStop={() => actions.stop(thread.id)}
           onToggleRight={actions.toggleRight}
-          onBlocked={() => actions.toast("运行中不能改，先停止")}
         />
         <SetupNotice
           setup={thread.workspace?.setup}
@@ -167,13 +174,18 @@ function ThreadChatView({
           onSubmit={submit}
           onStop={() => actions.stop(thread.id)}
           live={live}
+          engines={engines}
           engine={thread.engine}
+          // A task with history is stuck with its engine; the picker greys the
+          // other groups out and says why.
+          engineLocked={thread.messageCount > 0}
           model={thread.model}
           defaultModel={defaultModel}
+          runMode={runMode}
           // Same rule as the 思考 chip below: a running turn already carries
           // the model it started with, so switching it mid-flight would be a lie.
-          onPickModel={(model) =>
-            live ? actions.toast("运行中不能改，先停止") : actions.setModel(thread.id, model)
+          onPickModel={(engine, model) =>
+            live ? actions.toast("运行中不能改，先停止") : actions.setModel(thread.id, engine, model)
           }
           reasoningEffort={thread.reasoningEffort}
           // Same rule as the header's pills.

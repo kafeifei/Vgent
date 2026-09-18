@@ -1,5 +1,6 @@
 import type {
   ChangesSnapshot,
+  EngineDescriptor,
   EngineId,
   FileContent,
   FileDiff,
@@ -7,7 +8,6 @@ import type {
   IntegrateAction,
   IntegrationStatus,
   ModelCatalog,
-  PermissionMode,
   Project,
   Settings,
   SetupLog,
@@ -190,7 +190,6 @@ export function createClient(token: string) {
       projectId: string;
       title?: string;
       engine?: EngineId;
-      permissionMode?: PermissionMode;
       model?: string;
       /** The model's「思考等级」; omitted leaves the engine's own default. */
       reasoningEffort?: string;
@@ -202,13 +201,11 @@ export function createClient(token: string) {
       id: string,
       patch: {
         title?: string;
+        /** Picking another engine's model changes both at once; only an empty thread may. */
         engine?: EngineId;
-        permissionMode?: PermissionMode;
         model?: string | null;
         /** `null` clears it and hands the level back to the engine. */
         reasoningEffort?: string | null;
-        /** The task's 「本任务内一直允许」 tool list, whole. `[]` clears it. */
-        alwaysAllow?: string[];
         /** 归档 also reclaims the task's worktree; un-archiving restores it. */
         archived?: boolean;
       },
@@ -227,12 +224,22 @@ export function createClient(token: string) {
     /** `/compact`: replaces the task's whole history with a summary of it. Vgent engine only. */
     compactThread: (id: string) => api<ThreadRecord>(`/threads/${id}/compact`, token, { method: "POST" }),
 
+    /** 引擎能力表: what exists, what it is called, what it can do. */
+    listEngines: () => api<{ engines: EngineDescriptor[] }>("/engines", token).then((body) => body.engines),
+
     /** The engine's model list. `refresh` skips the server's 10-minute cache. */
     listModels: (engine: EngineId, refresh = false) =>
       api<ModelCatalog>(`/engines/${engine}/models${refresh ? "?refresh=1" : ""}`, token),
 
     getSettings: () => api<Settings>("/settings", token),
     putSettings: (patch: Partial<Settings>) => api<Settings>("/settings", token, { method: "PUT", json: patch }),
+
+    /**
+     * 「一直允许」 on an approval card: one tool onto the global allowlist, right
+     * now — it is clicked mid-turn, so it cannot go through the settings draft.
+     * Taking one back off is an ordinary settings edit (`putSettings`).
+     */
+    allowTool: (tool: string) => api<Settings>("/settings/allowlist", token, { method: "POST", json: { tool } }),
 
     stopChat: (threadId: string) => api<void>(`/chat/${threadId}/stop`, token, { method: "POST" }),
   };

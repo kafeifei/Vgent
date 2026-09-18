@@ -7,11 +7,12 @@ import type { LanguageModel, ModelMessage, TextStreamPart, ToolSet, UIMessage } 
 import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp, type VgentApp } from "./app.js";
-import { createEngineRegistry, type EngineContext, type EngineFactory } from "./engines/registry.js";
+import type { EngineDescriptor } from "./engines/capabilities.js";
+import { createEngineRegistry, type EngineContext, type EngineFactoryOverride } from "./engines/registry.js";
 import { DEFAULT_VGENT_MODEL } from "./engines/vgent.js";
 import { EngineUnavailableError } from "./errors.js";
 import { createThreadStore, type ThreadPreCompactSnapshot } from "./store/threads.js";
-import type { HarnessState, Project, ThreadMessageMetadata, ThreadRecord, ThreadSummary } from "./types.js";
+import type { HarnessState, Project, Settings, ThreadMessageMetadata, ThreadRecord, ThreadSummary } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -37,7 +38,7 @@ function createFakeEngine(options?: { text?: string; deltaDelayMs?: number; writ
   const delay = options?.deltaDelayMs ?? 0;
   let turn = 0;
 
-  const factory: EngineFactory = {
+  const factory: EngineFactoryOverride = {
     async create(ctx) {
       created.push(ctx);
       const sessionTurn = ++turn;
@@ -75,7 +76,7 @@ function createFakeEngine(options?: { text?: string; deltaDelayMs?: number; writ
   return { factory, created, streamed };
 }
 
-function makeApp(dataDir: string, factory?: EngineFactory, webDist?: string): VgentApp {
+function makeApp(dataDir: string, factory?: EngineFactoryOverride, webDist?: string): VgentApp {
   const instance = createApp({
     dataDir,
     token: TOKEN,
@@ -287,7 +288,10 @@ describe("createApp", () => {
     const dir = await tempDir();
     const app = makeApp(dir, createFakeEngine().factory);
     const project = (await (await postJson(app, "/api/projects", { repoPath: dir })).json()) as Project;
-    await request(app, "/api/settings", { method: "PUT", body: JSON.stringify({ defaultModel: "openai/gpt-5.5" }) });
+    await request(app, "/api/settings", {
+      method: "PUT",
+      body: JSON.stringify({ defaultEngine: "vgent", defaultModel: "openai/gpt-5.5" }),
+    });
 
     const picked = (await (
       await postJson(app, "/api/threads", { projectId: project.id, engine: "vgent", model: "codex-subscription:gpt-5.5" })
@@ -296,6 +300,13 @@ describe("createApp", () => {
 
     const defaulted = (await (await postJson(app, "/api/threads", { projectId: project.id, engine: "vgent" })).json()) as ThreadRecord;
     expect(defaulted.model).toBe("openai/gpt-5.5");
+
+    // A model id only means something to the engine it was picked under, so
+    // another engine starts on its own default instead.
+    const other = (await (
+      await postJson(app, "/api/threads", { projectId: project.id, engine: "claude-code" })
+    ).json()) as ThreadRecord;
+    expect(other.model).toBeUndefined();
   });
 
   it("round-trips the reasoning effort, clears it with null and rejects a bad one", async () => {
@@ -335,27 +346,60 @@ describe("createApp", () => {
     expect(rejectedOnCreate.status).toBe(400);
   });
 
-  it("refuses a codex thread in any permission mode but allow-all", async () => {
+  it("serves the 引擎能力表", async () => {
+    const dir = await tempDir();
+    const app = makeApp(dir);
+    const body = (await (await request(app, "/api/engines")).json()) as { engines: EngineDescriptor[] };
+    expect(body.engines.map((entry) => entry.id)).toEqual(["claude-code", "codex", "vgent"]);
+    expect(body.engines[0]).toMatchObject({ label: "Claude Code", capabilities: { approvals: true, compact: false } });
+    expect(body.engines[1]).toMatchObject({ label: "Codex", capabilities: { approvals: false } });
+  });
+
+  it("takes a codex thread under any run mode — 运行模式 is global now", async () => {
     const dir = await tempDir();
     const app = makeApp(dir, createFakeEngine().factory);
     const project = (await (await postJson(app, "/api/projects", { repoPath: dir })).json()) as Project;
 
-    // The default permission mode is `allow-reads`, which Codex cannot honour.
-    const rejected = await postJson(app, "/api/threads", { projectId: project.id, engine: "codex" });
-    expect(rejected.status).toBe(400);
-    expect(await rejected.json()).toMatchObject({ error: { code: "codex_permission_mode" } });
-
-    const created = await postJson(app, "/api/threads", { projectId: project.id, engine: "codex", permissionMode: "allow-all" });
+    // 询问 is the default run mode, and Codex cannot ask; the task is created
+    // anyway and simply runs 全自动 — see `effectivePermission`.
+    const created = await postJson(app, "/api/threads", { projectId: project.id, engine: "codex" });
     expect(created.status).toBe(200);
-    const codexThread = (await created.json()) as ThreadRecord;
+    expect((await created.json()) as ThreadRecord).toMatchObject({ engine: "codex" });
+  });
 
-    // And the same rule applies to a patch that would put it back in a mode it cannot run in.
-    const patched = await request(app, `/api/threads/${codexThread.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ permissionMode: "allow-edits" }),
-    });
-    expect(patched.status).toBe(400);
-    expect(await patched.json()).toMatchObject({ error: { code: "codex_permission_mode" } });
+  it("resolves the global run mode and allowlist onto the turn's engine context", async () => {
+    const dir = await tempDir();
+    const fake = createFakeEngine();
+    const app = makeApp(dir, fake.factory);
+    const { thread } = await setupThread(app, dir);
+
+    await request(app, "/api/settings", { method: "PUT", body: JSON.stringify({ runMode: "allow-edits" }) });
+    await postJson(app, "/api/settings/allowlist", { tool: "bash" });
+
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "你好")] }));
+    await waitForStatus(app, thread.id, "idle");
+    expect(fake.created.at(-1)).toMatchObject({ permissionMode: "allow-edits", alwaysAllow: ["bash"] });
+  });
+
+  it("keeps one global tool allowlist", async () => {
+    const dir = await tempDir();
+    const app = makeApp(dir);
+    const add = (tool: unknown) => postJson(app, "/api/settings/allowlist", { tool });
+
+    expect(((await (await add("bash")).json()) as Settings).allowlist).toEqual(["bash"]);
+    expect(((await (await add(" write ")).json()) as Settings).allowlist).toEqual(["bash", "write"]);
+    // Adding the same tool twice is what clicking 「一直允许」 twice looks like.
+    expect(((await (await add("bash")).json()) as Settings).allowlist).toEqual(["bash", "write"]);
+
+    for (const bad of [undefined, "", "   ", 3]) {
+      expect((await add(bad)).status).toBe(400);
+    }
+
+    const removed = await request(app, "/api/settings/allowlist/bash", { method: "DELETE" });
+    expect(((await removed.json()) as Settings).allowlist).toEqual(["write"]);
+    // Removing what is not there is a no-op, not a 404.
+    const again = await request(app, "/api/settings/allowlist/bash", { method: "DELETE" });
+    expect(((await again.json()) as Settings).allowlist).toEqual(["write"]);
   });
 
   it("lets an empty thread change engine but locks one that already has messages", async () => {
@@ -384,44 +428,22 @@ describe("createApp", () => {
     expect((await unchanged.json()) as ThreadRecord).toMatchObject({ engine: "claude-code", title: "改个标题" });
   });
 
-  it("keeps a per-thread tool allowlist, editable even mid-run", async () => {
+  it("takes engine and model in one patch while the thread is empty", async () => {
     const dir = await tempDir();
-    const fake = createFakeEngine({ deltaDelayMs: 25 });
-    const app = makeApp(dir, fake.factory);
+    const app = makeApp(dir, createFakeEngine().factory);
     const { thread } = await setupThread(app, dir);
-    const patch = (body: unknown) =>
-      request(app, `/api/threads/${thread.id}`, { method: "PATCH", body: JSON.stringify(body) });
 
-    // Deduped on the way in, and it reaches the summary the SSE snapshot carries.
-    const set = await patch({ alwaysAllow: ["bash", "write", "bash"] });
-    expect(set.status).toBe(200);
-    expect((await set.json()) as ThreadRecord).toMatchObject({ alwaysAllow: ["bash", "write"] });
-    const summaries = (await (await request(app, "/api/threads")).json()) as { threads: ThreadSummary[] };
-    expect(summaries.threads[0]).toMatchObject({ alwaysAllow: ["bash", "write"] });
-
-    for (const bad of [{ alwaysAllow: "bash" }, { alwaysAllow: ["bash", ""] }, { alwaysAllow: [1] }]) {
-      const rejected = await patch(bad);
-      expect(rejected.status).toBe(400);
-      expect(await rejected.json()).toMatchObject({ error: { code: "invalid_always_allow" } });
-    }
-
-    // An allowlist edit only steers future decisions, so unlike every other
-    // field it is accepted while the thread is running.
-    const run = postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "你好")] });
-    await (await waitForLiveStream(app, thread.id)).body?.cancel();
-    expect((await patch({ alwaysAllow: ["bash"] })).status).toBe(200);
-    expect((await patch({ alwaysAllow: ["bash"], title: "顺手改名" })).status).toBe(409);
-    await readSse(await run);
-    await waitForStatus(app, thread.id, "idle");
-
-    // An empty list is how the UI clears it, and the field goes away with it.
-    const cleared = (await (await patch({ alwaysAllow: [] })).json()) as ThreadRecord;
-    expect(cleared.alwaysAllow).toBeUndefined();
+    const switched = await request(app, `/api/threads/${thread.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ engine: "vgent", model: "openai/gpt-5" }),
+    });
+    expect(switched.status).toBe(200);
+    expect((await switched.json()) as ThreadRecord).toMatchObject({ engine: "vgent", model: "openai/gpt-5" });
   });
 
   it("turns an unavailable engine into a 503 before the run starts", async () => {
     const dir = await tempDir();
-    const factory: EngineFactory = {
+    const factory: EngineFactoryOverride = {
       ensureAvailable() {
         throw new EngineUnavailableError("Codex 未登录：找不到可用的 ChatGPT / Codex 登录态（~/.codex/auth.json，或 CODEX_HOME）");
       },
@@ -785,9 +807,13 @@ describe("createApp", () => {
 
   it("reads and writes settings", async () => {
     const app = makeApp(await tempDir());
-    expect(await (await request(app, "/api/settings")).json()).toMatchObject({ defaultEngine: "claude-code" });
-    const updated = await request(app, "/api/settings", { method: "PUT", body: JSON.stringify({ defaultPermissionMode: "allow-edits" }) });
-    expect(await updated.json()).toMatchObject({ defaultPermissionMode: "allow-edits" });
+    expect(await (await request(app, "/api/settings")).json()).toMatchObject({
+      defaultEngine: "claude-code",
+      runMode: "allow-reads",
+      allowlist: [],
+    });
+    const updated = await request(app, "/api/settings", { method: "PUT", body: JSON.stringify({ runMode: "allow-edits" }) });
+    expect(await updated.json()).toMatchObject({ runMode: "allow-edits" });
   });
 
   it("serves a built web app at / with an SPA fallback, without touching /api", async () => {
@@ -937,8 +963,10 @@ describe("createApp", () => {
     // Claude Code's harness picks its own; the server must not invent one.
     expect(await defaultModelOf("claude-code")).toBeUndefined();
 
+    // `defaultModel` belongs to `defaultEngine` — here Claude Code — so it
+    // answers for that engine only; the others keep their own answer.
     await request(app, "/api/settings", { method: "PUT", body: JSON.stringify({ defaultModel: "sonnet" }) });
-    expect(await defaultModelOf("vgent")).toBe("sonnet");
     expect(await defaultModelOf("claude-code")).toBe("sonnet");
+    expect(await defaultModelOf("vgent")).toBe(DEFAULT_VGENT_MODEL);
   });
 });

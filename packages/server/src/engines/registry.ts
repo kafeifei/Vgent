@@ -1,5 +1,6 @@
 import type { ModelMessage, TextStreamPart, ToolSet } from "ai";
-import type { EngineId, HarnessState, Logger, Project, ThreadRecord } from "../types.js";
+import type { EngineId, HarnessState, Logger, PermissionMode, Project, ThreadRecord } from "../types.js";
+import type { EngineDescriptor } from "./capabilities.js";
 import { createClaudeCodeEngineFactory } from "./claude-code.js";
 import { createCodexEngineFactory } from "./codex.js";
 import { createVgentEngineFactory } from "./vgent.js";
@@ -54,6 +55,15 @@ export interface EngineContext {
    */
   projectPath: string;
   dataDir: string;
+  /**
+   * The mode this turn runs under, resolved from the global 运行模式 against
+   * this engine's capabilities at turn start. Engines read it from here rather
+   * than from the thread: the setting is global, and a thread that was created
+   * under another mode must not keep running under it.
+   */
+  permissionMode: PermissionMode;
+  /** The global「一直允许」list, same resolution. Empty means nothing is pre-allowed. */
+  alwaysAllow: string[];
   harnessState?: HarnessState;
   /**
    * True when this turn continues the open one (the converted history ends in a
@@ -68,6 +78,11 @@ export interface EngineContext {
 }
 
 export interface EngineFactory {
+  /**
+   * What this engine is called and what it can do — the single source of the
+   * 引擎能力表 `GET /api/engines` serves and every client branches on.
+   */
+  descriptor: EngineDescriptor;
   /**
    * Cheap precondition checked before the run starts, so "this engine cannot
    * run here" is an HTTP error. Everything that needs the sandbox belongs in
@@ -97,12 +112,34 @@ export function statelessEngines(registry: EngineRegistry): ReadonlySet<EngineId
   return ids;
 }
 
+/** The engine ids this registry serves, in declaration order. */
+export function engineIds(registry: EngineRegistry): EngineId[] {
+  return Object.keys(registry) as EngineId[];
+}
+
+/** The 引擎能力表 as served by `GET /api/engines`. */
+export function engineDescriptors(registry: EngineRegistry): EngineDescriptor[] {
+  return engineIds(registry).map((id) => registry[id].descriptor);
+}
+
+/**
+ * A replacement engine in a test registry. Its descriptor is optional: a stand-in
+ * for, say, Claude Code is exercised through Claude Code's own capabilities, and
+ * making every test restate the table would be a second source for it.
+ */
+export type EngineFactoryOverride = Omit<EngineFactory, "descriptor"> & { descriptor?: EngineDescriptor };
+
 /** All three engines, each backed by its real runtime. */
-export function createEngineRegistry(overrides?: Partial<EngineRegistry>): EngineRegistry {
-  return {
+export function createEngineRegistry(overrides?: Partial<Record<EngineId, EngineFactoryOverride>>): EngineRegistry {
+  const base: EngineRegistry = {
     "claude-code": createClaudeCodeEngineFactory(),
     codex: createCodexEngineFactory(),
     vgent: createVgentEngineFactory(),
-    ...overrides,
   };
+  if (overrides == null) return base;
+  for (const id of engineIds(base)) {
+    const override = overrides[id];
+    if (override != null) base[id] = { ...override, descriptor: override.descriptor ?? base[id].descriptor };
+  }
+  return base;
 }

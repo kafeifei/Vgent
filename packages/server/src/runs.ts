@@ -15,9 +15,11 @@ import {
 import type { ChunkHub } from "./chunk-hub.js";
 import { createChunkHub } from "./chunk-hub.js";
 import { BadRequestError, ConflictError, NotFoundError, TurnResumeFailedError, VgentServerError } from "./errors.js";
+import { effectivePermission } from "./engines/capabilities.js";
 import type { EngineRegistry, EngineRunner } from "./engines/registry.js";
 import { statelessEngines } from "./engines/registry.js";
 import type { ProjectStore } from "./store/projects.js";
+import type { SettingsStore } from "./store/settings.js";
 import { DEFAULT_THREAD_TITLE, type ThreadStore } from "./store/threads.js";
 import type { ChangeStats, Logger, ThreadMessageMetadata, ThreadRecord, ThreadStatus, UsageInfo } from "./types.js";
 import { silentLogger } from "./types.js";
@@ -128,6 +130,8 @@ export interface RunManager {
 export function createRunManager(options: {
   threads: ThreadStore;
   projects: ProjectStore;
+  /** 运行模式 and its allowlist, read per turn so a change lands on the next message. */
+  settings: SettingsStore;
   registry: EngineRegistry;
   dataDir: string;
   log?: Logger;
@@ -139,7 +143,7 @@ export function createRunManager(options: {
    */
   changeStats?: (thread: ThreadRecord) => Promise<ChangeStats | undefined>;
 }): RunManager {
-  const { threads, projects, registry, dataDir } = options;
+  const { threads, projects, settings, registry, dataDir } = options;
   const log = options.log ?? silentLogger;
   const stopTimeoutMs = options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS;
   const runs = new Map<string, LiveRun>();
@@ -334,11 +338,16 @@ export function createRunManager(options: {
         // Read after the abandon path above, so a cleared `continueFrom` is
         // really gone by the time the runner could act on it.
         const harnessState = await threads.loadHarnessState(thread.id);
+        // 运行模式 is global and read here, at turn start: an engine that cannot
+        // ask runs 全自动 whatever the setting says.
+        const permission = effectivePermission(factory.descriptor.capabilities, await settings.get());
         runner = await factory.create({
           thread,
           project,
           projectPath: stored.repoPath,
           dataDir,
+          permissionMode: permission.permissionMode,
+          alwaysAllow: permission.alwaysAllow,
           ...(harnessState != null ? { harnessState } : {}),
           // A parked runner was reused above, so reaching here with
           // `continuesTurn` means the open turn lives in another process.

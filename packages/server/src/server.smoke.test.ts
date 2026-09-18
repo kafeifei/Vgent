@@ -117,7 +117,7 @@ describe("@vgent/server (smoke)", () => {
       try {
         const project = (await (await postJson(appA, "/api/projects", { repoPath: REPO_PATH })).json()) as Project;
         const thread = (await (
-          await postJson(appA, "/api/threads", { projectId: project.id, title: "冒烟", engine: "claude-code", permissionMode: "allow-reads" })
+          await postJson(appA, "/api/threads", { projectId: project.id, title: "冒烟", engine: "claude-code" })
         ).json()) as ThreadRecord;
         threadId = thread.id;
 
@@ -186,8 +186,6 @@ describe("@vgent/server (smoke)", () => {
             projectId: project.id,
             title: "重启续跑冒烟",
             engine: "claude-code",
-            // Gates every shell command, so the turn has to stop and ask.
-            permissionMode: "allow-reads",
           })
         ).json()) as ThreadRecord;
         threadId = thread.id;
@@ -263,8 +261,6 @@ describe("@vgent/server (smoke)", () => {
           projectId: project.id,
           title: "Codex 冒烟",
           engine: "codex",
-          // The only mode the Codex harness supports; anything else is a 400.
-          permissionMode: "allow-all",
         });
         expect(created.status).toBe(200);
         threadId = ((await created.json()) as ThreadRecord).id;
@@ -331,8 +327,7 @@ describe("@vgent/server (smoke)", () => {
         const created = await postJson(appA, "/api/threads", {
           projectId: project.id,
           title: "自研引擎冒烟",
-          engine: "vgent",
-          permissionMode: "allow-reads",
+          engine: "vgent"
         });
         expect(created.status).toBe(200);
         threadId = ((await created.json()) as ThreadRecord).id;

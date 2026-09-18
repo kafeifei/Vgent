@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import type { TextStreamPart, ToolSet } from "ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp, type VgentApp } from "./app.js";
-import { createEngineRegistry, type EngineFactory } from "./engines/registry.js";
+import { createEngineRegistry, type EngineFactoryOverride } from "./engines/registry.js";
 import type { ThreadRecord } from "./types.js";
 import { findSetupSpec } from "./worktree-setup.js";
 
@@ -58,7 +58,7 @@ async function writeConfig(repo: string, relative: string, body: unknown): Promi
  */
 function markerEngine(marker: string) {
   const seen: boolean[] = [];
-  const factory: EngineFactory = {
+  const factory: EngineFactoryOverride = {
     async create(ctx) {
       return {
         async stream() {
@@ -80,7 +80,7 @@ function markerEngine(marker: string) {
   return { factory, seen };
 }
 
-function makeApp(dataDir: string, factory?: EngineFactory): VgentApp {
+function makeApp(dataDir: string, factory?: EngineFactoryOverride): VgentApp {
   const instance = createApp({
     dataDir,
     token: TOKEN,

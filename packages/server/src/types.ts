@@ -118,12 +118,6 @@ export interface ThreadRecord {
    * means「用引擎自己的默认」.
    */
   reasoningEffort?: string;
-  permissionMode: PermissionMode;
-  /**
-   * Tools the user said to always allow in this task (「本任务内一直允许」).
-   * Deduped, non-empty names; absent means nothing is pre-allowed.
-   */
-  alwaysAllow?: string[];
   status: ThreadStatus;
   error?: string;
   /** Present only for a task running in its own git worktree. */
@@ -147,7 +141,17 @@ export interface ThreadSummary extends Omit<ThreadRecord, "messages"> {
 
 export interface Settings {
   defaultEngine: EngineId;
-  defaultPermissionMode: PermissionMode;
+  /**
+   * 运行模式: one global three-way choice, applied to every task. An engine
+   * without the `approvals` capability runs 全自动 whatever this says — see
+   * `effectivePermission`.
+   */
+  runMode: PermissionMode;
+  /**
+   * Tools the user said to never ask about again (审批卡上的「一直允许」).
+   * Global, like the mode above; deduped, non-empty names.
+   */
+  allowlist: string[];
   defaultModel?: string;
   /** MCP servers the `vgent` engine connects to per turn. Their tools are deferred; see `connectMcpServers`. */
   mcpServers?: McpServerConfig[];

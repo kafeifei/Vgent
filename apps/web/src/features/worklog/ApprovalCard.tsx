@@ -14,7 +14,7 @@ export function ApprovalCard({
   part: ToolPart;
   id: string;
   onRespond: (approved: boolean) => void;
-  /** Approves this call *and* adds the tool to the task's allowlist. */
+  /** Approves this call *and* adds the tool to the global allowlist. */
   onAlwaysAllow: (toolName: string) => void;
 }) {
   const display = describeTool(part);
@@ -49,10 +49,10 @@ export function ApprovalCard({
           <button
             type="button"
             onClick={() => onAlwaysAllow(toolName)}
-            title={`本任务之后的 ${toolName} 调用不再询问`}
+            title="以后所有任务都不再询问这个工具，可在设置里撤销"
             className="inline-flex h-xl items-center rounded-md border border-border bg-bg-elevated px-sm text-fg text-xs hover:border-border-strong hover:bg-bg-hover"
           >
-            本任务内一直允许 {toolTitle(toolName)}
+            一直允许 {toolTitle(toolName)}
           </button>
         </div>
       </div>

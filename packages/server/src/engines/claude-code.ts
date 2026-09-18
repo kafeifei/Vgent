@@ -2,7 +2,22 @@ import { collectHarnessAgentToolApprovalContinuations, collectHarnessAgentToolRe
 import { claudeCodeThinking, createClaudeCodeEngine } from "@vgent/engines";
 import type { TextStreamPart, ToolSet } from "ai";
 import { TurnResumeFailedError } from "../errors.js";
+import type { EngineDescriptor } from "./capabilities.js";
 import type { EngineContext, EngineFactory, EngineRunner } from "./registry.js";
+
+/** 引擎能力表, the Claude Code row: it can ask, and it can plan; the rest is not wired. */
+const DESCRIPTOR: EngineDescriptor = {
+  id: "claude-code",
+  label: "Claude Code",
+  capabilities: {
+    approvals: true,
+    askUser: false,
+    planMode: true,
+    compact: false,
+    knownDefaultModel: false,
+    extensions: false,
+  },
+};
 
 /**
  * The real Claude Code engine, one harness session per thread.
@@ -29,6 +44,8 @@ import type { EngineContext, EngineFactory, EngineRunner } from "./registry.js";
  */
 export function createClaudeCodeEngineFactory(): EngineFactory {
   return {
+    descriptor: DESCRIPTOR,
+
     async create(ctx: EngineContext): Promise<EngineRunner> {
       // Only a turn that is being continued may attach to a suspended one; a
       // fresh prompt abandons it and starts from the last finished state.
@@ -37,7 +54,7 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
 
       const engine = await createClaudeCodeEngine({
         repoPath: ctx.project.repoPath,
-        permissionMode: ctx.thread.permissionMode,
+        permissionMode: ctx.permissionMode,
         ...(ctx.thread.model != null ? { model: ctx.thread.model } : {}),
         // 「思考等级」for this engine *is* the harness `thinking` setting, and
         // `summarized` is what puts the reasoning in the stream.

@@ -1,28 +1,12 @@
 import { useEffect, useState } from "react";
 import { GitBranch, PanelRight, Square } from "lucide-react";
-import { ModelPicker } from "@/components/ModelPicker";
 import { OutcomeBadge } from "@/components/OutcomeBadge";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
-import { ENGINES, PERMISSIONS } from "@/lib/engineOptions";
-import type { EngineId, PermissionMode, ThreadSummary, ThreadWorkspace } from "@/lib/types";
+import type { ThreadSummary, ThreadWorkspace } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const PILL_CLASS =
   "inline-flex h-xl min-w-0 flex-none items-center gap-2xs overflow-hidden rounded-full border border-border bg-bg-elevated px-xs text-fg-muted text-xs";
-
-function Pill({
-  label,
-  value,
-  ...props
-}: { label: string; value: string } & React.ComponentProps<"button">) {
-  return (
-    <button type="button" {...props} className={cn(PILL_CLASS, "hover:border-border-strong hover:text-fg")}>
-      <span className="flex-none text-fg-faint">{label}</span>
-      <span className="min-w-0 truncate font-mono text-fg">{value}</span>
-      <span className="flex-none opacity-60">▾</span>
-    </button>
-  );
-}
 
 /** The worktree pill: its branch, plus 已回收 once the directory is gone. */
 function BranchPill({
@@ -89,39 +73,31 @@ function WorkspaceMenu({
   );
 }
 
-/** Sticky task header: title, engine / model / permission pills, stop, right pane. */
+/**
+ * Sticky task header: the title, where the task runs, how it was wound up, and
+ * the right pane. 模型 and 思考等级 live in the composer — one place to change
+ * them — and 运行模式 is a global setting, so neither has a pill here.
+ */
 export function TaskHeader({
   thread,
   live,
   pending,
   rightOpen,
   onRename,
-  onSetEngine,
-  onSetModel,
-  onSetPermission,
-  onClearAlwaysAllow,
   onReclaimWorkspace,
   onRestoreWorkspace,
   onStop,
   onToggleRight,
-  onBlocked,
 }: {
   thread: ThreadSummary;
   live: boolean;
   pending: number;
   rightOpen: boolean;
   onRename: (title: string) => void;
-  onSetEngine: (engine: EngineId) => void;
-  onSetModel: (model: string | null) => void;
-  onSetPermission: (mode: PermissionMode) => void;
-  /** Empties the task's 「本任务内一直允许」 list. */
-  onClearAlwaysAllow: () => void;
   onReclaimWorkspace: () => Promise<void>;
   onRestoreWorkspace: () => Promise<void>;
   onStop: () => void;
   onToggleRight: () => void;
-  /** Called instead of a PATCH while the thread is running. */
-  onBlocked: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(thread.title);
@@ -134,7 +110,6 @@ export function TaskHeader({
     else setDraft(thread.title);
   };
 
-  const guard = (run: () => void) => (live ? onBlocked() : run());
   const workspace = thread.workspace;
 
   return (
@@ -165,80 +140,6 @@ export function TaskHeader({
             {thread.title}
           </button>
         )}
-
-        <Popover
-          trigger={(props) => {
-            const engine = ENGINES.find((entry) => entry.id === thread.engine);
-            return <Pill label="引擎" value={engine?.label ?? thread.engine} {...props} />;
-          }}
-        >
-          {(close) => (
-            <>
-              <PopTitle>引擎</PopTitle>
-              {ENGINES.map((engine) => (
-                <PopItem
-                  key={engine.id}
-                  selected={engine.id === thread.engine}
-                  onClick={() => {
-                    guard(() => onSetEngine(engine.id));
-                    close();
-                  }}
-                >
-                  {engine.label}
-                </PopItem>
-              ))}
-            </>
-          )}
-        </Popover>
-
-        <ModelPicker
-          engine={thread.engine}
-          model={thread.model}
-          onPick={(model) => guard(() => onSetModel(model))}
-          trigger={(props, chip) => (
-            <Pill label="模型" value={chip.label} {...(chip.title != null ? { title: chip.title } : {})} {...props} />
-          )}
-        />
-
-        <Popover trigger={(props) => <Pill label="权限" value={thread.permissionMode} {...props} />}>
-          {(close) => (
-            <>
-              <PopTitle>权限模式</PopTitle>
-              {PERMISSIONS.map((mode) => {
-                const codexLocked = thread.engine === "codex" && mode !== "allow-all";
-                return (
-                  <PopItem
-                    key={mode}
-                    selected={mode === thread.permissionMode}
-                    disabled={codexLocked}
-                    {...(codexLocked ? { hint: "Codex 只支持 allow-all" } : {})}
-                    onClick={() => {
-                      guard(() => onSetPermission(mode));
-                      close();
-                    }}
-                  >
-                    <span className="font-mono">{mode}</span>
-                  </PopItem>
-                );
-              })}
-              {(thread.alwaysAllow?.length ?? 0) > 0 && (
-                <div className="flex items-center gap-xs px-xs py-2xs text-fg-faint text-xs">
-                  <span className="min-w-0 flex-1 truncate">一直允许：{thread.alwaysAllow?.join(", ")}</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onClearAlwaysAllow();
-                      close();
-                    }}
-                    className="flex-none text-fg-muted hover:text-fg"
-                  >
-                    清除
-                  </button>
-                </div>
-              )}
-            </>
-          )}
-        </Popover>
 
         {workspace != null && (
           <Popover

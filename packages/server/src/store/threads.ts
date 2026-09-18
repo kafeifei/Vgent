@@ -8,7 +8,6 @@ import type {
   EngineId,
   HarnessState,
   Logger,
-  PermissionMode,
   ThreadOutcome,
   ThreadRecord,
   ThreadStatus,
@@ -43,7 +42,6 @@ export interface CreateThreadInput {
   engine: EngineId;
   model?: string;
   reasoningEffort?: string;
-  permissionMode: PermissionMode;
 }
 
 export type ThreadPatch = Partial<{
@@ -52,9 +50,6 @@ export type ThreadPatch = Partial<{
   engine: EngineId;
   model: string | undefined;
   reasoningEffort: string | undefined;
-  permissionMode: PermissionMode;
-  /** The per-thread tool allowlist. `undefined` clears it. */
-  alwaysAllow: string[] | undefined;
   status: ThreadStatus;
   error: string | undefined;
   /** Attached right after the worktree is created, cleared when it is removed. */
@@ -240,7 +235,6 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
         engine: input.engine,
         ...(input.model != null ? { model: input.model } : {}),
         ...(input.reasoningEffort != null ? { reasoningEffort: input.reasoningEffort } : {}),
-        permissionMode: input.permissionMode,
         status: "idle",
         createdAt: now,
         updatedAt: now,
@@ -262,7 +256,6 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
           ...current,
           ...("title" in patch && patch.title != null ? { title: patch.title } : {}),
           ...("engine" in patch && patch.engine != null ? { engine: patch.engine } : {}),
-          ...("permissionMode" in patch && patch.permissionMode != null ? { permissionMode: patch.permissionMode } : {}),
           ...("status" in patch && patch.status != null ? { status: patch.status } : {}),
           ...("messages" in patch && patch.messages != null ? { messages: patch.messages } : {}),
           updatedAt: new Date().toISOString(),
@@ -279,10 +272,6 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
         if ("error" in patch) {
           if (patch.error == null) delete next.error;
           else next.error = patch.error;
-        }
-        if ("alwaysAllow" in patch) {
-          if (patch.alwaysAllow == null) delete next.alwaysAllow;
-          else next.alwaysAllow = patch.alwaysAllow;
         }
         if ("workspace" in patch) {
           if (patch.workspace == null) delete next.workspace;

@@ -6,7 +6,7 @@ import { ReasoningPicker } from "@/components/ReasoningPicker";
 import { dirName } from "@/features/changes/paths";
 import { baseName } from "@/lib/format";
 import { useToast } from "@/lib/toast";
-import type { ChangedFile, EngineId, FileEntry, ModelCatalog } from "@/lib/types";
+import type { ChangedFile, EngineDescriptor, EngineId, FileEntry, ModelCatalog, PermissionMode } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { ContextRing } from "./ContextRing";
 import { sumChanges } from "./contextUsage";
@@ -35,9 +35,12 @@ export function Composer({
   onSubmit,
   onStop,
   live,
+  engines,
   engine,
+  engineLocked,
   model,
   defaultModel,
+  runMode,
   onPickModel,
   reasoningEffort,
   onPickReasoning,
@@ -54,11 +57,17 @@ export function Composer({
   onSubmit: () => void;
   onStop?: () => void;
   live: boolean;
+  /** 引擎能力表, for the grouped model picker and the 「不支持审批」 notice. */
+  engines: EngineDescriptor[];
   engine: EngineId;
+  /** A task with history cannot cross engines; the picker greys the others out. */
+  engineLocked?: boolean;
   model: string | undefined;
   /** What the server would use when no model is picked; only the 思考 chip reads it. */
   defaultModel?: string | undefined;
-  onPickModel: (model: string | null) => void;
+  /** The global 运行模式, so an engine that cannot ask can say so. */
+  runMode?: PermissionMode | undefined;
+  onPickModel: (engine: EngineId, model: string | undefined) => void;
   reasoningEffort: string | undefined;
   onPickReasoning: (level: string) => void;
   /** Where this task runs, spelled out: 「主目录」 or 「worktree · <分支>」. */
@@ -95,6 +104,11 @@ export function Composer({
   const running = effectiveModel(model, catalog);
   const contextWindow = catalog?.models.find((entry) => entry.id === running)?.contextWindow;
   const sums = useMemo(() => (changedFiles == null ? null : sumChanges(changedFiles)), [changedFiles]);
+
+  // 能力缺失就明说，不装：an engine that cannot ask gets a sentence, not a
+  // control the user would only find out is dead by clicking it.
+  const descriptor = engines.find((entry) => entry.id === engine);
+  const noApprovals = descriptor != null && !descriptor.capabilities.approvals && runMode !== "allow-all";
 
   // Auto-grow: reset, then take the content height.
   useEffect(() => {
@@ -164,6 +178,9 @@ export function Composer({
         >
           {location}
         </span>
+        {noApprovals && (
+          <span className="min-w-0 truncate text-fg-faint text-xs">{descriptor?.label} 不支持审批，这个任务会全自动运行</span>
+        )}
         {sums != null && sums.files > 0 && (
           <button
             type="button"
@@ -295,8 +312,10 @@ export function Composer({
           )}
           <span className="inline-flex h-xl items-center rounded-sm px-xs text-fg-muted text-xs">Agent</span>
           <ModelPicker
+            engines={engines}
             engine={engine}
             model={model}
+            {...(engineLocked === true ? { engineLocked: true } : {})}
             onPick={onPickModel}
             onCatalog={setCatalog}
             side="top"

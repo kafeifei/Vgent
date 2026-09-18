@@ -5,7 +5,22 @@ import { describeSubscriptionAuth } from "@vgent/providers";
 import type { LanguageModel, TextStreamPart, ToolSet } from "ai";
 import { BadRequestError, EngineUnavailableError } from "../errors.js";
 import { createSettingsStore } from "../store/settings.js";
+import type { EngineDescriptor } from "./capabilities.js";
 import type { EngineContext, EngineFactory, EngineRunner } from "./registry.js";
+
+/** 引擎能力表, the 自研 row: everything, because everything in it is ours. */
+const DESCRIPTOR: EngineDescriptor = {
+  id: "vgent",
+  label: "Vgent（自研）",
+  capabilities: {
+    approvals: true,
+    askUser: true,
+    planMode: true,
+    compact: true,
+    knownDefaultModel: true,
+    extensions: true,
+  },
+};
 
 /** What a `vgent` thread runs on when it names no model of its own. */
 export const DEFAULT_VGENT_MODEL = "codex-subscription:gpt-5.5";
@@ -70,6 +85,7 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
   const { model: override } = options;
 
   return {
+    descriptor: DESCRIPTOR,
     statelessTurns: true,
 
     async ensureAvailable({ thread }) {
@@ -107,8 +123,8 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
       const engine = createVgentEngine({
         model,
         repoPath: ctx.project.repoPath,
-        permissionMode: ctx.thread.permissionMode,
-        ...(ctx.thread.alwaysAllow != null ? { alwaysAllow: ctx.thread.alwaysAllow } : {}),
+        permissionMode: ctx.permissionMode,
+        ...(ctx.alwaysAllow.length > 0 ? { alwaysAllow: ctx.alwaysAllow } : {}),
         extraTools: mcp.tools,
         skills,
         memoryDir: memoryDirOf(ctx),

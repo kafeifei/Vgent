@@ -1,12 +1,22 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, Pencil, Plus, Trash2 } from "lucide-react";
-import { ModelPicker, modelLabel } from "@/components/ModelPicker";
+import { ArrowLeft, Pencil, Plus, Trash2, X } from "lucide-react";
+import { ModelPicker } from "@/components/ModelPicker";
 import { ApiError, type ApiClient } from "@/lib/api";
-import { ENGINES, PERMISSIONS } from "@/lib/engineOptions";
 import { useToast } from "@/lib/toast";
-import type { McpServerConfig, Settings } from "@/lib/types";
+import type { EngineDescriptor, McpServerConfig, PermissionMode, Settings } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { EMPTY_MCP_FORM, fromForm, toForm, type McpForm } from "./mcpForm";
+
+/**
+ * 运行模式: three steps, each described by what it does *to you* rather than by
+ * the harness flag behind it. An engine that cannot ask runs 全自动 whatever is
+ * picked here — the composer says so on the task itself.
+ */
+const RUN_MODES: ReadonlyArray<{ id: PermissionMode; label: string; hint: string }> = [
+  { id: "allow-reads", label: "询问", hint: "读文件不问，改文件和跑命令先问" },
+  { id: "allow-edits", label: "自动改文件", hint: "改文件不问，跑命令先问" },
+  { id: "allow-all", label: "全自动", hint: "都不问" },
+];
 
 /** Deep-equal via a key-sorted `JSON.stringify`, so field order never causes a false "dirty". */
 const stableStringify = (value: unknown): string =>
@@ -142,16 +152,20 @@ function McpFormPanel({
 }
 
 /**
- * The settings page: defaults (engine / permission / model) plus the MCP
- * server list. One local draft, edited freely and sent whole on 保存; the
- * server snapshot only overwrites it while there is nothing unsaved to lose.
+ * The settings page: 运行模式, the global tool allowlist, the default model, the
+ * worktree cap, and the MCP server list. One local draft, edited freely and
+ * sent whole on 保存; the server snapshot only overwrites it while there is
+ * nothing unsaved to lose.
  */
 export function SettingsView({
   settings,
+  engines,
   client,
   onClose,
 }: {
   settings: Settings | null;
+  /** 引擎能力表, for the grouped 默认模型 picker. */
+  engines: EngineDescriptor[];
   client: ApiClient;
   onClose: () => void;
 }) {
@@ -190,17 +204,18 @@ export function SettingsView({
 
   const dirty = savedSnapshot != null && stableStringify(draft) !== savedSnapshot;
   const update = (patch: Partial<Settings>) => setDraft((current) => (current == null ? current : { ...current, ...patch }));
-  // `defaultModel` is optional-string under `exactOptionalPropertyTypes`, so clearing it means
+  // 选模型即选引擎, here too: the pair is written together. `defaultModel` is
+  // optional-string under `exactOptionalPropertyTypes`, so clearing it means
   // dropping the key rather than assigning `undefined` (which `update` cannot express).
-  const setDefaultModel = (model: string | null) =>
+  const setDefaultModel = (defaultEngine: Settings["defaultEngine"], model: string | undefined) =>
     setDraft((current) => {
       if (current == null) return current;
-      if (model != null) return { ...current, defaultModel: model };
+      if (model != null) return { ...current, defaultEngine, defaultModel: model };
       const { defaultModel: _dropped, ...rest } = current;
-      return rest;
+      return { ...rest, defaultEngine };
     });
   const servers = draft.mcpServers ?? [];
-  const codexLocked = draft.defaultEngine === "codex";
+  const allowlist = draft.allowlist ?? [];
 
   const save = () => {
     setSaving(true);
@@ -282,66 +297,88 @@ export function SettingsView({
       </div>
 
       <section className="flex flex-col gap-sm">
-        <h2 className="font-semibold text-fg text-sm">默认值</h2>
-
+        <h2 className="font-semibold text-fg text-sm">运行模式</h2>
         <div className="flex flex-col gap-2xs">
-          <span className="text-fg-faint text-xs">默认引擎</span>
-          <div className="flex flex-wrap gap-2xs">
-            {ENGINES.map((engine) => (
+          {RUN_MODES.map((mode) => (
+            <button
+              key={mode.id}
+              type="button"
+              aria-pressed={draft.runMode === mode.id}
+              onClick={() => update({ runMode: mode.id })}
+              className={cn(
+                "flex w-full flex-col items-start gap-3xs rounded-md border border-border bg-bg-elevated px-sm py-xs text-left hover:border-border-strong",
+                draft.runMode === mode.id && "border-brand bg-brand-bg hover:border-brand",
+              )}
+            >
+              <span className={cn("text-fg text-sm", draft.runMode === mode.id && "text-brand")}>{mode.label}</span>
+              <span className="text-fg-faint text-xs">{mode.hint}</span>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className="flex flex-col gap-sm">
+        <h2 className="font-semibold text-fg text-sm">一直允许的工具</h2>
+        <div className="flex flex-col gap-2xs">
+          {allowlist.map((tool) => (
+            <div key={tool} className="flex items-center gap-xs rounded-md border border-border bg-bg-elevated px-sm py-xs">
+              <span className="min-w-0 flex-1 truncate font-mono text-fg text-sm">{tool}</span>
               <button
-                key={engine.id}
                 type="button"
-                aria-pressed={draft.defaultEngine === engine.id}
-                onClick={() =>
-                  update({
-                    defaultEngine: engine.id,
-                    ...(engine.id === "codex" ? { defaultPermissionMode: "allow-all" as const } : {}),
-                  })
-                }
-                className={cn(PILL, draft.defaultEngine === engine.id && PILL_SELECTED)}
+                title="撤销"
+                onClick={() => update({ allowlist: allowlist.filter((name) => name !== tool) })}
+                className="grid size-lg flex-none place-items-center rounded-md text-fg-muted hover:bg-danger-bg hover:text-danger"
               >
-                {engine.label}
+                <X className="size-xs" />
               </button>
-            ))}
-          </div>
+            </div>
+          ))}
+          {allowlist.length === 0 && <p className="text-fg-faint text-xs">还没有一直允许的工具。审批卡上点「一直允许」会加到这里。</p>}
         </div>
+      </section>
 
-        <div className="flex flex-col gap-2xs">
-          <span className="text-fg-faint text-xs">默认权限模式</span>
-          <div className="flex flex-wrap gap-2xs">
-            {PERMISSIONS.map((mode) => {
-              const locked = codexLocked && mode !== "allow-all";
-              return (
-                <button
-                  key={mode}
-                  type="button"
-                  disabled={locked}
-                  title={locked ? "Codex 只支持 allow-all" : undefined}
-                  aria-pressed={draft.defaultPermissionMode === mode}
-                  onClick={() => update({ defaultPermissionMode: mode })}
-                  className={cn(PILL, "font-mono", draft.defaultPermissionMode === mode && PILL_SELECTED)}
-                >
-                  {mode}
-                </button>
-              );
-            })}
-          </div>
-        </div>
+      <section className="flex flex-col gap-sm">
+        <h2 className="font-semibold text-fg text-sm">默认模型</h2>
+        <ModelPicker
+          engines={engines}
+          engine={draft.defaultEngine}
+          model={draft.defaultModel}
+          onPick={setDefaultModel}
+          trigger={(props, chip) => (
+            <button type="button" {...props} className={cn(PILL, "w-fit font-mono")}>
+              {chip.label}
+              <span className="ml-2xs opacity-60">▾</span>
+            </button>
+          )}
+        />
+      </section>
 
-        <div className="flex flex-col gap-2xs">
-          <span className="text-fg-faint text-xs">默认模型</span>
-          <ModelPicker
-            engine={draft.defaultEngine}
-            model={draft.defaultModel}
-            onPick={setDefaultModel}
-            trigger={(props) => (
-              <button type="button" {...props} className={cn(PILL, "w-fit font-mono")}>
-                {modelLabel(draft.defaultModel)}
-                <span className="ml-2xs opacity-60">▾</span>
-              </button>
-            )}
+      <section className="flex flex-col gap-sm">
+        <h2 className="font-semibold text-fg text-sm">worktree 上限</h2>
+        <label className="flex flex-col gap-2xs">
+          <span className="text-fg-faint text-xs">超过这个数量就回收最旧的空闲任务目录；留空用默认值 25。</span>
+          <input
+            type="number"
+            min={1}
+            step={1}
+            value={draft.worktreeMaxCount ?? ""}
+            placeholder="25"
+            onChange={(event) => {
+              const raw = event.target.value.trim();
+              const parsed = Number.parseInt(raw, 10);
+              // Empty restores the built-in default; the server validates the rest.
+              setDraft((current) => {
+                if (current == null) return current;
+                if (raw === "" || !Number.isInteger(parsed) || parsed < 1) {
+                  const { worktreeMaxCount: _dropped, ...rest } = current;
+                  return rest;
+                }
+                return { ...current, worktreeMaxCount: parsed };
+              });
+            }}
+            className={cn(INPUT_CLASS, "w-[calc(var(--spacing-3xl)*2)] font-mono")}
           />
-        </div>
+        </label>
       </section>
 
       <section className="flex flex-col gap-sm">

@@ -7,13 +7,16 @@ import { readJsonOrQuarantine, writeJsonAtomic } from "./atomic-file.js";
 
 export const DEFAULT_SETTINGS: Settings = {
   defaultEngine: "claude-code",
-  defaultPermissionMode: "allow-reads",
+  runMode: "allow-reads",
+  allowlist: [],
 };
 
 /** `defaultModel: undefined` clears it, which `Partial<Settings>` cannot express under `exactOptionalPropertyTypes`. */
 export interface SettingsPatch {
   defaultEngine?: EngineId;
-  defaultPermissionMode?: PermissionMode;
+  runMode?: PermissionMode;
+  /** The whole global allowlist. `[]` empties it. */
+  allowlist?: string[];
   defaultModel?: string | undefined;
   mcpServers?: McpServerConfig[] | undefined;
   worktreeMaxCount?: number | undefined;
@@ -39,6 +42,20 @@ export interface SettingsStore {
 const isSettings = (value: unknown): value is Settings =>
   typeof value === "object" && value !== null && typeof (value as Settings).defaultEngine === "string";
 
+/**
+ * A stored settings file brought up to the current shape. 运行模式 used to be a
+ * per-thread default (`defaultPermissionMode`), so an older file's value becomes
+ * the global one; the old field is then dropped rather than kept in sync.
+ */
+export function migrateSettings(stored: Settings & { defaultPermissionMode?: PermissionMode }): Settings {
+  const { defaultPermissionMode, ...rest } = stored;
+  return {
+    ...rest,
+    runMode: stored.runMode ?? defaultPermissionMode ?? DEFAULT_SETTINGS.runMode,
+    allowlist: Array.isArray(stored.allowlist) ? stored.allowlist.filter((name) => typeof name === "string") : [],
+  };
+}
+
 export function createSettingsStore(dataDir: string, log: Logger = silentLogger): SettingsStore {
   const path = join(dataDir, "settings.json");
   const listeners = new Set<() => void>();
@@ -49,7 +66,8 @@ export function createSettingsStore(dataDir: string, log: Logger = silentLogger)
   const ensureReady = (): Promise<void> => {
     ready ??= (async () => {
       await mkdir(dataDir, { recursive: true, mode: 0o700 });
-      settings = (await readJsonOrQuarantine<Settings>(path, { validate: isSettings, log })) ?? { ...DEFAULT_SETTINGS };
+      const stored = await readJsonOrQuarantine<Settings>(path, { validate: isSettings, log });
+      settings = stored == null ? { ...DEFAULT_SETTINGS } : migrateSettings(stored);
     })();
     return ready;
   };
@@ -63,7 +81,8 @@ export function createSettingsStore(dataDir: string, log: Logger = silentLogger)
       await ensureReady();
       const next: Settings = { ...(settings ?? DEFAULT_SETTINGS) };
       if (patch.defaultEngine != null) next.defaultEngine = patch.defaultEngine;
-      if (patch.defaultPermissionMode != null) next.defaultPermissionMode = patch.defaultPermissionMode;
+      if (patch.runMode != null) next.runMode = patch.runMode;
+      if (patch.allowlist != null) next.allowlist = [...new Set(patch.allowlist)];
       if ("mcpServers" in patch) {
         if (patch.mcpServers == null || patch.mcpServers.length === 0) delete next.mcpServers;
         else next.mcpServers = patch.mcpServers;

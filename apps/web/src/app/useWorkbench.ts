@@ -3,7 +3,7 @@ import { createClient } from "@/lib/api";
 import { ThreadChats } from "@/lib/threadChats";
 import { useServerState } from "@/lib/useServerState";
 import { useToast } from "@/lib/toast";
-import type { EngineId, PermissionMode, ThreadMessageMetadata, ThreadSummary, WorkspaceMode } from "@/lib/types";
+import type { EngineDescriptor, EngineId, ThreadMessageMetadata, ThreadSummary, WorkspaceMode } from "@/lib/types";
 import { LIVE_STATUSES } from "@/lib/types";
 import { repoRelative } from "@/features/changes/paths";
 import { useChanges } from "@/features/changes/useChanges";
@@ -57,6 +57,24 @@ export function useWorkbench(token: string) {
   const [palette, setPalette] = useState(false);
   const [grouping, setGrouping] = useState<Grouping>("project");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /**
+   * 引擎能力表, loaded once. Everything the UI shows per engine — its name, the
+   * 「只能全自动」 note, whether 压缩上下文 is on offer — is read from here, so no
+   * component ever compares an engine id to a literal.
+   */
+  const [engines, setEngines] = useState<EngineDescriptor[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void client.listEngines().then(
+      (list) => {
+        if (!cancelled) setEngines(list);
+      },
+      (error: Error) => toast(error.message),
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [client, toast]);
 
   const thread = state.threads.find((entry) => entry.id === selectedThreadId);
   // A selected thread always wins over the manual project pick.
@@ -156,7 +174,6 @@ export function useWorkbench(token: string) {
         engine: EngineId,
         workspace: WorkspaceMode,
         model: string | null,
-        permissionMode: PermissionMode,
         reasoningEffort: string | null,
       ) => {
         if (activeProjectId == null) {
@@ -171,7 +188,6 @@ export function useWorkbench(token: string) {
             // Omitted, not null: the server reads「没传」as「用 defaultModel」.
             ...(model == null ? {} : { model }),
             ...(reasoningEffort == null ? {} : { reasoningEffort }),
-            permissionMode,
           })
           .then(async (record) => {
             selectThread(record.id);
@@ -192,38 +208,21 @@ export function useWorkbench(token: string) {
         void client.patchThread(threadId, { title }).catch((error: Error) => toast(error.message));
       },
 
-      setModel: (threadId: string, model: string | null) => {
-        void client.patchThread(threadId, { model }).catch((error: Error) => toast(error.message));
+      /**
+       * 选模型即选引擎: the two travel together, in one PATCH. The server refuses
+       * the engine half on a thread that already has messages.
+       */
+      setModel: (threadId: string, engine: EngineId, model: string | undefined) => {
+        void client.patchThread(threadId, { engine, model: model ?? null }).catch((error: Error) => toast(error.message));
       },
 
       setReasoningEffort: (threadId: string, reasoningEffort: string | null) => {
         void client.patchThread(threadId, { reasoningEffort }).catch((error: Error) => toast(error.message));
       },
 
-      setEngine: (threadId: string, engine: EngineId) => {
-        void client
-          .patchThread(threadId, {
-            engine,
-            ...(engine === "codex" ? { permissionMode: "allow-all" as const } : {}),
-          })
-          .catch((error: Error) => toast(error.message));
-      },
-
-      setPermission: (threadId: string, permissionMode: PermissionMode) => {
-        void client.patchThread(threadId, { permissionMode }).catch((error: Error) => toast(error.message));
-      },
-
-      /** 「本任务内一直允许」: one more tool on the thread's own allowlist. */
-      allowTool: (threadId: string, toolName: string) => {
-        const current = state.threads.find((entry) => entry.id === threadId)?.alwaysAllow ?? [];
-        if (current.includes(toolName)) return;
-        void client
-          .patchThread(threadId, { alwaysAllow: [...current, toolName] })
-          .catch((error: Error) => toast(error.message));
-      },
-
-      clearAllowedTools: (threadId: string) => {
-        void client.patchThread(threadId, { alwaysAllow: [] }).catch((error: Error) => toast(error.message));
+      /** 「一直允许」: one more tool on the *global* allowlist, from an approval card. */
+      allowTool: (toolName: string) => {
+        void client.allowTool(toolName).catch((error: Error) => toast(error.message));
       },
 
       // 归档 also reclaims the task's worktree, and un-archiving restores it —
@@ -304,6 +303,7 @@ export function useWorkbench(token: string) {
   return {
     state,
     client,
+    engines,
     thread,
     changes,
     selectedThreadId,

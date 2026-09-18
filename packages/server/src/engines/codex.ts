@@ -1,8 +1,27 @@
 import { createCodexEngine, type CodexEngineOptions } from "@vgent/engines";
 import { describeSubscriptionAuth } from "@vgent/providers";
 import type { TextStreamPart, ToolSet } from "ai";
-import { BadRequestError, EngineUnavailableError } from "../errors.js";
+import { EngineUnavailableError } from "../errors.js";
+import type { EngineDescriptor } from "./capabilities.js";
 import type { EngineContext, EngineFactory, EngineRunner } from "./registry.js";
+
+/**
+ * 引擎能力表, the Codex row. `update_plan` exists but produces no UI part, and
+ * the harness has no built-in tool approval at all — so every Codex turn runs
+ * 全自动, which `effectivePermission` is what decides.
+ */
+const DESCRIPTOR: EngineDescriptor = {
+  id: "codex",
+  label: "Codex",
+  capabilities: {
+    approvals: false,
+    askUser: false,
+    planMode: false,
+    compact: false,
+    knownDefaultModel: false,
+    extensions: false,
+  },
+};
 
 /**
  * The Codex harness takes a `reasoningEffort` of its own
@@ -38,13 +57,9 @@ function asCodexEffort(level: string | undefined): CodexEngineOptions["reasoning
  */
 export function createCodexEngineFactory(): EngineFactory {
   return {
-    async ensureAvailable({ thread }) {
-      // `HarnessAgent`'s constructor throws `HarnessCapabilityUnsupportedError`
-      // for any other mode. Catching it here makes it a 400 with a readable
-      // reason instead of an error part inside a 200 stream.
-      if (thread.permissionMode !== "allow-all") {
-        throw new BadRequestError("Codex 引擎没有内建工具审批，只支持 allow-all 权限模式", "codex_permission_mode");
-      }
+    descriptor: DESCRIPTOR,
+
+    async ensureAvailable() {
       // The adapter's `auth: 'auto'` reads the same store this reports on.
       const report = await describeSubscriptionAuth();
       if (!report.codex.available) {
@@ -56,7 +71,7 @@ export function createCodexEngineFactory(): EngineFactory {
       const reasoningEffort = asCodexEffort(ctx.thread.reasoningEffort);
       const engine = await createCodexEngine({
         repoPath: ctx.project.repoPath,
-        permissionMode: ctx.thread.permissionMode,
+        permissionMode: ctx.permissionMode,
         ...(ctx.thread.model != null ? { model: ctx.thread.model } : {}),
         ...(reasoningEffort != null ? { reasoningEffort } : {}),
         sessionId: ctx.thread.id,

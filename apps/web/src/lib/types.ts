@@ -12,6 +12,8 @@ export type {
   ChangeStats,
   ChangeStatus,
   ChangesSnapshot,
+  EngineCapabilities,
+  EngineDescriptor,
   EngineId,
   FileContent,
   FileDiff,

@@ -13,7 +13,6 @@ const record = (updatedAt: string, messages: UIMessage[]): ThreadRecord => ({
   projectId: "p1",
   title: "t",
   engine: "claude-code",
-  permissionMode: "allow-reads",
   status: "idle",
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt,

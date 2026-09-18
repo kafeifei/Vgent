@@ -15,7 +15,6 @@ const thread = (id: string, projectId: string, status: ThreadStatus, updatedAt: 
     projectId,
     title: id,
     engine: "claude-code",
-    permissionMode: "allow-reads",
     status,
     createdAt: updatedAt,
     updatedAt,

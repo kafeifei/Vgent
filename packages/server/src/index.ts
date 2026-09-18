@@ -51,12 +51,16 @@ export {
 } from "./integrate.js";
 export {
   createEngineRegistry,
+  engineDescriptors,
+  engineIds,
   statelessEngines,
   type EngineContext,
   type EngineFactory,
+  type EngineFactoryOverride,
   type EngineRegistry,
   type EngineRunner,
 } from "./engines/registry.js";
+export { effectivePermission, type EngineCapabilities, type EngineDescriptor } from "./engines/capabilities.js";
 export { createClaudeCodeEngineFactory } from "./engines/claude-code.js";
 export { createCodexEngineFactory } from "./engines/codex.js";
 export { createVgentEngineFactory, DEFAULT_VGENT_MODEL, type VgentEngineFactoryOptions } from "./engines/vgent.js";
@@ -72,7 +76,7 @@ export {
 export { AUTO_TITLE_MAX_LEN, createRunManager, deriveThreadTitle, recoverInterruptedThreads, type RunManager } from "./runs.js";
 export { readJsonOrQuarantine, writeJsonAtomic } from "./store/atomic-file.js";
 export { createProjectStore, type ProjectStore } from "./store/projects.js";
-export { createSettingsStore, DEFAULT_SETTINGS, type SettingsStore } from "./store/settings.js";
+export { createSettingsStore, DEFAULT_SETTINGS, migrateSettings, type SettingsPatch, type SettingsStore } from "./store/settings.js";
 export { createThreadStore, DEFAULT_THREAD_TITLE, summarize, type CreateThreadInput, type ThreadPatch, type ThreadStore } from "./store/threads.js";
 export {
   acquireInstanceLock,

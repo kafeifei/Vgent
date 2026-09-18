@@ -79,7 +79,7 @@ describe("createThreadStore", () => {
   it("rebuilds the index by scanning thread files", async () => {
     const dir = await tempDir();
     const store = seed(dir);
-    const thread = await store.create({ projectId: "p1", title: "第一个", engine: "claude-code", permissionMode: "allow-reads" });
+    const thread = await store.create({ projectId: "p1", title: "第一个", engine: "claude-code" });
 
     await rm(join(dir, "threads", "index.json"));
     const reopened = seed(dir);
@@ -91,8 +91,8 @@ describe("createThreadStore", () => {
   it("quarantines a corrupt thread file and still lists the healthy ones", async () => {
     const dir = await tempDir();
     const store = seed(dir);
-    const good = await store.create({ projectId: "p1", title: "好的", engine: "claude-code", permissionMode: "allow-reads" });
-    const bad = await store.create({ projectId: "p1", title: "坏的", engine: "claude-code", permissionMode: "allow-reads" });
+    const good = await store.create({ projectId: "p1", title: "好的", engine: "claude-code" });
+    const bad = await store.create({ projectId: "p1", title: "坏的", engine: "claude-code" });
 
     await writeFile(join(dir, "threads", `${bad.id}.json`), "{{{");
     await rm(join(dir, "threads", "index.json"));
@@ -106,7 +106,7 @@ describe("createThreadStore", () => {
   it("serializes concurrent writes to one thread", async () => {
     const dir = await tempDir();
     const store = seed(dir);
-    const thread = await store.create({ projectId: "p1", engine: "claude-code", permissionMode: "allow-reads" });
+    const thread = await store.create({ projectId: "p1", engine: "claude-code" });
 
     await Promise.all(Array.from({ length: 8 }, (_, index) => store.update(thread.id, { title: `标题-${index}` })));
 
@@ -119,7 +119,7 @@ describe("createThreadStore", () => {
   it("writes the harness state file 0600 and reads it back", async () => {
     const dir = await tempDir();
     const store = seed(dir);
-    const thread = await store.create({ projectId: "p1", engine: "claude-code", permissionMode: "allow-reads" });
+    const thread = await store.create({ projectId: "p1", engine: "claude-code" });
     const state = {
       version: 1,
       sessionId: thread.id,
@@ -136,8 +136,8 @@ describe("createThreadStore", () => {
   it("keeps pre-compact snapshots out of the index, sweeps a thread's own on remove, and leaves other threads' alone", async () => {
     const dir = await tempDir();
     const store = seed(dir);
-    const doomed = await store.create({ projectId: "p1", title: "要压缩的", engine: "claude-code", permissionMode: "allow-reads" });
-    const other = await store.create({ projectId: "p1", title: "另一个", engine: "claude-code", permissionMode: "allow-reads" });
+    const doomed = await store.create({ projectId: "p1", title: "要压缩的", engine: "claude-code" });
+    const other = await store.create({ projectId: "p1", title: "另一个", engine: "claude-code" });
 
     await store.snapshotBeforeCompact(doomed.id, [{ id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] }]);
     await store.snapshotBeforeCompact(doomed.id, [{ id: "m2", role: "user", parts: [{ type: "text", text: "hi again" }] }]);
@@ -168,7 +168,7 @@ describe("createThreadStore", () => {
       events += 1;
     });
 
-    const thread = await store.create({ projectId: "p1", engine: "claude-code", permissionMode: "allow-reads" });
+    const thread = await store.create({ projectId: "p1", engine: "claude-code" });
     await store.update(thread.id, { status: "idle" });
     await store.saveHarnessState(thread.id, { version: 1, sessionId: thread.id, resumeFrom: {}, updatedAt: "now" } as unknown as HarnessState);
     await store.remove(thread.id);
@@ -260,9 +260,31 @@ describe("createProjectStore / createSettingsStore", () => {
     const dir = await tempDir();
     const store = createSettingsStore(dir);
     expect((await store.get()).defaultEngine).toBe("claude-code");
-    await store.update({ defaultModel: "sonnet", defaultPermissionMode: "allow-edits" });
-    expect(await createSettingsStore(dir).get()).toMatchObject({ defaultModel: "sonnet", defaultPermissionMode: "allow-edits" });
+    await store.update({ defaultModel: "sonnet", runMode: "allow-edits" });
+    expect(await createSettingsStore(dir).get()).toMatchObject({ defaultModel: "sonnet", runMode: "allow-edits" });
     expect(await store.update({ defaultModel: undefined })).not.toHaveProperty("defaultModel");
+  });
+
+  it("promotes an older file's defaultPermissionMode to the global run mode", async () => {
+    const dir = await tempDir();
+    await writeJsonAtomic(join(dir, "settings.json"), { defaultEngine: "vgent", defaultPermissionMode: "allow-all" });
+
+    const migrated = await createSettingsStore(dir).get();
+    expect(migrated).toMatchObject({ defaultEngine: "vgent", runMode: "allow-all", allowlist: [] });
+    expect(migrated).not.toHaveProperty("defaultPermissionMode");
+
+    // A file with neither field falls back to 询问.
+    const bare = await tempDir();
+    await writeJsonAtomic(join(bare, "settings.json"), { defaultEngine: "codex" });
+    expect(await createSettingsStore(bare).get()).toMatchObject({ runMode: "allow-reads", allowlist: [] });
+  });
+
+  it("dedupes the global allowlist", async () => {
+    const dir = await tempDir();
+    const store = createSettingsStore(dir);
+    expect((await store.update({ allowlist: ["bash", "write", "bash"] })).allowlist).toEqual(["bash", "write"]);
+    expect((await createSettingsStore(dir).get()).allowlist).toEqual(["bash", "write"]);
+    expect((await store.update({ allowlist: [] })).allowlist).toEqual([]);
   });
 
   it("stores a validated MCP server list and clears it when emptied", async () => {

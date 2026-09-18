@@ -6,7 +6,7 @@ import { isToolUIPart, simulateReadableStream, type LanguageModel, type ModelMes
 import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp, type VgentApp } from "./app.js";
-import { createEngineRegistry, type EngineContext, type EngineFactory, type EngineRunner } from "./engines/registry.js";
+import { createEngineRegistry, type EngineContext, type EngineFactoryOverride, type EngineRunner } from "./engines/registry.js";
 import { createVgentEngineFactory } from "./engines/vgent.js";
 import { TurnResumeFailedError } from "./errors.js";
 import {
@@ -19,6 +19,7 @@ import {
   UNEXECUTED_TOOL_TEXT,
 } from "./runs.js";
 import { createProjectStore } from "./store/projects.js";
+import { createSettingsStore } from "./store/settings.js";
 import { createThreadStore, DEFAULT_THREAD_TITLE } from "./store/threads.js";
 import type { HarnessState, Project, ThreadMessageMetadata, ThreadRecord } from "./types.js";
 
@@ -60,7 +61,7 @@ async function readSse(response: Response): Promise<{ type: string; errorText?: 
     .map((line) => JSON.parse(line.slice(6)) as { type: string; errorText?: string });
 }
 
-function makeApp(dataDir: string, factory: EngineFactory, stopTimeoutMs?: number): VgentApp {
+function makeApp(dataDir: string, factory: EngineFactoryOverride, stopTimeoutMs?: number): VgentApp {
   const instance = createApp({
     dataDir,
     token: TOKEN,
@@ -74,7 +75,7 @@ function makeApp(dataDir: string, factory: EngineFactory, stopTimeoutMs?: number
 async function setupThread(app: VgentApp, repoPath: string): Promise<ThreadRecord> {
   const project = (await (await postJson(app, "/api/projects", { repoPath })).json()) as Project;
   return (await (
-    await postJson(app, "/api/threads", { projectId: project.id, title: "审批", engine: "claude-code", permissionMode: "allow-reads" })
+    await postJson(app, "/api/threads", { projectId: project.id, title: "审批", engine: "claude-code" })
   ).json()) as ThreadRecord;
 }
 
@@ -195,7 +196,7 @@ function createApprovalEngine(options: { suspend?: "ok" | "fail" } = {}) {
   const destroyed: number[] = [];
   const suspended: number[] = [];
 
-  const factory: EngineFactory = {
+  const factory: EngineFactoryOverride = {
     async create(ctx) {
       created.push(ctx);
       const id = runners.length + 1;
@@ -344,7 +345,7 @@ describe("approval parking", () => {
   it("closes an `awaiting-*` thread on startup, because its turn died with the process", async () => {
     const dir = await tempDir();
     const threads = createThreadStore(dir);
-    const record = await threads.create({ projectId: "p1", engine: "claude-code", permissionMode: "allow-reads" });
+    const record = await threads.create({ projectId: "p1", engine: "claude-code" });
     await threads.update(record.id, {
       status: "awaiting-approval",
       messages: [
@@ -474,7 +475,7 @@ describe("approval parking", () => {
     ] as unknown as TextStreamPart<ToolSet>[];
 
   /** Pauses on the first turn, then plays `continuation` once the human answers. */
-  function createPausedStepEngine(continuation: () => TextStreamPart<ToolSet>[]): EngineFactory {
+  function createPausedStepEngine(continuation: () => TextStreamPart<ToolSet>[]): EngineFactoryOverride {
     return {
       async create() {
         let unfinished = false;
@@ -666,7 +667,7 @@ describe("approval parking", () => {
 
   it("never stores an assistant message with no parts", async () => {
     const dir = await tempDir();
-    const factory: EngineFactory = {
+    const factory: EngineFactoryOverride = {
       async create() {
         return {
           hasUnfinishedTurn: () => false,
@@ -692,7 +693,7 @@ describe("approval parking", () => {
 describe("run lifecycle", () => {
   it("ends the thread in `error` when the engine stream carries an error part", async () => {
     const dir = await tempDir();
-    const factory: EngineFactory = {
+    const factory: EngineFactoryOverride = {
       async create() {
         return {
           hasUnfinishedTurn: () => false,
@@ -732,7 +733,7 @@ describe("run lifecycle", () => {
   it("releases the slot when a stopped engine ignores its abort signal", async () => {
     const dir = await tempDir();
     let release = () => {};
-    const factory: EngineFactory = {
+    const factory: EngineFactoryOverride = {
       async create() {
         return {
           hasUnfinishedTurn: () => false,
@@ -776,7 +777,7 @@ describe("run lifecycle", () => {
     const threads = createThreadStore(dir);
     const projects = createProjectStore(dir);
     const project = await projects.create({ repoPath: dir });
-    const thread = await threads.create({ projectId: project.id, engine: "claude-code", permissionMode: "allow-reads" });
+    const thread = await threads.create({ projectId: project.id, engine: "claude-code" });
 
     let hold: (() => void) | undefined;
     const gated = {
@@ -792,7 +793,13 @@ describe("run lifecycle", () => {
     };
 
     const engine = createApprovalEngine();
-    const runs = createRunManager({ threads: gated, projects, registry: createEngineRegistry({ "claude-code": engine.factory }), dataDir: dir });
+    const runs = createRunManager({
+      threads: gated,
+      projects,
+      settings: createSettingsStore(dir),
+      registry: createEngineRegistry({ "claude-code": engine.factory }),
+      dataDir: dir,
+    });
     const hub = await runs.start(thread.id, [userMessage("u1", "你好")]);
     for await (const _chunk of hub.subscribe()) {
       // drain until the hub closes, which is exactly the finalizing window
@@ -881,10 +888,11 @@ describe("vgent engine", () => {
     return instance;
   }
 
-  async function setupVgentThread(app: VgentApp, repoPath: string, permissionMode = "allow-reads"): Promise<ThreadRecord> {
+  /** 运行模式 is global and defaults to 询问, which is what the approval tests want. */
+  async function setupVgentThread(app: VgentApp, repoPath: string): Promise<ThreadRecord> {
     const project = (await (await postJson(app, "/api/projects", { repoPath })).json()) as Project;
     return (await (
-      await postJson(app, "/api/threads", { projectId: project.id, title: "自研引擎", engine: "vgent", permissionMode })
+      await postJson(app, "/api/threads", { projectId: project.id, title: "自研引擎", engine: "vgent" })
     ).json()) as ThreadRecord;
   }
 
@@ -940,6 +948,23 @@ describe("vgent engine", () => {
     expect(await exists(join(dataDir, "threads", `${thread.id}.harness.json`))).toBe(false);
   });
 
+  it("never asks about a tool on the global allowlist, even in 询问", async () => {
+    const dataDir = await tempDir();
+    const repoPath = await tempDir();
+    const app = makeVgentApp(dataDir, mockModel([toolCallStream("call-w", "write", WRITE_INPUT), textStream("文件已写入")]));
+    const thread = await setupVgentThread(app, repoPath);
+    const written = join(repoPath, "SMOKE.txt");
+
+    // What 「一直允许」 on an approval card writes; the run mode stays 询问.
+    await postJson(app, "/api/settings/allowlist", { tool: "write" });
+
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "在根目录新建 SMOKE.txt")] }));
+    const done = await waitForStatus(app, thread.id, "idle");
+
+    expect(await readFile(written, "utf8")).toBe(WRITE_INPUT.content);
+    expect(done.messages.at(-1)?.parts.find(isToolUIPart)?.state).toBe("output-available");
+  });
+
   it("ends the turn `awaiting-input` when the model calls askUserQuestions", async () => {
     const dataDir = await tempDir();
     const repoPath = await tempDir();
@@ -948,7 +973,7 @@ describe("vgent engine", () => {
       questions: [{ id: "q1", question: "要覆盖已有文件吗？", options: [{ id: "yes", label: "覆盖" }] }],
     };
     const app = makeVgentApp(dataDir, mockModel([toolCallStream("call-q", "askUserQuestions", questions)]));
-    const thread = await setupVgentThread(app, repoPath, "allow-reads");
+    const thread = await setupVgentThread(app, repoPath);
 
     await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "问我一个问题")] }));
     const waiting = await waitForStatus(app, thread.id, "awaiting-input");
@@ -994,7 +1019,7 @@ describe("auto title", () => {
   async function untitledThread(app: VgentApp, repoPath: string): Promise<ThreadRecord> {
     const project = (await (await postJson(app, "/api/projects", { repoPath })).json()) as Project;
     return (await (
-      await postJson(app, "/api/threads", { projectId: project.id, engine: "claude-code", permissionMode: "allow-reads" })
+      await postJson(app, "/api/threads", { projectId: project.id, engine: "claude-code" })
     ).json()) as ThreadRecord;
   }
 

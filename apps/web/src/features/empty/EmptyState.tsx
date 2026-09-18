@@ -2,9 +2,8 @@ import { useState } from "react";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ProjectPicker } from "@/components/ProjectPicker";
 import { Composer } from "@/features/composer/Composer";
-import { ENGINES, PERMISSIONS } from "@/lib/engineOptions";
 import { useToast } from "@/lib/toast";
-import type { EngineId, PermissionMode, Project, Settings, WorkspaceMode } from "@/lib/types";
+import type { EngineDescriptor, EngineId, Project, Settings, WorkspaceMode } from "@/lib/types";
 
 /**
  * The two run locations, with the sentence that tells them apart. 「独立检出」
@@ -22,12 +21,14 @@ const WORKSPACES: ReadonlyArray<{ id: WorkspaceMode; label: string; hint: string
 ];
 
 /**
- * 「配置 + 输入」, not 「欢迎语 + 建议」: pick the repo and the run location
- * first, then state the goal. Branch picking is deferred with worktrees.
+ * 「配置 + 输入」, not 「欢迎语 + 建议」. Four choices and no more: 项目 and
+ * 运行位置 on this row, 模型 and 思考等级 inside the composer. 运行模式 is a
+ * global setting now, so there is no permission control here at all.
  */
 export function EmptyState({
   projects,
   projectId,
+  engines,
   settings,
   onSelectProject,
   onAddProject,
@@ -36,6 +37,7 @@ export function EmptyState({
 }: {
   projects: Project[];
   projectId: string | null;
+  engines: EngineDescriptor[];
   settings: Settings | null;
   onSelectProject: (projectId: string) => void;
   onAddProject: (repoPath: string) => Promise<void>;
@@ -45,38 +47,41 @@ export function EmptyState({
     engine: EngineId,
     workspace: WorkspaceMode,
     model: string | null,
-    permissionMode: PermissionMode,
     reasoningEffort: string | null,
   ) => void;
 }) {
   const toast = useToast();
   const [draft, setDraft] = useState("");
-  // Local only, no persistence: seeded from the server default once, not kept
-  // in sync if the setting changes later while this screen is open.
-  const [engine, setEngine] = useState<EngineId>(() => settings?.defaultEngine ?? "claude-code");
-  // `null` means「用默认」: the server picks `settings.defaultModel`. Reset when
-  // the engine changes, since a model id only means something to one engine.
-  const [model, setModel] = useState<string | null>(null);
-  // Same story: a level belongs to a model, so switching either one clears it
-  // and the model's own default applies again.
+  /**
+   * The model this task will run on, and the engine that comes with it. Null
+   * until the user picks one, so until then the settings answer — and keep
+   * answering if they change while this screen is open.
+   */
+  const [picked, setPicked] = useState<{ engine: EngineId; model: string | null } | null>(null);
+  // A level belongs to a model, so switching the model clears it and the
+  // model's own default applies again.
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>(
-    () => settings?.defaultPermissionMode ?? "allow-reads",
-  );
   const [workspace, setWorkspace] = useState<WorkspaceMode>("project");
   const project = projects.find((entry) => entry.id === projectId);
-  // Codex has no built-in tool approval, so the server refuses any other mode.
-  const effectivePermission: PermissionMode = engine === "codex" ? "allow-all" : permissionMode;
+
+  const engine = picked?.engine ?? settings?.defaultEngine ?? engines[0]?.id;
+  // `null` means「用默认」: the server falls back to `settings.defaultModel`.
+  const model = picked?.model ?? (picked == null ? (settings?.defaultModel ?? null) : null);
 
   const submit = () => {
+    if (engine == null) return;
     if (draft.trim() === "") return;
     if (project == null) {
       toast("先选一个项目");
       return;
     }
-    onStart(draft.trim(), engine, workspace, model, effectivePermission, reasoningEffort);
+    onStart(draft.trim(), engine, workspace, model, reasoningEffort);
     setDraft("");
   };
+
+  // The engine list and the settings arrive in the same round trip; without
+  // them there is no honest model to show.
+  if (engine == null) return <div className="grid h-full place-items-center text-fg-faint text-sm">加载中…</div>;
 
   return (
     <div className="grid h-full min-h-0 grid-rows-[1fr_auto_auto_1fr] px-md">
@@ -142,74 +147,6 @@ export function EmptyState({
               </>
             )}
           </Popover>
-          <Popover
-            trigger={(props) => (
-              <button
-                type="button"
-                {...props}
-                className="inline-flex h-xl items-center gap-3xs rounded-sm px-xs text-fg-muted text-sm hover:bg-bg-hover hover:text-fg"
-              >
-                <span>{ENGINES.find((entry) => entry.id === engine)?.label ?? engine}</span>
-                <span className="opacity-60">▾</span>
-              </button>
-            )}
-          >
-            {(close) => (
-              <>
-                <PopTitle>引擎</PopTitle>
-                {ENGINES.map((entry) => (
-                  <PopItem
-                    key={entry.id}
-                    selected={entry.id === engine}
-                    onClick={() => {
-                      setEngine(entry.id);
-                      setModel(null);
-                      setReasoningEffort(null);
-                      close();
-                    }}
-                  >
-                    {entry.label}
-                  </PopItem>
-                ))}
-              </>
-            )}
-          </Popover>
-          {/* The same choice `TaskHeader` offers, made before the task exists. */}
-          <Popover
-            trigger={(props) => (
-              <button
-                type="button"
-                {...props}
-                className="inline-flex h-xl items-center gap-3xs rounded-sm px-xs text-fg-muted text-sm hover:bg-bg-hover hover:text-fg"
-              >
-                <span className="font-mono">{effectivePermission}</span>
-                <span className="opacity-60">▾</span>
-              </button>
-            )}
-          >
-            {(close) => (
-              <>
-                <PopTitle>权限模式</PopTitle>
-                {PERMISSIONS.map((mode) => {
-                  const codexLocked = engine === "codex" && mode !== "allow-all";
-                  return (
-                    <PopItem
-                      key={mode}
-                      selected={mode === effectivePermission}
-                      disabled={codexLocked}
-                      {...(codexLocked ? { hint: "Codex 只支持 allow-all" } : {})}
-                      onClick={() => {
-                        setPermissionMode(mode);
-                        close();
-                      }}
-                    >
-                      <span className="font-mono">{mode}</span>
-                    </PopItem>
-                  );
-                })}
-              </>
-            )}
-          </Popover>
         </div>
       </div>
 
@@ -219,11 +156,13 @@ export function EmptyState({
           onChange={setDraft}
           onSubmit={submit}
           live={false}
+          engines={engines}
           engine={engine}
           model={model ?? undefined}
           defaultModel={settings?.defaultModel}
-          onPickModel={(next) => {
-            setModel(next);
+          runMode={settings?.runMode}
+          onPickModel={(nextEngine, nextModel) => {
+            setPicked({ engine: nextEngine, model: nextModel ?? null });
             setReasoningEffort(null);
           }}
           reasoningEffort={reasoningEffort ?? undefined}

@@ -6,7 +6,7 @@ import { streamSSE } from "hono/streaming";
 import { compactThread } from "./compact.js";
 import { BadRequestError, ConflictError, NotFoundError, UnauthorizedError, UpstreamModelError, VgentServerError } from "./errors.js";
 import type { EngineRegistry } from "./engines/registry.js";
-import { createEngineRegistry } from "./engines/registry.js";
+import { createEngineRegistry, engineDescriptors, engineIds } from "./engines/registry.js";
 import { DEFAULT_VGENT_MODEL } from "./engines/vgent.js";
 import type { Files } from "./files.js";
 import { createFiles } from "./files.js";
@@ -34,7 +34,6 @@ const isLoopbackHostname = (hostname: string): boolean => LOOPBACK_HOSTNAMES.has
 const STATE_DEBOUNCE_MS = 50;
 const KEEPALIVE_MS = 15_000;
 
-const ENGINES: readonly EngineId[] = ["claude-code", "codex", "vgent"];
 const PERMISSION_MODES: readonly PermissionMode[] = ["allow-reads", "allow-edits", "allow-all"];
 
 export interface CreateAppOptions {
@@ -69,10 +68,6 @@ function tokensMatch(provided: string, expected: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-function asEngine(value: unknown): EngineId | undefined {
-  return typeof value === "string" && (ENGINES as readonly string[]).includes(value) ? (value as EngineId) : undefined;
-}
-
 function asPermissionMode(value: unknown): PermissionMode | undefined {
   return typeof value === "string" && (PERMISSION_MODES as readonly string[]).includes(value) ? (value as PermissionMode) : undefined;
 }
@@ -95,17 +90,6 @@ function readReasoningEffort(value: unknown): string | undefined {
   return trimmed;
 }
 
-/**
- * The Codex harness has no built-in tool approval, so `HarnessAgent` refuses to
- * be constructed in any other mode. Rejecting the combination when the thread is
- * written keeps a thread that can never run from existing in the first place.
- */
-function assertEngineSupportsMode(engine: EngineId, permissionMode: PermissionMode): void {
-  if (engine === "codex" && permissionMode !== "allow-all") {
-    throw new BadRequestError("Codex 引擎没有内建工具审批，只支持 allow-all 权限模式", "codex_permission_mode");
-  }
-}
-
 const PICK_KINDS = ["folder", "file"] as const;
 type PickKind = (typeof PICK_KINDS)[number];
 
@@ -116,17 +100,19 @@ function asPickKind(value: unknown): PickKind {
   throw new BadRequestError('kind 只能是 "folder" 或 "file"', "invalid_pick_kind");
 }
 
-/**
- * The per-thread tool allowlist from a PATCH body: deduped, and `undefined`
- * once it is empty, since the store spells "nothing pre-allowed" as an absent
- * field rather than an empty array.
- */
-function readAlwaysAllow(value: unknown): string[] | undefined {
+/** One tool name for the global allowlist, from a request body or a URL segment. */
+function readToolName(value: unknown): string {
+  const name = typeof value === "string" ? value.trim() : "";
+  if (name === "") throw new BadRequestError("tool 必须是非空字符串", "invalid_tool");
+  return name;
+}
+
+/** The whole global allowlist from a settings body: non-empty names, deduped. */
+function readAllowlist(value: unknown): string[] {
   if (!Array.isArray(value) || value.some((name) => typeof name !== "string" || name.trim() === "")) {
-    throw new BadRequestError("alwaysAllow 只能是非空字符串的数组", "invalid_always_allow");
+    throw new BadRequestError("allowlist 只能是非空字符串的数组", "invalid_allowlist");
   }
-  const names = [...new Set((value as string[]).map((name) => name.trim()))];
-  return names.length === 0 ? undefined : names;
+  return [...new Set((value as string[]).map((name) => name.trim()))];
 }
 
 /** The worktree cap from a settings body. `null` restores the built-in default. */
@@ -159,6 +145,13 @@ export function createApp(options: CreateAppOptions): VgentApp {
   const files = options.files ?? createFiles();
   const integrator = options.integrator ?? createIntegrator();
 
+  // The registry is the one list of engines: what exists, what it is called,
+  // and what it can do. Nothing below spells an engine id out.
+  const ids = engineIds(registry);
+  const asEngine = (value: unknown): EngineId | undefined =>
+    typeof value === "string" && (ids as readonly string[]).includes(value) ? (value as EngineId) : undefined;
+  const capabilitiesOf = (engine: EngineId) => registry[engine].descriptor.capabilities;
+
   /**
    * 「+N −M」 for one task, against its baseline. Undefined — never an error —
    * whenever there is nothing to measure: a reclaimed worktree, a project that
@@ -175,6 +168,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
   const runs = createRunManager({
     threads,
     projects,
+    settings,
     registry,
     dataDir,
     log,
@@ -437,18 +431,19 @@ export function createApp(options: CreateAppOptions): VgentApp {
       throw new BadRequestError("workspace 只能是 project 或 worktree", "invalid_workspace");
     }
     const defaults = await settings.get();
-    const model = body?.model ?? defaults.defaultModel;
     const engine = asEngine(body?.engine) ?? defaults.defaultEngine;
-    const permissionMode = asPermissionMode(body?.permissionMode) ?? defaults.defaultPermissionMode;
-    assertEngineSupportsMode(engine, permissionMode);
+    // `defaultModel` belongs to `defaultEngine`; another engine would not know
+    // that id, so it starts on its own default instead.
+    const model = body?.model ?? (engine === defaults.defaultEngine ? defaults.defaultModel : undefined);
     const reasoningEffort = readReasoningEffort(body?.reasoningEffort);
+    // `permissionMode` is no longer a thread field — 运行模式 is global — but an
+    // older client may still send it; ignoring it is kinder than a 400.
     const record = await threads.create({
       projectId,
       ...(typeof body?.title === "string" ? { title: body.title } : {}),
       engine,
       ...(typeof model === "string" ? { model } : {}),
       ...(reasoningEffort != null ? { reasoningEffort } : {}),
-      permissionMode,
     });
     if (body?.workspace !== "worktree") return c.json(record);
     // The worktree is named after the thread, so the record has to exist
@@ -487,14 +482,12 @@ export function createApp(options: CreateAppOptions): VgentApp {
   app.patch("/api/threads/:id", async (c) => {
     const id = c.req.param("id");
     const body = (await c.req.json().catch(() => undefined)) as Record<string, unknown> | undefined;
-    // The allowlist only steers *future* approval decisions, so it is the one
-    // field a running thread may change — that is the whole point of the
-    // 「本任务内一直允许」 button, which is clicked mid-turn.
-    const allowlistOnly = body != null && Object.keys(body).length > 0 && Object.keys(body).every((key) => key === "alwaysAllow");
-    if (runs.isRunning(id) && !allowlistOnly) throw new ConflictError(`线程正在运行，无法修改: ${id}`, "thread_running");
+    if (runs.isRunning(id)) throw new ConflictError(`线程正在运行，无法修改: ${id}`, "thread_running");
     const current = await threads.get(id);
     if (current == null) throw new NotFoundError(`线程不存在: ${id}`, "thread_not_found");
 
+    // `engine` and `model` travel together: picking another engine's model on an
+    // empty thread is one edit, not two.
     const engine = asEngine(body?.engine);
     // Switching engines mid-conversation would hand a history the new runtime
     // never produced to a session that cannot resume it. An empty thread has
@@ -502,8 +495,6 @@ export function createApp(options: CreateAppOptions): VgentApp {
     if (engine != null && engine !== current.engine && current.messages.length > 0) {
       throw new ConflictError("已有对话的任务不能换引擎，请新建任务", "engine_locked");
     }
-    const permissionMode = asPermissionMode(body?.permissionMode);
-    assertEngineSupportsMode(engine ?? current.engine, permissionMode ?? current.permissionMode);
 
     // 归档 is a lifecycle move, not a field edit: it reclaims the task's
     // worktree on the way in and restores it on the way out, and a failure
@@ -528,11 +519,9 @@ export function createApp(options: CreateAppOptions): VgentApp {
       ...lifecycle,
       ...(typeof body?.title === "string" ? { title: body.title } : {}),
       ...(engine != null ? { engine } : {}),
-      ...(permissionMode != null ? { permissionMode } : {}),
       ...("model" in (body ?? {}) ? { model: typeof body?.model === "string" ? body.model : undefined } : {}),
       // `null` clears it; an absent key leaves it alone.
       ...("reasoningEffort" in (body ?? {}) ? { reasoningEffort: readReasoningEffort(body?.reasoningEffort) } : {}),
-      ...("alwaysAllow" in (body ?? {}) ? { alwaysAllow: readAlwaysAllow(body?.alwaysAllow) } : {}),
     });
     return c.json(record);
   });
@@ -546,7 +535,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const id = c.req.param("id");
     if (runs.isRunning(id)) throw new ConflictError("任务运行中，等它结束再压缩", "thread_running");
     const thread = await threadOf(id);
-    if (thread.engine !== "vgent") throw new BadRequestError("只有自研引擎支持压缩上下文", "compact_unsupported");
+    if (!capabilitiesOf(thread.engine).compact) throw new BadRequestError("这个引擎不支持压缩上下文", "compact_unsupported");
     if (thread.status === "awaiting-approval" || thread.status === "awaiting-input") {
       throw new ConflictError("有待处理的审批或提问，先处理完再压缩", "compact_pending");
     }
@@ -584,9 +573,8 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const body = (await c.req.json().catch(() => undefined)) as Record<string, unknown> | undefined;
     const patch: SettingsPatch = {
       ...(asEngine(body?.defaultEngine) != null ? { defaultEngine: asEngine(body?.defaultEngine)! } : {}),
-      ...(asPermissionMode(body?.defaultPermissionMode) != null
-        ? { defaultPermissionMode: asPermissionMode(body?.defaultPermissionMode)! }
-        : {}),
+      ...(asPermissionMode(body?.runMode) != null ? { runMode: asPermissionMode(body?.runMode)! } : {}),
+      ...("allowlist" in (body ?? {}) ? { allowlist: readAllowlist(body?.allowlist) } : {}),
       ...("defaultModel" in (body ?? {}) ? { defaultModel: typeof body?.defaultModel === "string" ? body.defaultModel : undefined } : {}),
       // Unlike the scalars above, a malformed server list is rejected rather
       // than dropped: silently ignoring it would look exactly like an MCP
@@ -596,6 +584,28 @@ export function createApp(options: CreateAppOptions): VgentApp {
     };
     return c.json(await settings.update(patch));
   });
+
+  // 「一直允许」 on an approval card, and the 撤销 next to it in 设置. One tool at
+  // a time, because that is how the two buttons think about it.
+  app.post("/api/settings/allowlist", async (c) => {
+    const body = (await c.req.json().catch(() => undefined)) as { tool?: unknown } | undefined;
+    const tool = readToolName(body?.tool);
+    const current = (await settings.get()).allowlist;
+    if (current.includes(tool)) return c.json(await settings.get());
+    return c.json(await settings.update({ allowlist: [...current, tool] }));
+  });
+
+  app.delete("/api/settings/allowlist/:tool", async (c) => {
+    const tool = readToolName(decodeURIComponent(c.req.param("tool")));
+    const current = (await settings.get()).allowlist;
+    return c.json(await settings.update({ allowlist: current.filter((name) => name !== tool) }));
+  });
+
+  // --- engines ----------------------------------------------------------
+
+  // 引擎能力表. The client shows what an engine can do from this and never
+  // branches on its name.
+  app.get("/api/engines", (c) => c.json({ engines: engineDescriptors(registry) }));
 
   // --- model catalog ----------------------------------------------------
 
@@ -607,9 +617,14 @@ export function createApp(options: CreateAppOptions): VgentApp {
     if (engine == null) throw new BadRequestError(`未知引擎: ${JSON.stringify(raw)}`, "unknown_engine");
     const catalog = await modelCatalog.list(engine, { refresh: c.req.query("refresh") === "1" });
     // The list is cached per engine; the effective default is a setting, so it
-    // is merged in per request instead of baked into the cached catalog. Only
-    // `vgent` has a fallback of our own — see `DEFAULT_VGENT_MODEL`.
-    const defaultModel = (await settings.get()).defaultModel ?? (engine === "vgent" ? DEFAULT_VGENT_MODEL : undefined);
+    // is merged in per request instead of baked into the cached catalog. A model
+    // id means something to exactly one engine, so `defaultModel` only answers
+    // for the engine it was picked under; the others fall back to what we know
+    // of their own default — see `DEFAULT_VGENT_MODEL`.
+    const current = await settings.get();
+    const defaultModel =
+      (engine === current.defaultEngine ? current.defaultModel : undefined) ??
+      (capabilitiesOf(engine).knownDefaultModel ? DEFAULT_VGENT_MODEL : undefined);
     return c.json({ ...catalog, ...(defaultModel != null ? { defaultModel } : {}) });
   });
 

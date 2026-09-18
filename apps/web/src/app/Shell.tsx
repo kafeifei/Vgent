@@ -19,6 +19,7 @@ export function Shell({ token }: { token: string }) {
   const {
     state,
     client,
+    engines,
     thread,
     changes,
     selectedThreadId,
@@ -56,12 +57,14 @@ export function Shell({ token }: { token: string }) {
       { id: "left", label: left === "on" ? "收起侧栏" : "展开侧栏", hint: "⌘B", run: actions.toggleLeft },
       { id: "right", label: right.open ? "收起右栏" : "展开右栏", hint: "⌘J", run: actions.toggleRight },
       { id: "changes", label: "查看变更", run: () => actions.openChanges() },
-      // Only the in-house engine can be compacted, and only between turns.
-      ...(thread != null && thread.engine === "vgent" && !isLiveThread(thread)
+      // Only an engine whose history we own can be compacted, and only between turns.
+      ...(thread != null &&
+      engines.find((entry) => entry.id === thread.engine)?.capabilities.compact === true &&
+      !isLiveThread(thread)
         ? [{ id: "compact", label: "压缩上下文", hint: "/compact", run: () => void actions.compactThread(thread.id) }]
         : []),
     ],
-    [actions, left, right.open, state.threads, thread, toggleDensity, toggleTheme],
+    [actions, engines, left, right.open, state.threads, thread, toggleDensity, toggleTheme],
   );
 
   return (
@@ -103,7 +106,7 @@ export function Shell({ token }: { token: string }) {
         <main className="grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto]">
           {settingsOpen ? (
             <div className="row-span-3 min-h-0 overflow-y-auto">
-              <SettingsView settings={state.settings} client={client} onClose={actions.closeSettings} />
+              <SettingsView settings={state.settings} engines={engines} client={client} onClose={actions.closeSettings} />
             </div>
           ) : view === "thread" && thread != null ? (
             <ThreadView
@@ -112,7 +115,10 @@ export function Shell({ token }: { token: string }) {
               client={client}
               changes={changes}
               rightOpen={right.open}
+              engines={engines}
               defaultModel={state.settings?.defaultModel}
+              runMode={state.settings?.runMode}
+              allowlist={state.settings?.allowlist}
               onQueue={onQueue}
               onMessages={onMessages}
             />
@@ -121,6 +127,7 @@ export function Shell({ token }: { token: string }) {
               <EmptyState
                 projects={state.projects}
                 projectId={activeProjectId}
+                engines={engines}
                 settings={state.settings}
                 onSelectProject={actions.selectProject}
                 onAddProject={actions.addProject}

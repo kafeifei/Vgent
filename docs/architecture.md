@@ -168,9 +168,9 @@ docs/
 - 本地 sandbox 跑 Claude Code bridge 官方无先例，freecode 证明可行但用了脏办法，我们要找干净的。
 - 自研引擎不走 HarnessV1，resume / compact / permissionMode 是自己的实现，和官方引擎语义可能有差；壳用统一配置抽象盖住。
 
-## 当前状态（2026-09-18，阶段六完成；之后按 `docs/product.md` 的里程碑推进，M1、M2 已落地）
+## 当前状态（2026-09-18，阶段六完成；之后按 `docs/product.md` 的里程碑推进，M1、M2、M3 已落地）
 
-三条引擎路全部本地跑通并有真实冒烟测试（`VGENT_SMOKE=1`）；桌面壳、worktree 隔离、子代理/MCP/skills、动态模型清单、`pnpm start` 全部落地。全仓构建绿，`pnpm test` 54 文件 / 427 测试 通过（另 5 文件 / 12 测试是 `VGENT_SMOKE` 门控的真机冒烟，默认跳过）。
+三条引擎路全部本地跑通并有真实冒烟测试（`VGENT_SMOKE=1`）；桌面壳、worktree 隔离、子代理/MCP/skills、动态模型清单、`pnpm start` 全部落地。全仓构建绿，`pnpm test` 57 文件 / 460 测试通过（另 5 文件 / 12 测试是 `VGENT_SMOKE` 门控的真机冒烟，默认跳过）。
 
 - `packages/sandbox-local`：freecode 移植，`createLocalSandboxProvider`，`loopbackOnly` 预加载已验证 bridge 只绑 127.0.0.1。
 - `packages/engines`：`createClaudeCodeEngine` / `createCodexEngine` → `{ agent, session, dispose }`，`toTUIAgent`，共享逻辑在 `shared.ts`。仓库路径靠覆写 `doStart` 传 `sessionWorkDir`。Claude 保留真实 HOME 复用登录（副作用：`~/.claude/CLAUDE.md` 影响回复）；Codex 用隔离 `CODEX_HOME`（真实 `~/.codex/config.toml` 与 pinned SDK 不兼容），登录态走 env 转发不受影响。Codex 的 permissionMode 只能 `allow-all`，SDK 构造时自己抛错。
@@ -290,9 +290,17 @@ docs/
   - `packages/server/src/worktree-limit.ts`：`Settings.worktreeMaxCount`（默认 25，`PUT /api/settings` 校验），建新 worktree 后和启动时（都是 detached）回收最旧的非运行任务的 worktree，走和手动回收同一条留快照的路。
   - 假按钮：「+」在光标处插入 `@` 并打开文件补全（空状态没有补全来源，不显示）；「规划一个想法」「打开编辑器」删掉；运行中按 Enter 只 toast「运行中，先停止或等它结束」，草稿不动；模型 chip 运行中不可改。
   - 本仓库自带 `.vgent/worktrees.json`（`pnpm install --frozen-lockfile`）。
-- 验证：`pnpm build && pnpm test` → 54 文件 / 427 测试 通过（另 5 文件 / 12 测试 `VGENT_SMOKE` 门控默认跳过；含合并 main 的实例锁之后）。浏览器实测（临时 `--data-dir` + 一个临时 git 仓库，Claude Code 真跑）：worktree 任务里 agent 改一个文件、新建一个文件、自己 `git commit` 一次、再留一个未跟踪文件，合并 M1 之前「审查」只剩 `+1 −0`，之后是 `+3 −0`、面板列全三个文件并标「领先基线 1 个提交」；带回主目录后主检出 HEAD 不动、出现同样三处未提交改动（当时主检出已比任务基线多一个提交，补丁照样干净应用）；再点一次给出三个冲突文件、主检出不动；提交后任务头 / 侧栏行 / 动作条都是「已提交 <sha>」且文件清单仍是全量；全部丢弃二次确认后 worktree 干净、被忽略的 setup 产物还在；归档后 worktree 目录消失、留快照、任务进折叠的「已归档」，取消归档后提交和未跟踪文件都回来；删除任务后 worktree、记录、空分支都没了。setup：字符串值指向不存在的脚本 → 退出码 127 的警告、任务照跑；数组值含 `sleep 3` → 期间显示「正在准备工作目录…」，回合等它结束才开始，标记文件里的 `ROOT_WORKTREE_PATH` 是主检出。M2 验收标准：本仓库的克隆登记成项目，新 worktree 任务 setup 2.4s 装完依赖，在该 worktree 里 `pnpm build && pnpm test` 全绿。
+- **M3 模型在前，运行模式全局化**（`a64474d`，验收补丁 `d38ea46`）。
+  - 能力表：`packages/server/src/engines/capabilities.ts` 的 `EngineCapabilities { approvals, askUser, planMode, compact, knownDefaultModel, extensions }` 和 `EngineDescriptor { id, label, capabilities }`，每个引擎工厂自带 descriptor（单一来源，测试替身继承真引擎的），`GET /api/engines` 下发；`app.ts` 的引擎 id 清单从 registry 派生。web 在 `useWorkbench` 里加载一次，`apps/web/src` 里不再有按引擎名的判断，`lib/engineOptions.ts` 删掉。
+  - 运行模式：`Settings.runMode`（读时迁移 `runMode ?? defaultPermissionMode ?? "allow-reads"`，不再写旧字段）+ `Settings.allowlist`。`effectivePermission(caps, settings)`：`caps.approvals ? runMode : "allow-all"`；在 `runs.ts` 每轮开始时解析，放进 `EngineContext.permissionMode / alwaysAllow`，三个引擎工厂读 context 不读线程。`ThreadRecord.permissionMode / alwaysAllow` 从类型里去掉（旧 JSON 里的残留字段无害），`assertEngineSupportsMode` 和 codex 里的重复检查删掉。compact 路由看 `capabilities.compact`，模型清单的 `defaultModel` 回退看 `knownDefaultModel`；`settings.defaultModel` 只对 `settings.defaultEngine` 生效。
+  - allowlist 按命令：条目是工具名或 `bash(<head>)`。`packages/engine/src/allowlist.ts`（零依赖，子路径导出 `@vgent/engine/allowlist`）一份解析器两处用：自研引擎的 `decideApproval`（子代理的 `denyUnapproved` 走同一条）和浏览器的 `lib/autoApprove.ts`（读 `part.input.command`，给 harness 引擎自动点批准）。一条命令的每一段的 head 都在名单或内置安全清单里才免审；子 shell、`$()`、反引号、重定向、引号、glob、`FOO=1` 前缀、`sudo` / `env` / `xargs` / `sh` 这类包装一律算读不懂，不免审也不给「一直允许」。审批卡按钮写「一直允许 mkdir、touch」（只列这次调用里还没放行的 head），逐个 `POST /api/settings/allowlist`（串行，避免并发读改写互相覆盖）；`DELETE /api/settings/allowlist/:tool` 有但设置页走草稿 + 保存。旧文件里裸的 `bash` 继续按原意生效，设置页显示成「bash（全部命令）」可撤销。
+  - 模型选择器：`components/ModelPicker.tsx` 重写成唯一的分组选择器，并行拉每个引擎的清单（一个失败不挡别的），组标题是引擎 label，没有审批能力的组标「只能全自动」，每组第一行「默认」，回调给 `(engine, model)`；有对话的任务里别的组收起并写「已有对话的任务不能跨引擎换模型」（`PATCH` 一次带 `engine` + `model`，server 仍有 409 `engine_locked`）。chip 用清单里的 label；自研组的 Codex 订阅模型 label 复用 Codex 的显示名。`ReasoningPicker` 不再吃 `settings.defaultModel`。
+  - 界面：空状态一行只剩项目 · 运行位置；任务头去掉引擎 / 模型 / 权限三个 pill 和每任务的放行名单；聊天框顶行在「引擎不支持审批且运行模式不是全自动」时写一句「Codex 不支持审批，这个任务会全自动运行」；设置页依次是运行模式三档、一直允许的工具、默认模型（分组选择器，写 `defaultEngine` + `defaultModel`）、worktree 上限、MCP。
+  - 浏览器实测（临时 `--data-dir`，Claude Code 真跑）：旧格式 `settings.json`（`defaultPermissionMode`）启动后 `runMode` 迁移正确、旧字段保存时丢掉；带 `permissionMode` 的旧任务记录正常打开；空状态四个选择；三组模型；选 Codex 的 GPT-5.5 出提示；询问模式下 `mkdir -p tmpdir && touch tmpdir/a.txt` 出卡片「一直允许 mkdir、touch」，点后落盘 `["bash(mkdir)","bash(touch)"]`，同一轮里第二条同类命令不再问。
+- 验证：`pnpm build && pnpm test` → 57 文件 / 460 测试通过（另 5 文件 / 12 测试 `VGENT_SMOKE` 门控默认跳过；含合并 main 的实例锁之后）。浏览器实测（临时 `--data-dir` + 一个临时 git 仓库，Claude Code 真跑）：worktree 任务里 agent 改一个文件、新建一个文件、自己 `git commit` 一次、再留一个未跟踪文件，合并 M1 之前「审查」只剩 `+1 −0`，之后是 `+3 −0`、面板列全三个文件并标「领先基线 1 个提交」；带回主目录后主检出 HEAD 不动、出现同样三处未提交改动（当时主检出已比任务基线多一个提交，补丁照样干净应用）；再点一次给出三个冲突文件、主检出不动；提交后任务头 / 侧栏行 / 动作条都是「已提交 <sha>」且文件清单仍是全量；全部丢弃二次确认后 worktree 干净、被忽略的 setup 产物还在；归档后 worktree 目录消失、留快照、任务进折叠的「已归档」，取消归档后提交和未跟踪文件都回来；删除任务后 worktree、记录、空分支都没了。setup：字符串值指向不存在的脚本 → 退出码 127 的警告、任务照跑；数组值含 `sleep 3` → 期间显示「正在准备工作目录…」，回合等它结束才开始，标记文件里的 `ROOT_WORKTREE_PATH` 是主检出。M2 验收标准：本仓库的克隆登记成项目，新 worktree 任务 setup 2.4s 装完依赖，在该 worktree 里 `pnpm build && pnpm test` 全绿。
 - M1 验收补丁（`f8693c3`）：启动时（detached，排在上限回收之后）给没有 `changeStats` 的旧任务补算，否则它们会错落在「已完成」；`GET /api/threads/:id/changes` 顺手把过期的统计改正并落盘（用户在 Vgent 外面提交 / 改文件后侧栏跟着变，不多跑 git）；停在等审批 / 等回答的任务也算进行中，收口和归档回 409 `thread_running`，动作条和行菜单的「归档」禁用并用 `title` 说明，删除不受影响。三条都在浏览器里实测过。
-- 已知未修：**Claude Code 任务点「拒绝」审批后一直停在「进行中」**，只能手动停止（2026-09-18 验收时发现，全新任务可复现，正在查是否回归）；新一轮对话清掉 `outcome` 后，已开的 PR 链接不再出现在界面上；`worktreeMaxCount` 还没有设置界面（M3）；上限回收只有单测、没在界面里实测。
+- **拒绝审批后卡在「进行中」**（`907aa64`，不是回归，harness 引擎接上那天起就有）。根因：`convertToModelMessages` 把 `approval: { approved: false }` 转成尾部 `role: "tool"` 消息里的两个 part，一个 `tool-approval-response`，外加一个合成的 `tool-result`（`output: { type: "execution-denied" }`）；harness 的 `collectHarnessAgentToolApprovalContinuations` 见到该调用已有 tool result 就当它了结、跳过审批回应，于是 `submitToolApproval({ approved: false })` 永远不被调用，bridge 的 `canUseTool` 一直挂着。批准不受影响（不合成结果）。修法：`packages/server/src/engines/harness-messages.ts` 的 `stripDeniedApprovalResults` 在交给 harness 前去掉被拒调用的合成结果，Claude Code 的 `stream` / `continueStream` 两条路都过一遍（Codex 同样处理，但它不会停在审批上，等于空操作）；自研引擎必须保留那条合成结果，那是模型知道被拒的唯一途径。真机冒烟（`VGENT_SMOKE=1`，`server.smoke.test.ts`）：修之前挂 11 分钟以上，修之后 9.5s 结束并回一句「命令被拒了」。值得给上游提 issue。
+- 已知未修：新一轮对话清掉 `outcome` 后，已开的 PR 链接不再出现在界面上；allowlist 的 `bash(git)` 同时放行 `git status` 和 `git push`，没细到子命令；上限回收只有单测、没在界面里实测。
 
 ### 明确未做
 
@@ -301,4 +309,4 @@ docs/
 - Web：checkpoint / 回退（M5）、麦克风、侧聊 `/side`、模式 chip（写死 `Agent`，M4）、harness 引擎的子代理嵌套流（自研引擎已是实时嵌套流；Claude Code 的 Task 目前是一行 spinner + 结束后原始 JSON）、虚拟滚动、无障碍焦点管理。
 - 桌面壳：Windows / Linux、签名与公证、自动更新、多窗口。
 
-下一步：按 `docs/product.md` 的工作计划走，M3（模型在前、运行模式全局化）→ M4（Plan 模式）→ M5（排队和 checkpoint）；每个里程碑落 main 后打包装到 /Applications。发布工程（签名 / 公证、自动更新、Windows）只在有明确需求时再启动。
+下一步：按 `docs/product.md` 的工作计划走，M4（Plan 模式）→ M5（排队和 checkpoint）；每个里程碑落 main 后打包装到 /Applications。发布工程（签名 / 公证、自动更新、Windows）只在有明确需求时再启动。

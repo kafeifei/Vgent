@@ -32,6 +32,12 @@ describe("decideApproval", () => {
     }
   });
 
+  it("never asks before updatePlan, in any mode", () => {
+    for (const mode of ["allow-reads", "allow-edits", "allow-all"] as const) {
+      expect(decideApproval({ mode, toolName: "updatePlan", input: {} })).toBe("not-applicable");
+    }
+  });
+
   it("asks before every shell command in allow-reads, allowlist or not", () => {
     expect(bash("allow-reads", "git status")).toBe("user-approval");
     expect(bash("allow-reads", "rm -rf /")).toBe("user-approval");

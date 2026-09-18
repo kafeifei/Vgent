@@ -3,7 +3,7 @@ import { oneLine } from "@/lib/format";
 
 export type ToolPart = ToolUIPart | DynamicToolUIPart;
 
-export type ToolKind = "read" | "search" | "bash" | "write" | "edit" | "agent" | "other";
+export type ToolKind = "read" | "search" | "bash" | "write" | "edit" | "agent" | "plan" | "other";
 
 export interface ToolDisplay {
   kind: ToolKind;
@@ -15,7 +15,7 @@ export interface ToolDisplay {
   file?: string;
 }
 
-const field = (input: unknown, ...names: string[]): string | undefined => {
+export const field = (input: unknown, ...names: string[]): string | undefined => {
   if (typeof input !== "object" || input === null) return undefined;
   const record = input as Record<string, unknown>;
   for (const name of names) {
@@ -23,6 +23,14 @@ const field = (input: unknown, ...names: string[]): string | undefined => {
     if (typeof value === "string" && value.length > 0) return value;
   }
   return undefined;
+};
+
+/** Item count from whichever array shape a plan tool's input carries. */
+const planCount = (input: unknown): number | undefined => {
+  if (typeof input !== "object" || input === null) return undefined;
+  const record = input as Record<string, unknown>;
+  const list = record.items ?? record.todos ?? record.plan;
+  return Array.isArray(list) ? list.length : undefined;
 };
 
 /**
@@ -66,6 +74,13 @@ export function describeTool(part: ToolPart): ToolDisplay {
         verb: "子代理",
         target: field(input, "description", "subagent_type", "prompt") ?? "",
       };
+    // Vgent's own plan tool, Claude Code's `TodoWrite`, Codex's `update_plan`.
+    case "updateplan":
+    case "todowrite":
+    case "update_plan": {
+      const count = planCount(input);
+      return { kind: "plan", verb: "计划", target: count != null ? `${count} 项` : "" };
+    }
     default:
       return { kind: "other", verb: name, target: oneLine(field(input, "file_path", "path", "pattern", "command", "description") ?? "", 100) };
   }

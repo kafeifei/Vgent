@@ -9,6 +9,7 @@ import { createToolApproval, type PermissionMode } from "./permissions.js";
 import { appendSession } from "./session-store.js";
 import type { SkillSummary } from "./skills.js";
 import { createSubagentTools } from "./subagents.js";
+import { updatePlanTool } from "./update-plan.js";
 
 /** Prefix that routes a model string to the machine's ChatGPT/Codex login instead of the gateway. */
 export const CODEX_SUBSCRIPTION_PREFIX = "codex-subscription:";
@@ -126,6 +127,7 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
   const tools: ToolSet = {
     ...createCodingTools({ workDir: repoPath }),
     askUserQuestions: askUserQuestionsTool,
+    updatePlan: updatePlanTool,
     ...(subagents
       ? createSubagentTools({
           model: options.subagentModel == null ? model : resolveModel(options.subagentModel),

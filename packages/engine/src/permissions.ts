@@ -17,8 +17,10 @@ export type ApprovalDecision = "not-applicable" | "user-approval";
  * Tools that only observe the workspace. Never need approval in any mode.
  * `explore` is a read-only subagent (its child's tools are read-only too) and
  * `toolSearch` only looks up tool definitions — neither touches anything.
+ * `updatePlan` has no side effects either: it only replaces the todo list the
+ * UI renders, never anything on disk or for the user.
  */
-const READ_ONLY_TOOLS = new Set(["read", "grep", "glob", "explore", "toolSearch"]);
+const READ_ONLY_TOOLS = new Set(["read", "grep", "glob", "explore", "toolSearch", "updatePlan"]);
 
 /**
  * Tools that only surface a question to the human and have no `execute` of

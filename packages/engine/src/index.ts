@@ -24,6 +24,7 @@ export {
   type AskUserQuestionsOutput,
 } from "./ask-user-questions.js";
 export { appendSession, loadSession, type SessionRecord, type LoadSessionOptions } from "./session-store.js";
+export { updatePlanTool, updatePlanInputSchema, type UpdatePlanInput } from "./update-plan.js";
 export { createSubagentTools, summarizeSubagentMessage, type CreateSubagentToolsOptions } from "./subagents.js";
 export {
   connectMcpServers,

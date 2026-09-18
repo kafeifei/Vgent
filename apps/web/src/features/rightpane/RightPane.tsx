@@ -1,7 +1,10 @@
+import type { UIMessage } from "ai";
 import { FileDiff, FolderTree, ListChecks, ListTodo, Terminal, X } from "lucide-react";
 import { ChangesPanel } from "@/features/changes/ChangesPanel";
 import { useChanges } from "@/features/changes/useChanges";
 import { FilesPanel } from "@/features/files/FilesPanel";
+import { PlanPanel } from "@/features/plan/PlanPanel";
+import { TerminalPanel } from "@/features/terminal/TerminalPanel";
 import type { QueueItem } from "@/features/worklog/queue";
 import type { ApiClient } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -26,7 +29,7 @@ function jumpTo(anchor: string): void {
 }
 
 /**
- * Right column. 队列 / 变更 / 文件 have content; 终端 / 计划 are placeholders.
+ * Right column. 队列、变更、文件、终端、计划 all have content.
  *
  * The changes snapshot is loaded here rather than inside `ChangesPanel` so the
  * 变更 tab can carry its file count — and so a collapsed pane, which stays
@@ -44,6 +47,7 @@ export function RightPane({
   onSelectFile,
   refreshKey,
   toast,
+  messages,
 }: {
   queue: QueueItem[];
   open: boolean;
@@ -58,6 +62,8 @@ export function RightPane({
   /** The thread's `updatedAt`: a new one means the engine wrote to disk. */
   refreshKey: string;
   toast: (text: string) => void;
+  /** The active thread's messages, for 终端 and 计划. Empty without a live thread. */
+  messages: UIMessage[];
 }) {
   const changes = useChanges({
     client,
@@ -136,8 +142,10 @@ export function RightPane({
           <ChangesPanel changes={changes} />
         ) : tab === "files" ? (
           <FilesPanel client={client} threadId={threadId} active={open} refreshKey={refreshKey} />
+        ) : tab === "term" ? (
+          <TerminalPanel messages={messages} />
         ) : (
-          <p className="text-fg-faint text-xs">下一步接入</p>
+          <PlanPanel messages={messages} />
         )}
       </div>
     </aside>

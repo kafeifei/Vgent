@@ -19,6 +19,7 @@ export function ThreadView(props: {
   client: ApiClient;
   rightOpen: boolean;
   onQueue: (queue: QueueItem[]) => void;
+  onMessages: (messages: UIMessage[]) => void;
 }) {
   const { thread, actions } = props;
   const [chat, setChat] = useState<Chat<UIMessage> | null>(null);
@@ -44,6 +45,7 @@ function ThreadChatView({
   client,
   rightOpen,
   onQueue,
+  onMessages,
   chat,
 }: {
   thread: ThreadSummary;
@@ -51,6 +53,7 @@ function ThreadChatView({
   client: ApiClient;
   rightOpen: boolean;
   onQueue: (queue: QueueItem[]) => void;
+  onMessages: (messages: UIMessage[]) => void;
   chat: Chat<UIMessage>;
 }) {
   const [draft, setDraft] = useState("");
@@ -65,6 +68,7 @@ function ThreadChatView({
   const queue = useMemo(() => pendingQueue(messages), [messages]);
 
   useEffect(() => onQueue(queue), [onQueue, queue]);
+  useEffect(() => onMessages(messages), [onMessages, messages]);
 
   const turnActions: TurnActions = useMemo(
     () => ({

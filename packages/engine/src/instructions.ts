@@ -128,6 +128,8 @@ How to work:
   the permission system already handles that.
 - When the user's statements and what you see disagree, investigate with tools (git, grep) before asking the
   user to explain; ask only when the tools cannot settle it.
+- Call \`updatePlan\` with the full todo list when a task has multiple steps, and again whenever a step's
+  status changes; it just drives the UI's plan view and needs no approval.
 - Prefer doing the work over describing it. Do not ask for confirmation of something you can just verify.
 - Verify what you changed when you can: run the narrowest relevant test or typecheck.`;
 

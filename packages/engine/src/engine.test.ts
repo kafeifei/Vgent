@@ -67,7 +67,7 @@ describe("createVgentEngine", () => {
     await dispose();
   });
 
-  it("exposes the built-in tools plus askUserQuestions and the subagents, and askUserQuestions has no execute", async () => {
+  it("exposes the built-in tools plus askUserQuestions, updatePlan and the subagents, and askUserQuestions has no execute", async () => {
     const { agent } = createVgentEngine({ model: readThenAnswer("done"), repoPath });
     expect(Object.keys(agent.tools ?? {}).sort()).toEqual([
       "askUserQuestions",
@@ -78,6 +78,7 @@ describe("createVgentEngine", () => {
       "glob",
       "grep",
       "read",
+      "updatePlan",
       "write",
     ]);
     // No `execute` is what makes the loop stop and hand the question to the UI.

@@ -16,7 +16,18 @@ describe("describeTool", () => {
   it("hands write/edit a file for the chip and falls back to the tool name", () => {
     expect(describeTool(part("tool-edit", { file_path: "a/b.ts" })).file).toBe("a/b.ts");
     expect(describeTool(part("tool-write", { file_path: "a/b.ts" })).kind).toBe("write");
-    expect(describeTool(part("tool-TodoWrite", {})).verb).toBe("TodoWrite");
+  });
+
+  it("reads TodoWrite/update_plan/updatePlan as a plan row with an item count", () => {
+    expect(describeTool(part("tool-TodoWrite", { todos: [{ content: "a", status: "pending" }] }))).toMatchObject({
+      kind: "plan",
+      verb: "计划",
+      target: "1 项",
+    });
+    expect(
+      describeTool(part("tool-update_plan", { plan: [{ step: "a", status: "pending" }, { step: "b", status: "done" }] })),
+    ).toMatchObject({ kind: "plan", verb: "计划", target: "2 项" });
+    expect(describeTool(part("tool-updatePlan", { items: [] }))).toMatchObject({ kind: "plan", verb: "计划", target: "0 项" });
   });
 });
 

@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
+import type { UIMessage } from "ai";
 import { CommandPalette, type Command } from "@/features/cmdk/CommandPalette";
 import { EmptyState } from "@/features/empty/EmptyState";
 import { RightPane } from "@/features/rightpane/RightPane";
@@ -31,8 +32,10 @@ export function Shell({ token }: { token: string }) {
   } = workbench;
   const { toggleTheme, toggleDensity } = usePrefs();
   const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [messages, setMessages] = useState<UIMessage[]>([]);
 
   const onQueue = useCallback((next: QueueItem[]) => setQueue(next), []);
+  const onMessages = useCallback((next: UIMessage[]) => setMessages(next), []);
 
   const commands = useMemo<Command[]>(
     () => [
@@ -96,7 +99,7 @@ export function Shell({ token }: { token: string }) {
               <SettingsView settings={state.settings} client={client} onClose={actions.closeSettings} />
             </div>
           ) : view === "thread" && thread != null ? (
-            <ThreadView thread={thread} actions={actions} client={client} rightOpen={right.open} onQueue={onQueue} />
+            <ThreadView thread={thread} actions={actions} client={client} rightOpen={right.open} onQueue={onQueue} onMessages={onMessages} />
           ) : (
             <div className="row-span-3 min-h-0 overflow-y-auto">
               <EmptyState
@@ -125,6 +128,7 @@ export function Shell({ token }: { token: string }) {
             onSelectFile={actions.selectChange}
             refreshKey={thread?.updatedAt ?? ""}
             toast={actions.toast}
+            messages={messages}
           />
         )}
       </div>

@@ -133,3 +133,13 @@ export type {
 } from "./types.js";
 /** Re-exported so the web client can type its settings form without depending on `@vgent/engine` directly. */
 export type { McpHttpServerConfig, McpServerConfig, McpStdioServerConfig } from "@vgent/engine";
+export { createProviderStore, type ProviderStore } from "./store/providers.js";
+/** Re-exported so the web client types its provider settings from one place. The key never appears in any of them. */
+export type {
+  ProviderAgent,
+  ProviderAgentConfig,
+  ProviderModel,
+  ProviderPreset,
+  ProviderProtocol,
+  RedactedProviderConfig,
+} from "@vgent/providers";

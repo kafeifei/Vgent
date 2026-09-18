@@ -74,6 +74,43 @@ export interface ClaudeCodeEngineOptions {
    * `defaultClaudeCodeAuth()`; see there for why it is never `'auto'`.
    */
   auth?: HarnessV1Authentication;
+  /**
+   * Extra environment for the `claude` CLI, on top of the engine's own. What a
+   * custom endpoint needs beyond its credential — see {@link claudeCodeProviderEnv}.
+   */
+  env?: Readonly<Record<string, string>>;
+}
+
+/**
+ * Everything the runtime needs to run one model of an Anthropic-compatible
+ * provider: the credential for the adapter (`auth`) and the CLI environment
+ * that keeps *every* request on that model (`env`).
+ *
+ * The second half matters as much as the first. Besides the model a session
+ * names, the CLI calls a "small fast model" for titles and summaries, maps the
+ * `haiku` / `sonnet` / `opus` aliases to Anthropic ids, and gives native
+ * subagents a model of their own — all of which a third-party endpoint has never
+ * heard of. Pinning each of them to the chosen model is what vendors' own
+ * Claude Code guides do.
+ */
+export function claudeCodeProviderEnv(options: { baseURL: string; apiKey?: string; model: string }): {
+  auth: Readonly<Record<string, string>>;
+  env: Readonly<Record<string, string>>;
+} {
+  return {
+    auth: {
+      ANTHROPIC_BASE_URL: options.baseURL,
+      ...(options.apiKey != null && options.apiKey !== "" ? { ANTHROPIC_AUTH_TOKEN: options.apiKey } : {}),
+    },
+    env: {
+      ANTHROPIC_MODEL: options.model,
+      ANTHROPIC_SMALL_FAST_MODEL: options.model,
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: options.model,
+      ANTHROPIC_DEFAULT_SONNET_MODEL: options.model,
+      ANTHROPIC_DEFAULT_OPUS_MODEL: options.model,
+      CLAUDE_CODE_SUBAGENT_MODEL: options.model,
+    },
+  };
 }
 
 export interface ClaudeCodeEngine {
@@ -233,6 +270,7 @@ export async function createClaudeCodeEngine(options: ClaudeCodeEngineOptions): 
     env: {
       DISABLE_AUTOUPDATER: "1",
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+      ...options.env,
     },
   });
 

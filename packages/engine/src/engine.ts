@@ -1,6 +1,6 @@
 import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { createApiKeyModel, createCodexSubscriptionModel } from "@vgent/providers";
+import { createModelRegistry, type ProviderConfig } from "@vgent/providers";
 import { createCodingTools } from "@vgent/tools";
 import { ToolLoopAgent, isStepCount, pruneMessages, toolSearch, type LanguageModel, type ModelMessage, type ToolSet } from "ai";
 import { askUserQuestionsTool } from "./ask-user-questions.js";
@@ -35,11 +35,14 @@ export type VgentEngineEvent =
 
 export interface VgentEngineOptions {
   /**
-   * The model to drive the loop. A `LanguageModel` is used as-is. A string is
-   * resolved as a gateway `provider/model` spec, except when it starts with
-   * `codex-subscription:`, which uses the machine's Codex CLI login.
+   * The model to drive the loop. A `LanguageModel` is used as-is. A string goes
+   * through the model registry: `codex-subscription:<id>` is the machine's
+   * Codex CLI login, `<providerId>:<id>` a provider from {@link providers}, and
+   * a bare `creator/model` the AI Gateway.
    */
   model: LanguageModel | string;
+  /** The providers from the settings page, which is what makes `<providerId>:<id>` resolvable. */
+  providers?: readonly ProviderConfig[];
   /** Repository the agent works in. Tools are confined to it. */
   repoPath: string;
   /**
@@ -135,16 +138,13 @@ export interface VgentEngine {
 
 /**
  * Resolves the `model` option. Kept separate so the string forms are testable
- * without constructing an agent.
+ * without constructing an agent. The spellings and their errors live in the
+ * registry (`@vgent/providers`), which is also what the server's precondition
+ * check reads — one source for both.
  */
-export function resolveModel(model: LanguageModel | string): LanguageModel {
+export function resolveModel(model: LanguageModel | string, providers: readonly ProviderConfig[] = []): LanguageModel {
   if (typeof model !== "string") return model;
-  if (model.startsWith(CODEX_SUBSCRIPTION_PREFIX)) {
-    const modelId = model.slice(CODEX_SUBSCRIPTION_PREFIX.length);
-    if (modelId === "") throw new Error(`Missing model id after "${CODEX_SUBSCRIPTION_PREFIX}".`);
-    return createCodexSubscriptionModel(modelId);
-  }
-  return createApiKeyModel(model);
+  return createModelRegistry({ providers }).languageModel(model);
 }
 
 /** The memory entries that already exist, for the prompt. A directory nobody wrote to yet is simply empty. */
@@ -209,7 +209,7 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
   const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
   const contextTokenBudget = options.contextTokenBudget ?? DEFAULT_CONTEXT_TOKEN_BUDGET;
   const { sessionFile, onEvent, skills, memoryDir } = options;
-  const model = resolveModel(options.model);
+  const model = resolveModel(options.model, options.providers);
   const subagents = options.subagents !== false;
 
   const plan = options.plan === true;
@@ -223,7 +223,7 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
     ...(memoryDir == null ? {} : { memory: createMemoryTool(memoryDir) }),
     ...(subagents
       ? createSubagentTools({
-          model: options.subagentModel == null ? model : resolveModel(options.subagentModel),
+          model: options.subagentModel == null ? model : resolveModel(options.subagentModel, options.providers),
           repoPath,
           permissionMode,
           ...(options.alwaysAllow == null ? {} : { alwaysAllow: options.alwaysAllow }),

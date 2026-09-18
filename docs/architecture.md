@@ -54,7 +54,15 @@ Vgent 是一个 **Web 优先**的本地 coding agent 工作台，底下可换引
    - **Codex / ChatGPT 订阅：做。** Codex CLI 开源且官方支持 ChatGPT 登录，第三方复用登录态的容忍度高。`createOpenAI({ baseURL: chatgpt.com/backend-api/codex, fetch })` 配注入 OAuth Bearer 的 fetch，token 读 `~/.codex/auth.json`（尊重 `CODEX_HOME`），刷新和过期判断用 `@ai-sdk/harness/utils` 的 `refreshOAuthAccessToken` / `isAccessTokenExpiringSoon`。独立包 `@vgent/providers`，默认关闭，UI 明示"非官方支持"。
    - **Claude 订阅：不做 token 直连。** Anthropic 条款把 Claude Code 的 OAuth 凭据限定在 Claude Code 内使用，2025 年有第三方 agent 因此被封的先例，用户判断风险过高。Claude 订阅**只通过 Claude Code harness 引擎原生使用**。
    - **不进主线的实验项：Claude Code 精简模式**（官方 harness + `inactiveTools` 关掉全部内建工具 + 挂我们的工具、skills、审批，等于借 Claude Code 当模型入口）。技术上只是一段配置，但它是两个系统的接缝：模型带着原生工具的先验会去调被关的工具白烧步数；宿主工具每次经 bridge 往返；Claude Code 自带的 compaction / todo / Task 子代理 / 权限提示与我们的机制撞车；且是 experimental 家族里被踩得最少的路。用户和我一致判断 bug 会多，**先不做**，留作将来有明确需求时的一两天实验。
-   - 通用原则：引擎和 UI 只依赖 `LanguageModel` 类型；token 不落日志、不落我们自己的存储。
+   - 通用原则：引擎和 UI 只依赖 `LanguageModel` 类型；订阅登录的 token 不落日志、不落我们自己的存储。
+3. **用户接入的提供商（2026-09-19）**：设置页「模型提供商」。数据模型在 `packages/providers/src/provider-config.ts`（零依赖，子路径 `@vgent/providers/config`）：`ProviderConfig { id, name, presetId?, apiKey?, agents: { vgent?, "claude-code"?, codex? } }`，每个 agent 一份 `{ baseURL, protocol, models[] }`——「每个 agent 用哪些模型」就是这个字段，没有第二张表。
+   - **注册表**：`model-registry.ts` 的 `createModelRegistry({ providers })` 用 AI SDK 的 provider 管理搭：`createProviderRegistry`（分隔符 `:`）里放 gateway 和每个提供商一个 `customProvider`（`languageModels` = 勾选的模型，`fallbackProvider` = 提供商本身，没勾的 id 也能解析）。OpenAI 兼容走 `@ai-sdk/openai-compatible`（`includeUsage: true`，否则流式没有用量、context ring 没数）；Anthropic 兼容走 `@ai-sdk/anthropic`，baseURL 按 `claude` CLI 的写法存（不带 `/v1`），给 SDK 时补上；第三方端点用 Bearer（`authToken`），并用 `wrapProvider` + `defaultSettingsMiddleware` 把 `maxOutputTokens` 定到 16000——SDK 对不认识的模型 id 会悄悄限到 4096。Codex 订阅不进 SDK 注册表（它是一个个包好的模型，不是 provider 对象），在 `languageModel()` 里直接解析。
+   - **模型标识三种写法**，由 `describeModelSpec` 一处判定，引擎的 `resolveModel`、server 的前置检查、`/compact` 都读它：`codex-subscription:<id>`、`<提供商 id>:<id>`、`creator/model`（或 `gateway:creator/model`）。提供商 id 不能占用 `codex-subscription` / `gateway`。
+   - **预设**：`presets.ts`，取自 Cindy 公开目录 `model-access-server/catalog/providers.json` 的 `presets`（目录版本 2，2026-08-06 的修订）：Claude Code runtime → `claude-code` agent（Anthropic 兼容地址），Codex runtime 的 OpenAI 兼容地址 → 自研 `vgent` agent。预设里的模型只是种子，设置页照样去拉实时清单（`discover.ts`：OpenAI 兼容 `GET <baseURL>/models`，Anthropic 兼容 `GET <baseURL>/v1/models`），用户从并集里勾。
+   - **key 存哪**：`<dataDir>/providers.json`，0600、原子写、读改写全在一条 promise 链里。它不放进 `settings.json`，因为 settings 会整个走状态 SSE 广播。出进程的只有 `redactProvider()` 之后的形态（`hasKey: boolean`）；编辑时不带 `apiKey` = 保留，`""` = 清掉。这一条改掉了原先「凭据一律不落我们的存储」的原则：订阅 token 仍然不存，用户自己填的 API key 存在本机这一个文件里。
+   - **三个引擎怎么用上**：自研引擎每轮读一次 provider 存储，把 `providers` 传给 `createVgentEngine`；Claude Code 的任务模型若是 `<提供商 id>:<id>`，`server/engines/claude-code.ts` 的 `providerRoute` 把它变成 `auth`（`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`）、裸模型 id 和一组 CLI 环境变量（`ANTHROPIC_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` / 三个 `ANTHROPIC_DEFAULT_*_MODEL` / `CLAUDE_CODE_SUBAGENT_MODEL` 全指向选中的模型，否则 CLI 会拿 Anthropic 的模型名去问第三方端点）；Codex 的能力表 `customProviders: false`，设置页据此写一句话而不是摆一个用不了的块。
+   - **接口**：`GET /api/providers`（已配置的 + 预设）、`POST`、`PATCH /:id`、`DELETE /:id`、`POST /api/providers/discover`（表单里有 key 用表单的，没有就用存着的）。`GET /api/engines/:engine/models` 每次请求把该引擎可用的提供商模型并进去（`ModelEntry.provider` = 提供商名），不进 10 分钟缓存。
+   - **没做的**：Codex 接自定义端点（要一个 Responses 协议的转发代理，Cindy 就是这么绕的）；用 Cindy 账号自动换 key（现在是自己贴地址和 key）；子代理单独配模型；provider 级的推理 / 思考等级；key 放钥匙串。
 
 ## 后端 `@vgent/server`（Hono）
 
@@ -170,7 +178,7 @@ docs/
 
 ## 当前状态（2026-09-18，阶段六完成；之后按 `docs/product.md` 的里程碑推进，M1–M5 已落地）
 
-三条引擎路全部本地跑通并有真实冒烟测试（`VGENT_SMOKE=1`）；桌面壳、worktree 隔离、子代理/MCP/skills、动态模型清单、`pnpm start` 全部落地。全仓构建绿，`pnpm test` 61 文件 / 507 测试通过（另 5 文件 / 12 测试是 `VGENT_SMOKE` 门控的真机冒烟，默认跳过）。
+三条引擎路全部本地跑通并有真实冒烟测试（`VGENT_SMOKE=1`）；桌面壳、worktree 隔离、子代理/MCP/skills、动态模型清单、`pnpm start` 全部落地。全仓构建绿，`pnpm test` 65 文件 / 547 测试通过（另 5 文件 / 13 测试是 `VGENT_SMOKE` 门控的真机冒烟，默认跳过；2026-09-19 加完模型提供商之后）。
 
 - `packages/sandbox-local`：freecode 移植，`createLocalSandboxProvider`，`loopbackOnly` 预加载已验证 bridge 只绑 127.0.0.1。
 - `packages/engines`：`createClaudeCodeEngine` / `createCodexEngine` → `{ agent, session, dispose }`，`toTUIAgent`，共享逻辑在 `shared.ts`。仓库路径靠覆写 `doStart` 传 `sessionWorkDir`。Claude 保留真实 HOME 复用登录（副作用：`~/.claude/CLAUDE.md` 影响回复）；Codex 用隔离 `CODEX_HOME`（真实 `~/.codex/config.toml` 与 pinned SDK 不兼容），登录态走 env 转发不受影响。Codex 的 permissionMode 只能 `allow-all`，SDK 构造时自己抛错。

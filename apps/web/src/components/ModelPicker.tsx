@@ -130,6 +130,21 @@ function useAllCatalogs(
   return states;
 }
 
+/**
+ * An engine's list in the order the picker shows it: its own models first (the
+ * source line under them describes *that* list), then each settings-page
+ * provider's models under the provider's name, in the order they first appear.
+ */
+export function splitByProvider<T extends { provider?: string }>(entries: readonly T[]): { own: T[]; fromProviders: [string, T[]][] } {
+  const own: T[] = [];
+  const groups = new Map<string, T[]>();
+  for (const entry of entries) {
+    if (entry.provider == null) own.push(entry);
+    else groups.set(entry.provider, [...(groups.get(entry.provider) ?? []), entry]);
+  }
+  return { own, fromProviders: [...groups] };
+}
+
 /** The line under a group: where its list came from, or why there is none. */
 function footerOf(state: CatalogState | undefined): string | undefined {
   if (state == null || state.status === "loading") return undefined;
@@ -207,6 +222,7 @@ export function ModelPicker({
             const groupDefault =
               defaultId == null ? undefined : (entries.find((row) => row.id === defaultId)?.label ?? defaultId);
             const footer = footerOf(state);
+            const { own, fromProviders } = splitByProvider(entries);
             const pick = (next: string | undefined) => {
               onPick(entry.id, next);
               close();
@@ -233,12 +249,22 @@ export function ModelPicker({
                       </PopItem>
                     )}
                     {state?.status === "loading" && <PopItem disabled>加载中…</PopItem>}
-                    {entries.map((row) => (
+                    {own.map((row) => (
                       <PopItem key={row.id} selected={entry.id === engine && row.id === model} onClick={() => pick(row.id)}>
                         <span className="font-mono">{row.label}</span>
                       </PopItem>
                     ))}
                     {footer != null && <div className="px-xs py-2xs text-2xs text-fg-faint">{footer}</div>}
+                    {fromProviders.map(([provider, rows]) => (
+                      <div key={provider}>
+                        <div className="px-xs pt-2xs text-2xs text-fg-faint">{provider}</div>
+                        {rows.map((row) => (
+                          <PopItem key={row.id} selected={entry.id === engine && row.id === model} onClick={() => pick(row.id)}>
+                            <span className="font-mono">{row.label}</span>
+                          </PopItem>
+                        ))}
+                      </div>
+                    ))}
                   </>
                 )}
               </div>

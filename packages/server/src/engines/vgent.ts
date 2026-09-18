@@ -1,9 +1,10 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { CODEX_SUBSCRIPTION_PREFIX, connectMcpServers, createVgentEngine, loadSkillsIndex } from "@vgent/engine";
-import { describeSubscriptionAuth } from "@vgent/providers";
+import { describeModelSpec, describeSubscriptionAuth } from "@vgent/providers";
 import type { LanguageModel, TextStreamPart, ToolSet } from "ai";
 import { BadRequestError, EngineUnavailableError } from "../errors.js";
+import { createProviderStore } from "../store/providers.js";
 import { createSettingsStore } from "../store/settings.js";
 import type { EngineDescriptor } from "./capabilities.js";
 import type { EngineContext, EngineFactory, EngineRunner } from "./registry.js";
@@ -19,6 +20,7 @@ const DESCRIPTOR: EngineDescriptor = {
     compact: true,
     knownDefaultModel: true,
     extensions: true,
+    customProviders: true,
   },
 };
 
@@ -27,8 +29,6 @@ export const DEFAULT_VGENT_MODEL = "codex-subscription:gpt-5.5";
 
 /** Either of these lets the AI Gateway authenticate a `provider/model` spec. */
 const GATEWAY_ENV_VARS = ["AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"] as const;
-
-type ModelSpec = { kind: "codex-subscription" } | { kind: "gateway" } | { kind: "invalid"; reason: string };
 
 /**
  * Where a project's cross-task memory lives: `<dataDir>/memory/<project>`.
@@ -39,26 +39,6 @@ type ModelSpec = { kind: "codex-subscription" } | { kind: "gateway" } | { kind: 
 function memoryDirOf(ctx: EngineContext): string {
   const key = `${ctx.project.name}-${ctx.project.id.slice(0, 8)}`.replace(/[^A-Za-z0-9._-]/g, "-");
   return join(ctx.dataDir, "memory", key);
-}
-
-/**
- * What a thread's model string routes to. Mirrors `resolveModel` in
- * `@vgent/engine` — the function that really builds the model — so an unusable
- * spec is a typed 400 before the run starts instead of an error part inside a
- * 200 stream. Deliberately a re-check rather than a call: `resolveModel`
- * constructs a provider, which is not what a precondition should do.
- */
-function describeModelSpec(spec: string): ModelSpec {
-  if (spec.startsWith(CODEX_SUBSCRIPTION_PREFIX)) {
-    return spec.length > CODEX_SUBSCRIPTION_PREFIX.length
-      ? { kind: "codex-subscription" }
-      : { kind: "invalid", reason: `${CODEX_SUBSCRIPTION_PREFIX} 后面缺少模型 id` };
-  }
-  const separator = spec.indexOf("/");
-  if (separator <= 0 || separator === spec.length - 1 || spec.includes(" ")) {
-    return { kind: "invalid", reason: '应为 "provider/model" 或 "codex-subscription:<模型 id>"' };
-  }
-  return { kind: "gateway" };
 }
 
 export interface VgentEngineFactoryOptions {
@@ -88,12 +68,21 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
     descriptor: DESCRIPTOR,
     statelessTurns: true,
 
-    async ensureAvailable({ thread }) {
+    // A precondition, so an unusable model is a typed 400 / 503 before the run
+    // starts instead of an error part inside a 200 stream. It reads the same
+    // classifier the registry resolves with, so the two cannot disagree.
+    async ensureAvailable({ thread, dataDir }) {
       if (override != null) return;
       const spec = thread.model ?? DEFAULT_VGENT_MODEL;
-      const described = describeModelSpec(spec);
+      const described = describeModelSpec(spec, await createProviderStore(dataDir).list());
       if (described.kind === "invalid") {
         throw new BadRequestError(`模型标识不合法: ${JSON.stringify(spec)}，${described.reason}`, "invalid_model");
+      }
+      if (described.kind === "provider") {
+        // A local server (Ollama, LM Studio) legitimately has no key, so its
+        // absence is not checked here; a wrong or missing one comes back as the
+        // provider's own 401 in the stream.
+        return;
       }
       if (described.kind === "codex-subscription") {
         const report = await describeSubscriptionAuth();
@@ -112,6 +101,7 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
       // effect on the next message instead of on the next server restart.
       const settings = await createSettingsStore(ctx.dataDir, ctx.log).get();
       const mcp = await connectMcpServers(settings.mcpServers ?? [], { log: ctx.log });
+      const providers = await createProviderStore(ctx.dataDir, ctx.log).list();
       const skills = await loadSkillsIndex([
         join(ctx.project.repoPath, ".claude", "skills"),
         join(homedir(), ".vgent", "skills"),
@@ -122,6 +112,7 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
 
       const engine = createVgentEngine({
         model,
+        providers,
         repoPath: ctx.project.repoPath,
         permissionMode: ctx.permissionMode,
         ...(ctx.alwaysAllow.length > 0 ? { alwaysAllow: ctx.alwaysAllow } : {}),

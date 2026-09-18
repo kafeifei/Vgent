@@ -13,6 +13,12 @@ export interface ModelEntry {
   label: string;
   description?: string;
   /**
+   * The display name of the settings-page provider this model comes from. Absent
+   * for an engine's own models (its login, its built-in aliases); the picker
+   * lists those first and the rest under their provider's name.
+   */
+  provider?: string;
+  /**
    * The「思考等级」this model offers, in the order the picker should show them.
    * Absent means the model has none to choose from and the chip stays hidden —
    * never guessed, only ever taken from the source that knows (Codex's own

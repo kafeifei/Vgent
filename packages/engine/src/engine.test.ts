@@ -262,11 +262,24 @@ describe("resolveModel", () => {
   });
 
   it("rejects an empty codex-subscription model id", () => {
-    expect(() => resolveModel("codex-subscription:")).toThrow(/Missing model id/);
+    expect(() => resolveModel("codex-subscription:")).toThrow(/缺少模型 id/);
+  });
+
+  it("routes a configured provider's prefix to that provider, and only when it is configured", () => {
+    const providers = [
+      {
+        id: "deepseek",
+        name: "DeepSeek",
+        apiKey: "sk-test",
+        agents: { vgent: { baseURL: "https://api.deepseek.com", protocol: "openai-compatible" as const, models: [{ id: "deepseek-v4-pro" }] } },
+      },
+    ];
+    expect((resolveModel("deepseek:deepseek-v4-pro", providers) as { modelId: string }).modelId).toBe("deepseek-v4-pro");
+    expect(() => resolveModel("deepseek:deepseek-v4-pro")).toThrow(/deepseek/);
   });
 
   it("routes anything else through the gateway as provider/model", () => {
     expect((resolveModel("openai/gpt-5") as { modelId: string }).modelId).toBe("openai/gpt-5");
-    expect(() => resolveModel("not-a-spec")).toThrow(/provider\/model/);
+    expect(() => resolveModel("not-a-spec")).toThrow(/模型标识不合法/);
   });
 });

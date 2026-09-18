@@ -11,6 +11,12 @@ import type {
   ModelCatalog,
   PlanDocument,
   Project,
+  ProviderAgent,
+  ProviderAgentConfig,
+  ProviderModel,
+  ProviderPreset,
+  ProviderProtocol,
+  RedactedProviderConfig,
   Settings,
   SetupLog,
   ThreadMode,
@@ -19,6 +25,14 @@ import type {
   WorkspaceMode,
 } from "./types";
 import { pickNativePath } from "./nativePicker";
+
+/** What the provider form sends. The key travels up only; nothing the server answers carries one. */
+export interface ProviderInputBody {
+  name: string;
+  presetId?: string;
+  apiKey?: string;
+  agents: Partial<Record<ProviderAgent, ProviderAgentConfig>>;
+}
 
 const TOKEN_KEY = "vgent.token";
 
@@ -261,6 +275,17 @@ export function createClient(token: string) {
 
     /** 引擎能力表: what exists, what it is called, what it can do. */
     listEngines: () => api<{ engines: EngineDescriptor[] }>("/engines", token).then((body) => body.engines),
+
+    /** 模型提供商: the configured ones (never with their key) and the presets a new one can start from. */
+    listProviders: () => api<{ providers: RedactedProviderConfig[]; presets: ProviderPreset[] }>("/providers", token),
+    createProvider: (input: ProviderInputBody) => api<RedactedProviderConfig>("/providers", token, { method: "POST", json: input }),
+    /** `apiKey` absent keeps the stored key, `""` clears it. */
+    updateProvider: (id: string, input: ProviderInputBody) =>
+      api<RedactedProviderConfig>(`/providers/${encodeURIComponent(id)}`, token, { method: "PATCH", json: input }),
+    deleteProvider: (id: string) => api<void>(`/providers/${encodeURIComponent(id)}`, token, { method: "DELETE" }),
+    /** 拉模型清单. With `providerId` and no `apiKey`, the server uses the key it has stored. */
+    discoverProviderModels: (input: { providerId?: string; baseURL: string; protocol: ProviderProtocol; apiKey?: string }) =>
+      api<{ models: ProviderModel[] }>("/providers/discover", token, { method: "POST", json: input }).then((body) => body.models),
 
     /** The engine's model list. `refresh` skips the server's 10-minute cache. */
     listModels: (engine: EngineId, refresh = false) =>

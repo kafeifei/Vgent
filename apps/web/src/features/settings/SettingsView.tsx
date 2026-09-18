@@ -7,6 +7,8 @@ import { useToast } from "@/lib/toast";
 import type { EngineDescriptor, McpServerConfig, PermissionMode, Settings } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { EMPTY_MCP_FORM, fromForm, toForm, type McpForm } from "./mcpForm";
+import { ProvidersSection } from "./ProvidersSection";
+import { INPUT_CLASS, PILL, PILL_SELECTED, TEXTAREA_CLASS } from "./styles";
 import { isImeKeyEvent } from "@/lib/ime";
 
 /**
@@ -38,14 +40,6 @@ const stableStringify = (value: unknown): string =>
       ? Object.fromEntries(Object.entries(val as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)))
       : val,
   );
-
-const PILL =
-  "inline-flex h-xl items-center rounded-full border border-border bg-bg-elevated px-sm text-fg-muted text-sm hover:border-border-strong hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-border disabled:hover:text-fg-muted";
-const PILL_SELECTED = "border-brand bg-brand-bg text-brand hover:border-brand hover:text-brand";
-const INPUT_CLASS =
-  "h-xl rounded-sm border border-border bg-bg-inset px-xs text-fg text-sm outline-none placeholder:text-fg-faint focus-visible:border-border-strong";
-const TEXTAREA_CLASS =
-  "resize-y rounded-sm border border-border bg-bg-inset px-xs py-2xs font-mono text-fg text-xs outline-none placeholder:text-fg-faint focus-visible:border-border-strong";
 
 function describeServer(config: McpServerConfig): { kind: string; detail: string } {
   if ("command" in config) return { kind: "stdio", detail: [config.command, ...(config.args ?? [])].join(" ") };
@@ -191,6 +185,7 @@ export function SettingsView({
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [pickerAvailable, setPickerAvailable] = useState(true);
+  const [catalogVersion, setCatalogVersion] = useState(0);
 
   // Re-synced from the server only while the draft has no edits the user would lose.
   useEffect(() => {
@@ -352,9 +347,13 @@ export function SettingsView({
         </div>
       </section>
 
+      <ProvidersSection client={client} engines={engines} onChanged={() => setCatalogVersion((version) => version + 1)} />
+
       <section className="flex flex-col gap-sm">
         <h2 className="font-semibold text-fg text-sm">默认模型</h2>
         <ModelPicker
+          // Remounted when a provider changes: its lists are loaded once per mount.
+          key={catalogVersion}
           engines={engines}
           engine={draft.defaultEngine}
           model={draft.defaultModel}

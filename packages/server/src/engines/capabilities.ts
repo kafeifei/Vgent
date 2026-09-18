@@ -21,6 +21,11 @@ export interface EngineCapabilities {
   knownDefaultModel: boolean;
   /** MCP servers, skills and memory. */
   extensions: boolean;
+  /**
+   * Can be pointed at a provider from the settings page (its own endpoint and
+   * key). Codex cannot: its harness only ever runs on the machine's Codex login.
+   */
+  customProviders: boolean;
 }
 
 /** One engine as the client sees it: an id, a name to show, and the row above. */

@@ -95,7 +95,7 @@ export interface EngineFactory {
    * run here" is an HTTP error. Everything that needs the sandbox belongs in
    * `create`, where failures reach the client as stream error parts instead.
    */
-  ensureAvailable?(ctx: { thread: ThreadRecord }): void | Promise<void>;
+  ensureAvailable?(ctx: { thread: ThreadRecord; dataDir: string }): void | Promise<void>;
   /**
    * True when a turn leaves nothing behind in the runner: the whole
    * conversation, including a pending approval, is reconstructible from the

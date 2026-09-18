@@ -621,7 +621,7 @@ export function createRunManager(options: {
     // Awaited: the probe can touch the filesystem (a login store, an
     // environment credential), and a rejected precondition has to become the
     // HTTP response instead of an unhandled rejection.
-    await factory.ensureAvailable?.({ thread });
+    await factory.ensureAvailable?.({ thread, dataDir });
     // The previous turn's engine may still be persisting its resume state.
     await finishing.get(threadId);
 

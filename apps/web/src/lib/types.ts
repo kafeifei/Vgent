@@ -40,6 +40,12 @@ export type {
   ThreadStatus,
   ThreadSummary,
   ThreadWorkspace,
+  ProviderAgent,
+  ProviderAgentConfig,
+  ProviderModel,
+  ProviderPreset,
+  ProviderProtocol,
+  RedactedProviderConfig,
   UsageInfo,
   WorkspaceSetup,
 } from "@vgent/server";

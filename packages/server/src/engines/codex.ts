@@ -21,6 +21,7 @@ const DESCRIPTOR: EngineDescriptor = {
     compact: false,
     knownDefaultModel: false,
     extensions: false,
+    customProviders: false,
   },
 };
 

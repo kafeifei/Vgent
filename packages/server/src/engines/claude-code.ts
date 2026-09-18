@@ -1,8 +1,10 @@
 import { collectHarnessAgentToolApprovalContinuations, collectHarnessAgentToolResultContinuations } from "@ai-sdk/harness/agent";
 import { planModeInstructions } from "@vgent/engine";
-import { claudeCodeThinking, createClaudeCodeEngine } from "@vgent/engines";
+import { claudeCodeProviderEnv, claudeCodeThinking, createClaudeCodeEngine } from "@vgent/engines";
+import { splitProviderModelSpec, type ProviderConfig } from "@vgent/providers";
 import type { TextStreamPart, ToolSet } from "ai";
-import { TurnResumeFailedError } from "../errors.js";
+import { BadRequestError, TurnResumeFailedError } from "../errors.js";
+import { createProviderStore } from "../store/providers.js";
 import type { EngineDescriptor } from "./capabilities.js";
 import { stripDeniedApprovalResults } from "./harness-messages.js";
 import type { EngineContext, EngineFactory, EngineRunner } from "./registry.js";
@@ -18,6 +20,7 @@ const DESCRIPTOR: EngineDescriptor = {
     compact: false,
     knownDefaultModel: false,
     extensions: false,
+    customProviders: true,
   },
 };
 
@@ -32,6 +35,38 @@ const PLAN_ACTIVE_TOOLS = ["read", "grep", "glob", "TodoWrite"] as const;
 
 /** Claude Code has no `askUserQuestions`, so the addendum tells it to ask in prose. */
 const PLAN_INSTRUCTIONS = planModeInstructions({ askTool: false });
+
+/**
+ * A thread model of the form `<providerId>:<model>` runs on that provider's
+ * Anthropic-compatible endpoint instead of the machine's Claude login: the
+ * engine is handed the endpoint and key as its authentication, the bare model
+ * id, and the CLI environment that keeps every request on that model.
+ *
+ * Anything else — `sonnet`, a full Anthropic id, nothing — is the runtime's own
+ * business and yields `undefined`. A prefix that names a provider which has no
+ * `claude-code` endpoint (or no longer exists) is refused rather than sent to
+ * Anthropic as a model id it would 404 on.
+ */
+export function providerRoute(model: string | undefined, providers: readonly ProviderConfig[]) {
+  if (model == null) return undefined;
+  const split = splitProviderModelSpec(model);
+  if (split == null) return undefined;
+  const provider = providers.find((entry) => entry.id === split.providerId);
+  if (provider == null) {
+    // Claude model ids never contain a colon, so this can only be a provider that was deleted.
+    throw new BadRequestError(`没有叫 ${JSON.stringify(split.providerId)} 的提供商，可能已被删除；请给这个任务换一个模型`, "invalid_model");
+  }
+  const agent = provider.agents["claude-code"];
+  if (agent == null) {
+    throw new BadRequestError(`提供商「${provider.name}」没有给 Claude Code 配置接入地址`, "invalid_model");
+  }
+  const { auth, env } = claudeCodeProviderEnv({
+    baseURL: agent.baseURL,
+    ...(provider.apiKey != null ? { apiKey: provider.apiKey } : {}),
+    model: split.modelId,
+  });
+  return { model: split.modelId, auth, env };
+}
 
 /**
  * The real Claude Code engine, one harness session per thread.
@@ -66,10 +101,12 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
       const continueFrom = ctx.continuesTurn ? ctx.harnessState?.continueFrom : undefined;
       const resumeFrom = continueFrom == null ? ctx.harnessState?.resumeFrom : undefined;
 
+      const route = providerRoute(ctx.thread.model, await createProviderStore(ctx.dataDir, ctx.log).list());
+
       const engine = await createClaudeCodeEngine({
         repoPath: ctx.project.repoPath,
         permissionMode: ctx.permissionMode,
-        ...(ctx.thread.model != null ? { model: ctx.thread.model } : {}),
+        ...(route != null ? route : ctx.thread.model != null ? { model: ctx.thread.model } : {}),
         // 「思考等级」for this engine *is* the harness `thinking` setting, and
         // `summarized` is what puts the reasoning in the stream.
         thinking: claudeCodeThinking(ctx.thread.reasoningEffort),

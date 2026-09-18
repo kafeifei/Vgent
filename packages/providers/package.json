@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./config": {
+      "types": "./dist/provider-config.d.ts",
+      "default": "./dist/provider-config.js"
     }
   },
   "files": [
@@ -19,8 +23,10 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "4.0.56",
     "@ai-sdk/harness": "1.0.115",
     "@ai-sdk/openai": "4.0.69",
+    "@ai-sdk/openai-compatible": "3.0.51",
     "@ai-sdk/provider-utils": "5.0.43",
     "ai": "7.0.105"
   }

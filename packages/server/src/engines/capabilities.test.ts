@@ -26,6 +26,7 @@ describe("引擎能力表", () => {
       compact: false,
       knownDefaultModel: false,
       extensions: false,
+      customProviders: true,
     });
     expect(registry.codex.descriptor.capabilities).toEqual({
       approvals: false,
@@ -34,6 +35,7 @@ describe("引擎能力表", () => {
       compact: false,
       knownDefaultModel: false,
       extensions: false,
+      customProviders: false,
     });
     expect(Object.values(registry.vgent.descriptor.capabilities).every(Boolean)).toBe(true);
   });

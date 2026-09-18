@@ -1,5 +1,16 @@
 import { timingSafeEqual } from "node:crypto";
 import { resolveModel } from "@vgent/engine";
+import {
+  ModelDiscoveryError,
+  PROVIDER_PRESETS,
+  PROVIDER_PROTOCOLS,
+  discoverProviderModels,
+  parseProviderInput,
+  providerModelSpec,
+  redactProvider,
+  type ProviderInput,
+  type ProviderProtocol,
+} from "@vgent/providers";
 import { UI_MESSAGE_STREAM_HEADERS, createUIMessageStreamResponse, type LanguageModel } from "ai";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
@@ -15,12 +26,13 @@ import type { Git } from "./git.js";
 import { createGit } from "./git.js";
 import { pickFile, pickFolder } from "./folder-picker.js";
 import { asIntegrateAction, changeStatsOf, createIntegrator, taskTarget, type Integrator, type TaskTarget } from "./integrate.js";
-import { createModelCatalog } from "./models.js";
+import { createModelCatalog, type ModelEntry } from "./models.js";
 import { createQueueStore, readQueueText } from "./queue.js";
 import { createRunManager, recoverInterruptedThreads } from "./runs.js";
 import { registerStatic } from "./static.js";
 import { createPlanStore, MAX_PLAN_BYTES } from "./store/plans.js";
 import { createProjectStore, type ProjectStore } from "./store/projects.js";
+import { createProviderStore } from "./store/providers.js";
 import { asMcpServers, createSettingsStore, type SettingsPatch } from "./store/settings.js";
 import { createThreadStore, type ThreadPatch } from "./store/threads.js";
 import type {
@@ -67,6 +79,8 @@ export interface CreateAppOptions {
   stopTimeoutMs?: number;
   /** The summariser behind `POST /threads/:id/compact`. Unset, the thread's own model is resolved. */
   compactModel?: LanguageModel;
+  /** What `POST /api/providers/discover` reaches a provider with. Tests answer for the provider. */
+  providerFetch?: typeof globalThis.fetch;
 }
 
 export interface VgentApp {
@@ -170,6 +184,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
   const threads = createThreadStore(dataDir, log);
   const plans = createPlanStore(dataDir, log);
   const settings = createSettingsStore(dataDir, log);
+  const providers = createProviderStore(dataDir, log);
   const queue = createQueueStore(threads);
   const registry = options.registry ?? createEngineRegistry();
   const git = options.git ?? createGit();
@@ -779,7 +794,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     }
     if (thread.messages.length < 2) throw new BadRequestError("没有可压缩的对话", "compact_empty");
 
-    const model = options.compactModel ?? resolveModel(thread.model ?? DEFAULT_VGENT_MODEL);
+    const model = options.compactModel ?? resolveModel(thread.model ?? DEFAULT_VGENT_MODEL, await providers.list());
     const { messages } = await compactThread({ thread, model }).catch((error: unknown) => {
       throw new UpstreamModelError(`压缩失败: ${error instanceof Error ? error.message : String(error)}`);
     });
@@ -844,6 +859,59 @@ export function createApp(options: CreateAppOptions): VgentApp {
     return c.json(await settings.update({ allowlist: current.filter((name) => name !== tool) }));
   });
 
+  // --- providers --------------------------------------------------------
+
+  // 模型提供商: an account (endpoints + key) and, per agent, the models the user
+  // ticked. Keys go in and never come out — every response is the redacted form.
+
+  const readProviderBody = async (c: { req: { json(): Promise<unknown> } }): Promise<ProviderInput> => {
+    const body = await c.req.json().catch(() => undefined);
+    try {
+      return parseProviderInput(body);
+    } catch (error) {
+      throw new BadRequestError(error instanceof Error ? error.message : String(error), "invalid_provider");
+    }
+  };
+
+  app.get("/api/providers", async (c) => c.json({ providers: (await providers.list()).map(redactProvider), presets: PROVIDER_PRESETS }));
+
+  app.post("/api/providers", async (c) => c.json(redactProvider(await providers.create(await readProviderBody(c))), 201));
+
+  app.patch("/api/providers/:id", async (c) => c.json(redactProvider(await providers.update(c.req.param("id"), await readProviderBody(c)))));
+
+  app.delete("/api/providers/:id", async (c) => {
+    await providers.remove(c.req.param("id"));
+    return c.body(null, 204);
+  });
+
+  // 拉模型清单. Works before the provider is saved (the form sends the key it
+  // holds) and after (`providerId` alone uses the stored key), so「拉下来我选」
+  // never needs the key typed twice.
+  app.post("/api/providers/discover", async (c) => {
+    const body = (await c.req.json().catch(() => undefined)) as
+      | { providerId?: unknown; baseURL?: unknown; protocol?: unknown; apiKey?: unknown }
+      | undefined;
+    const baseURL = typeof body?.baseURL === "string" ? body.baseURL.trim() : "";
+    if (baseURL === "") throw new BadRequestError("缺少 baseURL", "invalid_provider");
+    const protocol = body?.protocol ?? "openai-compatible";
+    if (!(PROVIDER_PROTOCOLS as readonly unknown[]).includes(protocol)) throw new BadRequestError("protocol 不合法", "invalid_provider");
+    const stored = typeof body?.providerId === "string" ? await providers.get(body.providerId) : undefined;
+    const apiKey = typeof body?.apiKey === "string" && body.apiKey.trim() !== "" ? body.apiKey.trim() : stored?.apiKey;
+    try {
+      const models = await discoverProviderModels({
+        baseURL,
+        protocol: protocol as ProviderProtocol,
+        ...(apiKey != null ? { apiKey } : {}),
+        ...(options.providerFetch != null ? { fetch: options.providerFetch } : {}),
+        signal: c.req.raw.signal,
+      });
+      return c.json({ models });
+    } catch (error) {
+      if (error instanceof ModelDiscoveryError) throw new UpstreamModelError(error.message, "provider_discovery_failed");
+      throw error;
+    }
+  });
+
   // --- engines ----------------------------------------------------------
 
   // 引擎能力表. The client shows what an engine can do from this and never
@@ -868,7 +936,19 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const defaultModel =
       (engine === current.defaultEngine ? current.defaultModel : undefined) ??
       (capabilitiesOf(engine).knownDefaultModel ? DEFAULT_VGENT_MODEL : undefined);
-    return c.json({ ...catalog, ...(defaultModel != null ? { defaultModel } : {}) });
+    // Provider models are merged per request for the same reason: the list is
+    // the user's, edited on the settings page, and must not wait out a cache.
+    const fromProviders: ModelEntry[] = capabilitiesOf(engine).customProviders
+      ? (await providers.list()).flatMap((provider) =>
+          (provider.agents[engine]?.models ?? []).map((model) => ({
+            id: providerModelSpec(provider.id, model.id),
+            label: model.label ?? model.id,
+            provider: provider.name,
+            ...(model.contextWindow != null ? { contextWindow: model.contextWindow } : {}),
+          })),
+        )
+      : [];
+    return c.json({ ...catalog, models: [...catalog.models, ...fromProviders], ...(defaultModel != null ? { defaultModel } : {}) });
   });
 
   // --- chat -------------------------------------------------------------

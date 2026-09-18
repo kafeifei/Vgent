@@ -13,13 +13,14 @@ import { createFiles } from "./files.js";
 import type { Git } from "./git.js";
 import { createGit } from "./git.js";
 import { pickFile, pickFolder } from "./folder-picker.js";
+import { asIntegrateAction, changeStatsOf, createIntegrator, taskTarget, type Integrator, type TaskTarget } from "./integrate.js";
 import { createModelCatalog } from "./models.js";
 import { createRunManager, recoverInterruptedThreads } from "./runs.js";
 import { registerStatic } from "./static.js";
 import { createProjectStore, type ProjectStore } from "./store/projects.js";
 import { asMcpServers, createSettingsStore, type SettingsPatch } from "./store/settings.js";
-import { createThreadStore } from "./store/threads.js";
-import type { EngineId, Logger, PermissionMode, Project, ThreadRecord, ThreadWorkspace } from "./types.js";
+import { createThreadStore, type ThreadPatch } from "./store/threads.js";
+import type { ChangeStats, EngineId, Logger, PermissionMode, Project, ThreadRecord, ThreadWorkspace } from "./types.js";
 import { silentLogger } from "./types.js";
 import { createWorktree, reclaimWorktree, removeWorktree, restoreWorktree } from "./workspace.js";
 
@@ -40,6 +41,8 @@ export interface CreateAppOptions {
   registry?: EngineRegistry;
   /** The `git diff` backend behind the changes routes. Tests inject a shorter-fused one. */
   git?: Git;
+  /** The 收口 backend. Tests inject one whose `gh` / `git push` are fakes. */
+  integrator?: Integrator;
   /** The working-tree listing backend behind the files routes. */
   files?: Files;
   log?: Logger;
@@ -143,12 +146,28 @@ export function createApp(options: CreateAppOptions): VgentApp {
   const registry = options.registry ?? createEngineRegistry();
   const git = options.git ?? createGit();
   const files = options.files ?? createFiles();
+  const integrator = options.integrator ?? createIntegrator();
+
+  /**
+   * 「+N −M」 for one task, against its baseline. Undefined — never an error —
+   * whenever there is nothing to measure: a reclaimed worktree, a project that
+   * vanished, a directory that is not a repo.
+   */
+  const changeStatsFor = async (thread: ThreadRecord): Promise<ChangeStats | undefined> => {
+    if (thread.workspace?.reclaimed === true) return undefined;
+    const project = await projects.get(thread.projectId);
+    if (project == null) return undefined;
+    const target = taskTarget(thread, project);
+    return changeStatsOf(await git.changes(target.repoPath, target.baseCommit));
+  };
+
   const runs = createRunManager({
     threads,
     projects,
     registry,
     dataDir,
     log,
+    changeStats: changeStatsFor,
     ...(options.stopTimeoutMs != null ? { stopTimeoutMs: options.stopTimeoutMs } : {}),
   });
 
@@ -229,34 +248,72 @@ export function createApp(options: CreateAppOptions): VgentApp {
     return project;
   };
 
-  /** The directory this task actually edits: its own worktree, or the project. */
-  const repoPathOf = async (threadId: string): Promise<string> => {
+  /**
+   * The two directories and the baseline this task's diff is measured against:
+   * its own worktree from `workspace.baseCommit`, or the project from HEAD.
+   */
+  const targetOf = async (threadId: string): Promise<TaskTarget> => {
     const thread = await threadOf(threadId);
-    if (thread.workspace == null) return (await projectOf(thread)).repoPath;
-    if (thread.workspace.reclaimed === true) throw new ConflictError("此任务的工作目录已回收", "workspace_reclaimed");
-    return thread.workspace.path;
+    if (thread.workspace?.reclaimed === true) throw new ConflictError("此任务的工作目录已回收", "workspace_reclaimed");
+    return taskTarget(thread, await projectOf(thread));
   };
 
-  app.get("/api/threads/:id/changes", async (c) => c.json(await git.changes(await repoPathOf(c.req.param("id")))));
+  /** Keeps the record's 「+N −M」 current after an action that changed the tree. */
+  const restat = async (threadId: string): Promise<void> => {
+    const thread = await threads.get(threadId);
+    if (thread == null) return;
+    const stats = await changeStatsFor(thread).catch((error: unknown) => {
+      log.warn(`统计线程 ${threadId} 的改动失败`, error);
+      return undefined;
+    });
+    if (stats != null) await threads.update(threadId, { changeStats: stats });
+  };
+
+  app.get("/api/threads/:id/changes", async (c) => {
+    const target = await targetOf(c.req.param("id"));
+    return c.json(await git.changes(target.repoPath, target.baseCommit));
+  });
 
   app.get("/api/threads/:id/changes/file", async (c) => {
-    const repoPath = await repoPathOf(c.req.param("id"));
+    const target = await targetOf(c.req.param("id"));
     const path = c.req.query("path");
     if (path == null || path.length === 0) throw new BadRequestError("缺少 path", "invalid_path");
-    return c.json(await git.fileDiff(repoPath, path));
+    return c.json(await git.fileDiff(target.repoPath, path, target.baseCommit));
   });
 
   app.post("/api/threads/:id/changes/revert", async (c) => {
-    const repoPath = await repoPathOf(c.req.param("id"));
+    const id = c.req.param("id");
+    const target = await targetOf(id);
     const body = (await c.req.json().catch(() => undefined)) as { path?: unknown } | undefined;
     if (typeof body?.path !== "string" || body.path.length === 0) throw new BadRequestError("缺少 path", "invalid_path");
-    return c.json(await git.revert(repoPath, body.path));
+    const result = await git.revert(target.repoPath, body.path, target.baseCommit);
+    await restat(id);
+    return c.json(result);
+  });
+
+  // --- 收口 -------------------------------------------------------------
+
+  app.get("/api/threads/:id/integration", async (c) => c.json(await integrator.status(await targetOf(c.req.param("id")))));
+
+  app.post("/api/threads/:id/integrate", async (c) => {
+    const id = c.req.param("id");
+    if (runs.isRunning(id)) throw new ConflictError(`线程正在运行，无法收口: ${id}`, "thread_running");
+    const target = await targetOf(id);
+    const body = (await c.req.json().catch(() => undefined)) as { action?: unknown; message?: unknown } | undefined;
+    const action = asIntegrateAction(body?.action);
+    const outcome = await integrator.integrate(target, {
+      action,
+      ...(typeof body?.message === "string" ? { message: body.message } : {}),
+    });
+    const thread = await threads.update(id, { outcome });
+    await restat(id);
+    return c.json((await threads.get(id)) ?? thread);
   });
 
   // --- files ------------------------------------------------------------
 
   app.get("/api/threads/:id/files", async (c) => {
-    const root = await repoPathOf(c.req.param("id"));
+    const { repoPath: root } = await targetOf(c.req.param("id"));
     const q = c.req.query("q");
     const limit = c.req.query("limit");
     return c.json(
@@ -268,7 +325,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
   });
 
   app.get("/api/threads/:id/files/content", async (c) => {
-    const root = await repoPathOf(c.req.param("id"));
+    const { repoPath: root } = await targetOf(c.req.param("id"));
     const path = c.req.query("path");
     if (path == null || path.length === 0) throw new BadRequestError("缺少 path", "invalid_path");
     return c.json(await files.content(root, path));
@@ -276,31 +333,45 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   // --- workspace --------------------------------------------------------
 
-  app.post("/api/threads/:id/workspace/reclaim", async (c) => {
-    const id = c.req.param("id");
-    if (runs.isRunning(id)) throw new ConflictError(`线程正在运行，无法回收工作目录: ${id}`, "thread_running");
-    const thread = await threadOf(id);
-    if (thread.workspace == null) throw new ConflictError("此任务没有独立工作目录", "workspace_not_worktree");
-    if (thread.workspace.reclaimed === true) return c.json(thread);
-    const { snapshotPath } = await reclaimWorktree({ dataDir, project: await projectOf(thread), thread });
-    return c.json(await threads.update(id, { workspace: { ...thread.workspace, reclaimed: true, snapshotPath } }));
-  });
-
-  app.post("/api/threads/:id/workspace/restore", async (c) => {
-    const id = c.req.param("id");
-    const thread = await threadOf(id);
+  /**
+   * Snapshot and remove the task's worktree. `undefined` means there was
+   * nothing to do — no worktree, or it is already gone — so the caller leaves
+   * the record alone. Archiving shares this with the explicit route.
+   */
+  const reclaimFor = async (thread: ThreadRecord): Promise<ThreadWorkspace | undefined> => {
     const workspace = thread.workspace;
-    if (workspace?.reclaimed !== true || workspace.snapshotPath == null) {
-      throw new ConflictError("此任务的工作目录没有被回收，无需恢复", "workspace_not_reclaimed");
-    }
+    if (workspace == null || workspace.reclaimed === true) return undefined;
+    const { snapshotPath } = await reclaimWorktree({ dataDir, project: await projectOf(thread), thread });
+    return { ...workspace, reclaimed: true, snapshotPath };
+  };
+
+  /** The other direction; `undefined` when the task's directory is already there. */
+  const restoreFor = async (thread: ThreadRecord): Promise<ThreadWorkspace | undefined> => {
+    const workspace = thread.workspace;
+    if (workspace?.reclaimed !== true || workspace.snapshotPath == null) return undefined;
     const { branch } = await restoreWorktree({
       dataDir,
       project: await projectOf(thread),
       thread,
       snapshotPath: workspace.snapshotPath,
     });
-    const restored: ThreadWorkspace = { mode: "worktree", path: workspace.path, branch, baseCommit: workspace.baseCommit };
-    return c.json(await threads.update(id, { workspace: restored }));
+    return { mode: "worktree", path: workspace.path, branch, baseCommit: workspace.baseCommit };
+  };
+
+  app.post("/api/threads/:id/workspace/reclaim", async (c) => {
+    const id = c.req.param("id");
+    if (runs.isRunning(id)) throw new ConflictError(`线程正在运行，无法回收工作目录: ${id}`, "thread_running");
+    const thread = await threadOf(id);
+    if (thread.workspace == null) throw new ConflictError("此任务没有独立工作目录", "workspace_not_worktree");
+    const workspace = await reclaimFor(thread);
+    return c.json(workspace == null ? thread : await threads.update(id, { workspace }));
+  });
+
+  app.post("/api/threads/:id/workspace/restore", async (c) => {
+    const id = c.req.param("id");
+    const workspace = await restoreFor(await threadOf(id));
+    if (workspace == null) throw new ConflictError("此任务的工作目录没有被回收，无需恢复", "workspace_not_reclaimed");
+    return c.json(await threads.update(id, { workspace }));
   });
 
   // --- threads ----------------------------------------------------------
@@ -373,7 +444,27 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const permissionMode = asPermissionMode(body?.permissionMode);
     assertEngineSupportsMode(engine ?? current.engine, permissionMode ?? current.permissionMode);
 
+    // 归档 is a lifecycle move, not a field edit: it reclaims the task's
+    // worktree on the way in and restores it on the way out, and a failure
+    // there fails the whole request rather than leaving the two out of step.
+    const lifecycle: ThreadPatch = {};
+    if ("archived" in (body ?? {})) {
+      if (typeof body?.archived !== "boolean") throw new BadRequestError("archived 只能是布尔值", "invalid_archived");
+      if (body.archived) {
+        if (current.archivedAt == null) {
+          const workspace = await reclaimFor(current);
+          if (workspace != null) lifecycle.workspace = workspace;
+          lifecycle.archivedAt = new Date().toISOString();
+        }
+      } else {
+        const workspace = await restoreFor(current);
+        if (workspace != null) lifecycle.workspace = workspace;
+        lifecycle.archivedAt = undefined;
+      }
+    }
+
     const record = await threads.update(id, {
+      ...lifecycle,
       ...(typeof body?.title === "string" ? { title: body.title } : {}),
       ...(engine != null ? { engine } : {}),
       ...(permissionMode != null ? { permissionMode } : {}),

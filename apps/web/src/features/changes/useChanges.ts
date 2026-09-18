@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ApiClient } from "@/lib/api";
-import type { ChangesSnapshot, FileDiff } from "@/lib/types";
+import type { ChangesSnapshot, FileDiff, IntegrateAction, IntegrationStatus } from "@/lib/types";
 
 export interface ChangesView {
   snapshot: ChangesSnapshot | null;
@@ -14,6 +14,16 @@ export interface ChangesView {
   diffLoading: boolean;
   diffError: string | null;
   revert: (path: string) => void;
+  /** 收口: what the action bar may offer, `null` until the first load lands. */
+  integration: IntegrationStatus | null;
+  /** True while one of the four actions is in flight. */
+  integrating: boolean;
+  /**
+   * The last action's failure, shown inside the panel rather than only as a
+   * toast: 带回主目录's conflict list is several lines long.
+   */
+  actionError: string | null;
+  integrate: (action: IntegrateAction, message?: string) => void;
 }
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -49,15 +59,29 @@ export function useChanges(options: {
   /** Bumped per snapshot load; a stale response never writes state. */
   const generation = useRef(0);
 
+  /** Fetched alongside the snapshot: the action bar is part of the same view. */
+  const [integration, setIntegration] = useState<IntegrationStatus | null>(null);
+
   const load = useCallback(async (): Promise<ChangesSnapshot | null> => {
     const mine = ++generation.current;
     if (threadId == null) {
       setSnapshot(null);
+      setIntegration(null);
       setError(null);
       setLoading(false);
       return null;
     }
     setLoading(true);
+    // The two calls fail independently: a repo we cannot diff still has nothing
+    // to offer, but an unavailable `gh` must not blank the file list.
+    void client
+      .getIntegration(threadId)
+      .then((next) => {
+        if (mine === generation.current) setIntegration(next);
+      })
+      .catch(() => {
+        if (mine === generation.current) setIntegration(null);
+      });
     try {
       const next = await client.listChanges(threadId);
       if (mine !== generation.current) return null;
@@ -134,5 +158,54 @@ export function useChanges(options: {
     [client, load, onSelect, threadId, selected, toast],
   );
 
-  return { snapshot, loading, error, refresh, selected, select: onSelect, fileDiff, diffLoading, diffError, revert };
+  const [integrating, setIntegrating] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  // It describes the last action on *this* task; another task starts clean.
+  useEffect(() => setActionError(null), [threadId]);
+
+  const integrate = useCallback(
+    (action: IntegrateAction, text?: string) => {
+      if (threadId == null) return;
+      setIntegrating(true);
+      setActionError(null);
+      void (async () => {
+        try {
+          const record = await client.integrate(threadId, action, text);
+          toast(DONE[action](record.outcome?.ref));
+        } catch (failure) {
+          setActionError(message(failure));
+        } finally {
+          setIntegrating(false);
+        }
+        // Whatever happened, the tree may have moved: 提交 empties it, 丢弃
+        // rewinds it, and a failed 带回 left it exactly as it was.
+        await load();
+      })();
+    },
+    [client, load, threadId, toast],
+  );
+
+  return {
+    snapshot,
+    loading,
+    error,
+    refresh,
+    selected,
+    select: onSelect,
+    fileDiff,
+    diffLoading,
+    diffError,
+    revert,
+    integration,
+    integrating,
+    actionError,
+    integrate,
+  };
 }
+
+const DONE: Record<IntegrateAction, (ref?: string) => string> = {
+  commit: (ref) => `已提交${ref != null ? ` ${ref.slice(0, 7)}` : ""}`,
+  pr: () => "已开 PR",
+  apply: () => "已带回主目录",
+  discard: () => "已全部丢弃",
+};

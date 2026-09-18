@@ -4,6 +4,8 @@ import type {
   FileContent,
   FileDiff,
   FileListing,
+  IntegrateAction,
+  IntegrationStatus,
   ModelCatalog,
   PermissionMode,
   Project,
@@ -161,6 +163,15 @@ export function createClient(token: string) {
     revertFile: (threadId: string, path: string) =>
       api<{ path: string }>(`/threads/${threadId}/changes/revert`, token, { method: "POST", json: { path } }),
 
+    /** 收口: what this task can do with its changes right now. */
+    getIntegration: (threadId: string) => api<IntegrationStatus>(`/threads/${threadId}/integration`, token),
+    /** 提交 / 开 PR / 带回主目录 / 全部丢弃. `message` is required for 提交 and for a dirty PR. */
+    integrate: (threadId: string, action: IntegrateAction, message?: string) =>
+      api<ThreadRecord>(`/threads/${threadId}/integrate`, token, {
+        method: "POST",
+        json: { action, ...(message != null ? { message } : {}) },
+      }),
+
     // Same directory as the changes routes: the whole working tree this time,
     // for the 文件 tab and the composer's `@` completion.
     listFiles: (threadId: string, opts?: { q?: string; limit?: number }) => {
@@ -197,6 +208,8 @@ export function createClient(token: string) {
         reasoningEffort?: string | null;
         /** The task's 「本任务内一直允许」 tool list, whole. `[]` clears it. */
         alwaysAllow?: string[];
+        /** 归档 also reclaims the task's worktree; un-archiving restores it. */
+        archived?: boolean;
       },
     ) => api<ThreadRecord>(`/threads/${id}`, token, { method: "PATCH", json: patch }),
     deleteThread: (id: string) => api<void>(`/threads/${id}`, token, { method: "DELETE" }),

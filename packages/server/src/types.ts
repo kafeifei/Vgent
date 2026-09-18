@@ -68,6 +68,27 @@ export interface ThreadMessageMetadata {
   compacted?: { before: number; at: string };
 }
 
+/**
+ * 收口态: how a task's changes left the workbench. Absent means the task still
+ * owns its diff. Cleared when a new turn starts, because the task is working
+ * again and whatever it did before is no longer the whole story.
+ */
+export interface ThreadOutcome {
+  kind: "committed" | "pr" | "applied" | "discarded";
+  at: string;
+  /** The commit sha, for `committed`. */
+  ref?: string;
+  /** The pull request, for `pr`. */
+  url?: string;
+}
+
+/** The task's diff against its baseline, in three numbers, for the sidebar. */
+export interface ChangeStats {
+  files: number;
+  additions: number;
+  deletions: number;
+}
+
 /** One task. Persisted whole in `threads/<id>.json`. */
 export interface ThreadRecord {
   version: 1;
@@ -94,6 +115,12 @@ export interface ThreadRecord {
   error?: string;
   /** Present only for a task running in its own git worktree. */
   workspace?: ThreadWorkspace;
+  /** How the task was wound up — 提交 / PR / 带回主目录 / 丢弃. */
+  outcome?: ThreadOutcome;
+  /** Recomputed at the end of every turn and after every 收口 action. */
+  changeStats?: ChangeStats;
+  /** Set when the task was archived; its worktree is reclaimed at the same time. */
+  archivedAt?: string;
   createdAt: string;
   updatedAt: string;
   messages: UIMessage[];

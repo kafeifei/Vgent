@@ -96,6 +96,8 @@ export function Shell({ token }: { token: string }) {
           onOpenSettings={actions.openSettings}
           settingsOpen={settingsOpen}
           getChat={actions.getChat}
+          onArchive={actions.archiveThread}
+          onDelete={actions.deleteThread}
         />
 
         <main className="grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto]">
@@ -141,6 +143,8 @@ export function Shell({ token }: { token: string }) {
             threadId={selectedThreadId}
             refreshKey={thread?.updatedAt ?? ""}
             messages={messages}
+            thread={thread}
+            live={isLiveThread(thread)}
           />
         )}
       </div>

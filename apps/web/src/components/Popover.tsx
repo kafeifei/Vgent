@@ -27,12 +27,15 @@ export function Popover({
   align = "start",
   side = "bottom",
   className,
+  openRef,
 }: {
   trigger: (props: TriggerProps) => ReactNode;
   children: (close: () => void) => ReactNode;
   align?: "start" | "end";
   side?: "bottom" | "top";
   className?: string;
+  /** Filled with an `open()` the owner can call — a row's right-click uses it. */
+  openRef?: RefObject<(() => void) | null>;
 }) {
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -40,6 +43,14 @@ export function Popover({
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
 
   const close = useCallback(() => setOpen(false), []);
+
+  useEffect(() => {
+    if (openRef == null) return;
+    openRef.current = () => setOpen(true);
+    return () => {
+      openRef.current = null;
+    };
+  }, [openRef]);
 
   useLayoutEffect(() => {
     if (!open) return;

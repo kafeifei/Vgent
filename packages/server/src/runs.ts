@@ -19,7 +19,7 @@ import type { EngineRegistry, EngineRunner } from "./engines/registry.js";
 import { statelessEngines } from "./engines/registry.js";
 import type { ProjectStore } from "./store/projects.js";
 import { DEFAULT_THREAD_TITLE, type ThreadStore } from "./store/threads.js";
-import type { Logger, ThreadMessageMetadata, ThreadRecord, ThreadStatus, UsageInfo } from "./types.js";
+import type { ChangeStats, Logger, ThreadMessageMetadata, ThreadRecord, ThreadStatus, UsageInfo } from "./types.js";
 import { silentLogger } from "./types.js";
 
 /** Mid-turn persists are at least this far apart; the final one always lands. */
@@ -131,6 +131,12 @@ export function createRunManager(options: {
   dataDir: string;
   log?: Logger;
   stopTimeoutMs?: number;
+  /**
+   * The task's diff against its baseline, recomputed for the thread record when
+   * a turn ends. Injected because the git plumbing belongs to the app, not here;
+   * a rejection is logged and the previous value kept — it never fails a turn.
+   */
+  changeStats?: (thread: ThreadRecord) => Promise<ChangeStats | undefined>;
 }): RunManager {
   const { threads, projects, registry, dataDir } = options;
   const log = options.log ?? silentLogger;
@@ -150,6 +156,17 @@ export function createRunManager(options: {
    * destroys it and starts over (new user prompt).
    */
   const parked = new Map<string, ParkedEngine>();
+
+  /** Never throws: a diff we could not count must not turn a good turn into a failed one. */
+  const measureChanges = async (thread: ThreadRecord): Promise<ChangeStats | undefined> => {
+    if (options.changeStats == null) return undefined;
+    try {
+      return await options.changeStats(thread);
+    } catch (error) {
+      log.warn(`统计线程 ${thread.id} 的改动失败`, error);
+      return undefined;
+    }
+  };
 
   /**
    * Fold the client's latest message into the stored thread. `useChat` posts
@@ -388,11 +405,13 @@ export function createRunManager(options: {
       const settled = park || run.stopped ? assistant : settleStreamingToolParts(assistant, seed?.dropped);
 
       if (!run.stopped) {
+        const stats = await measureChanges(thread);
         await threads
           .update(thread.id, {
             messages: withAssistant(settled),
             status,
             error: rawStreamError ?? streamError,
+            ...(stats != null ? { changeStats: stats } : {}),
           })
           .catch(async (error) => {
             // Never let a failed final write leave the thread stuck `running`.
@@ -498,6 +517,9 @@ export function createRunManager(options: {
         messages,
         status: "running",
         error: undefined,
+        // The task is working again, so whatever it was wound up as no longer
+        // describes what is on disk.
+        outcome: undefined,
         ...(title != null ? { title } : {}),
       });
 

@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { RefreshCw } from "lucide-react";
+import { OutcomeBadge } from "@/components/OutcomeBadge";
 import { baseName } from "@/lib/format";
-import type { ChangeStatus, ChangedFile } from "@/lib/types";
+import type { ChangeStatus, ChangedFile, ThreadOutcome } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { DiffView } from "./DiffView";
 import { parseUnifiedDiff } from "./diff";
@@ -103,8 +104,128 @@ function DiffBlock({ file, changes }: { file: ChangedFile; changes: ChangesView 
   );
 }
 
-/** 变更 tab: the working tree against HEAD, one expandable diff at a time. */
-export function ChangesPanel({ changes }: { changes: ChangesView }) {
+const BAR_BUTTON =
+  "inline-flex h-xl flex-none items-center rounded-sm border border-border px-xs text-fg-muted text-xs hover:border-border-strong hover:bg-bg-hover hover:text-fg disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border disabled:hover:bg-transparent";
+
+/**
+ * 收口: the bar under the file list. What it offers comes from the server's
+ * integration status, so a task in the project's own checkout simply has fewer
+ * buttons — nothing here decides that from the thread's shape.
+ */
+function ActionBar({
+  changes,
+  title,
+  live,
+  outcome,
+}: {
+  changes: ChangesView;
+  /** The default commit message. */
+  title: string;
+  live: boolean;
+  outcome: ThreadOutcome | undefined;
+}) {
+  const { integration, integrating, actionError, integrate } = changes;
+  const [message, setMessage] = useState(title);
+  const [composing, setComposing] = useState(false);
+  const [armed, setArmed] = useState(false);
+
+  useEffect(() => setMessage(title), [title]);
+
+  if (integration == null) return null;
+  const blocked = live || integrating;
+  const hint = live ? { title: "任务运行中" } : {};
+  const worktree = integration.mode === "worktree";
+
+  const commit = () => {
+    const text = message.trim();
+    if (text === "") return;
+    setComposing(false);
+    integrate("commit", text);
+  };
+
+  return (
+    <div className="mt-md flex flex-col gap-2xs border-border border-t pt-sm">
+      <div className="flex flex-wrap items-center gap-2xs">
+        <button type="button" disabled={blocked || !integration.canCommit} {...hint} onClick={() => setComposing(true)} className={BAR_BUTTON}>
+          提交
+        </button>
+        {integration.pr.available && (
+          <button type="button" disabled={blocked} {...hint} onClick={() => integrate("pr", message.trim())} className={BAR_BUTTON}>
+            开 PR
+          </button>
+        )}
+        {worktree && (
+          <button type="button" disabled={blocked || !integration.canApply} {...hint} onClick={() => integrate("apply")} className={BAR_BUTTON}>
+            带回主目录
+          </button>
+        )}
+        {worktree && integration.canDiscardAll && !armed && (
+          <button
+            type="button"
+            disabled={blocked}
+            {...hint}
+            onClick={() => setArmed(true)}
+            className={cn(BAR_BUTTON, "text-danger hover:border-danger hover:bg-danger-bg")}
+          >
+            全部丢弃
+          </button>
+        )}
+        {armed && (
+          <>
+            <button
+              type="button"
+              disabled={blocked}
+              onClick={() => {
+                setArmed(false);
+                integrate("discard");
+              }}
+              className={cn(BAR_BUTTON, "border-danger bg-danger-bg text-danger")}
+            >
+              确认丢弃全部
+            </button>
+            <button type="button" onClick={() => setArmed(false)} className={BAR_BUTTON}>
+              取消
+            </button>
+          </>
+        )}
+        {outcome != null && <OutcomeBadge outcome={outcome} className="ml-auto" />}
+      </div>
+
+      {composing && (
+        <input
+          autoFocus
+          value={message}
+          placeholder="提交信息"
+          onChange={(event) => setMessage(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") commit();
+            if (event.key === "Escape") setComposing(false);
+          }}
+          onBlur={() => setComposing(false)}
+          className="h-xl w-full rounded-sm border border-border bg-bg-elevated px-xs text-xs outline-none focus:border-border-strong"
+        />
+      )}
+
+      {worktree && !integration.pr.available && integration.pr.reason != null && (
+        <p className="text-2xs text-fg-faint">开 PR 不可用：{integration.pr.reason}</p>
+      )}
+      {actionError != null && <p className="whitespace-pre-wrap text-danger text-xs">{actionError}</p>}
+    </div>
+  );
+}
+
+/** 变更 tab: the task's diff against its baseline, one expandable diff at a time. */
+export function ChangesPanel({
+  changes,
+  title,
+  live,
+  outcome,
+}: {
+  changes: ChangesView;
+  title: string;
+  live: boolean;
+  outcome: ThreadOutcome | undefined;
+}) {
   const { snapshot, loading, error, refresh, selected, select } = changes;
   const files = useMemo(() => snapshot?.files ?? [], [snapshot]);
   const groups = useMemo(() => groupByDir(files), [files]);
@@ -120,6 +241,9 @@ export function ChangesPanel({ changes }: { changes: ChangesView }) {
           <span className="font-mono text-diff-del-fg">−{removed}</span>
         </span>
         <span className="ml-auto flex min-w-0 items-center gap-2xs">
+          {(changes.integration?.commitsAhead ?? 0) > 0 && (
+            <span className="flex-none text-fg-faint">领先基线 {changes.integration?.commitsAhead} 个提交</span>
+          )}
           {snapshot?.branch != null && (
             <span className="min-w-0 truncate font-mono text-code text-fg-faint" title={snapshot.branch}>
               {snapshot.branch}
@@ -143,9 +267,7 @@ export function ChangesPanel({ changes }: { changes: ChangesView }) {
       ) : (
         <>
           {/* A chip in the log can open a file the snapshot no longer lists. */}
-          {selected != null && selectedFile == null && (
-            <p className="mb-xs text-fg-faint text-xs">该文件没有未提交的改动</p>
-          )}
+          {selected != null && selectedFile == null && <p className="mb-xs text-fg-faint text-xs">该文件没有未提交的改动</p>}
           {groups.map((group) => (
             <div key={group.dir === "" ? "/" : group.dir}>
               <div className="truncate px-2xs pt-xs pb-3xs font-mono text-2xs text-fg-faint">
@@ -176,9 +298,10 @@ export function ChangesPanel({ changes }: { changes: ChangesView }) {
               ))}
             </div>
           ))}
-          <p className="mt-md text-2xs text-fg-faint">引擎直接写盘，这里没有「接受」——只有还原。</p>
         </>
       )}
+
+      {error == null && <ActionBar changes={changes} title={title} live={live} outcome={outcome} />}
     </>
   );
 }

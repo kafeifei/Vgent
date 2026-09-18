@@ -7,6 +7,7 @@ export {
   BadRequestError,
   ConflictError,
   EngineUnavailableError,
+  ExternalToolError,
   GitError,
   GitUnavailableError,
   NotAGitRepoError,
@@ -34,6 +35,20 @@ export {
   type FileDiff,
   type Git,
 } from "./git.js";
+export {
+  asIntegrateAction,
+  changeStatsOf,
+  createIntegrator,
+  runCommand,
+  taskTarget,
+  type CreateIntegratorOptions,
+  type IntegrateAction,
+  type IntegrationStatus,
+  type Integrator,
+  type TaskMode,
+  type TaskTarget,
+  type ToolExec,
+} from "./integrate.js";
 export {
   createEngineRegistry,
   statelessEngines,
@@ -71,6 +86,7 @@ export {
   type WorkspaceOwnership,
 } from "./workspace.js";
 export type {
+  ChangeStats,
   ConnectionInfo,
   EngineId,
   HarnessState,
@@ -79,6 +95,7 @@ export type {
   Project,
   Settings,
   ThreadMessageMetadata,
+  ThreadOutcome,
   ThreadRecord,
   ThreadStatus,
   ThreadSummary,

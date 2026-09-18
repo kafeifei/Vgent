@@ -30,7 +30,7 @@ afterEach(async () => {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A scripted engine: streams `text` word by word, then persists a fake resume state. */
-function createFakeEngine(options?: { text?: string; deltaDelayMs?: number }) {
+function createFakeEngine(options?: { text?: string; deltaDelayMs?: number; writes?: { path: string; text: string } }) {
   const created: EngineContext[] = [];
   const streamed: ModelMessage[][] = [];
   const text = options?.text ?? "你好 世界 来自 假引擎";
@@ -41,6 +41,9 @@ function createFakeEngine(options?: { text?: string; deltaDelayMs?: number }) {
     async create(ctx) {
       created.push(ctx);
       const sessionTurn = ++turn;
+      // Engines write straight to disk; this one does too, so the change stats
+      // a finished turn records have something real to count.
+      if (options?.writes != null) await writeFile(join(ctx.project.repoPath, options.writes.path), options.writes.text);
       return {
         async stream({ messages }) {
           streamed.push(messages);
@@ -670,6 +673,109 @@ describe("createApp", () => {
     expect((await request(app, `/api/threads/${thread.id}`, { method: "DELETE" })).status).toBe(204);
     await expect(stat(workspacePath)).rejects.toMatchObject({ code: "ENOENT" });
     expect((await execFileAsync("git", ["worktree", "list", "--porcelain"], { cwd: repo })).stdout).not.toContain(workspacePath);
+  });
+
+  it("任务基线：worktree 里自己提交过的改动仍然算这个任务的", async () => {
+    const repo = await gitRepo();
+    const app = makeApp(await tempDir());
+    const project = (await (await postJson(app, "/api/projects", { repoPath: repo })).json()) as Project;
+    const thread = (await (
+      await postJson(app, "/api/threads", { projectId: project.id, workspace: "worktree" })
+    ).json()) as ThreadRecord;
+    const workspacePath = thread.workspace?.path ?? "";
+
+    // Everything the task did: a commit of its own, plus an untracked file.
+    await writeFile(join(workspacePath, "tracked.txt"), "line1\nline2\n提交过的\n");
+    await execFileAsync("git", ["add", "-A"], { cwd: workspacePath });
+    await execFileAsync("git", ["commit", "-q", "-m", "任务自己的提交"], { cwd: workspacePath });
+    await writeFile(join(workspacePath, "新文件.txt"), "还没提交\n");
+
+    const changes = (await (await request(app, `/api/threads/${thread.id}/changes`)).json()) as {
+      files: { path: string; status: string; additions: number }[];
+    };
+    expect(changes.files).toMatchObject([
+      { path: "tracked.txt", status: "modified", additions: 1 },
+      { path: "新文件.txt", status: "untracked", additions: 1 },
+    ]);
+
+    const diff = (await (await request(app, `/api/threads/${thread.id}/changes/file?path=tracked.txt`)).json()) as { diff: string };
+    expect(diff.diff).toContain("+提交过的");
+
+    // 还原 puts the file back the way the *baseline* had it, commit or no commit.
+    expect((await postJson(app, `/api/threads/${thread.id}/changes/revert`, { path: "tracked.txt" })).status).toBe(200);
+    expect(await readFile(join(workspacePath, "tracked.txt"), "utf8")).toBe("line1\nline2\n");
+  });
+
+  it("收口：提交后任务记下 outcome 和改动统计", async () => {
+    const repo = await gitRepo();
+    const app = makeApp(await tempDir());
+    const project = (await (await postJson(app, "/api/projects", { repoPath: repo })).json()) as Project;
+    const thread = (await (
+      await postJson(app, "/api/threads", { projectId: project.id, workspace: "worktree" })
+    ).json()) as ThreadRecord;
+    const workspacePath = thread.workspace?.path ?? "";
+    await writeFile(join(workspacePath, "tracked.txt"), "line1\nline2\n加一行\n");
+
+    const status = (await (await request(app, `/api/threads/${thread.id}/integration`)).json()) as {
+      mode: string;
+      dirty: boolean;
+      canCommit: boolean;
+      pr: { available: boolean; reason?: string };
+    };
+    expect(status).toMatchObject({ mode: "worktree", dirty: true, canCommit: true });
+    expect(status.pr).toEqual({ available: false, reason: "仓库没有 origin 远端" });
+
+    const committed = (await (
+      await postJson(app, `/api/threads/${thread.id}/integrate`, { action: "commit", message: "收个口" })
+    ).json()) as ThreadRecord;
+    expect(committed.outcome).toMatchObject({ kind: "committed" });
+    expect(committed.changeStats).toEqual({ files: 1, additions: 1, deletions: 0 });
+
+    const bad = await postJson(app, `/api/threads/${thread.id}/integrate`, { action: "nope" });
+    expect(bad.status).toBe(400);
+    expect(await bad.json()).toMatchObject({ error: { code: "invalid_action" } });
+  });
+
+  it("归档：worktree 目录消失，取消归档又回来", async () => {
+    const repo = await gitRepo();
+    const app = makeApp(await tempDir());
+    const project = (await (await postJson(app, "/api/projects", { repoPath: repo })).json()) as Project;
+    const thread = (await (
+      await postJson(app, "/api/threads", { projectId: project.id, workspace: "worktree" })
+    ).json()) as ThreadRecord;
+    const workspacePath = thread.workspace?.path ?? "";
+    await writeFile(join(workspacePath, "未提交.txt"), "任务留下的\n");
+
+    const patch = (body: unknown) => request(app, `/api/threads/${thread.id}`, { method: "PATCH", body: JSON.stringify(body) });
+
+    const archived = (await (await patch({ archived: true })).json()) as ThreadRecord;
+    expect(archived.archivedAt).toEqual(expect.any(String));
+    expect(archived.workspace?.reclaimed).toBe(true);
+    await expect(stat(workspacePath)).rejects.toMatchObject({ code: "ENOENT" });
+    // The summary the sidebar groups on carries it too.
+    const listed = (await (await request(app, "/api/threads")).json()) as { threads: ThreadSummary[] };
+    expect(listed.threads[0]?.archivedAt).toBe(archived.archivedAt);
+
+    const restored = (await (await patch({ archived: false })).json()) as ThreadRecord;
+    expect(restored.archivedAt).toBeUndefined();
+    expect(restored.workspace?.reclaimed).toBeUndefined();
+    expect(await readFile(join(workspacePath, "未提交.txt"), "utf8")).toBe("任务留下的\n");
+
+    const wrong = await patch({ archived: "yes" });
+    expect(wrong.status).toBe(400);
+    expect(await wrong.json()).toMatchObject({ error: { code: "invalid_archived" } });
+  });
+
+  it("回合结束时记下改动统计", async () => {
+    const repo = await gitRepo();
+    const engine = createFakeEngine({ writes: { path: "引擎写的.txt", text: "一行\n" } });
+    const app = makeApp(await tempDir(), engine.factory);
+    const { thread } = await setupThread(app, repo);
+
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "开始")] }));
+    // The stream closes before the turn's final write; that write is what carries the stats.
+    const after = await waitForStatus(app, thread.id, "idle");
+    expect(after.changeStats).toEqual({ files: 1, additions: 1, deletions: 0 });
   });
 
   it("rejects an unknown kind on the native picker route", async () => {

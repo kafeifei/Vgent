@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { Chat } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
 import { Plus, Settings } from "lucide-react";
@@ -23,6 +24,8 @@ export function Sidebar({
   onOpenSettings,
   settingsOpen,
   getChat,
+  onArchive,
+  onDelete,
 }: {
   projects: Project[];
   threads: ThreadSummary[];
@@ -36,8 +39,13 @@ export function Sidebar({
   settingsOpen: boolean;
   /** Live chats only: the sidebar reads the current action off them. */
   getChat: (threadId: string) => Chat<UIMessage>;
+  onArchive: (threadId: string, archived: boolean) => void;
+  onDelete: (threadId: string) => void;
 }) {
   const groups = groupThreads(threads, projects, grouping);
+  // Only 已归档 folds, and only for as long as the sidebar is mounted: it is a
+  // glance, not a preference.
+  const [expanded, setExpanded] = useState(false);
 
   return (
     <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-border border-r bg-bg">
@@ -98,26 +106,44 @@ export function Sidebar({
       )}
 
       <nav className={cn("min-h-0 flex-1 overflow-y-auto pb-md", rail ? "px-2xs" : "px-sm")}>
-        {groups.map((group) => (
-          <div key={group.key}>
-            {!rail && (
-              <div className="flex items-center gap-2xs px-xs pt-md pb-2xs text-2xs text-fg-faint tracking-wider">
-                <span className="min-w-0 truncate">{group.title}</span>
-                {group.count != null && <span className="font-mono">{group.count}</span>}
-              </div>
-            )}
-            {group.threads.map((thread) => (
-              <TaskItem
-                key={thread.id}
-                thread={thread}
-                selected={thread.id === selectedThreadId}
-                rail={rail}
-                chat={thread.status === "running" ? getChat(thread.id) : undefined}
-                onSelect={() => onSelect(thread.id)}
-              />
-            ))}
-          </div>
-        ))}
+        {groups.map((group) => {
+          const folded = group.collapsible === true && !expanded;
+          return (
+            <div key={group.key}>
+              {!rail &&
+                (group.collapsible === true ? (
+                  <button
+                    type="button"
+                    aria-expanded={expanded}
+                    onClick={() => setExpanded((open) => !open)}
+                    className="flex w-full items-center gap-2xs rounded-sm px-xs pt-md pb-2xs text-2xs text-fg-faint tracking-wider hover:text-fg-muted"
+                  >
+                    <span className="flex-none">{expanded ? "▾" : "▸"}</span>
+                    <span className="min-w-0 truncate">{group.title}</span>
+                    {group.count != null && <span className="font-mono">{group.count}</span>}
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-2xs px-xs pt-md pb-2xs text-2xs text-fg-faint tracking-wider">
+                    <span className="min-w-0 truncate">{group.title}</span>
+                    {group.count != null && <span className="font-mono">{group.count}</span>}
+                  </div>
+                ))}
+              {!folded &&
+                group.threads.map((thread) => (
+                  <TaskItem
+                    key={thread.id}
+                    thread={thread}
+                    selected={thread.id === selectedThreadId}
+                    rail={rail}
+                    chat={thread.status === "running" ? getChat(thread.id) : undefined}
+                    onSelect={() => onSelect(thread.id)}
+                    onArchive={(archived) => onArchive(thread.id, archived)}
+                    onDelete={() => onDelete(thread.id)}
+                  />
+                ))}
+            </div>
+          );
+        })}
         {threads.length === 0 && !rail && <p className="px-xs py-md text-fg-faint text-xs">还没有任务。</p>}
       </nav>
 

@@ -3,7 +3,18 @@ import { mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { isToolUIPart, type UIMessage } from "ai";
 import { NotFoundError } from "../errors.js";
-import type { EngineId, HarnessState, Logger, PermissionMode, ThreadRecord, ThreadStatus, ThreadSummary, ThreadWorkspace } from "../types.js";
+import type {
+  ChangeStats,
+  EngineId,
+  HarnessState,
+  Logger,
+  PermissionMode,
+  ThreadOutcome,
+  ThreadRecord,
+  ThreadStatus,
+  ThreadSummary,
+  ThreadWorkspace,
+} from "../types.js";
 import { silentLogger } from "../types.js";
 import { readJsonOrQuarantine, writeJsonAtomic } from "./atomic-file.js";
 
@@ -37,6 +48,11 @@ export type ThreadPatch = Partial<{
   error: string | undefined;
   /** Attached right after the worktree is created, cleared when it is removed. */
   workspace: ThreadWorkspace | undefined;
+  /** 收口 result. `undefined` clears it, which a new turn does. */
+  outcome: ThreadOutcome | undefined;
+  changeStats: ChangeStats | undefined;
+  /** `undefined` un-archives. */
+  archivedAt: string | undefined;
   messages: UIMessage[];
 }>;
 
@@ -230,6 +246,18 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
         if ("workspace" in patch) {
           if (patch.workspace == null) delete next.workspace;
           else next.workspace = patch.workspace;
+        }
+        if ("outcome" in patch) {
+          if (patch.outcome == null) delete next.outcome;
+          else next.outcome = patch.outcome;
+        }
+        if ("changeStats" in patch) {
+          if (patch.changeStats == null) delete next.changeStats;
+          else next.changeStats = patch.changeStats;
+        }
+        if ("archivedAt" in patch) {
+          if (patch.archivedAt == null) delete next.archivedAt;
+          else next.archivedAt = patch.archivedAt;
         }
         await writeJsonAtomic(recordPath(id), next);
         return next;

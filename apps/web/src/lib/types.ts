@@ -9,6 +9,7 @@ import type { UIMessage } from "ai";
  */
 export type {
   ChangedFile,
+  ChangeStats,
   ChangeStatus,
   ChangesSnapshot,
   EngineId,
@@ -16,6 +17,8 @@ export type {
   FileDiff,
   FileEntry,
   FileListing,
+  IntegrateAction,
+  IntegrationStatus,
   McpHttpServerConfig,
   McpServerConfig,
   McpStdioServerConfig,
@@ -25,6 +28,7 @@ export type {
   Project,
   Settings,
   ThreadMessageMetadata,
+  ThreadOutcome,
   ThreadRecord,
   ThreadStatus,
   ThreadSummary,

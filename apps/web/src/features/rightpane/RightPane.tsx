@@ -7,6 +7,7 @@ import { PlanPanel } from "@/features/plan/PlanPanel";
 import { TerminalPanel } from "@/features/terminal/TerminalPanel";
 import type { QueueItem } from "@/features/worklog/queue";
 import type { ApiClient } from "@/lib/api";
+import type { ThreadSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export type RightTab = "changes" | "files" | "term" | "plan" | "queue";
@@ -46,6 +47,8 @@ export function RightPane({
   threadId,
   refreshKey,
   messages,
+  thread,
+  live,
 }: {
   queue: QueueItem[];
   open: boolean;
@@ -60,6 +63,10 @@ export function RightPane({
   refreshKey: string;
   /** The active thread's messages, for 终端 and 计划. Empty without a live thread. */
   messages: UIMessage[];
+  /** The selected task, for the 变更 tab's 收口 bar. */
+  thread: ThreadSummary | undefined;
+  /** Whether that task's turn is still alive; every 收口 action is off while it is. */
+  live: boolean;
 }) {
   const changeCount = changes.snapshot?.files.length ?? 0;
 
@@ -126,7 +133,12 @@ export function RightPane({
             )}
           </>
         ) : tab === "changes" ? (
-          <ChangesPanel changes={changes} />
+          <ChangesPanel
+            changes={changes}
+            title={thread?.title ?? ""}
+            live={live}
+            {...(thread?.outcome != null ? { outcome: thread.outcome } : { outcome: undefined })}
+          />
         ) : tab === "files" ? (
           <FilesPanel client={client} threadId={threadId} active={open} refreshKey={refreshKey} />
         ) : tab === "term" ? (

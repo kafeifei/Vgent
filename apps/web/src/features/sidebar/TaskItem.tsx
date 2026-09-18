@@ -1,6 +1,10 @@
+import { useRef, useState, type RefObject } from "react";
 import { useChat } from "@ai-sdk/react";
 import type { Chat } from "@ai-sdk/react";
 import { isToolUIPart, type UIMessage } from "ai";
+import { MoreHorizontal } from "lucide-react";
+import { OutcomeBadge } from "@/components/OutcomeBadge";
+import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { relativeTime } from "@/lib/format";
 import type { ThreadStatus, ThreadSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -37,12 +41,82 @@ function LiveAction({ chat }: { chat: Chat<UIMessage> }) {
   return <>{currentAction(messages) ?? "运行中"}</>;
 }
 
+/** The row's own menu: 归档 / 取消归档 and a two-step 删除任务. */
+function RowMenu({
+  archived,
+  openRef,
+  onArchive,
+  onDelete,
+}: {
+  archived: boolean;
+  openRef: RefObject<(() => void) | null>;
+  onArchive: (archived: boolean) => void;
+  onDelete: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+
+  return (
+    <Popover
+      align="end"
+      openRef={openRef}
+      trigger={(props) => (
+        <button
+          type="button"
+          aria-label="任务操作"
+          {...props}
+          onClick={() => {
+            setConfirming(false);
+            props.onClick();
+          }}
+          className="absolute top-xs right-2xs grid size-lg place-items-center rounded-sm text-fg-faint opacity-0 hover:bg-bg-active hover:text-fg focus-visible:opacity-100 aria-expanded:opacity-100 group-hover:opacity-100"
+        >
+          <MoreHorizontal className="size-md" />
+        </button>
+      )}
+    >
+      {(close) =>
+        confirming ? (
+          <>
+            <PopTitle>删除这个任务？</PopTitle>
+            <p className="m-0 px-xs pb-2xs text-fg-muted text-xs leading-snug">
+              会删掉对话记录、worktree 和快照。分支上如果有提交会保留下来。
+            </p>
+            <PopItem
+              onClick={() => {
+                close();
+                onDelete();
+              }}
+            >
+              <span className="text-danger">确认删除</span>
+            </PopItem>
+            <PopItem onClick={() => setConfirming(false)}>取消</PopItem>
+          </>
+        ) : (
+          <>
+            <PopItem
+              onClick={() => {
+                close();
+                onArchive(!archived);
+              }}
+            >
+              {archived ? "取消归档" : "归档"}
+            </PopItem>
+            <PopItem onClick={() => setConfirming(true)}>删除任务…</PopItem>
+          </>
+        )
+      }
+    </Popover>
+  );
+}
+
 export function TaskItem({
   thread,
   selected,
   rail,
   chat,
   onSelect,
+  onArchive,
+  onDelete,
 }: {
   thread: ThreadSummary;
   selected: boolean;
@@ -50,7 +124,10 @@ export function TaskItem({
   /** Only supplied for running threads, so idle ones cost nothing. */
   chat: Chat<UIMessage> | undefined;
   onSelect: () => void;
+  onArchive: (archived: boolean) => void;
+  onDelete: () => void;
 }) {
+  const openMenu = useRef<(() => void) | null>(null);
   const meta =
     thread.status === "awaiting-approval"
       ? "等待审批"
@@ -61,8 +138,9 @@ export function TaskItem({
           : thread.status === "interrupted"
             ? `已中断 · ${relativeTime(thread.updatedAt)}`
             : relativeTime(thread.updatedAt);
+  const stats = thread.changeStats;
 
-  return (
+  const row = (
     <button
       type="button"
       onClick={onSelect}
@@ -84,8 +162,30 @@ export function TaskItem({
           <span className="min-w-0 flex-1 truncate">
             {thread.status === "running" && chat != null ? <LiveAction chat={chat} /> : meta}
           </span>
+          {thread.outcome != null && <OutcomeBadge outcome={thread.outcome} />}
+          {stats != null && stats.files > 0 && (
+            <span className="flex flex-none gap-2xs font-mono text-2xs">
+              <span className="text-diff-add-fg">+{stats.additions}</span>
+              <span className="text-diff-del-fg">−{stats.deletions}</span>
+            </span>
+          )}
         </span>
       )}
     </button>
+  );
+
+  if (rail) return row;
+
+  return (
+    <div
+      className="group relative"
+      onContextMenu={(event) => {
+        event.preventDefault();
+        openMenu.current?.();
+      }}
+    >
+      {row}
+      <RowMenu archived={thread.archivedAt != null} openRef={openMenu} onArchive={onArchive} onDelete={onDelete} />
+    </div>
   );
 }

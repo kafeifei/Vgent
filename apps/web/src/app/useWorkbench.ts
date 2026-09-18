@@ -226,6 +226,26 @@ export function useWorkbench(token: string) {
         void client.patchThread(threadId, { alwaysAllow: [] }).catch((error: Error) => toast(error.message));
       },
 
+      // 归档 also reclaims the task's worktree, and un-archiving restores it —
+      // the server does both in one PATCH, so one failure means neither moved.
+      archiveThread: (threadId: string, archived: boolean) => {
+        void client.patchThread(threadId, { archived }).then(
+          () => toast(archived ? "已归档，worktree 已回收" : "已取消归档"),
+          (error: Error) => toast(error.message),
+        );
+      },
+
+      deleteThread: (threadId: string) => {
+        void client.deleteThread(threadId).then(
+          () => {
+            chats.forget(threadId);
+            if (threadId === selectedThreadId) selectThread(null);
+            toast("已删除任务");
+          },
+          (error: Error) => toast(error.message),
+        );
+      },
+
       // Reclaim snapshots the worktree before removing it, so both directions
       // are recoverable and neither asks for a confirmation.
       reclaimWorkspace: (threadId: string): Promise<void> =>
@@ -255,7 +275,7 @@ export function useWorkbench(token: string) {
       whenReady: (threadId: string) => chats.whenReady(threadId),
       toast,
     }),
-    [activeProjectId, chats, client, selectChange, selectThread, state.projects, state.threads, thread, toast],
+    [activeProjectId, chats, client, selectChange, selectThread, selectedThreadId, state.projects, state.threads, thread, toast],
   );
 
   // ⌘K / ⌘N / ⌘J / ⌘B

@@ -13,19 +13,42 @@ export interface ThreadGroup {
   title: string;
   /** Shown after the title when the grouping is count-bearing. */
   count?: number;
+  /** 已归档 comes in folded; every other group is always open. */
+  collapsible?: boolean;
   threads: ThreadSummary[];
 }
 
-const STATUS_BUCKET: Record<ThreadStatus, "active" | "waiting" | "done"> = {
+export const ARCHIVED_KEY = "archived";
+
+type StatusBucket = "active" | "waiting" | "review" | "done";
+
+const STATUS_BUCKET: Record<ThreadStatus, Exclude<StatusBucket, "review">> = {
   running: "active",
   "awaiting-approval": "waiting",
   "awaiting-input": "waiting",
   idle: "done",
-  interrupted: "done",
-  error: "done",
+  interrupted: "waiting",
+  error: "waiting",
 };
 
-const BUCKET_TITLES = { active: "进行中", waiting: "待处理", done: "已完成" } as const;
+const BUCKET_TITLES: Record<StatusBucket, string> = {
+  active: "进行中",
+  waiting: "待处理",
+  review: "待验收",
+  done: "已完成",
+};
+
+export const isArchived = (thread: ThreadSummary): boolean => thread.archivedAt != null;
+
+/**
+ * 待验收: the task is not running, it left changes behind, and nobody has
+ * decided what to do with them yet. This is the group the user most needs.
+ */
+export function needsReview(thread: ThreadSummary): boolean {
+  return thread.status === "idle" && (thread.changeStats?.files ?? 0) > 0 && thread.outcome == null && !isArchived(thread);
+}
+
+const bucketOf = (thread: ThreadSummary): StatusBucket => (needsReview(thread) ? "review" : STATUS_BUCKET[thread.status]);
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -37,14 +60,24 @@ function dayBucket(iso: string, now: number): { key: string; title: string; orde
   return { key: "older", title: "更早", order: 3 };
 }
 
-/** The sidebar's three groupings. Threads always stay newest-first inside a group. */
+/**
+ * The sidebar's three groupings. Threads stay newest-first inside a group, and
+ * archived ones are pulled out of whichever group they would have landed in and
+ * collected at the bottom — the same place in all three.
+ */
 export function groupThreads(
   threads: readonly ThreadSummary[],
   projects: readonly Project[],
   grouping: Grouping,
   now = Date.now(),
 ): ThreadGroup[] {
-  const sorted = [...threads].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const ordered = [...threads].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const archived = ordered.filter(isArchived);
+  const sorted = ordered.filter((thread) => !isArchived(thread));
+  const withArchived = (groups: ThreadGroup[]): ThreadGroup[] =>
+    archived.length === 0
+      ? groups
+      : [...groups, { key: ARCHIVED_KEY, title: "已归档", count: archived.length, collapsible: true, threads: archived }];
 
   if (grouping === "project") {
     const byProject = new Map<string, ThreadSummary[]>();
@@ -53,24 +86,28 @@ export function groupThreads(
       list.push(thread);
       byProject.set(thread.projectId, list);
     }
-    return projects
-      .filter((project) => byProject.has(project.id))
-      .map((project) => ({ key: project.id, title: project.name, threads: byProject.get(project.id) ?? [] }))
-      .concat(
-        [...byProject.entries()]
-          .filter(([id]) => !projects.some((project) => project.id === id))
-          .map(([id, list]) => ({ key: id, title: "未知项目", threads: list })),
-      );
+    return withArchived(
+      projects
+        .filter((project) => byProject.has(project.id))
+        .map((project) => ({ key: project.id, title: project.name, threads: byProject.get(project.id) ?? [] }))
+        .concat(
+          [...byProject.entries()]
+            .filter(([id]) => !projects.some((project) => project.id === id))
+            .map(([id, list]) => ({ key: id, title: "未知项目", threads: list })),
+        ),
+    );
   }
 
   if (grouping === "status") {
-    const buckets: Array<keyof typeof BUCKET_TITLES> = ["active", "waiting", "done"];
-    return buckets
-      .map((bucket) => {
-        const list = sorted.filter((thread) => STATUS_BUCKET[thread.status] === bucket);
-        return { key: bucket, title: BUCKET_TITLES[bucket], count: list.length, threads: list };
-      })
-      .filter((group) => group.threads.length > 0);
+    const buckets: StatusBucket[] = ["active", "waiting", "review", "done"];
+    return withArchived(
+      buckets
+        .map((bucket) => {
+          const list = sorted.filter((thread) => bucketOf(thread) === bucket);
+          return { key: bucket, title: BUCKET_TITLES[bucket], count: list.length, threads: list };
+        })
+        .filter((group) => group.threads.length > 0),
+    );
   }
 
   const byDay = new Map<string, ThreadGroup & { order: number }>();
@@ -80,5 +117,5 @@ export function groupThreads(
     group.threads.push(thread);
     byDay.set(bucket.key, group);
   }
-  return [...byDay.values()].sort((a, b) => a.order - b.order);
+  return withArchived([...byDay.values()].sort((a, b) => a.order - b.order));
 }

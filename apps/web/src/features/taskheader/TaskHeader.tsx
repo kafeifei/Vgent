@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { GitBranch, PanelRight, Square } from "lucide-react";
 import { ModelPicker } from "@/components/ModelPicker";
+import { OutcomeBadge } from "@/components/OutcomeBadge";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ENGINES, PERMISSIONS } from "@/lib/engineOptions";
 import type { EngineId, PermissionMode, ThreadSummary, ThreadWorkspace } from "@/lib/types";
@@ -260,6 +261,8 @@ export function TaskHeader({
             )}
           </Popover>
         )}
+
+        {thread.outcome != null && <OutcomeBadge outcome={thread.outcome} className="max-w-[24ch]" />}
       </div>
 
       <div className="ml-auto flex flex-none items-center gap-xs">

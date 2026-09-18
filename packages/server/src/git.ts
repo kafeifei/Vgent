@@ -1,9 +1,12 @@
 /**
- * The 「变更」panel's data source: working tree vs HEAD for one repo.
+ * The 「变更」panel's data source: one repo's working tree against a baseline.
  *
- * Staged and unstaged changes are merged — the engines write straight to disk
- * and we do not care about the index — plus untracked files (`.gitignore`
- * honoured). Everything shells out to the real `git`; no libgit, no cache.
+ * The baseline is HEAD for a task that edits the project directly, and the
+ * worktree's `baseCommit` for a task with its own checkout — so everything the
+ * task did counts, its own commits included. Staged and unstaged changes are
+ * merged (`git diff <base>` compares the baseline straight to the working tree,
+ * which is exactly that), plus untracked files with `.gitignore` honoured.
+ * Everything shells out to the real `git`; no libgit, no cache.
  */
 import { execFile } from "node:child_process";
 import { readFile, rm, stat } from "node:fs/promises";
@@ -40,9 +43,10 @@ export interface FileDiff {
 }
 
 export interface Git {
-  changes(repoPath: string): Promise<ChangesSnapshot>;
-  fileDiff(repoPath: string, path: string): Promise<FileDiff>;
-  revert(repoPath: string, path: string): Promise<{ path: string }>;
+  /** `base` defaults to HEAD, or the empty tree in a repo with no commit yet. */
+  changes(repoPath: string, base?: string): Promise<ChangesSnapshot>;
+  fileDiff(repoPath: string, path: string, base?: string): Promise<FileDiff>;
+  revert(repoPath: string, path: string, base?: string): Promise<{ path: string }>;
 }
 
 export interface CreateGitOptions {
@@ -95,13 +99,11 @@ function countLines(buffer: Buffer): number {
   return lines;
 }
 
-/** porcelain v2 `XY` → our merged (index + worktree vs HEAD) status. */
-function mergeStatus(x: string, y: string): ChangeStatus | undefined {
-  if (x === "R" || y === "R" || x === "C" || y === "C") return "renamed";
-  // Staged as new, then deleted from the worktree: nothing left to show vs HEAD.
-  if (x === "A" && y === "D") return undefined;
-  if (x === "D" || y === "D") return "deleted";
-  if (x === "A") return "added";
+/** A `git diff --name-status` letter. `T` (typechange) and `U` (unmerged) read as plain edits. */
+function letterStatus(letter: string): ChangeStatus {
+  if (letter === "A") return "added";
+  if (letter === "D") return "deleted";
+  if (letter === "R" || letter === "C") return "renamed";
   return "modified";
 }
 
@@ -135,8 +137,9 @@ export function createGit(options: CreateGitOptions = {}): Git {
     if (result.code !== 0 || result.stdout.trim() !== "true") throw new NotAGitRepoError(`不是 git 仓库: ${repoPath}`);
   }
 
-  /** `HEAD`, or the empty tree when the repo has no commit yet. */
-  async function diffBase(repoPath: string): Promise<string> {
+  /** The caller's baseline, or `HEAD` — the empty tree when the repo has no commit yet. */
+  async function diffBase(repoPath: string, base?: string): Promise<string> {
+    if (base != null) return base;
     const head = await run(repoPath, ["rev-parse", "--quiet", "--verify", "HEAD"], [1]);
     return head.code === 0 && head.stdout.trim().length > 0 ? "HEAD" : EMPTY_TREE;
   }
@@ -153,8 +156,7 @@ export function createGit(options: CreateGitOptions = {}): Git {
   }
 
   /** `path` → `[additions, deletions, binary]` for everything tracked, keyed by the post-image path. */
-  async function numstat(repoPath: string): Promise<Map<string, { additions: number; deletions: number; binary: boolean }>> {
-    const base = await diffBase(repoPath);
+  async function numstat(repoPath: string, base: string): Promise<Map<string, { additions: number; deletions: number; binary: boolean }>> {
     const result = await run(repoPath, ["diff", base, "--numstat", "-z", "-M", "--no-color"]);
     const tokens = splitNul(result.stdout);
     const counts = new Map<string, { additions: number; deletions: number; binary: boolean }>();
@@ -193,47 +195,41 @@ export function createGit(options: CreateGitOptions = {}): Git {
     return { additions: countLines(buffer), binary: false };
   }
 
-  async function changes(repoPath: string): Promise<ChangesSnapshot> {
+  async function changes(repoPath: string, base?: string): Promise<ChangesSnapshot> {
     await assertRepo(repoPath);
-    const [branch, counts, status] = await Promise.all([
+    const resolved = await diffBase(repoPath, base);
+    const [branch, counts, nameStatus, others] = await Promise.all([
       currentBranch(repoPath),
-      numstat(repoPath),
-      run(repoPath, ["status", "--porcelain=v2", "-z", "--untracked-files=all"]),
+      numstat(repoPath, resolved),
+      run(repoPath, ["diff", resolved, "--name-status", "-z", "-M", "--no-color"]),
+      run(repoPath, ["ls-files", "--others", "--exclude-standard", "-z"]),
     ]);
 
-    const tokens = splitNul(status.stdout);
+    const tokens = splitNul(nameStatus.stdout);
     const files: ChangedFile[] = [];
-    const untracked: string[] = [];
 
+    // `-z` puts the status letter in its own record, followed by one path — or,
+    // for a rename or copy, by the pre- and post-image paths in that order.
     for (let i = 0; i < tokens.length; i += 1) {
-      const token = tokens[i];
-      if (token == null || token.length === 0) continue;
-      const kind = token[0];
-      if (kind === "?") {
-        untracked.push(token.slice(2));
-        continue;
-      }
-      if (kind !== "1" && kind !== "2" && kind !== "u") continue;
-      const fields = token.split(" ");
-      // `1`/`u` put the path at field 8, `2` at field 9 (after `<X><score>`).
-      const pathFrom = kind === "2" ? 9 : kind === "u" ? 10 : 8;
-      const path = fields.slice(pathFrom).join(" ");
-      const oldPath = kind === "2" ? (tokens[++i] ?? "") : undefined;
-      const xy = fields[1] ?? "..";
-      const merged = kind === "u" ? "modified" : mergeStatus(xy[0] ?? ".", xy[1] ?? ".");
-      if (merged == null || path.length === 0) continue;
+      const letter = tokens[i]?.[0];
+      if (letter == null) continue;
+      const status = letterStatus(letter);
+      const oldPath = status === "renamed" ? tokens[++i] : undefined;
+      const path = tokens[++i];
+      if (path == null || path.length === 0) continue;
       const count = counts.get(path);
       files.push({
         path,
-        status: merged,
-        ...(merged === "renamed" && oldPath != null && oldPath.length > 0 ? { oldPath } : {}),
+        status,
+        ...(oldPath != null && oldPath.length > 0 ? { oldPath } : {}),
         additions: count?.additions ?? 0,
         deletions: count?.deletions ?? 0,
         binary: count?.binary ?? false,
       });
     }
 
-    for (const path of untracked) {
+    for (const path of splitNul(others.stdout)) {
+      if (path.length === 0) continue;
       const { additions, binary } = await untrackedCounts(repoPath, path);
       files.push({ path, status: "untracked", additions, deletions: 0, binary });
     }
@@ -257,9 +253,9 @@ export function createGit(options: CreateGitOptions = {}): Git {
   }
 
   /** Validates, then pins the path to an entry of the current snapshot. */
-  async function resolveEntry(repoPath: string, raw: string): Promise<ChangedFile> {
+  async function resolveEntry(repoPath: string, raw: string, base?: string): Promise<ChangedFile> {
     const path = checkPath(repoPath, raw);
-    const snapshot = await changes(repoPath);
+    const snapshot = await changes(repoPath, base);
     const entry = snapshot.files.find((file) => file.path === path || file.oldPath === path);
     if (entry == null) throw new NotFoundError(`文件没有变更: ${path}`, "file_not_changed");
     return entry;
@@ -275,10 +271,10 @@ export function createGit(options: CreateGitOptions = {}): Git {
     return { diff: head.subarray(0, lastNewline >= 0 ? lastNewline + 1 : head.length).toString("utf8"), truncated: true };
   }
 
-  async function fileDiff(repoPath: string, rawPath: string): Promise<FileDiff> {
-    const entry = await resolveEntry(repoPath, rawPath);
-    const base = { path: entry.path, status: entry.status, ...(entry.oldPath != null ? { oldPath: entry.oldPath } : {}) };
-    if (entry.binary) return { ...base, binary: true, diff: "", truncated: false };
+  async function fileDiff(repoPath: string, rawPath: string, base?: string): Promise<FileDiff> {
+    const entry = await resolveEntry(repoPath, rawPath, base);
+    const head = { path: entry.path, status: entry.status, ...(entry.oldPath != null ? { oldPath: entry.oldPath } : {}) };
+    if (entry.binary) return { ...head, binary: true, diff: "", truncated: false };
 
     let text: string;
     if (entry.status === "untracked") {
@@ -287,19 +283,21 @@ export function createGit(options: CreateGitOptions = {}): Git {
       text = result.stdout;
     } else {
       const paths = entry.oldPath != null ? [entry.oldPath, entry.path] : [entry.path];
-      const result = await run(repoPath, ["diff", await diffBase(repoPath), "--no-color", "--no-ext-diff", "-M", "--", ...paths]);
+      const result = await run(repoPath, ["diff", await diffBase(repoPath, base), "--no-color", "--no-ext-diff", "-M", "--", ...paths]);
       text = result.stdout;
     }
-    return { ...base, binary: false, ...truncate(text) };
+    return { ...head, binary: false, ...truncate(text) };
   }
 
-  async function revert(repoPath: string, rawPath: string): Promise<{ path: string }> {
-    const entry = await resolveEntry(repoPath, rawPath);
+  /** Puts one file back the way the baseline had it — deleting it when it was not there at all. */
+  async function revert(repoPath: string, rawPath: string, base?: string): Promise<{ path: string }> {
+    const entry = await resolveEntry(repoPath, rawPath, base);
+    const resolved = await diffBase(repoPath, base);
 
     if (entry.status === "renamed" && entry.oldPath != null) {
       if (await isInIndex(repoPath, entry.path)) await run(repoPath, ["rm", "-q", "--cached", "--force", "--", entry.path]);
       await rm(resolve(repoPath, entry.path), { force: true });
-      await run(repoPath, ["checkout", "HEAD", "--", entry.oldPath]);
+      await run(repoPath, ["checkout", resolved, "--", entry.oldPath]);
       return { path: entry.oldPath };
     }
 
@@ -310,7 +308,7 @@ export function createGit(options: CreateGitOptions = {}): Git {
       return { path: entry.path };
     }
 
-    await run(repoPath, ["checkout", "HEAD", "--", entry.path]);
+    await run(repoPath, ["checkout", resolved, "--", entry.path]);
     return { path: entry.path };
   }
 

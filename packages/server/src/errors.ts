@@ -80,6 +80,17 @@ export class UpstreamModelError extends VgentServerError {
   }
 }
 
+/**
+ * An external command the user asked us to drive (`git push`, `gh`) failed on
+ * its own terms — the network, the remote, the login. Like `UpstreamModelError`
+ * it is a 502: our request was fine, the thing on the other end was not.
+ */
+export class ExternalToolError extends VgentServerError {
+  constructor(message: string, code = "tool_failed") {
+    super({ message, status: 502, code });
+  }
+}
+
 /** The project's `repoPath` is not (inside) a git work tree, so there is nothing to diff. */
 export class NotAGitRepoError extends VgentServerError {
   constructor(message: string, code = "not_a_git_repo") {

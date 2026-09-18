@@ -10,7 +10,7 @@
  * Projects that are not git repositories are allowed in Vgent, so every entry
  * point here answers `undefined` for one instead of failing the turn.
  */
-import { copyFile, mkdtemp, rm, rmdir } from "node:fs/promises";
+import { copyFile, mkdtemp, rm, rmdir, stat, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { runCommand, type ToolExec } from "./exec.js";
@@ -30,6 +30,9 @@ const REF_ROOT = "refs/vgent/checkpoints";
 
 /** Every ref one thread's checkpoints live under. */
 export const checkpointRefPrefix = (threadId: string): string => `${REF_ROOT}/${threadId}`;
+
+/** Where one thread's 任务基线 is pinned. Deliberately not a numbered checkpoint: retention leaves it alone. */
+export const baselineRef = (threadId: string): string => `${checkpointRefPrefix(threadId)}/base`;
 
 /**
  * A fixed identity, forced through the environment: a repo without a
@@ -93,6 +96,12 @@ async function isRepo(repoPath: string, exec: ToolExec): Promise<boolean> {
  * place `add -A` re-hashes only what actually changed, which is what keeps this
  * off a large repo's critical path. A missing or unreadable index just means
  * starting empty, which produces the same tree, only slower.
+ *
+ * The copy keeps the real index's own mtime, and that is load-bearing: git
+ * compares whole seconds, so a file written in the same second as the index
+ * looks unchanged by its stat alone. Git catches that with the index's
+ * timestamp (an entry at or after it is re-hashed) — a copy with a fresh mtime
+ * would throw that safety net away and silently snapshot the old content.
  */
 export async function snapshotTree(repoPath: string, exec: ToolExec = runCommand): Promise<string> {
   const git = gitIn(repoPath, exec);
@@ -102,7 +111,9 @@ export async function snapshotTree(repoPath: string, exec: ToolExec = runCommand
     const located = await git.run(["rev-parse", "--git-path", "index"]);
     if (located.code === 0) {
       const real = resolve(repoPath, located.stdout.trim());
+      const info = await stat(real).catch(() => null);
       await copyFile(real, indexFile).catch(() => {});
+      if (info != null) await utimes(indexFile, info.atime, info.mtime).catch(() => {});
     }
     const env = { GIT_INDEX_FILE: indexFile };
     await git.ok(["add", "-A"], env);
@@ -126,17 +137,32 @@ interface RefEntry {
   counter: number;
 }
 
-/** One thread's checkpoint refs, oldest first. Empty for a non-git directory. */
-async function listRefs(repoPath: string, threadId: string, exec: ToolExec): Promise<RefEntry[]> {
+/** Everything one thread keeps under its prefix, the 基线 ref included. Empty for a non-git directory. */
+async function listAllRefs(repoPath: string, threadId: string, exec: ToolExec): Promise<{ ref: string; commit: string }[]> {
   const prefix = checkpointRefPrefix(threadId);
   const result = await gitIn(repoPath, exec).run(["for-each-ref", "--format=%(refname)%00%(objectname)", "--", `${prefix}/`]);
   if (result.code !== 0) return [];
-  const entries: RefEntry[] = [];
+  const entries: { ref: string; commit: string }[] = [];
   for (const line of result.stdout.split("\n")) {
     if (line.trim() === "") continue;
     const [ref = "", commit = ""] = line.split("\0");
+    if (ref === "" || commit === "") continue;
+    entries.push({ ref, commit });
+  }
+  return entries;
+}
+
+/**
+ * One thread's *numbered* checkpoint refs, oldest first. The 基线 ref has no
+ * counter, so it is not one of these — which is exactly what keeps retention
+ * from ever dropping it.
+ */
+async function listRefs(repoPath: string, threadId: string, exec: ToolExec): Promise<RefEntry[]> {
+  const prefix = checkpointRefPrefix(threadId);
+  const entries: RefEntry[] = [];
+  for (const { ref, commit } of await listAllRefs(repoPath, threadId, exec)) {
     const counter = refCounter(ref, prefix);
-    if (counter == null || commit === "") continue;
+    if (counter == null) continue;
     entries.push({ ref, commit, counter });
   }
   return entries.sort((a, b) => a.counter - b.counter);
@@ -193,14 +219,45 @@ export async function createCheckpoint(options: GitOptions & {
   }
 }
 
-/** Forget every checkpoint of one thread. For a deleted task. */
+/**
+ * 任务基线 of a main-checkout task: the state its first turn started from,
+ * pinned under a ref of its own so the 50-checkpoint retention never drops it.
+ *
+ * `commit` re-uses a snapshot already taken (the task's first checkpoint);
+ * without it the working directory is snapshotted afresh — what 提交 does to
+ * move the baseline past what it just committed. `undefined` — never a throw —
+ * for a directory that is not a git repo, or a git call that failed.
+ */
+export async function pinBaseline(options: GitOptions & { threadId: string; commit?: string }): Promise<string | undefined> {
+  const { repoPath, threadId } = options;
+  const exec = options.exec ?? runCommand;
+  const log = options.log ?? silentLogger;
+  try {
+    if (!(await isRepo(repoPath, exec))) return undefined;
+    const git = gitIn(repoPath, exec);
+    let commit = options.commit;
+    if (commit == null) {
+      const tree = await snapshotTree(repoPath, exec);
+      const head = await git.run(["rev-parse", "--verify", "--quiet", "HEAD"]);
+      const parent = head.code === 0 ? head.stdout.trim() : "";
+      commit = (await git.ok(["commit-tree", tree, ...(parent === "" ? [] : ["-p", parent]), "-m", COMMIT_MESSAGE], IDENTITY)).trim();
+    }
+    await git.ok(["update-ref", baselineRef(threadId), commit]);
+    return commit;
+  } catch (error) {
+    log.warn(`线程 ${threadId} 的任务基线记录失败`, error);
+    return undefined;
+  }
+}
+
+/** Forget every checkpoint of one thread — the 基线 ref with them. For a deleted task. */
 export async function deleteCheckpoints(options: GitOptions & { threadId: string }): Promise<number> {
   const { repoPath, threadId } = options;
   const exec = options.exec ?? runCommand;
   const log = options.log ?? silentLogger;
   try {
     const git = gitIn(repoPath, exec);
-    const entries = await listRefs(repoPath, threadId, exec);
+    const entries = await listAllRefs(repoPath, threadId, exec);
     let removed = 0;
     for (const entry of entries) {
       const result = await git.run(["update-ref", "-d", entry.ref, entry.commit]);

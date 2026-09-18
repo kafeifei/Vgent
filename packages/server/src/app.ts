@@ -3,7 +3,7 @@ import { resolveModel } from "@vgent/engine";
 import { UI_MESSAGE_STREAM_HEADERS, createUIMessageStreamResponse, type LanguageModel } from "ai";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { createCheckpoint, deleteCheckpoints, listCheckpointCommits, restoreCheckpoint } from "./checkpoints.js";
+import { createCheckpoint, deleteCheckpoints, listCheckpointCommits, pinBaseline, restoreCheckpoint } from "./checkpoints.js";
 import { compactThread } from "./compact.js";
 import { BadRequestError, ConflictError, NotFoundError, UnauthorizedError, UpstreamModelError, VgentServerError } from "./errors.js";
 import type { EngineRegistry } from "./engines/registry.js";
@@ -203,7 +203,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const project = await projects.get(thread.projectId);
     if (project == null) return undefined;
     const target = taskTarget(thread, project);
-    return changeStatsOf(await git.changes(target.repoPath, target.baseCommit));
+    return changeStatsOf(await git.changes(target.repoPath, target.baseline));
   };
 
   const runs = createRunManager({
@@ -346,7 +346,8 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   /**
    * The two directories and the baseline this task's diff is measured against:
-   * its own worktree from `workspace.baseCommit`, or the project from HEAD.
+   * its own worktree from `workspace.baseCommit`, or the project from the
+   * snapshot its first turn started with (`baselineCommit`).
    */
   const targetFor = async (thread: ThreadRecord): Promise<TaskTarget> => {
     if (thread.workspace?.reclaimed === true) throw new ConflictError("此任务的工作目录已回收", "workspace_reclaimed");
@@ -381,7 +382,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
   app.get("/api/threads/:id/changes", async (c) => {
     const thread = await threadOf(c.req.param("id"));
     const target = await targetFor(thread);
-    const snapshot = await git.changes(target.repoPath, target.baseCommit);
+    const snapshot = await git.changes(target.repoPath, target.baseline);
     // The user can commit, edit or `git checkout` outside Vgent, which leaves
     // the record's 「+N −M」 — and with it the 待验收 bucket — describing a tree
     // that no longer exists. This panel just counted the real one, for free.
@@ -399,7 +400,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const target = await targetOf(c.req.param("id"));
     const path = c.req.query("path");
     if (path == null || path.length === 0) throw new BadRequestError("缺少 path", "invalid_path");
-    return c.json(await git.fileDiff(target.repoPath, path, target.baseCommit));
+    return c.json(await git.fileDiff(target.repoPath, path, target.baseline));
   });
 
   app.post("/api/threads/:id/changes/revert", async (c) => {
@@ -407,7 +408,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const target = await targetOf(id);
     const body = (await c.req.json().catch(() => undefined)) as { path?: unknown } | undefined;
     if (typeof body?.path !== "string" || body.path.length === 0) throw new BadRequestError("缺少 path", "invalid_path");
-    const result = await git.revert(target.repoPath, body.path, target.baseCommit);
+    const result = await git.revert(target.repoPath, body.path, target.baseline);
     await restat(id);
     return c.json(result);
   });
@@ -427,7 +428,15 @@ export function createApp(options: CreateAppOptions): VgentApp {
       action,
       ...(typeof body?.message === "string" ? { message: body.message } : {}),
     });
-    const updated = await threads.update(id, { outcome });
+    // 提交 in the user's own checkout leaves their other uncommitted work right
+    // where it was, so the 任务基线 moves to the state just after the commit:
+    // what the task committed stops counting as its un-integrated 改动, and what
+    // is still the user's own goes on not counting at all.
+    const moved =
+      action === "commit" && target.mode === "project" && thread.baselineCommit != null
+        ? await pinBaseline({ repoPath: target.repoPath, threadId: id, log })
+        : undefined;
+    const updated = await threads.update(id, { outcome, ...(moved != null ? { baselineCommit: moved } : {}) });
     await restat(id);
     return c.json((await threads.get(id)) ?? updated);
   });

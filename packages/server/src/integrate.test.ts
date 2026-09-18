@@ -3,9 +3,12 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import type { UIMessage } from "ai";
 import { afterEach, describe, expect, it } from "vitest";
+import { snapshotTree } from "./checkpoints.js";
 import { runCommand, type ToolExec } from "./exec.js";
-import { createIntegrator, type TaskTarget } from "./integrate.js";
+import { createIntegrator, taskTarget, type TaskTarget } from "./integrate.js";
+import type { Project } from "./types.js";
 
 const exec = promisify(execFile);
 const hasGit = spawnSync("git", ["--version"]).status === 0;
@@ -48,7 +51,99 @@ async function worktreeTask(): Promise<{ project: string; work: string; base: st
   };
 }
 
+/**
+ * The user's own checkout, already dirty the way a real one is — a modified
+ * file, an untracked one and a staged one — with a task whose 任务基线 was
+ * pinned before it touched anything.
+ */
+async function projectTask(): Promise<{ project: string; target: TaskTarget; userLines: string[] }> {
+  const project = await tempDir();
+  await run(project, "init", "-q", "-b", "main");
+  await run(project, "config", "user.email", "test@vgent.local");
+  await run(project, "config", "user.name", "Vgent Test");
+  await run(project, "config", "commit.gpgsign", "false");
+  await writeFile(join(project, "tracked.txt"), "line1\nline2\n");
+  await writeFile(join(project, "用户的.txt"), "原样\n");
+  await writeFile(join(project, "暂存的.txt"), "原样\n");
+  await run(project, "add", "-A");
+  await run(project, "commit", "-q", "-m", "初始");
+
+  await writeFile(join(project, "用户的.txt"), "原样\n用户改的\n");
+  await writeFile(join(project, "用户没跟踪的.txt"), "用户建的\n");
+  await writeFile(join(project, "暂存的.txt"), "原样\n用户暂存的\n");
+  await run(project, "add", "暂存的.txt");
+  const userLines = (await porcelain(project)).split("\n").filter((line) => line.trim() !== "");
+
+  const baseline = await snapshotTree(project);
+  return {
+    project,
+    target: { mode: "project", repoPath: project, projectPath: project, baseline: { tree: baseline } },
+    userLines,
+  };
+}
+
+/** The paths one commit carries. `core.quotepath` off, or every non-ASCII name comes back escaped. */
+const committedPaths = async (cwd: string, rev = "HEAD") =>
+  (await run(cwd, "-c", "core.quotepath=false", "show", "--pretty=format:", "--name-only", rev)).stdout
+    .split("\n")
+    .filter((line) => line.trim() !== "");
+
 describe.skipIf(!hasGit)("createIntegrator", () => {
+  it("主目录任务：只提交任务改的，用户自己的改动一件不动", async () => {
+    const { project, target, userLines } = await projectTask();
+    const integrator = createIntegrator();
+
+    // Nothing done yet: the repo is dirty, but not by this task.
+    expect(await integrator.status(target)).toMatchObject({ mode: "project", dirty: true, canCommit: false, commitFiles: 0 });
+    await expect(integrator.integrate(target, { action: "commit", message: "空的" })).rejects.toMatchObject({
+      code: "nothing_to_commit",
+    });
+
+    await writeFile(join(project, "tracked.txt"), "line1\nline2\n任务加的\n");
+    await writeFile(join(project, "任务的.txt"), "任务建的\n");
+
+    expect(await integrator.status(target)).toMatchObject({ canCommit: true, commitFiles: 2 });
+    expect(await integrator.integrate(target, { action: "commit", message: "任务收个口" })).toMatchObject({ kind: "committed" });
+
+    expect(await committedPaths(project)).toEqual(["tracked.txt", "任务的.txt"]);
+    // Modified, untracked and staged: all three are still exactly as the user left them.
+    expect((await porcelain(project)).split("\n").filter((line) => line.trim() !== "")).toEqual(userLines);
+
+    // The baseline moves to the state right after the commit, the way the route
+    // does it — so the task has nothing left to commit, twice over.
+    const moved: TaskTarget = { ...target, baseline: { tree: await snapshotTree(project) } };
+    expect(await integrator.status(moved)).toMatchObject({ canCommit: false, commitFiles: 0 });
+    await expect(integrator.integrate(moved, { action: "commit", message: "再来一次" })).rejects.toMatchObject({
+      code: "nothing_to_commit",
+    });
+  });
+
+  it("主目录任务：基线功能之前建的任务照旧全提交，但把话说明白", async () => {
+    const { project } = await projectTask();
+    const legacy: TaskTarget = { mode: "project", repoPath: project, projectPath: project };
+    const integrator = createIntegrator();
+
+    const status = await integrator.status(legacy);
+    expect(status).toMatchObject({ canCommit: true, note: expect.stringContaining("全部改动") });
+    expect(status.commitFiles).toBeUndefined();
+
+    expect(await integrator.integrate(legacy, { action: "commit", message: "老任务" })).toMatchObject({ kind: "committed" });
+    expect(await committedPaths(project)).toEqual(["暂存的.txt", "用户没跟踪的.txt", "用户的.txt"]);
+  });
+
+  it("还没跑过回合的主目录任务：没有基线，就没有改动", async () => {
+    const { project } = await projectTask();
+    const fresh: TaskTarget = { mode: "project", repoPath: project, projectPath: project, baseline: { none: true } };
+    const integrator = createIntegrator();
+
+    const status = await integrator.status(fresh);
+    expect(status).toMatchObject({ dirty: true, canCommit: false, commitFiles: 0 });
+    expect(status.note).toBeUndefined();
+    await expect(integrator.integrate(fresh, { action: "commit", message: "什么都没干" })).rejects.toMatchObject({
+      code: "nothing_to_commit",
+    });
+  });
+
   it("提交：把任务目录里的一切落成一次提交", async () => {
     const { work, target } = await worktreeTask();
     const integrator = createIntegrator();
@@ -144,6 +239,27 @@ describe.skipIf(!hasGit)("createIntegrator", () => {
     await writeFile(join(project, "tracked.txt"), "line1\n主目录改的\n");
     expect(await integrator.integrate(target, { action: "commit", message: "在主目录提交" })).toMatchObject({ kind: "committed" });
     expect(await porcelain(project)).toBe("");
+  });
+
+  it("任务基线：worktree 任务用 baseCommit，主目录任务用 checkpoint，老任务退回 HEAD", () => {
+    const project: Project = { id: "p1", name: "repo", repoPath: "/repo", createdAt: "2026-09-18T00:00:00.000Z" };
+    const message: UIMessage = { id: "m1", role: "user", parts: [{ type: "text", text: "干活" }] };
+
+    // Nothing has run yet: the task cannot have changed anything.
+    expect(taskTarget({ messages: [] }, project)).toMatchObject({ mode: "project", baseline: { none: true } });
+    // Its first turn pinned a baseline.
+    expect(taskTarget({ messages: [message], baselineCommit: "a".repeat(40) }, project)).toMatchObject({
+      baseline: { tree: "a".repeat(40) },
+    });
+    // Older than 任务基线: HEAD, the way it has always been.
+    expect(taskTarget({ messages: [message] }, project).baseline).toBeUndefined();
+    // A worktree task is untouched by any of this.
+    const workspace = { mode: "worktree", path: "/wt", branch: "vgent/x", baseCommit: "b".repeat(40) } as const;
+    expect(taskTarget({ messages: [], workspace }, project)).toMatchObject({
+      mode: "worktree",
+      baseCommit: "b".repeat(40),
+      baseline: "b".repeat(40),
+    });
   });
 
   it("开 PR：没有 origin 远端就说明原因，不显示按钮", async () => {

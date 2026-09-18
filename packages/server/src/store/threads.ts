@@ -60,6 +60,8 @@ export type ThreadPatch = Partial<{
   error: string | undefined;
   /** Attached right after the worktree is created, cleared when it is removed. */
   workspace: ThreadWorkspace | undefined;
+  /** 任务基线 of a main-checkout task: set on its first turn, moved forward by 提交. */
+  baselineCommit: string | undefined;
   /** 收口 result. `undefined` clears it, which a new turn does. */
   outcome: ThreadOutcome | undefined;
   changeStats: ChangeStats | undefined;
@@ -290,6 +292,10 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
         if ("workspace" in patch) {
           if (patch.workspace == null) delete next.workspace;
           else next.workspace = patch.workspace;
+        }
+        if ("baselineCommit" in patch) {
+          if (patch.baselineCommit == null) delete next.baselineCommit;
+          else next.baselineCommit = patch.baselineCommit;
         }
         if ("outcome" in patch) {
           if (patch.outcome == null) delete next.outcome;

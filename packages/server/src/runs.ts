@@ -12,7 +12,7 @@ import {
   type UIMessage,
   type UIMessageChunk,
 } from "ai";
-import { createCheckpoint } from "./checkpoints.js";
+import { createCheckpoint, pinBaseline } from "./checkpoints.js";
 import type { ChunkHub } from "./chunk-hub.js";
 import { createChunkHub } from "./chunk-hub.js";
 import { BadRequestError, ConflictError, NotFoundError, TurnResumeFailedError, VgentServerError } from "./errors.js";
@@ -253,7 +253,27 @@ export function createRunManager(options: {
     const taken = await createCheckpoint({ repoPath, threadId: thread.id, log });
     const elapsed = Date.now() - startedAt;
     if (elapsed >= SLOW_CHECKPOINT_MS) log.warn(`线程 ${thread.id} 的回合快照耗时 ${elapsed}ms`);
+    if (taken != null) await recordBaseline(thread, repoPath, taken.commit);
     return taken == null ? undefined : { ...taken, at: new Date().toISOString() };
+  };
+
+  /**
+   * 任务基线 of a task running in the user's own checkout: the snapshot its very
+   * first turn started from, pinned under a ref of its own. Everything 改动 and
+   * 提交 look at is measured against it, so the work the user already had lying
+   * around uncommitted is never counted as the task's — and never committed
+   * under its name. A worktree task has `workspace.baseCommit` for that.
+   *
+   * On the record rather than on the message: `/compact` replaces the messages,
+   * and losing the baseline with them would put the task back on HEAD.
+   */
+  const recordBaseline = async (thread: ThreadRecord, repoPath: string, commit: string): Promise<void> => {
+    if (thread.workspace != null || thread.baselineCommit != null) return;
+    const pinned = await pinBaseline({ repoPath, threadId: thread.id, commit, log });
+    if (pinned == null) return;
+    await threads.update(thread.id, { baselineCommit: pinned }).catch((error: unknown) => {
+      log.warn(`线程 ${thread.id} 的任务基线没能记下`, error);
+    });
   };
 
   /** The incoming list with the checkpoint stamped onto its last (user) message. */

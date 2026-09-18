@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
+import { snapshotTree } from "./checkpoints.js";
 import { BadRequestError, NotAGitRepoError, NotFoundError } from "./errors.js";
 import { createGit, type ChangedFile } from "./git.js";
 
@@ -203,6 +204,53 @@ describe.skipIf(!hasGit)("createGit", () => {
     expect(byPath(snapshot.files, "loose.txt")).toMatchObject({ status: "untracked", additions: 2 });
     expect(byPath(snapshot.files, "staged.txt")).toMatchObject({ status: "added", additions: 1, deletions: 0 });
     expect((await git.fileDiff(dir, "staged.txt")).diff).toContain("+one");
+  });
+
+  it("任务基线是快照时，用户自己的改动一件都不算任务的", async () => {
+    const git = createGit();
+    const dir = await seededRepo();
+    // The user's own work, all of it from before the task started.
+    await writeFile(join(dir, "edited.txt"), "line1\nline2\n用户改的\n");
+    await writeFile(join(dir, "用户的新文件.txt"), "用户建的\n");
+    await writeFile(join(dir, "kept.txt"), "kept\n用户暂存的\n");
+    await run(dir, "add", "kept.txt");
+    const stagedBefore = (await run(dir, "diff", "--cached", "--name-only")).stdout;
+
+    const baseline = await snapshotTree(dir);
+
+    // What the task did: one tracked file, one new file, and a line appended to
+    // the file the user had left untracked.
+    await writeFile(join(dir, "gone.txt"), "gone\n任务改的\n");
+    await writeFile(join(dir, "任务的新文件.txt"), "任务建的\n");
+    await writeFile(join(dir, "用户的新文件.txt"), "用户建的\n任务加的\n");
+
+    const { files } = await git.changes(dir, { tree: baseline });
+    expect(files.map((file) => file.path)).toEqual(["gone.txt", "任务的新文件.txt", "用户的新文件.txt"]);
+    expect(byPath(files, "gone.txt")).toMatchObject({ status: "modified", additions: 1, deletions: 0 });
+    expect(byPath(files, "任务的新文件.txt")).toMatchObject({ status: "added", additions: 1 });
+    // Already untracked when the task started, so it is an edit, not a new file.
+    expect(byPath(files, "用户的新文件.txt")).toMatchObject({ status: "modified", additions: 1, deletions: 0 });
+    expect((await git.fileDiff(dir, "用户的新文件.txt", { tree: baseline })).diff).toContain("+任务加的");
+
+    // 还原 goes back to the baseline, and the user's index is not part of it.
+    expect(await git.revert(dir, "gone.txt", { tree: baseline })).toEqual({ path: "gone.txt" });
+    expect(await git.revert(dir, "任务的新文件.txt", { tree: baseline })).toEqual({ path: "任务的新文件.txt" });
+    expect(await readFile(join(dir, "gone.txt"), "utf8")).toBe("gone\n");
+    expect(await stat(join(dir, "任务的新文件.txt")).catch(() => null)).toBeNull();
+    expect((await run(dir, "diff", "--cached", "--name-only")).stdout).toBe(stagedBefore);
+    expect(await readFile(join(dir, "edited.txt"), "utf8")).toBe("line1\nline2\n用户改的\n");
+  });
+
+  it("还没有基线的任务什么都没改", async () => {
+    const git = createGit();
+    const dir = await seededRepo();
+    await writeFile(join(dir, "edited.txt"), "line1\nline2\n用户改的\n");
+    await writeFile(join(dir, "用户的新文件.txt"), "用户建的\n");
+
+    const snapshot = await git.changes(dir, { none: true });
+    expect(snapshot).toMatchObject({ branch: "main", files: [] });
+    await expect(git.fileDiff(dir, "edited.txt", { none: true })).rejects.toBeInstanceOf(NotFoundError);
+    await expect(git.revert(dir, "edited.txt", { none: true })).rejects.toBeInstanceOf(NotFoundError);
   });
 
   it("refuses a directory that is not a repo", async () => {

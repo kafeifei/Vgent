@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { snapshotTree } from "./checkpoints.js";
 import { BadRequestError, ConflictError, ExternalToolError, GitError } from "./errors.js";
 import { runCommand, type ToolExec } from "./exec.js";
-import type { ChangesSnapshot } from "./git.js";
+import type { ChangesSnapshot, DiffBase } from "./git.js";
 import type { ChangeStats, Project, ThreadOutcome, ThreadRecord } from "./types.js";
 
 /** Pushes and `gh` calls go over the network; give them room. */
@@ -37,20 +37,36 @@ export interface TaskTarget {
   /** The project's own checkout — where 带回主目录 lands. */
   projectPath: string;
   branch?: string;
-  /** The commit the task started from. Absent for a main-checkout task, whose baseline is HEAD. */
+  /** The commit a worktree task branched from. Absent for a main-checkout task, which has no branch of its own. */
   baseCommit?: string;
+  /** 任务基线: what 改动 and 提交 are measured against. Absent = `HEAD`, the fallback of a task older than 任务基线. */
+  baseline?: DiffBase;
 }
 
 /** A thread plus its project → the two directories and the baseline. Pure. */
-export function taskTarget(thread: Pick<ThreadRecord, "workspace">, project: Project): TaskTarget {
+export function taskTarget(thread: Pick<ThreadRecord, "workspace" | "baselineCommit" | "messages">, project: Project): TaskTarget {
   const workspace = thread.workspace;
-  if (workspace == null) return { mode: "project", repoPath: project.repoPath, projectPath: project.repoPath };
+  if (workspace == null) {
+    // A main-checkout task's baseline is a snapshot of the working directory,
+    // taken before its first turn. Until it has run one it cannot have changed
+    // anything — whatever is lying around uncommitted is the user's own. Only a
+    // task from before 任务基线 existed (messages, no baseline) falls back to HEAD.
+    const baseline: DiffBase | undefined =
+      thread.baselineCommit != null ? { tree: thread.baselineCommit } : thread.messages.length === 0 ? { none: true } : undefined;
+    return {
+      mode: "project",
+      repoPath: project.repoPath,
+      projectPath: project.repoPath,
+      ...(baseline != null ? { baseline } : {}),
+    };
+  }
   return {
     mode: "worktree",
     repoPath: workspace.path,
     projectPath: project.repoPath,
     branch: workspace.branch,
     baseCommit: workspace.baseCommit,
+    baseline: workspace.baseCommit,
   };
 }
 
@@ -74,9 +90,16 @@ export interface IntegrationStatus {
   canCommit: boolean;
   canApply: boolean;
   canDiscardAll: boolean;
+  /** How many files 提交 would commit. Only for a task with a 任务基线; a worktree task commits its whole directory. */
+  commitFiles?: number;
+  /** Something the user has to know before pressing a button — today only the missing-baseline warning. */
+  note?: string;
   /** 开 PR needs a worktree task, an `origin`, and a logged-in `gh`. */
   pr: { available: boolean; reason?: string };
 }
+
+/** A main-checkout task from before 任务基线 existed cannot tell its own changes from the user's. */
+const NO_BASELINE_NOTE = "这个任务创建于基线功能之前，提交会包含工作目录里的全部改动";
 
 export const INTEGRATE_ACTIONS = ["commit", "pr", "apply", "discard"] as const;
 export type IntegrateAction = (typeof INTEGRATE_ACTIONS)[number];
@@ -151,16 +174,58 @@ export function createIntegrator(options: CreateIntegratorOptions = {}): Integra
     return { available: true };
   };
 
-  /** `git add -A` + `git commit`, in whichever directory the task owns. */
-  const commit = async (target: TaskTarget, message: string | undefined): Promise<string> => {
+  /**
+   * The paths the task itself changed: 任务基线 against the working directory as
+   * a tree, built through a throwaway index so the user's own is never touched.
+   *
+   * `undefined` means the task has no baseline to measure against — a worktree
+   * task, whose whole directory is its own, or a task older than 任务基线.
+   */
+  const taskPaths = async (target: TaskTarget): Promise<string[] | undefined> => {
+    const baseline = target.baseline;
+    if (baseline == null || typeof baseline === "string") return undefined;
+    if ("none" in baseline) return [];
+    const current = await snapshotTree(target.repoPath, exec);
+    // `--no-renames` so a rename comes out as both of its paths, which is what
+    // has to be staged for the commit to carry it.
+    const out = await gitOk(target.repoPath, ["diff", "--name-only", "-z", "--no-renames", baseline.tree, current]);
+    const paths = out.split("\0");
+    if (paths.at(-1) === "") paths.pop();
+    return paths;
+  };
+
+  /**
+   * `git commit`, in whichever directory the task owns.
+   *
+   * `paths` — the task's own, for a main-checkout task — scopes both the staging
+   * and the commit to them, so every other change in the user's checkout, staged
+   * or not, is exactly where they left it afterwards. They travel through a file
+   * rather than the command line: a big turn can touch more paths than an argv
+   * holds.
+   */
+  const commit = async (target: TaskTarget, message: string | undefined, paths?: string[]): Promise<string> => {
     const text = message?.trim() ?? "";
     if (text === "") throw new BadRequestError("提交信息不能为空", "invalid_message");
-    if (!(await isDirty(target.repoPath))) throw new BadRequestError("没有可提交的改动", "nothing_to_commit");
-    await gitOk(target.repoPath, ["add", "-A"]);
-    const result = await git(target.repoPath, ["commit", "-m", text]);
-    // Git's own words: a missing `user.email` explains itself better than we could.
-    if (result.code !== 0) throw new BadRequestError(`提交失败：${tail(result.stderr || result.stdout)}`, "commit_failed");
-    return (await gitOk(target.repoPath, ["rev-parse", "HEAD"])).trim();
+    if (paths == null ? !(await isDirty(target.repoPath)) : paths.length === 0) {
+      throw new BadRequestError("没有可提交的改动", "nothing_to_commit");
+    }
+
+    const scratch = paths == null ? undefined : await mkdtemp(join(tmpdir(), "vgent-commit-"));
+    try {
+      let scope: string[] = [];
+      if (paths != null && scratch != null) {
+        const listFile = join(scratch, "paths");
+        await writeFile(listFile, `${paths.join("\0")}\0`);
+        scope = [`--pathspec-from-file=${listFile}`, "--pathspec-file-nul"];
+      }
+      await gitOk(target.repoPath, ["add", "-A", ...scope]);
+      const result = await git(target.repoPath, ["commit", "-m", text, ...scope]);
+      // Git's own words: a missing `user.email` explains itself better than we could.
+      if (result.code !== 0) throw new BadRequestError(`提交失败：${tail(result.stderr || result.stdout)}`, "commit_failed");
+      return (await gitOk(target.repoPath, ["rev-parse", "HEAD"])).trim();
+    } finally {
+      if (scratch != null) await rm(scratch, { recursive: true, force: true });
+    }
   };
 
   const apply = async (target: TaskTarget): Promise<void> => {
@@ -220,7 +285,12 @@ export function createIntegrator(options: CreateIntegratorOptions = {}): Integra
 
   return {
     async status(target) {
-      const [dirty, commitsAhead, pr] = await Promise.all([isDirty(target.repoPath), commitsAheadOf(target), prAvailability(target)]);
+      const [dirty, commitsAhead, pr, paths] = await Promise.all([
+        isDirty(target.repoPath),
+        commitsAheadOf(target),
+        prAvailability(target),
+        taskPaths(target),
+      ]);
       const worktree = target.mode === "worktree";
       const hasWork = dirty || commitsAhead > 0;
       return {
@@ -228,7 +298,11 @@ export function createIntegrator(options: CreateIntegratorOptions = {}): Integra
         ...(target.branch != null ? { branch: target.branch } : {}),
         commitsAhead,
         dirty,
-        canCommit: dirty,
+        // A dirty repo is not the same thing as a task with changes: 提交 only
+        // ever carries what this task did.
+        canCommit: paths == null ? dirty : paths.length > 0,
+        ...(paths != null ? { commitFiles: paths.length } : {}),
+        ...(!worktree && target.baseline == null ? { note: NO_BASELINE_NOTE } : {}),
         canApply: worktree && hasWork,
         // A main-checkout task cannot tell its own untracked files from the
         // user's, so it is never offered a blanket discard.
@@ -242,7 +316,7 @@ export function createIntegrator(options: CreateIntegratorOptions = {}): Integra
         throw new BadRequestError("主目录任务只能提交", "action_unsupported");
       }
       const at = new Date().toISOString();
-      if (action === "commit") return { kind: "committed", at, ref: await commit(target, message) };
+      if (action === "commit") return { kind: "committed", at, ref: await commit(target, message, await taskPaths(target)) };
       if (action === "pr") return { kind: "pr", at, url: await pullRequest(target, message) };
       if (action === "apply") {
         await apply(target);

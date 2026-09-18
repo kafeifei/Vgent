@@ -31,7 +31,7 @@ afterEach(async () => {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A scripted engine: streams `text` word by word, then persists a fake resume state. */
-function createFakeEngine(options?: { text?: string; deltaDelayMs?: number; writes?: { path: string; text: string } }) {
+function createFakeEngine(options?: { text?: string; deltaDelayMs?: number; writes?: { path: string; text: string }[] }) {
   const created: EngineContext[] = [];
   const streamed: ModelMessage[][] = [];
   const text = options?.text ?? "你好 世界 来自 假引擎";
@@ -44,7 +44,7 @@ function createFakeEngine(options?: { text?: string; deltaDelayMs?: number; writ
       const sessionTurn = ++turn;
       // Engines write straight to disk; this one does too, so the change stats
       // a finished turn records have something real to count.
-      if (options?.writes != null) await writeFile(join(ctx.project.repoPath, options.writes.path), options.writes.text);
+      for (const write of options?.writes ?? []) await writeFile(join(ctx.project.repoPath, write.path), write.text);
       return {
         async stream({ messages }) {
           streamed.push(messages);
@@ -556,10 +556,14 @@ describe("createApp", () => {
   it("serves the change list, a file diff and a revert for a real repo", async () => {
     const dir = await tempDir();
     const repo = await gitRepo();
-    await writeFile(join(repo, "tracked.txt"), "line1\n改了\n");
+    // The user's own uncommitted work, from before the task ever ran: it is
+    // part of the 任务基线, so nothing below may list it as the task's.
+    await writeFile(join(repo, "用户自己的.txt"), "没提交的\n");
 
-    const app = makeApp(dir);
+    const app = makeApp(dir, createFakeEngine({ writes: [{ path: "tracked.txt", text: "line1\n改了\n" }] }).factory);
     const { thread } = await setupThread(app, repo);
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "改一行")] }));
+    await waitForStatus(app, thread.id, "idle");
 
     const changes = (await (await request(app, `/api/threads/${thread.id}/changes`)).json()) as {
       branch: string | null;
@@ -756,6 +760,83 @@ describe("createApp", () => {
     expect(await bad.json()).toMatchObject({ error: { code: "invalid_action" } });
   });
 
+  it("主目录任务：改动、统计和提交都只算任务自己的", async () => {
+    const repo = await gitRepo();
+    await writeFile(join(repo, "a.txt"), "一\n");
+    await execFileAsync("git", ["add", "-A"], { cwd: repo });
+    await execFileAsync("git", ["commit", "-q", "-m", "再来一个"], { cwd: repo });
+
+    // The user's own uncommitted work: modified, untracked, staged.
+    await writeFile(join(repo, "tracked.txt"), "line1\nline2\n用户改的\n");
+    await writeFile(join(repo, "用户没跟踪的.txt"), "用户建的\n");
+    await writeFile(join(repo, "用户暂存的.txt"), "用户 add 过的\n");
+    await execFileAsync("git", ["add", "用户暂存的.txt"], { cwd: repo });
+    const porcelain = async () => (await execFileAsync("git", ["status", "--porcelain"], { cwd: repo })).stdout;
+    const dirtyBefore = await porcelain();
+
+    const dataDir = await tempDir();
+    const engine = createFakeEngine({
+      writes: [
+        { path: "a.txt", text: "一\n任务加的\n" },
+        { path: "b.txt", text: "任务建的\n" },
+      ],
+    });
+    const app = makeApp(dataDir, engine.factory);
+    const { thread } = await setupThread(app, repo);
+    const record = async () => (await (await request(app, `/api/threads/${thread.id}`)).json()) as ThreadRecord;
+    const changesOf = async () =>
+      (await (await request(app, `/api/threads/${thread.id}/changes`)).json()) as { files: { path: string; status: string; additions: number }[] };
+
+    // Before its first turn a task has no baseline, so it has changed nothing —
+    // whatever is lying around is the user's. Nothing counts it either, so the
+    // task never shows a 审查 pill and never lands in 待验收.
+    expect((await record()).changeStats).toBeUndefined();
+    expect((await changesOf()).files).toEqual([]);
+    expect((await record()).changeStats).toEqual({ files: 0, additions: 0, deletions: 0 });
+
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "改两个文件")] }));
+    await waitForStatus(app, thread.id, "idle");
+
+    expect((await changesOf()).files).toMatchObject([
+      { path: "a.txt", status: "modified", additions: 1 },
+      { path: "b.txt", status: "added", additions: 1 },
+    ]);
+    const afterTurn = await record();
+    expect(afterTurn.changeStats).toEqual({ files: 2, additions: 2, deletions: 0 });
+    expect(afterTurn.baselineCommit).toMatch(/^[0-9a-f]{40}$/);
+
+    // `/compact` replaces the messages; the baseline is on the record, not on one of them.
+    await createThreadStore(dataDir).update(thread.id, { messages: [userMessage("s1", "摘要")] });
+    expect((await record()).baselineCommit).toBe(afterTurn.baselineCommit);
+    expect((await changesOf()).files).toHaveLength(2);
+
+    const status = (await (await request(app, `/api/threads/${thread.id}/integration`)).json()) as {
+      canCommit: boolean;
+      commitFiles: number;
+      note?: string;
+    };
+    expect(status).toMatchObject({ canCommit: true, commitFiles: 2 });
+    expect(status.note).toBeUndefined();
+
+    const committed = (await (
+      await postJson(app, `/api/threads/${thread.id}/integrate`, { action: "commit", message: "只提交任务改的" })
+    ).json()) as ThreadRecord;
+    expect(committed.outcome).toMatchObject({ kind: "committed" });
+    expect(committed.changeStats).toEqual({ files: 0, additions: 0, deletions: 0 });
+    // The baseline moved past the commit, so what it carried stops counting.
+    expect(committed.baselineCommit).not.toBe(afterTurn.baselineCommit);
+
+    const shown = (await execFileAsync("git", ["-c", "core.quotepath=false", "show", "--pretty=format:", "--name-only", "HEAD"], { cwd: repo })).stdout;
+    expect(shown.split("\n").filter((line) => line.trim() !== "")).toEqual(["a.txt", "b.txt"]);
+    // The user's three changes are still exactly what they were.
+    expect(await porcelain()).toBe(dirtyBefore);
+
+    expect((await changesOf()).files).toEqual([]);
+    const again = await postJson(app, `/api/threads/${thread.id}/integrate`, { action: "commit", message: "再来一次" });
+    expect(again.status).toBe(400);
+    expect(await again.json()).toMatchObject({ error: { code: "nothing_to_commit" } });
+  });
+
   it("看变更时顺手把过期的统计改正过来", async () => {
     const repo = await gitRepo();
     const app = makeApp(await tempDir());
@@ -860,7 +941,7 @@ describe("createApp", () => {
 
   it("回合结束时记下改动统计", async () => {
     const repo = await gitRepo();
-    const engine = createFakeEngine({ writes: { path: "引擎写的.txt", text: "一行\n" } });
+    const engine = createFakeEngine({ writes: [{ path: "引擎写的.txt", text: "一行\n" }] });
     const app = makeApp(await tempDir(), engine.factory);
     const { thread } = await setupThread(app, repo);
 

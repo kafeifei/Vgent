@@ -11,6 +11,7 @@ import {
   checkpointRefPrefix,
   createCheckpoint,
   deleteCheckpoints,
+  pinBaseline,
   restoreCheckpoint,
   snapshotTree,
 } from "./checkpoints.js";
@@ -84,6 +85,19 @@ describe.skipIf(!hasGit)("checkpoints", () => {
     expect((await git(repo, "diff", "--cached", "--name-only")).stdout).toBe(stagedBefore);
   });
 
+  it("同一秒内改的、大小又一样的文件也算进快照", async () => {
+    const repo = await repoWithHistory();
+    // Same second as the commit that wrote the index, and the same 4 bytes:
+    // git compares whole seconds, so nothing but the index's own timestamp
+    // tells it to look at the content again.
+    await writeFile(join(repo, "tracked.txt"), "two\n");
+    // Past that second, which is when a stale stat cache would start lying.
+    await sleep(1100);
+
+    const tree = await snapshotTree(repo);
+    expect((await git(repo, "cat-file", "-p", `${tree}:tracked.txt`)).stdout).toBe("two\n");
+  });
+
   it("恢复：改过的写回来，删掉的回来，之后新建的删掉，忽略的文件和真实索引都不动", async () => {
     const repo = await repoWithHistory();
     await mkdir(join(repo, "子目录"), { recursive: true });
@@ -153,18 +167,25 @@ describe.skipIf(!hasGit)("checkpoints", () => {
     expect(await createCheckpoint({ repoPath: plain, threadId: "t1" })).toBeUndefined();
   });
 
-  it(`只保留最新的 ${CHECKPOINT_RETENTION} 条引用，删除任务时全部清掉`, async () => {
+  it(`只保留最新的 ${CHECKPOINT_RETENTION} 条引用，任务基线不算在内，删除任务时全部清掉`, async () => {
     const repo = await repoWithHistory();
+    // The 任务基线 is pinned before the first turn and has to outlive every cap.
+    const baseline = await pinBaseline({ repoPath: repo, threadId: "t1" });
+    expect(baseline).toMatch(/^[0-9a-f]{40}$/);
+
     for (let i = 0; i < CHECKPOINT_RETENTION + 5; i += 1) {
       await writeFile(join(repo, "tracked.txt"), `第 ${i} 轮\n`);
       expect(await createCheckpoint({ repoPath: repo, threadId: "t1" })).toBeDefined();
     }
     const kept = await refNames(repo, "t1");
-    expect(kept).toHaveLength(CHECKPOINT_RETENTION);
-    expect(kept.at(0)).toBe(`${checkpointRefPrefix("t1")}/000006`);
-    expect(kept.at(-1)).toBe(`${checkpointRefPrefix("t1")}/000055`);
+    const numbered = kept.filter((ref) => !ref.endsWith("/base"));
+    expect(numbered).toHaveLength(CHECKPOINT_RETENTION);
+    expect(numbered.at(0)).toBe(`${checkpointRefPrefix("t1")}/000006`);
+    expect(numbered.at(-1)).toBe(`${checkpointRefPrefix("t1")}/000055`);
+    expect(kept).toContain(`${checkpointRefPrefix("t1")}/base`);
+    expect((await git(repo, "rev-parse", `${checkpointRefPrefix("t1")}/base`)).stdout.trim()).toBe(baseline);
 
-    expect(await deleteCheckpoints({ repoPath: repo, threadId: "t1" })).toBe(CHECKPOINT_RETENTION);
+    expect(await deleteCheckpoints({ repoPath: repo, threadId: "t1" })).toBe(CHECKPOINT_RETENTION + 1);
     expect(await refNames(repo, "t1")).toEqual([]);
   }, 60_000);
 }, 30_000);
@@ -306,7 +327,12 @@ describe.skipIf(!hasGit)("checkpoint 路由", () => {
     await drain(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "用工具跑一下")] }));
     const parked = await waitForStatus(app, thread.id, "awaiting-approval");
     expect(checkpointOf(parked.messages[0])).toMatchObject({ commit: expect.stringMatching(/^[0-9a-f]{40}$/) });
-    expect(await refNames(repo, thread.id)).toHaveLength(1);
+    // The first turn of a main-checkout task also pins its 任务基线, which is a
+    // ref of its own rather than a numbered checkpoint.
+    expect(await refNames(repo, thread.id)).toEqual([
+      `${checkpointRefPrefix(thread.id)}/000001`,
+      `${checkpointRefPrefix(thread.id)}/base`,
+    ]);
 
     const pending = parked.messages.at(-1)!;
     const approved = {
@@ -321,7 +347,7 @@ describe.skipIf(!hasGit)("checkpoint 路由", () => {
     await waitForSlotReleased(app, thread.id);
 
     // The continuation belongs to the turn the first message already snapshotted.
-    expect(await refNames(repo, thread.id)).toHaveLength(1);
+    expect(await refNames(repo, thread.id)).toHaveLength(2);
   });
 
   it("项目不是 git 仓库：回合照跑，只是没有快照", async () => {
@@ -422,7 +448,8 @@ describe.skipIf(!hasGit)("checkpoint 路由", () => {
 
     await drain(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "第一轮")] }));
     await waitForSlotReleased(app, thread.id);
-    expect(await refNames(repo, thread.id)).toHaveLength(1);
+    // The turn's checkpoint and the 任务基线 ref.
+    expect(await refNames(repo, thread.id)).toHaveLength(2);
 
     expect((await request(app, `/api/threads/${thread.id}`, { method: "DELETE" })).status).toBe(204);
     expect(await refNames(repo, thread.id)).toEqual([]);

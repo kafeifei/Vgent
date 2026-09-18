@@ -169,6 +169,15 @@ export interface ThreadRecord {
   error?: string;
   /** Present only for a task running in its own git worktree. */
   workspace?: ThreadWorkspace;
+  /**
+   * 任务基线 of a task that edits the project directly: the working directory as
+   * its first turn found it, kept as a commit under
+   * `refs/vgent/checkpoints/<id>/base`. Everything 改动 and 提交 look at is
+   * measured against it, so the user's own uncommitted work never counts as the
+   * task's. A worktree task uses `workspace.baseCommit` instead, and a task from
+   * before this existed has neither — it falls back to `HEAD`.
+   */
+  baselineCommit?: string;
   /** How the task was wound up — 提交 / PR / 带回主目录 / 丢弃. */
   outcome?: ThreadOutcome;
   /** Recomputed at the end of every turn and after every 收口 action. */

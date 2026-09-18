@@ -1,6 +1,6 @@
 # Vgent
 
-终端 coding agent 的壳，可插拔引擎：Claude Code、Codex（官方 harness 适配器）和自研引擎（`ToolLoopAgent` 实现的 `HarnessV1` 适配器）。**先读 `docs/architecture.md`**。
+终端 coding agent 的壳，可插拔引擎：Claude Code、Codex（官方 harness 适配器）和自研引擎（`ToolLoopAgent` 实现的 `HarnessV1` 适配器）。**先读 `docs/product.md`（做什么、每个功能落在任务生命周期哪一步；落不上的不做），再读 `docs/architecture.md`（怎么实现）**。
 
 ## AI SDK（Vercel `ai` 包）
 

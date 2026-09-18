@@ -1,3 +1,4 @@
+import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { createApiKeyModel, createCodexSubscriptionModel } from "@vgent/providers";
 import { createCodingTools } from "@vgent/tools";
@@ -5,6 +6,7 @@ import { ToolLoopAgent, isStepCount, pruneMessages, toolSearch, type LanguageMod
 import { askUserQuestionsTool } from "./ask-user-questions.js";
 import { buildInstructions, type VgentContext } from "./instructions.js";
 import { hasDeferredTools } from "./mcp.js";
+import { createMemoryTool } from "./memory.js";
 import { createToolApproval, type PermissionMode } from "./permissions.js";
 import { appendSession } from "./session-store.js";
 import type { SkillSummary } from "./skills.js";
@@ -67,6 +69,12 @@ export interface VgentEngineOptions {
   extraTools?: ToolSet;
   /** The skills index for the system prompt. Names and descriptions only; see `loadSkillsIndex`. */
   skills?: readonly SkillSummary[];
+  /**
+   * Directory the `memory` tool keeps its entries in — outside the repository,
+   * shared by every task of the project. Omitted, the tool is not offered at
+   * all and the prompt says nothing about memory.
+   */
+  memoryDir?: string;
 }
 
 /**
@@ -102,6 +110,17 @@ export function resolveModel(model: LanguageModel | string): LanguageModel {
   return createApiKeyModel(model);
 }
 
+/** The memory entries that already exist, for the prompt. A directory nobody wrote to yet is simply empty. */
+function memoryEntries(dir: string): string[] {
+  try {
+    return readdirSync(dir)
+      .filter((name) => name.endsWith(".md"))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
 /** Cheap prompt-size estimate: roughly four characters per token. */
 function estimateTokens(messages: readonly ModelMessage[]): number {
   return JSON.stringify(messages).length / 4;
@@ -120,7 +139,7 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
   const permissionMode: PermissionMode = options.permissionMode ?? "allow-edits";
   const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
   const contextTokenBudget = options.contextTokenBudget ?? DEFAULT_CONTEXT_TOKEN_BUDGET;
-  const { sessionFile, onEvent, skills } = options;
+  const { sessionFile, onEvent, skills, memoryDir } = options;
   const model = resolveModel(options.model);
   const subagents = options.subagents !== false;
 
@@ -128,6 +147,9 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
     ...createCodingTools({ workDir: repoPath }),
     askUserQuestions: askUserQuestionsTool,
     updatePlan: updatePlanTool,
+    // Only the top-level agent remembers: a subagent is handed everything it
+    // needs and has no conversation of its own worth carrying across tasks.
+    ...(memoryDir == null ? {} : { memory: createMemoryTool(memoryDir) }),
     ...(subagents
       ? createSubagentTools({
           model: options.subagentModel == null ? model : resolveModel(options.subagentModel),
@@ -158,6 +180,7 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
       subagents,
       toolSearch: deferred,
       ...(skills == null ? {} : { skills }),
+      ...(memoryDir == null ? {} : { memory: { dir: memoryDir, entries: memoryEntries(memoryDir) } }),
       ...(options.instructions == null ? {} : { extra: options.instructions }),
     }),
     tools,

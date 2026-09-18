@@ -44,6 +44,16 @@ describe("buildInstructions", () => {
     expect(text).toContain("This is the project's main working tree.");
   });
 
+  it("lists the memory directory and its existing entries, and says 暂无 when there are none", () => {
+    const withEntries = buildInstructions({ ...base, memory: { dir: "/data/memory/demo", entries: ["build-command.md", "ui-tone.md"] } });
+    expect(withEntries).toContain("/data/memory/demo");
+    expect(withEntries).toContain("build-command.md, ui-tone.md");
+
+    expect(buildInstructions({ ...base, memory: { dir: "/data/memory/demo", entries: [] } })).toContain("现有条目：暂无");
+    // No memory dir, no section at all.
+    expect(buildInstructions(base)).not.toContain("跨任务记忆");
+  });
+
   it("tells the model to check with tools before asking the user to explain a contradiction", () => {
     expect(buildInstructions(base)).toContain("investigate with tools (git, grep) before asking the");
   });

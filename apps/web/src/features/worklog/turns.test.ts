@@ -1,6 +1,6 @@
 import type { UIMessage } from "ai";
 import { describe, expect, it } from "vitest";
-import { buildTurns, runsOf } from "./turns";
+import { buildTurns, compactedOf, runsOf } from "./turns";
 
 const user = (id: string, text: string): UIMessage => ({ id, role: "user", parts: [{ type: "text", text }] });
 
@@ -73,5 +73,16 @@ describe("runsOf", () => {
     ]);
     const runs = runsOf(turns[0]?.blocks ?? []);
     expect(runs.map((run) => run.kind)).toEqual(["foldable", "open"]);
+  });
+});
+
+describe("compactedOf", () => {
+  it("reads the /compact marker off the summary message and ignores ordinary ones", () => {
+    const summary: UIMessage = {
+      ...user("u1", "上下文已压缩，以下是之前对话的摘要：\n\n…"),
+      metadata: { compacted: { before: 12, at: "2026-09-18T00:00:00.000Z" } },
+    };
+    expect(compactedOf(summary)?.before).toBe(12);
+    expect(compactedOf(user("u2", "普通消息"))).toBeUndefined();
   });
 });

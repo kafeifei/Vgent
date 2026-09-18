@@ -69,6 +69,17 @@ export class TurnResumeFailedError extends VgentServerError {
   }
 }
 
+/**
+ * A model call the server made on its own behalf (not through an engine's
+ * stream) failed upstream — the request was fine, the provider was not. The
+ * provider's own message is carried through so the user sees what broke.
+ */
+export class UpstreamModelError extends VgentServerError {
+  constructor(message: string, code = "model_failed") {
+    super({ message, status: 502, code });
+  }
+}
+
 /** The project's `repoPath` is not (inside) a git work tree, so there is nothing to diff. */
 export class NotAGitRepoError extends VgentServerError {
   constructor(message: string, code = "not_a_git_repo") {

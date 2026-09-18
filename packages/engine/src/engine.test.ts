@@ -85,6 +85,11 @@ describe("createVgentEngine", () => {
     expect((agent.tools as Record<string, { execute?: unknown }>).askUserQuestions!.execute).toBeUndefined();
   });
 
+  it("adds the memory tool only when a memory directory is given", async () => {
+    const { agent } = createVgentEngine({ model: readThenAnswer("done"), repoPath, memoryDir: join(repoPath, "..", "memory") });
+    expect(Object.keys(agent.tools ?? {})).toContain("memory");
+  });
+
   it("puts the working directory and permission mode into the instructions it sends", async () => {
     const model = readThenAnswer("ok");
     const { agent } = createVgentEngine({

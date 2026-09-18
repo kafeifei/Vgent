@@ -16,6 +16,17 @@ const GATEWAY_ENV_VARS = ["AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"] as const;
 type ModelSpec = { kind: "codex-subscription" } | { kind: "gateway" } | { kind: "invalid"; reason: string };
 
 /**
+ * Where a project's cross-task memory lives: `<dataDir>/memory/<project>`.
+ * Keyed on the *project*, not the thread, so every task of the same repository
+ * reads and writes the same notes — and on `dataDir` rather than the worktree,
+ * so reclaiming a task's directory does not take its memory with it.
+ */
+function memoryDirOf(ctx: EngineContext): string {
+  const key = `${ctx.project.name}-${ctx.project.id.slice(0, 8)}`.replace(/[^A-Za-z0-9._-]/g, "-");
+  return join(ctx.dataDir, "memory", key);
+}
+
+/**
  * What a thread's model string routes to. Mirrors `resolveModel` in
  * `@vgent/engine` — the function that really builds the model — so an unusable
  * spec is a typed 400 before the run starts instead of an error part inside a
@@ -100,6 +111,7 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
         ...(ctx.thread.alwaysAllow != null ? { alwaysAllow: ctx.thread.alwaysAllow } : {}),
         extraTools: mcp.tools,
         skills,
+        memoryDir: memoryDirOf(ctx),
         // Everything the model cannot work out for itself: which model it is,
         // which front end it is answering through, and whether this directory
         // is the project or a worktree cut from it.

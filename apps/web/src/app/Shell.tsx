@@ -11,7 +11,7 @@ import { oneLine } from "@/lib/format";
 import { usePrefs } from "@/lib/prefs";
 import { ThreadView } from "./ThreadView";
 import { TitleBar } from "./TitleBar";
-import { useWorkbench } from "./useWorkbench";
+import { isLiveThread, useWorkbench } from "./useWorkbench";
 
 /** The three-column grid. Widths come straight from the spacing tokens. */
 export function Shell({ token }: { token: string }) {
@@ -56,8 +56,12 @@ export function Shell({ token }: { token: string }) {
       { id: "left", label: left === "on" ? "收起侧栏" : "展开侧栏", hint: "⌘B", run: actions.toggleLeft },
       { id: "right", label: right.open ? "收起右栏" : "展开右栏", hint: "⌘J", run: actions.toggleRight },
       { id: "changes", label: "查看变更", run: () => actions.openChanges() },
+      // Only the in-house engine can be compacted, and only between turns.
+      ...(thread != null && thread.engine === "vgent" && !isLiveThread(thread)
+        ? [{ id: "compact", label: "压缩上下文", hint: "/compact", run: () => void actions.compactThread(thread.id) }]
+        : []),
     ],
-    [actions, left, right.open, state.threads, toggleDensity, toggleTheme],
+    [actions, left, right.open, state.threads, thread, toggleDensity, toggleTheme],
   );
 
   return (

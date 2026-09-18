@@ -48,6 +48,8 @@ export interface BuildInstructionsOptions {
   toolSearch?: boolean;
   /** Names and descriptions of the skills on this machine. Bodies are never inlined. */
   skills?: readonly SkillSummary[];
+  /** Where the `memory` tool stores its entries, and which ones already exist. Omitted, the tool is not offered. */
+  memory?: { dir: string; entries: readonly string[] };
 }
 
 const SUBAGENTS_SECTION = `Subagents:
@@ -69,6 +71,13 @@ function skillsSection(skills: readonly SkillSummary[]): string {
   return `Available skills — instructions for specific kinds of work. This is only the index; \`read\` a
 skill's SKILL.md before relying on it, and only when the task actually matches it.
 ${lines.join("\n")}`;
+}
+
+function memorySection(memory: { dir: string; entries: readonly string[] }): string {
+  return `跨任务记忆 —— \`memory\` 工具，条目存在 ${memory.dir}：
+- 现有条目：${memory.entries.length === 0 ? "暂无" : memory.entries.join(", ")}
+- 动手之前，先 \`read\` 名字看起来和本次任务相关的条目；不相关的不用读。
+- 用户让你记住某件事，或者某个事实对以后的任务有用、又没法从代码和 git 历史里读出来时，\`write\` 一条。`;
 }
 
 /** The opening sentence: what the model is and what it is running inside. */
@@ -100,6 +109,7 @@ export function buildInstructions({
   subagents,
   toolSearch,
   skills,
+  memory,
 }: BuildInstructionsOptions): string {
   const head = `${identityLine(context)}
 
@@ -141,6 +151,7 @@ has to decide. No preamble, no restating the request, no pasted diffs.`;
     ...(subagents === true ? [SUBAGENTS_SECTION] : []),
     ...(toolSearch === true ? [TOOL_SEARCH_SECTION] : []),
     ...(skills != null && skills.length > 0 ? [skillsSection(skills)] : []),
+    ...(memory == null ? [] : [memorySection(memory)]),
     tail,
     ...(extra == null || extra.trim() === "" ? [] : [extra.trim()]),
   ];

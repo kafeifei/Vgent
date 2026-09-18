@@ -106,8 +106,15 @@ function ThreadChatView({
   );
 
   const submit = () => {
-    if (draft.trim() === "") return;
-    actions.send(thread.id, draft.trim());
+    const text = draft.trim();
+    if (text === "") return;
+    // The one command the composer understands; everything else is a message.
+    if (text === "/compact") {
+      void actions.compactThread(thread.id);
+      setDraft("");
+      return;
+    }
+    actions.send(thread.id, text);
     setDraft("");
   };
 

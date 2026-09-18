@@ -189,6 +189,9 @@ export function createClient(token: string) {
     restoreWorkspace: (id: string) =>
       api<ThreadRecord>(`/threads/${id}/workspace/restore`, token, { method: "POST" }),
 
+    /** `/compact`: replaces the task's whole history with a summary of it. Vgent engine only. */
+    compactThread: (id: string) => api<ThreadRecord>(`/threads/${id}/compact`, token, { method: "POST" }),
+
     /** The engine's model list. `refresh` skips the server's 10-minute cache. */
     listModels: (engine: EngineId, refresh = false) =>
       api<ModelCatalog>(`/engines/${engine}/models${refresh ? "?refresh=1" : ""}`, token),

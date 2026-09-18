@@ -3,12 +3,14 @@ import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { ModelMessage, TextStreamPart, ToolSet, UIMessage } from "ai";
+import type { LanguageModel, ModelMessage, TextStreamPart, ToolSet, UIMessage } from "ai";
+import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp, type VgentApp } from "./app.js";
 import { createEngineRegistry, type EngineContext, type EngineFactory } from "./engines/registry.js";
 import { EngineUnavailableError } from "./errors.js";
-import type { HarnessState, Project, ThreadRecord, ThreadSummary } from "./types.js";
+import { createThreadStore } from "./store/threads.js";
+import type { HarnessState, Project, ThreadMessageMetadata, ThreadRecord, ThreadSummary } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -133,6 +135,23 @@ async function setupThread(app: VgentApp, repoPath: string, engine = "claude-cod
 }
 
 const userMessage = (id: string, text: string): UIMessage => ({ id, role: "user", parts: [{ type: "text", text }] });
+
+/** A model that answers one `generateText` call with `text` — what `/compact` needs and nothing else. */
+const summariser = (text: string): LanguageModel =>
+  new MockLanguageModelV3({
+    doGenerate: [
+      {
+        content: [{ type: "text" as const, text }],
+        finishReason: { unified: "stop" as const },
+        usage: {
+          inputTokens: { total: undefined, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+          outputTokens: { total: undefined, reasoning: undefined },
+          totalTokens: undefined,
+        },
+        warnings: [],
+      },
+    ],
+  }) as unknown as LanguageModel;
 
 /** Polls the resume endpoint until a run is actually live, so the test never races the run's start. */
 async function waitForLiveStream(app: VgentApp, threadId: string): Promise<Response> {
@@ -651,6 +670,47 @@ describe("createApp", () => {
     expect((await app.app.request(`${ORIGIN}/api/projects`)).status).toBe(401);
     expect((await request(app, "/api/nope")).status).toBe(404);
     expect((await app.app.request("http://evil.example.com/")).status).toBe(403);
+  });
+
+  it("压缩上下文：把自研引擎任务的历史换成一条摘要，并记下原来的条数", async () => {
+    const dataDir = await tempDir();
+    const app = createApp({ dataDir, token: TOKEN, compactModel: summariser("摘要内容") });
+    apps.push(app);
+    const { thread } = await setupThread(app, await tempDir(), "vgent");
+
+    // The store is the shortest way to a thread with a history: no engine has
+    // to run for the route's precondition to be interesting.
+    await createThreadStore(dataDir).update(thread.id, {
+      messages: [
+        userMessage("m1", "把登录页改成中文"),
+        { id: "m2", role: "assistant", parts: [{ type: "text", text: "改好了" }] },
+        userMessage("m3", "再加个按钮"),
+      ],
+    });
+
+    const response = await postJson(app, `/api/threads/${thread.id}/compact`, {});
+    expect(response.status).toBe(200);
+    const record = (await response.json()) as ThreadRecord;
+    expect(record.messages).toHaveLength(2);
+    expect(JSON.stringify(record.messages[0]!.parts)).toContain("摘要内容");
+    expect((record.messages[0]!.metadata as ThreadMessageMetadata).compacted).toMatchObject({ before: 3 });
+    expect(record.messages[1]!.role).toBe("assistant");
+  });
+
+  it("压缩上下文：其他引擎和空对话都被挡住", async () => {
+    const dataDir = await tempDir();
+    const app = createApp({ dataDir, token: TOKEN, compactModel: summariser("摘要内容") });
+    apps.push(app);
+
+    const { thread: harness } = await setupThread(app, await tempDir(), "claude-code");
+    const unsupported = await postJson(app, `/api/threads/${harness.id}/compact`, {});
+    expect(unsupported.status).toBe(400);
+    expect(await unsupported.json()).toMatchObject({ error: { code: "compact_unsupported" } });
+
+    const { thread: fresh } = await setupThread(app, await tempDir(), "vgent");
+    const empty = await postJson(app, `/api/threads/${fresh.id}/compact`, {});
+    expect(empty.status).toBe(400);
+    expect(await empty.json()).toMatchObject({ error: { code: "compact_empty" } });
   });
 
   it("serves a model catalog per engine and rejects an unknown one", async () => {

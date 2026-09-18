@@ -3,7 +3,7 @@ import { createClient } from "@/lib/api";
 import { ThreadChats } from "@/lib/threadChats";
 import { useServerState } from "@/lib/useServerState";
 import { useToast } from "@/lib/toast";
-import type { EngineId, PermissionMode, ThreadSummary, WorkspaceMode } from "@/lib/types";
+import type { EngineId, PermissionMode, ThreadMessageMetadata, ThreadSummary, WorkspaceMode } from "@/lib/types";
 import { LIVE_STATUSES } from "@/lib/types";
 import { repoRelative } from "@/features/changes/paths";
 import { useChanges } from "@/features/changes/useChanges";
@@ -225,6 +225,17 @@ export function useWorkbench(token: string) {
       restoreWorkspace: (threadId: string): Promise<void> =>
         client.restoreWorkspace(threadId).then(
           () => toast("已恢复"),
+          (error: Error) => toast(error.message),
+        ),
+
+      // The chat itself needs no nudge: the record's `updatedAt` moves, and
+      // `ThreadChats.refreshIfStale` re-fetches the (now two-message) history.
+      compactThread: (threadId: string): Promise<void> =>
+        client.compactThread(threadId).then(
+          (record) => {
+            const before = (record.messages[0]?.metadata as ThreadMessageMetadata | undefined)?.compacted?.before;
+            toast(`已压缩：${before ?? record.messages.length} 条消息 → 摘要`);
+          },
           (error: Error) => toast(error.message),
         ),
 

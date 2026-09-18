@@ -8,7 +8,7 @@ import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
 import { Spinner, ToolRow } from "./ToolRow";
 import type { Block, Run, Turn as TurnModel } from "./turns";
-import { approvalAnchor, isOpenApproval, isOpenQuestion, questionAnchor, runsOf } from "./turns";
+import { approvalAnchor, compactedOf, isOpenApproval, isOpenQuestion, questionAnchor, runsOf } from "./turns";
 
 export interface TurnActions {
   respondToApproval: (approvalId: string, approved: boolean) => void;
@@ -48,6 +48,8 @@ export function Turn({
   const { ref, pinned } = usePinned(isLast);
   // A finished turn folds its process blocks away; the running one stays open.
   const folded = !(isLast && live);
+  // A `/compact` summary is an ordinary user message apart from this marker.
+  const compacted = turn.user == null ? undefined : compactedOf(turn.user);
 
   return (
     <section className="flex flex-col gap-block-gap pb-xl">
@@ -60,6 +62,7 @@ export function Turn({
             pinned && "border-b-border-strong shadow-sm",
           )}
         >
+          {compacted != null && <p className="m-0 mb-2xs text-fg-muted text-xs">上下文已压缩（原 {compacted.before} 条消息）</p>}
           {turn.user.parts.map((part, index) =>
             part.type === "text" ? (
               <p key={index} className="m-0 whitespace-pre-wrap">

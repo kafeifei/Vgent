@@ -19,8 +19,10 @@ export type ApprovalDecision = "not-applicable" | "user-approval";
  * `toolSearch` only looks up tool definitions — neither touches anything.
  * `updatePlan` has no side effects either: it only replaces the todo list the
  * UI renders, never anything on disk or for the user.
+ * `memory` does write, but only inside its own directory outside the repository
+ * — never the user's code — so asking for each note would be pure friction.
  */
-const READ_ONLY_TOOLS = new Set(["read", "grep", "glob", "explore", "toolSearch", "updatePlan"]);
+const READ_ONLY_TOOLS = new Set(["read", "grep", "glob", "explore", "toolSearch", "updatePlan", "memory"]);
 
 /**
  * Tools that only surface a question to the human and have no `execute` of

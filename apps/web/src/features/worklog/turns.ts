@@ -1,4 +1,5 @@
 import { getToolName, isToolUIPart, type UIMessage } from "ai";
+import type { ThreadMessageMetadata } from "@/lib/types";
 import type { ToolPart } from "./toolMeta";
 
 export type TextPart = Extract<UIMessage["parts"][number], { type: "text" }>;
@@ -15,6 +16,10 @@ export interface Turn {
   user?: UIMessage;
   blocks: Block[];
 }
+
+/** Set on the summary message `/compact` leaves behind; absent on an ordinary user message. */
+export const compactedOf = (message: UIMessage): ThreadMessageMetadata["compacted"] =>
+  (message.metadata as ThreadMessageMetadata | undefined)?.compacted;
 
 /** The anchor ids the right-pane queue scrolls to. */
 export const approvalAnchor = (toolCallId: string): string => `approval-${toolCallId}`;

@@ -61,6 +61,11 @@ export interface ThreadMessageMetadata {
   usage?: UsageInfo;
   /** All of the turn's steps summed, for cost rather than context. */
   totalUsage?: UsageInfo;
+  /**
+   * On the summary message `/compact` left behind: how many messages it
+   * replaced, and when. The work log renders a marker from it.
+   */
+  compacted?: { before: number; at: string };
 }
 
 /** One task. Persisted whole in `threads/<id>.json`. */

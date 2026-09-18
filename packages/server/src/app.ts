@@ -1,10 +1,13 @@
 import { timingSafeEqual } from "node:crypto";
-import { UI_MESSAGE_STREAM_HEADERS, createUIMessageStreamResponse } from "ai";
+import { resolveModel } from "@vgent/engine";
+import { UI_MESSAGE_STREAM_HEADERS, createUIMessageStreamResponse, type LanguageModel } from "ai";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { BadRequestError, ConflictError, NotFoundError, UnauthorizedError, VgentServerError } from "./errors.js";
+import { compactThread } from "./compact.js";
+import { BadRequestError, ConflictError, NotFoundError, UnauthorizedError, UpstreamModelError, VgentServerError } from "./errors.js";
 import type { EngineRegistry } from "./engines/registry.js";
 import { createEngineRegistry } from "./engines/registry.js";
+import { DEFAULT_VGENT_MODEL } from "./engines/vgent.js";
 import type { Files } from "./files.js";
 import { createFiles } from "./files.js";
 import type { Git } from "./git.js";
@@ -44,6 +47,8 @@ export interface CreateAppOptions {
   webDist?: string;
   /** How long a stop waits for a run to wind down before forcing its slot open. Tests shorten it. */
   stopTimeoutMs?: number;
+  /** The summariser behind `POST /threads/:id/compact`. Unset, the thread's own model is resolved. */
+  compactModel?: LanguageModel;
 }
 
 export interface VgentApp {
@@ -356,6 +361,28 @@ export function createApp(options: CreateAppOptions): VgentApp {
       ...("alwaysAllow" in (body ?? {}) ? { alwaysAllow: readAlwaysAllow(body?.alwaysAllow) } : {}),
     });
     return c.json(record);
+  });
+
+  /**
+   * 手动 /compact：把整段历史换成一条摘要。Only the in-house engine can take
+   * it — the harness engines keep their own transcript on disk, so rewriting
+   * the stored messages would desynchronise the two.
+   */
+  app.post("/api/threads/:id/compact", async (c) => {
+    const id = c.req.param("id");
+    if (runs.isRunning(id)) throw new ConflictError("任务运行中，等它结束再压缩", "thread_running");
+    const thread = await threadOf(id);
+    if (thread.engine !== "vgent") throw new BadRequestError("只有自研引擎支持压缩上下文", "compact_unsupported");
+    if (thread.status === "awaiting-approval" || thread.status === "awaiting-input") {
+      throw new ConflictError("有待处理的审批或提问，先处理完再压缩", "compact_pending");
+    }
+    if (thread.messages.length < 2) throw new BadRequestError("没有可压缩的对话", "compact_empty");
+
+    const model = options.compactModel ?? resolveModel(thread.model ?? DEFAULT_VGENT_MODEL);
+    const { messages } = await compactThread({ thread, model }).catch((error: unknown) => {
+      throw new UpstreamModelError(`压缩失败: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    return c.json(await threads.update(id, { messages }));
   });
 
   app.delete("/api/threads/:id", async (c) => {

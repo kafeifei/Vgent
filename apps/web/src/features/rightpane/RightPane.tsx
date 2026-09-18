@@ -1,7 +1,7 @@
 import type { UIMessage } from "ai";
 import { FileDiff, FolderTree, ListChecks, ListTodo, Terminal, X } from "lucide-react";
 import { ChangesPanel } from "@/features/changes/ChangesPanel";
-import { useChanges } from "@/features/changes/useChanges";
+import type { ChangesView } from "@/features/changes/useChanges";
 import { FilesPanel } from "@/features/files/FilesPanel";
 import { PlanPanel } from "@/features/plan/PlanPanel";
 import { TerminalPanel } from "@/features/terminal/TerminalPanel";
@@ -31,9 +31,9 @@ function jumpTo(anchor: string): void {
 /**
  * Right column. 队列、变更、文件、终端、计划 all have content.
  *
- * The changes snapshot is loaded here rather than inside `ChangesPanel` so the
- * 变更 tab can carry its file count — and so a collapsed pane, which stays
- * mounted at zero width, does not keep asking git for one.
+ * The changes snapshot comes in as a prop: `useWorkbench` owns that fetch,
+ * because the composer's 审查 pill reads the same numbers and neither view may
+ * pay for its own request.
  */
 export function RightPane({
   queue,
@@ -41,12 +41,10 @@ export function RightPane({
   tab,
   onTab,
   onClose,
+  changes,
   client,
   threadId,
-  file,
-  onSelectFile,
   refreshKey,
-  toast,
   messages,
 }: {
   queue: QueueItem[];
@@ -54,26 +52,15 @@ export function RightPane({
   tab: RightTab;
   onTab: (tab: RightTab) => void;
   onClose: () => void;
+  changes: ChangesView;
   client: ApiClient;
-  /** The task whose directory the 变更 tab diffs; nothing to show without one. */
+  /** The task whose directory the 文件 tab lists; nothing to show without one. */
   threadId: string | null;
-  file: string | null;
-  onSelectFile: (path: string | null) => void;
   /** The thread's `updatedAt`: a new one means the engine wrote to disk. */
   refreshKey: string;
-  toast: (text: string) => void;
   /** The active thread's messages, for 终端 and 计划. Empty without a live thread. */
   messages: UIMessage[];
 }) {
-  const changes = useChanges({
-    client,
-    threadId,
-    active: open && tab === "changes",
-    refreshKey,
-    selected: file,
-    onSelect: onSelectFile,
-    toast,
-  });
   const changeCount = changes.snapshot?.files.length ?? 0;
 
   return (

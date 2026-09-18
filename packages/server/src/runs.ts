@@ -7,6 +7,7 @@ import {
   toUIMessageStream,
   validateUIMessages,
   type DynamicToolUIPart,
+  type LanguageModelUsage,
   type ToolUIPart,
   type UIMessage,
   type UIMessageChunk,
@@ -18,7 +19,7 @@ import type { EngineRegistry, EngineRunner } from "./engines/registry.js";
 import { statelessEngines } from "./engines/registry.js";
 import type { ProjectStore } from "./store/projects.js";
 import { DEFAULT_THREAD_TITLE, type ThreadStore } from "./store/threads.js";
-import type { Logger, ThreadRecord, ThreadStatus } from "./types.js";
+import type { Logger, ThreadMessageMetadata, ThreadRecord, ThreadStatus, UsageInfo } from "./types.js";
 import { silentLogger } from "./types.js";
 
 /** Mid-turn persists are at least this far apart; the final one always lands. */
@@ -39,6 +40,27 @@ const RAW_ERROR_TEXT_MAX_LEN = 2000;
 function rawErrorText(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
   return text.trim().slice(0, RAW_ERROR_TEXT_MAX_LEN);
+}
+
+/**
+ * v7 `LanguageModelUsage` → the flat `UsageInfo` a thread message carries.
+ *
+ * `inputTokens` is taken as reported: in v7 it is the full prompt of that call,
+ * with `inputTokenDetails.cacheReadTokens` being the cached *part* of it, not an
+ * extra amount on top. Every field is dropped when the provider left it
+ * undefined, so `exactOptionalPropertyTypes` holds and nothing lands in the
+ * thread file as an explicit null.
+ */
+function toUsageInfo(usage: LanguageModelUsage): UsageInfo {
+  const cached = usage.inputTokenDetails?.cacheReadTokens;
+  const reasoning = usage.outputTokenDetails?.reasoningTokens;
+  return {
+    ...(usage.inputTokens != null ? { inputTokens: usage.inputTokens } : {}),
+    ...(usage.outputTokens != null ? { outputTokens: usage.outputTokens } : {}),
+    ...(usage.totalTokens != null ? { totalTokens: usage.totalTokens } : {}),
+    ...(cached != null ? { cachedInputTokens: cached } : {}),
+    ...(reasoning != null ? { reasoningTokens: reasoning } : {}),
+  };
 }
 
 /** Cap on an auto-derived thread title. */
@@ -327,6 +349,21 @@ export function createRunManager(options: {
         onError: (error) => {
           rawStreamError ??= rawErrorText(error);
           return getHarnessErrorMessage(error);
+        },
+        // Token usage, attached to the assistant message so the composer's
+        // context ring has a real number instead of an estimate. Every engine
+        // funnels through here and the `HarnessV1` protocol carries the same
+        // two parts, so this covers all three without per-engine wiring.
+        //
+        // `usage` is deliberately the *last* step's, not the sum: a step's
+        // `inputTokens` is the prompt it sent, which is what "how full is the
+        // context" means, while a sum over steps double-counts the history.
+        // The reader merges each metadata object into the message, so a later
+        // step simply overwrites the earlier one's numbers.
+        messageMetadata: ({ part }): ThreadMessageMetadata | undefined => {
+          if (part.type === "finish-step") return { usage: toUsageInfo(part.usage) };
+          if (part.type === "finish") return { totalUsage: toUsageInfo(part.totalUsage) };
+          return undefined;
         },
       });
 

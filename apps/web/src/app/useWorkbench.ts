@@ -6,6 +6,7 @@ import { useToast } from "@/lib/toast";
 import type { EngineId, PermissionMode, ThreadSummary, WorkspaceMode } from "@/lib/types";
 import { LIVE_STATUSES } from "@/lib/types";
 import { repoRelative } from "@/features/changes/paths";
+import { useChanges } from "@/features/changes/useChanges";
 import type { Grouping } from "@/features/sidebar/grouping";
 import type { RightTab } from "@/features/rightpane/RightPane";
 
@@ -61,6 +62,24 @@ export function useWorkbench(token: string) {
   // A selected thread always wins over the manual project pick.
   const activeProjectId = thread?.projectId ?? projectId ?? state.projects[0]?.id ?? null;
 
+  /** The 变更 tab's selection, from the panel's own file rows. */
+  const selectChange = useCallback((file: string | null) => setRight((state) => ({ ...state, file })), []);
+
+  /**
+   * The selected task's working-tree snapshot. Loaded here, not inside
+   * `RightPane`, because the composer's 审查 pill needs the same numbers whether
+   * or not the right column is open — one hook feeding both is also what keeps
+   * it to a single fetch per `updatedAt`.
+   */
+  const changes = useChanges({
+    client,
+    threadId: selectedThreadId,
+    refreshKey: thread?.updatedAt ?? "",
+    selected: right.file,
+    onSelect: selectChange,
+    toast,
+  });
+
   const selectThread = useCallback((threadId: string | null) => {
     setSelectedThreadId(threadId);
     writeThreadToUrl(threadId);
@@ -102,8 +121,7 @@ export function useWorkbench(token: string) {
       toggleRight: () => setRight((state) => ({ ...state, open: !state.open })),
       openRight: () => setRight((state) => ({ ...state, open: true })),
       setRightTab: (tab: RightTab) => setRight((state) => ({ ...state, tab })),
-      /** The 变更 tab's selection, from the panel's own file rows. */
-      selectChange: (file: string | null) => setRight((state) => ({ ...state, file })),
+      selectChange,
 
       /**
        * A file chip in the work log. The engines report absolute paths and the
@@ -213,7 +231,7 @@ export function useWorkbench(token: string) {
       whenReady: (threadId: string) => chats.whenReady(threadId),
       toast,
     }),
-    [activeProjectId, chats, client, selectThread, state.projects, state.threads, thread, toast],
+    [activeProjectId, chats, client, selectChange, selectThread, state.projects, state.threads, thread, toast],
   );
 
   // ⌘K / ⌘N / ⌘J / ⌘B
@@ -243,6 +261,7 @@ export function useWorkbench(token: string) {
     state,
     client,
     thread,
+    changes,
     selectedThreadId,
     activeProjectId,
     view,

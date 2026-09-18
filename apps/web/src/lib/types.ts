@@ -24,10 +24,12 @@ export type {
   PermissionMode,
   Project,
   Settings,
+  ThreadMessageMetadata,
   ThreadRecord,
   ThreadStatus,
   ThreadSummary,
   ThreadWorkspace,
+  UsageInfo,
 } from "@vgent/server";
 
 /** What a new task asks for: the project's working tree, or its own worktree. */

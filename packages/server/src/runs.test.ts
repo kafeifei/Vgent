@@ -20,7 +20,7 @@ import {
 } from "./runs.js";
 import { createProjectStore } from "./store/projects.js";
 import { createThreadStore, DEFAULT_THREAD_TITLE } from "./store/threads.js";
-import type { HarnessState, Project, ThreadRecord } from "./types.js";
+import type { HarnessState, Project, ThreadMessageMetadata, ThreadRecord } from "./types.js";
 
 const TOKEN = "test-token-0123456789";
 const ORIGIN = "http://127.0.0.1:7412";
@@ -853,6 +853,19 @@ describe("vgent engine", () => {
     }),
   });
 
+  /** `textStream`, but with token counts the way a real provider reports them. */
+  const textStreamWithUsage = (text: string, usage: unknown) => ({
+    stream: simulateReadableStream({
+      chunks: [
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "t1" },
+        { type: "text-delta", id: "t1", delta: text },
+        { type: "text-end", id: "t1" },
+        { type: "finish", finishReason: { unified: "stop" }, usage },
+      ],
+    }),
+  });
+
   const mockModel = (results: unknown[]): LanguageModel =>
     new MockLanguageModelV3({ doStream: results as never }) as unknown as LanguageModel;
 
@@ -874,6 +887,31 @@ describe("vgent engine", () => {
       await postJson(app, "/api/threads", { projectId: project.id, title: "自研引擎", engine: "vgent", permissionMode })
     ).json()) as ThreadRecord;
   }
+
+  it("persists the turn's token usage as the assistant message's metadata", async () => {
+    const dataDir = await tempDir();
+    const repoPath = await tempDir();
+    const app = makeVgentApp(
+      dataDir,
+      mockModel([
+        textStreamWithUsage("算好了", {
+          inputTokens: { total: 1234, noCache: 234, cacheRead: 1000, cacheWrite: 0 },
+          outputTokens: { total: 56, reasoning: 8 },
+          totalTokens: 1290,
+        }),
+      ]),
+    );
+    const thread = await setupVgentThread(app, repoPath);
+
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "数一数")] }));
+    const done = await waitForStatus(app, thread.id, "idle");
+
+    const metadata = done.messages.at(-1)?.metadata as ThreadMessageMetadata | undefined;
+    expect(typeof metadata?.usage?.inputTokens).toBe("number");
+    // `inputTokens` is the whole prompt, cache reads included — the context size.
+    expect(metadata?.usage).toMatchObject({ inputTokens: 1234, outputTokens: 56, cachedInputTokens: 1000, reasoningTokens: 8 });
+    expect(metadata?.totalUsage).toMatchObject({ totalTokens: 1290 });
+  });
 
   it("parks on a write approval in allow-reads and writes the file once it is approved", async () => {
     const dataDir = await tempDir();

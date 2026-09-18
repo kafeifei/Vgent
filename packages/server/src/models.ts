@@ -12,6 +12,14 @@ export interface ModelEntry {
   id: string;
   label: string;
   description?: string;
+  /**
+   * The model's usable context window in tokens — the denominator of the
+   * composer's context ring. Only sources that report one fill it: Codex does
+   * (`context_window`), while the Anthropic models API and the AI Gateway list
+   * do not, so it stays undefined there and the client falls back to its own
+   * default.
+   */
+  contextWindow?: number;
 }
 
 /**
@@ -38,6 +46,12 @@ export interface CodexCatalogModel {
   description?: string;
   visibility?: string;
   priority?: number;
+  /**
+   * The window this model actually runs with. The payload also carries a larger
+   * `max_context_window` (what the model could do on another tier); the ring
+   * has to measure against the one in force, so only this one is read.
+   */
+  context_window?: number;
 }
 
 /** The slice of the gateway provider this module needs; tests pass a fake. */
@@ -109,6 +123,7 @@ function normalizeCodexModels(raw: readonly unknown[]): CodexCatalogModel[] {
       ...(typeof entry.display_name === "string" ? { display_name: entry.display_name } : {}),
       ...(typeof entry.description === "string" ? { description: entry.description } : {}),
       ...(typeof entry.priority === "number" ? { priority: entry.priority } : {}),
+      ...(typeof entry.context_window === "number" ? { context_window: entry.context_window } : {}),
     }))
     .sort((a, b) => (a.priority ?? Number.MAX_SAFE_INTEGER) - (b.priority ?? Number.MAX_SAFE_INTEGER));
 }
@@ -243,6 +258,7 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
         id: entry.slug,
         label: entry.display_name ?? entry.slug,
         ...(entry.description != null ? { description: entry.description } : {}),
+        ...(entry.context_window != null ? { contextWindow: entry.context_window } : {}),
       })),
       source: codex.source,
       ...(codex.warning != null ? { warning: codex.warning } : {}),
@@ -262,6 +278,8 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
           id: `${CODEX_SUBSCRIPTION_PREFIX}${entry.slug}`,
           label: `${CODEX_SUBSCRIPTION_PREFIX}${entry.slug}`,
           ...(entry.display_name != null ? { description: entry.display_name } : {}),
+          // Same model behind the subscription prefix, so the same window.
+          ...(entry.context_window != null ? { contextWindow: entry.context_window } : {}),
         })),
       );
     }

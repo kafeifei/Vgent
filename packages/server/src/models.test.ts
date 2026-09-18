@@ -100,6 +100,27 @@ describe("createModelCatalog", () => {
     expect(result.models.map((entry) => entry.id)).toEqual(["gpt-7"]);
   });
 
+  it("carries Codex's context_window through both engines, ignoring max_context_window", async () => {
+    const withWindow = [
+      { slug: "gpt-6-astra", display_name: "GPT-6-Astra", visibility: "list", priority: 1, context_window: 272_000, max_context_window: 872_000 },
+      { slug: "gpt-old", display_name: "GPT-Old", visibility: "list", priority: 2 },
+    ];
+    const catalog = createModelCatalog({
+      env: { CODEX_HOME: await loggedInCodexHome(withWindow) },
+      fetchCodexRemote: rejectRemote,
+    });
+
+    expect((await catalog.list("codex")).models).toEqual([
+      { id: "gpt-6-astra", label: "GPT-6-Astra", contextWindow: 272_000 },
+      { id: "gpt-old", label: "GPT-Old" },
+    ]);
+    // The `vgent` engine's prefixed mapping inherits the same window.
+    expect((await catalog.list("vgent")).models).toEqual([
+      { id: "codex-subscription:gpt-6-astra", label: "codex-subscription:gpt-6-astra", description: "GPT-6-Astra", contextWindow: 272_000 },
+      { id: "codex-subscription:gpt-old", label: "codex-subscription:gpt-old", description: "GPT-Old" },
+    ]);
+  });
+
   it("merges the prefixed Codex models with the gateway's language models for vgent", async () => {
     const gateway: GatewayModelSource = {
       getAvailableModels: async () => ({

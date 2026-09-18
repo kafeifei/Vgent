@@ -20,6 +20,7 @@ export function Shell({ token }: { token: string }) {
     state,
     client,
     thread,
+    changes,
     selectedThreadId,
     activeProjectId,
     view,
@@ -99,7 +100,15 @@ export function Shell({ token }: { token: string }) {
               <SettingsView settings={state.settings} client={client} onClose={actions.closeSettings} />
             </div>
           ) : view === "thread" && thread != null ? (
-            <ThreadView thread={thread} actions={actions} client={client} rightOpen={right.open} onQueue={onQueue} onMessages={onMessages} />
+            <ThreadView
+              thread={thread}
+              actions={actions}
+              client={client}
+              changes={changes}
+              rightOpen={right.open}
+              onQueue={onQueue}
+              onMessages={onMessages}
+            />
           ) : (
             <div className="row-span-3 min-h-0 overflow-y-auto">
               <EmptyState
@@ -122,12 +131,10 @@ export function Shell({ token }: { token: string }) {
             tab={right.tab}
             onTab={actions.setRightTab}
             onClose={actions.toggleRight}
+            changes={changes}
             client={client}
             threadId={selectedThreadId}
-            file={right.file}
-            onSelectFile={actions.selectChange}
             refreshKey={thread?.updatedAt ?? ""}
-            toast={actions.toast}
             messages={messages}
           />
         )}

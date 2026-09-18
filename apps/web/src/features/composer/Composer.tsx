@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { UIMessage } from "ai";
 import { ArrowUp, File, Folder, Plus, Square } from "lucide-react";
 import { ModelPicker, modelLabel } from "@/components/ModelPicker";
 import { dirName } from "@/features/changes/paths";
 import { baseName } from "@/lib/format";
 import { useToast } from "@/lib/toast";
-import type { EngineId, FileEntry } from "@/lib/types";
+import type { ChangedFile, EngineId, FileEntry, ModelCatalog } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { ContextRing } from "./ContextRing";
+import { sumChanges } from "./contextUsage";
 import { acceptMention, findMention, mentionSegments, type Mention } from "./mention";
 
 export const COMPOSER_PLACEHOLDER = "规划、构建，/ 输入命令，@ 引用上下文";
@@ -17,8 +20,10 @@ const MAX_ROWS = 12;
 /**
  * The composer, shared by the thread view and the empty state.
  *
- * The review bar above it keeps its slot — 审查 pill, context ring and 运行位置
- * dropdown are later steps, so it carries only the static 本机 chip for now.
+ * The review bar above it carries the task's 「改动收口」: the 审查 pill, the
+ * static 本机 chip, and the context ring at the right end. The empty state has
+ * no task, so it passes neither `messages` nor `changedFiles` and the row falls
+ * back to the chip alone (the 运行位置 dropdown is still a later step).
  *
  * `@` opens a file completion when `completeFiles` is given; the accepted
  * token is plain text in the sent message — the engines read the file itself.
@@ -33,6 +38,9 @@ export function Composer({
   model,
   onPickModel,
   completeFiles,
+  messages,
+  changedFiles,
+  onOpenChanges,
   autoFocus = false,
   big = false,
 }: {
@@ -46,6 +54,11 @@ export function Composer({
   onPickModel: (model: string | null) => void;
   /** Absent (the empty state) leaves `@` inert. */
   completeFiles?: (q: string) => Promise<FileEntry[]>;
+  /** This task's history, for the context ring. Absent = no ring. */
+  messages?: readonly UIMessage[];
+  /** This task's working-tree changes, for the 审查 pill. Absent or empty = no pill. */
+  changedFiles?: readonly ChangedFile[];
+  onOpenChanges?: () => void;
   autoFocus?: boolean;
   big?: boolean;
 }) {
@@ -60,6 +73,15 @@ export function Composer({
   /** Bumped per query; a stale response never writes state. */
   const generation = useRef(0);
   const open = mention != null && rows.length > 0;
+
+  /**
+   * The ring's denominator, taken off the very list `ModelPicker` below loads —
+   * `contextWindow` is undefined for sources that do not report one, and the
+   * ring then says so itself.
+   */
+  const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
+  const contextWindow = catalog?.models.find((entry) => entry.id === model)?.contextWindow;
+  const sums = useMemo(() => (changedFiles == null ? null : sumChanges(changedFiles)), [changedFiles]);
 
   // Auto-grow: reset, then take the content height.
   useEffect(() => {
@@ -113,6 +135,19 @@ export function Composer({
         <span className="inline-flex h-xl items-center rounded-full border border-border bg-bg-elevated px-sm text-fg-muted text-xs">
           本机
         </span>
+        {sums != null && sums.files > 0 && (
+          <button
+            type="button"
+            title={`${sums.files} 个文件有改动，点开右栏逐个看 diff`}
+            onClick={onOpenChanges}
+            className="inline-flex h-xl items-center gap-2xs rounded-full border border-border bg-bg-elevated px-sm text-fg-muted text-xs hover:border-border-strong hover:text-fg"
+          >
+            <span>审查</span>
+            <span className="font-mono text-diff-add-fg">+{sums.additions}</span>
+            <span className="font-mono text-diff-del-fg">−{sums.deletions}</span>
+          </button>
+        )}
+        {messages != null && <ContextRing messages={messages} {...(contextWindow != null ? { contextWindow } : {})} />}
       </div>
 
       <div className="relative rounded-lg border border-border bg-bg-elevated focus-within:border-border-strong">
@@ -226,6 +261,7 @@ export function Composer({
             engine={engine}
             model={model}
             onPick={onPickModel}
+            onCatalog={setCatalog}
             side="top"
             trigger={(props) => (
               <button

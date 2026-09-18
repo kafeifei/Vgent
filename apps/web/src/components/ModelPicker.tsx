@@ -30,6 +30,7 @@ export function ModelPicker({
   engine,
   model,
   onPick,
+  onCatalog,
   trigger,
   align = "start",
   side = "bottom",
@@ -37,6 +38,12 @@ export function ModelPicker({
   engine: EngineId;
   model: string | undefined;
   onPick: (model: string | null) => void;
+  /**
+   * The loaded catalog, handed up so a sibling can read a model's metadata
+   * (the composer's context ring wants `contextWindow`) off the list this
+   * picker has already fetched instead of fetching it again.
+   */
+  onCatalog?: (catalog: ModelCatalog) => void;
   trigger: (props: Parameters<Parameters<typeof Popover>[0]["trigger"]>[0]) => ReactNode;
   align?: "start" | "end";
   side?: "bottom" | "top";
@@ -44,7 +51,9 @@ export function ModelPicker({
   const [state, setState] = useState<CatalogState>({ status: "loading" });
 
   // One load per engine. The server caches each catalog for ten minutes, so
-  // remounting the picker costs nothing worth debouncing.
+  // remounting the picker costs nothing worth debouncing. `onCatalog` is
+  // deliberately not a dependency: it is an output, and refetching whenever the
+  // parent hands down a new closure is exactly what this effect must not do.
   useEffect(() => {
     const token = getToken();
     if (token == null) return;
@@ -54,7 +63,9 @@ export function ModelPicker({
       .listModels(engine)
       .then(
         (catalog) => {
-          if (!cancelled) setState({ status: "ready", catalog });
+          if (cancelled) return;
+          setState({ status: "ready", catalog });
+          onCatalog?.(catalog);
         },
         (error: unknown) => {
           if (!cancelled) setState({ status: "error", message: error instanceof Error ? error.message : String(error) });

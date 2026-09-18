@@ -27,20 +27,21 @@ const message = (error: unknown): string => (error instanceof Error ? error.mess
  * the pane on a file), so it comes in as `selected` / `onSelect` — this hook
  * only owns the two fetches.
  *
- * `active` is the pane being open on this tab: the right column stays mounted
- * when it is collapsed, and a collapsed pane must not poll git. `refreshKey`
- * is the thread's `updatedAt`, which the server bumps as the engine writes.
+ * The snapshot is loaded whenever `refreshKey` — the thread's `updatedAt`,
+ * which the server bumps as the engine writes — changes, regardless of whether
+ * the right column is open: the composer's 审查 pill shows the same numbers
+ * from a collapsed pane. The per-file diff stays lazy, since it is only fetched
+ * once something has actually selected a file, which only opening the pane does.
  */
 export function useChanges(options: {
   client: ApiClient;
   threadId: string | null;
-  active: boolean;
   refreshKey: string;
   selected: string | null;
   onSelect: (path: string | null) => void;
   toast: (text: string) => void;
 }): ChangesView {
-  const { client, threadId, active, refreshKey, selected, onSelect, toast } = options;
+  const { client, threadId, refreshKey, selected, onSelect, toast } = options;
 
   const [snapshot, setSnapshot] = useState<ChangesSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
@@ -74,8 +75,8 @@ export function useChanges(options: {
   }, [client, threadId]);
 
   useEffect(() => {
-    if (active) void load();
-  }, [active, load, refreshKey]);
+    void load();
+  }, [load, refreshKey]);
 
   const [fileDiff, setFileDiff] = useState<FileDiff | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
@@ -88,7 +89,7 @@ export function useChanges(options: {
 
   useEffect(() => {
     const mine = ++diffGeneration.current;
-    if (!active || threadId == null || selected == null || !changed) {
+    if (threadId == null || selected == null || !changed) {
       setFileDiff(null);
       setDiffError(null);
       setDiffLoading(false);
@@ -112,7 +113,7 @@ export function useChanges(options: {
       });
     // `snapshot`: a refreshed snapshot means the engine wrote again, so the
     // open diff is stale too.
-  }, [active, changed, client, threadId, selected, snapshot]);
+  }, [changed, client, threadId, selected, snapshot]);
 
   const refresh = useCallback(() => void load(), [load]);
 

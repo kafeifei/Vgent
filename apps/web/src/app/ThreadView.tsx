@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import type { Chat } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
+import type { ChangesView } from "@/features/changes/useChanges";
 import { Composer } from "@/features/composer/Composer";
 import { TaskHeader } from "@/features/taskheader/TaskHeader";
 import { WorkLog } from "@/features/worklog/WorkLog";
@@ -17,6 +18,7 @@ export function ThreadView(props: {
   thread: ThreadSummary;
   actions: WorkbenchActions;
   client: ApiClient;
+  changes: ChangesView;
   rightOpen: boolean;
   onQueue: (queue: QueueItem[]) => void;
   onMessages: (messages: UIMessage[]) => void;
@@ -43,6 +45,7 @@ function ThreadChatView({
   thread,
   actions,
   client,
+  changes,
   rightOpen,
   onQueue,
   onMessages,
@@ -51,6 +54,7 @@ function ThreadChatView({
   thread: ThreadSummary;
   actions: WorkbenchActions;
   client: ApiClient;
+  changes: ChangesView;
   rightOpen: boolean;
   onQueue: (queue: QueueItem[]) => void;
   onMessages: (messages: UIMessage[]) => void;
@@ -145,6 +149,9 @@ function ThreadChatView({
           model={thread.model}
           onPickModel={(model) => actions.setModel(thread.id, model)}
           completeFiles={completeFiles}
+          messages={messages}
+          {...(changes.snapshot != null ? { changedFiles: changes.snapshot.files } : {})}
+          onOpenChanges={() => actions.openChanges()}
         />
       </div>
     </>

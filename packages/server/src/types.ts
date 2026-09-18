@@ -30,6 +30,39 @@ export interface ThreadWorkspace {
   snapshotPath?: string;
 }
 
+/**
+ * Token counts of one model call, flattened out of the AI SDK v7
+ * `LanguageModelUsage` (whose cache / reasoning splits live in nested
+ * `inputTokenDetails` / `outputTokenDetails`).
+ *
+ * Every field is optional because a provider may report none of them. The one
+ * the client really uses is `inputTokens`: it is the *whole* prompt a call sent,
+ * cache reads included, which is exactly how much context the thread occupies.
+ */
+export interface UsageInfo {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  /** Of `inputTokens`, the part that was read from the provider's prompt cache. */
+  cachedInputTokens?: number;
+  reasoningTokens?: number;
+}
+
+/**
+ * `UIMessage.metadata` on an assistant message this server persisted.
+ *
+ * Attached by the run manager's `toUIMessageStream({ messageMetadata })`, so
+ * every engine whose stream reports usage gets it. Deliberately *not* mirrored
+ * onto `ThreadSummary`: the client derives the context ring from `messages`,
+ * and the thread list has no use for it.
+ */
+export interface ThreadMessageMetadata {
+  /** The last step's usage — its `inputTokens` is the context size at turn end. */
+  usage?: UsageInfo;
+  /** All of the turn's steps summed, for cost rather than context. */
+  totalUsage?: UsageInfo;
+}
+
 /** One task. Persisted whole in `threads/<id>.json`. */
 export interface ThreadRecord {
   version: 1;

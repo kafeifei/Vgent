@@ -85,6 +85,8 @@ export {
   verifyOwnership,
   type WorkspaceOwnership,
 } from "./workspace.js";
+export { DEFAULT_WORKTREE_MAX_COUNT, enforceWorktreeLimit } from "./worktree-limit.js";
+export { findSetupSpec, readSetupLog, runSetup, startSetup, whenSetupSettled, type SetupSpec } from "./worktree-setup.js";
 export type {
   ChangeStats,
   ConnectionInfo,
@@ -101,6 +103,7 @@ export type {
   ThreadSummary,
   ThreadWorkspace,
   UsageInfo,
+  WorkspaceSetup,
 } from "./types.js";
 /** Re-exported so the web client can type its settings form without depending on `@vgent/engine` directly. */
 export type { McpHttpServerConfig, McpServerConfig, McpStdioServerConfig } from "@vgent/engine";

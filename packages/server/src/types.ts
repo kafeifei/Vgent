@@ -14,6 +14,17 @@ export interface Project {
 }
 
 /**
+ * How the project's worktree setup script went for this task. Absent means the
+ * project has no `worktrees.json`, so nothing was ever run.
+ */
+export interface WorkspaceSetup {
+  status: "running" | "ok" | "failed";
+  startedAt: string;
+  finishedAt?: string;
+  exitCode?: number;
+}
+
+/**
  * Where a task's files live, when that is not the project's own working tree.
  * Absent means the task edits the project directly.
  */
@@ -28,6 +39,8 @@ export interface ThreadWorkspace {
   reclaimed?: boolean;
   /** The snapshot a reclaimed worktree can be restored from. */
   snapshotPath?: string;
+  /** Progress of the project's setup script; absent means there was none to run. */
+  setup?: WorkspaceSetup;
 }
 
 /**
@@ -138,6 +151,8 @@ export interface Settings {
   defaultModel?: string;
   /** MCP servers the `vgent` engine connects to per turn. Their tools are deferred; see `connectMcpServers`. */
   mcpServers?: McpServerConfig[];
+  /** How many live worktrees to keep before the oldest idle ones are reclaimed. Absent = `DEFAULT_WORKTREE_MAX_COUNT`. */
+  worktreeMaxCount?: number;
 }
 
 /**

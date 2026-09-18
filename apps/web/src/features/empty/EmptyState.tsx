@@ -1,11 +1,25 @@
 import { useState } from "react";
-import { GitBranch } from "lucide-react";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ProjectPicker } from "@/components/ProjectPicker";
 import { Composer } from "@/features/composer/Composer";
 import { ENGINES, PERMISSIONS } from "@/lib/engineOptions";
 import { useToast } from "@/lib/toast";
 import type { EngineId, PermissionMode, Project, Settings, WorkspaceMode } from "@/lib/types";
+
+/**
+ * The two run locations, with the sentence that tells them apart. 「独立检出」
+ * is spelled out because the surprise it avoids — a worktree starts from the
+ * *committed* HEAD, without your uncommitted work — is otherwise only
+ * discovered afterwards.
+ */
+const WORKSPACES: ReadonlyArray<{ id: WorkspaceMode; label: string; hint: string }> = [
+  { id: "project", label: "本机 · 主目录", hint: "直接改你手上的文件，收口时只能提交或丢弃" },
+  {
+    id: "worktree",
+    label: "本机 · worktree",
+    hint: "独立检出，从已提交的 HEAD 开出，不带你未提交的改动；完成后可提交、开 PR 或带回主目录",
+  },
+];
 
 /**
  * 「配置 + 输入」, not 「欢迎语 + 建议」: pick the repo and the run location
@@ -65,7 +79,7 @@ export function EmptyState({
   };
 
   return (
-    <div className="grid h-full min-h-0 grid-rows-[1fr_auto_auto_auto_1fr] px-md">
+    <div className="grid h-full min-h-0 grid-rows-[1fr_auto_auto_1fr] px-md">
       <div />
       <div className="mx-auto flex w-full max-w-log-max flex-col gap-sm">
         <div className="flex items-center gap-xs text-fg-muted text-sm">
@@ -93,9 +107,41 @@ export function EmptyState({
               </button>
             )}
           />
-          <span className="inline-flex h-xl items-center gap-3xs rounded-sm px-xs text-fg-muted text-sm">
-            <span>本机</span>
-          </span>
+          {/* 运行位置：一个选择器，两个值。它决定这个任务改谁的文件。 */}
+          <Popover
+            className="max-w-[calc(var(--spacing-3xl)*8)]"
+            trigger={(props) => (
+              <button
+                type="button"
+                {...props}
+                className="inline-flex h-xl items-center gap-3xs rounded-sm px-xs text-fg-muted text-sm hover:bg-bg-hover hover:text-fg"
+              >
+                <span>{WORKSPACES.find((entry) => entry.id === workspace)?.label}</span>
+                <span className="opacity-60">▾</span>
+              </button>
+            )}
+          >
+            {(close) => (
+              <>
+                <PopTitle>运行位置</PopTitle>
+                {WORKSPACES.map((entry) => (
+                  <PopItem
+                    key={entry.id}
+                    selected={entry.id === workspace}
+                    onClick={() => {
+                      setWorkspace(entry.id);
+                      close();
+                    }}
+                  >
+                    <span className="flex flex-col gap-3xs whitespace-normal">
+                      <span className="text-fg">{entry.label}</span>
+                      <span className="text-fg-faint text-xs leading-snug">{entry.hint}</span>
+                    </span>
+                  </PopItem>
+                ))}
+              </>
+            )}
+          </Popover>
           <Popover
             trigger={(props) => (
               <button
@@ -164,21 +210,6 @@ export function EmptyState({
               </>
             )}
           </Popover>
-          {/* One click, two states: where this task's edits land. */}
-          <button
-            type="button"
-            title={
-              workspace === "worktree"
-                ? "任务在自己的 git worktree 里改文件，不碰项目当前的工作区"
-                : "任务直接改项目目录，和你手上的文件是同一份"
-            }
-            aria-pressed={workspace === "worktree"}
-            onClick={() => setWorkspace((mode) => (mode === "worktree" ? "project" : "worktree"))}
-            className="inline-flex h-xl items-center gap-3xs rounded-sm px-xs text-fg-muted text-sm hover:bg-bg-hover hover:text-fg"
-          >
-            <GitBranch className="size-md" />
-            <span>{workspace === "worktree" ? "独立 worktree" : "主工作区"}</span>
-          </button>
         </div>
       </div>
 
@@ -197,28 +228,12 @@ export function EmptyState({
           }}
           reasoningEffort={reasoningEffort ?? undefined}
           onPickReasoning={setReasoningEffort}
+          location={workspace === "worktree" ? "worktree" : "主目录"}
           autoFocus
           big
         />
       </div>
 
-      <div className="mx-auto flex w-full max-w-log-max flex-wrap gap-xs">
-        <button
-          type="button"
-          onClick={() => toast("下一步")}
-          className="inline-flex h-xl items-center gap-xs rounded-full border border-border bg-bg-elevated px-md text-fg-muted text-sm hover:border-border-strong hover:text-fg"
-        >
-          规划一个想法
-          <span className="font-mono text-fg-faint text-xs">⇧Tab</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => toast("下一步")}
-          className="inline-flex h-xl items-center rounded-full border border-border bg-bg-elevated px-md text-fg-muted text-sm hover:border-border-strong hover:text-fg"
-        >
-          打开编辑器
-        </button>
-      </div>
       <div />
     </div>
   );

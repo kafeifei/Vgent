@@ -10,6 +10,7 @@ import type {
   PermissionMode,
   Project,
   Settings,
+  SetupLog,
   ThreadRecord,
   ThreadSummary,
   WorkspaceMode,
@@ -219,6 +220,9 @@ export function createClient(token: string) {
       api<ThreadRecord>(`/threads/${id}/workspace/reclaim`, token, { method: "POST" }),
     restoreWorkspace: (id: string) =>
       api<ThreadRecord>(`/threads/${id}/workspace/restore`, token, { method: "POST" }),
+
+    /** What the project's worktree setup script printed, for the 终端 tab. */
+    getSetupLog: (id: string) => api<SetupLog>(`/threads/${id}/workspace/setup-log`, token),
 
     /** `/compact`: replaces the task's whole history with a summary of it. Vgent engine only. */
     compactThread: (id: string) => api<ThreadRecord>(`/threads/${id}/compact`, token, { method: "POST" }),

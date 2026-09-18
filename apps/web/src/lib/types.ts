@@ -34,7 +34,15 @@ export type {
   ThreadSummary,
   ThreadWorkspace,
   UsageInfo,
+  WorkspaceSetup,
 } from "@vgent/server";
+
+/** `GET /api/threads/:id/workspace/setup-log`. `none` = the project has no setup config. */
+export type SetupLog = {
+  status: "none" | "running" | "ok" | "failed";
+  exitCode?: number;
+  log: string;
+};
 
 /** What a new task asks for: the project's working tree, or its own worktree. */
 export type WorkspaceMode = "project" | "worktree";

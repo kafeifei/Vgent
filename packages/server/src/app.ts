@@ -23,6 +23,8 @@ import { createThreadStore, type ThreadPatch } from "./store/threads.js";
 import type { ChangeStats, EngineId, Logger, PermissionMode, Project, ThreadRecord, ThreadWorkspace } from "./types.js";
 import { silentLogger } from "./types.js";
 import { createWorktree, reclaimWorktree, removeWorktree, restoreWorktree } from "./workspace.js";
+import { DEFAULT_WORKTREE_MAX_COUNT, enforceWorktreeLimit } from "./worktree-limit.js";
+import { failInterruptedSetups, readSetupLog, startSetup } from "./worktree-setup.js";
 
 export const VGENT_SERVER_VERSION = "0.0.1";
 
@@ -127,6 +129,15 @@ function readAlwaysAllow(value: unknown): string[] | undefined {
   return names.length === 0 ? undefined : names;
 }
 
+/** The worktree cap from a settings body. `null` restores the built-in default. */
+function readWorktreeMaxCount(value: unknown): number | undefined {
+  if (value == null) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new BadRequestError("worktreeMaxCount 必须是不小于 1 的整数", "invalid_worktree_max_count");
+  }
+  return value;
+}
+
 /** `mcpServers` from a request body, as a 400 instead of an exception. */
 function readMcpServers(value: unknown) {
   try {
@@ -171,8 +182,22 @@ export function createApp(options: CreateAppOptions): VgentApp {
     ...(options.stopTimeoutMs != null ? { stopTimeoutMs: options.stopTimeoutMs } : {}),
   });
 
-  // Nothing on disk can be mid-turn at boot; this process has no runs yet.
-  const recovered = recoverInterruptedThreads(threads, registry, log).catch((error) => log.warn("恢复中断线程失败", error));
+  /** `settings.worktreeMaxCount`, defaulted. */
+  const worktreeCap = async (): Promise<number> => (await settings.get()).worktreeMaxCount ?? DEFAULT_WORKTREE_MAX_COUNT;
+  const trimWorktrees = (): Promise<void> =>
+    worktreeCap()
+      .then((max) => enforceWorktreeLimit({ dataDir, threads, projects, max, log }))
+      .then(() => {})
+      .catch((error: unknown) => log.warn("回收超额 worktree 失败", error));
+
+  // Nothing on disk can be mid-turn at boot; this process has no runs yet — and
+  // a setup that was `running` died with the process that owned it.
+  const recovered = recoverInterruptedThreads(threads, registry, log)
+    .then(() => failInterruptedSetups(threads, log))
+    .catch((error) => log.warn("恢复中断线程失败", error));
+  // Detached: trimming snapshots directories, and the first `/api/state` waits
+  // on `recovered` — it must not also wait on a housekeeping copy.
+  void recovered.then(trimWorktrees);
 
   const app = new Hono();
 
@@ -355,7 +380,15 @@ export function createApp(options: CreateAppOptions): VgentApp {
       thread,
       snapshotPath: workspace.snapshotPath,
     });
-    return { mode: "worktree", path: workspace.path, branch, baseCommit: workspace.baseCommit };
+    // The snapshot carried the ignored files back too (`node_modules` included),
+    // so setup is not re-run and its old result stays on the record.
+    return {
+      mode: "worktree",
+      path: workspace.path,
+      branch,
+      baseCommit: workspace.baseCommit,
+      ...(workspace.setup != null ? { setup: workspace.setup } : {}),
+    };
   };
 
   app.post("/api/threads/:id/workspace/reclaim", async (c) => {
@@ -365,6 +398,18 @@ export function createApp(options: CreateAppOptions): VgentApp {
     if (thread.workspace == null) throw new ConflictError("此任务没有独立工作目录", "workspace_not_worktree");
     const workspace = await reclaimFor(thread);
     return c.json(workspace == null ? thread : await threads.update(id, { workspace }));
+  });
+
+  // What the project's setup script printed. The 终端 tab shows it as the
+  // task's first entry, so it is fetched rather than pushed through messages.
+  app.get("/api/threads/:id/workspace/setup-log", async (c) => {
+    const thread = await threadOf(c.req.param("id"));
+    const setup = thread.workspace?.setup;
+    return c.json({
+      status: setup?.status ?? "none",
+      ...(setup?.exitCode != null ? { exitCode: setup.exitCode } : {}),
+      log: await readSetupLog(dataDir, thread.id),
+    });
   });
 
   app.post("/api/threads/:id/workspace/restore", async (c) => {
@@ -410,7 +455,23 @@ export function createApp(options: CreateAppOptions): VgentApp {
     // first — and must not survive a worktree that failed to materialize.
     try {
       const workspace = await createWorktree({ dataDir, project, threadId: record.id });
-      return c.json(await threads.update(record.id, { workspace }));
+      const withWorkspace = await threads.update(record.id, { workspace });
+      // Detached: a `pnpm install` must not hold up the response, and the first
+      // message can be typed while it runs — `runs.start()` waits for it.
+      startSetup({
+        dataDir,
+        threadId: record.id,
+        workspacePath: workspace.path,
+        projectPath: project.repoPath,
+        log,
+        onStatus: async (setup) => {
+          const current = await threads.get(record.id);
+          if (current?.workspace == null) return;
+          await threads.update(record.id, { workspace: { ...current.workspace, setup } });
+        },
+      });
+      void trimWorktrees();
+      return c.json(withWorkspace);
     } catch (error) {
       await threads.remove(record.id).catch((failure) => log.warn(`回滚线程 ${record.id} 失败`, failure));
       throw error;
@@ -526,6 +587,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
       // than dropped: silently ignoring it would look exactly like an MCP
       // server whose tools never showed up.
       ...("mcpServers" in (body ?? {}) ? { mcpServers: readMcpServers(body?.mcpServers) } : {}),
+      ...("worktreeMaxCount" in (body ?? {}) ? { worktreeMaxCount: readWorktreeMaxCount(body?.worktreeMaxCount) } : {}),
     };
     return c.json(await settings.update(patch));
   });

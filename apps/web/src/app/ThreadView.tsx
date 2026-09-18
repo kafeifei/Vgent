@@ -5,6 +5,7 @@ import type { UIMessage } from "ai";
 import type { ChangesView } from "@/features/changes/useChanges";
 import { Composer } from "@/features/composer/Composer";
 import { TaskHeader } from "@/features/taskheader/TaskHeader";
+import { SetupNotice } from "@/features/workspace/SetupNotice";
 import { WorkLog } from "@/features/worklog/WorkLog";
 import { pendingQueue, type QueueItem } from "@/features/worklog/queue";
 import type { TurnActions } from "@/features/worklog/Turn";
@@ -124,22 +125,32 @@ function ThreadChatView({
 
   return (
     <>
-      <TaskHeader
-        thread={thread}
-        live={live}
-        pending={thread.pendingApprovals + queue.filter((item) => item.kind === "question").length}
-        rightOpen={rightOpen}
-        onRename={(title) => actions.rename(thread.id, title)}
-        onSetEngine={(engine) => actions.setEngine(thread.id, engine)}
-        onSetModel={(model) => actions.setModel(thread.id, model)}
-        onSetPermission={(mode) => actions.setPermission(thread.id, mode)}
-        onClearAlwaysAllow={() => actions.clearAllowedTools(thread.id)}
-        onReclaimWorkspace={() => actions.reclaimWorkspace(thread.id)}
-        onRestoreWorkspace={() => actions.restoreWorkspace(thread.id)}
-        onStop={() => actions.stop(thread.id)}
-        onToggleRight={actions.toggleRight}
-        onBlocked={() => actions.toast("运行中不能改，先停止")}
-      />
+      {/* One grid row: the header, plus the setup line when there is one. */}
+      <div>
+        <TaskHeader
+          thread={thread}
+          live={live}
+          pending={thread.pendingApprovals + queue.filter((item) => item.kind === "question").length}
+          rightOpen={rightOpen}
+          onRename={(title) => actions.rename(thread.id, title)}
+          onSetEngine={(engine) => actions.setEngine(thread.id, engine)}
+          onSetModel={(model) => actions.setModel(thread.id, model)}
+          onSetPermission={(mode) => actions.setPermission(thread.id, mode)}
+          onClearAlwaysAllow={() => actions.clearAllowedTools(thread.id)}
+          onReclaimWorkspace={() => actions.reclaimWorkspace(thread.id)}
+          onRestoreWorkspace={() => actions.restoreWorkspace(thread.id)}
+          onStop={() => actions.stop(thread.id)}
+          onToggleRight={actions.toggleRight}
+          onBlocked={() => actions.toast("运行中不能改，先停止")}
+        />
+        <SetupNotice
+          setup={thread.workspace?.setup}
+          onOpenLog={() => {
+            actions.setRightTab("term");
+            actions.openRight();
+          }}
+        />
+      </div>
 
       <WorkLog
         messages={messages}
@@ -159,12 +170,18 @@ function ThreadChatView({
           engine={thread.engine}
           model={thread.model}
           defaultModel={defaultModel}
-          onPickModel={(model) => actions.setModel(thread.id, model)}
+          // Same rule as the 思考 chip below: a running turn already carries
+          // the model it started with, so switching it mid-flight would be a lie.
+          onPickModel={(model) =>
+            live ? actions.toast("运行中不能改，先停止") : actions.setModel(thread.id, model)
+          }
           reasoningEffort={thread.reasoningEffort}
-          // Same rule as the header's pills: a running turn already carries the
-          // level it started with, so changing it mid-flight would be a lie.
+          // Same rule as the header's pills.
           onPickReasoning={(level) =>
             live ? actions.toast("运行中不能改，先停止") : actions.setReasoningEffort(thread.id, level)
+          }
+          location={
+            thread.workspace == null ? "主目录" : `worktree · ${thread.workspace.branch}`
           }
           completeFiles={completeFiles}
           messages={messages}

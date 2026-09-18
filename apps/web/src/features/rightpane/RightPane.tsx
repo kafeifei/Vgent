@@ -142,7 +142,7 @@ export function RightPane({
         ) : tab === "files" ? (
           <FilesPanel client={client} threadId={threadId} active={open} refreshKey={refreshKey} />
         ) : tab === "term" ? (
-          <TerminalPanel messages={messages} />
+          <TerminalPanel messages={messages} client={client} threadId={threadId} refreshKey={refreshKey} />
         ) : (
           <PlanPanel messages={messages} />
         )}

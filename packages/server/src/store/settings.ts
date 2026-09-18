@@ -16,6 +16,7 @@ export interface SettingsPatch {
   defaultPermissionMode?: PermissionMode;
   defaultModel?: string | undefined;
   mcpServers?: McpServerConfig[] | undefined;
+  worktreeMaxCount?: number | undefined;
 }
 
 /**
@@ -70,6 +71,10 @@ export function createSettingsStore(dataDir: string, log: Logger = silentLogger)
       if ("defaultModel" in patch) {
         if (patch.defaultModel == null) delete next.defaultModel;
         else next.defaultModel = patch.defaultModel;
+      }
+      if ("worktreeMaxCount" in patch) {
+        if (patch.worktreeMaxCount == null) delete next.worktreeMaxCount;
+        else next.worktreeMaxCount = patch.worktreeMaxCount;
       }
       settings = next;
       const work = () => writeJsonAtomic(path, next);

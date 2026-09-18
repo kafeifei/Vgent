@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { UIMessage } from "ai";
 import { Spinner } from "@/features/worklog/ToolRow";
+import type { ApiClient } from "@/lib/api";
+import type { SetupLog } from "@/lib/types";
 import { collectTerminalEntries, type TerminalEntry } from "./terminal";
 
 /** Within this many pixels of the bottom counts as "at the bottom". */
@@ -35,8 +37,52 @@ function TerminalRow({ entry }: { entry: TerminalEntry }) {
  * Owns its own scroll container so it can follow the bottom as output grows —
  * but only while the user has not scrolled away from it.
  */
-export function TerminalPanel({ messages }: { messages: UIMessage[] }) {
-  const entries = useMemo(() => collectTerminalEntries(messages), [messages]);
+export function TerminalPanel({
+  messages,
+  client,
+  threadId,
+  refreshKey,
+}: {
+  messages: UIMessage[];
+  client: ApiClient;
+  threadId: string | null;
+  /** The thread's `updatedAt`: setup finishing moves it, which re-fetches the log. */
+  refreshKey: string;
+}) {
+  // The worktree setup ran before the engine did, so it is the first entry —
+  // and it never went through the messages, so it is fetched on its own.
+  const [setup, setSetup] = useState<SetupLog | null>(null);
+  useEffect(() => {
+    if (threadId == null) {
+      setSetup(null);
+      return;
+    }
+    let cancelled = false;
+    void client.getSetupLog(threadId).then(
+      (body) => {
+        if (!cancelled) setSetup(body.log === "" ? null : body);
+      },
+      () => {
+        if (!cancelled) setSetup(null);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [client, threadId, refreshKey]);
+
+  const entries = useMemo(() => {
+    const collected = collectTerminalEntries(messages);
+    if (setup == null) return collected;
+    const head: TerminalEntry = {
+      id: "worktree-setup",
+      command: "worktree setup",
+      output: setup.log,
+      state: setup.status === "running" ? "running" : setup.status === "failed" ? "error" : "done",
+      ...(setup.exitCode != null ? { exitCode: setup.exitCode } : {}),
+    };
+    return [head, ...collected];
+  }, [messages, setup]);
   const containerRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
 

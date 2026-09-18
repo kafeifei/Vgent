@@ -21,6 +21,7 @@ import type { ProjectStore } from "./store/projects.js";
 import { DEFAULT_THREAD_TITLE, type ThreadStore } from "./store/threads.js";
 import type { ChangeStats, Logger, ThreadMessageMetadata, ThreadRecord, ThreadStatus, UsageInfo } from "./types.js";
 import { silentLogger } from "./types.js";
+import { whenSetupSettled } from "./worktree-setup.js";
 
 /** Mid-turn persists are at least this far apart; the final one always lands. */
 const PERSIST_INTERVAL_MS = 1000;
@@ -493,6 +494,10 @@ export function createRunManager(options: {
         // normal, so wait for the slot instead of rejecting it.
         await active.done.catch(() => {});
       }
+      // A fresh worktree may still be installing dependencies: the user could
+      // submit their first message the moment the task appeared. A *failed*
+      // setup does not hold the turn back — the task simply runs without it.
+      await whenSetupSettled(threadId);
       const factory = registry[thread.engine];
       if (factory == null) throw new BadRequestError(`未知引擎: ${thread.engine}`, "unknown_engine");
       // Awaited: the probe can touch the filesystem (a login store, an

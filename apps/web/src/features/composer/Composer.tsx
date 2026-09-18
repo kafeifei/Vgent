@@ -21,10 +21,10 @@ const MAX_ROWS = 12;
 /**
  * The composer, shared by the thread view and the empty state.
  *
- * The review bar above it carries the task's 「改动收口」: the 审查 pill, the
- * static 本机 chip, and the context ring at the right end. The empty state has
- * no task, so it passes neither `messages` nor `changedFiles` and the row falls
- * back to the chip alone (the 运行位置 dropdown is still a later step).
+ * The review bar above it carries the task's 「改动收口」: the 运行位置 label,
+ * the 审查 pill, and the context ring at the right end. The empty state has no
+ * task, so it passes neither `messages` nor `changedFiles` and the row falls
+ * back to the label alone — the location the new task will run in.
  *
  * `@` opens a file completion when `completeFiles` is given; the accepted
  * token is plain text in the sent message — the engines read the file itself.
@@ -41,6 +41,7 @@ export function Composer({
   onPickModel,
   reasoningEffort,
   onPickReasoning,
+  location,
   completeFiles,
   messages,
   changedFiles,
@@ -60,7 +61,9 @@ export function Composer({
   onPickModel: (model: string | null) => void;
   reasoningEffort: string | undefined;
   onPickReasoning: (level: string) => void;
-  /** Absent (the empty state) leaves `@` inert. */
+  /** Where this task runs, spelled out: 「主目录」 or 「worktree · <分支>」. */
+  location: string;
+  /** Absent (the empty state) leaves `@` inert, and hides the 「+」 button. */
   completeFiles?: (q: string) => Promise<FileEntry[]>;
   /** This task's history, for the context ring. Absent = no ring. */
   messages?: readonly UIMessage[];
@@ -139,11 +142,27 @@ export function Composer({
     onChange(next.text);
   };
 
+  /** 「+」: type the `@` for the user, at the caret, and open the completion. */
+  const insertMention = (): void => {
+    const element = textarea.current;
+    const caret = element?.selectionStart ?? value.length;
+    const head = value.slice(0, caret);
+    const token = `${head === "" || /\s$/.test(head) ? "" : " "}@`;
+    const next = head + token + value.slice(caret);
+    const position = caret + token.length;
+    pendingCaret.current = position;
+    onChange(next);
+    setMention(findMention(next, position));
+  };
+
   return (
     <div className="mx-auto w-full max-w-log-max">
       <div className="flex min-h-review-bar items-center gap-2xs pb-2xs">
-        <span className="inline-flex h-xl items-center rounded-full border border-border bg-bg-elevated px-sm text-fg-muted text-xs">
-          本机
+        <span
+          title="这个任务在哪里改文件"
+          className="inline-flex h-xl items-center rounded-full border border-border bg-bg-elevated px-sm text-fg-muted text-xs"
+        >
+          {location}
         </span>
         {sums != null && sums.files > 0 && (
           <button
@@ -247,6 +266,11 @@ export function Composer({
               }
               if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                 event.preventDefault();
+                // 排队是 M5 的事；在那之前 Enter 只提示，绝不清掉草稿。
+                if (live) {
+                  toast("运行中，先停止或等它结束");
+                  return;
+                }
                 onSubmit();
               }
             }}
@@ -258,14 +282,17 @@ export function Composer({
         </div>
 
         <div className="flex items-center gap-2xs px-xs pt-2xs pb-xs">
-          <button
-            type="button"
-            aria-label="添加上下文"
-            onClick={() => toast("下一步")}
-            className="grid size-xl flex-none place-items-center rounded-full bg-bg-inset text-fg-muted hover:bg-bg-active hover:text-fg"
-          >
-            <Plus className="size-md" />
-          </button>
+          {completeFiles != null && (
+            <button
+              type="button"
+              aria-label="添加上下文"
+              title="引用一个文件"
+              onClick={insertMention}
+              className="grid size-xl flex-none place-items-center rounded-full bg-bg-inset text-fg-muted hover:bg-bg-active hover:text-fg"
+            >
+              <Plus className="size-md" />
+            </button>
+          )}
           <span className="inline-flex h-xl items-center rounded-sm px-xs text-fg-muted text-xs">Agent</span>
           <ModelPicker
             engine={engine}

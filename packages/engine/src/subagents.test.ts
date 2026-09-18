@@ -156,6 +156,30 @@ describe("coder subagent", () => {
     expect((failed as { errorText?: string } | undefined)?.errorText).toContain("子代理不能执行需要审批的操作");
     expect(await readdir(repoPath)).toEqual(["hello-vgent.txt"]);
   });
+
+  it("runs bash for the child when the parent's alwaysAllow covers it, even in allow-reads", async () => {
+    const child = childModel([
+      toolCallStep("child-1", "bash", { command: "echo ok" }),
+      textStep("跑完了。"),
+    ]);
+    const tools: ToolSet = createSubagentTools({
+      model: child,
+      repoPath,
+      permissionMode: "allow-reads",
+      alwaysAllow: ["bash"],
+    });
+
+    const execute = tools.coder!.execute as (input: unknown, options: unknown) => AsyncIterable<UIMessage>;
+    let last: UIMessage | undefined;
+    for await (const message of execute({ task: "跑一下 echo ok" }, { toolCallId: "t1", messages: [] })) {
+      last = message;
+    }
+
+    const bashPart = last?.parts.find((part) => part.type === "tool-bash");
+    expect(bashPart).toMatchObject({ state: "output-available" });
+    expect(JSON.stringify(bashPart)).not.toContain("子代理不能执行需要审批的操作");
+    expect(JSON.stringify(bashPart)).toContain("ok");
+  });
 });
 
 describe("summarizeSubagentMessage", () => {

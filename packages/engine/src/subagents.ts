@@ -54,6 +54,8 @@ export interface CreateSubagentToolsOptions {
   permissionMode: PermissionMode;
   /** Hard cap on each child's steps. Defaults to 30 for `explore` and 60 for `coder`. */
   maxSteps?: number;
+  /** Tool names the parent has been granted standing approval for; threaded into the children's denial check. */
+  alwaysAllow?: readonly string[];
 }
 
 /**
@@ -62,7 +64,7 @@ export interface CreateSubagentToolsOptions {
  * round: anything that *would* have needed approval fails instead, and the
  * child reports the refusal in its summary.
  */
-function denyUnapproved(tools: ToolSet, mode: PermissionMode): ToolSet {
+function denyUnapproved(tools: ToolSet, mode: PermissionMode, alwaysAllow?: readonly string[]): ToolSet {
   const guarded: ToolSet = {};
   for (const [toolName, definition] of Object.entries(tools)) {
     const execute = definition.execute as ((input: unknown, options: unknown) => unknown) | undefined;
@@ -73,7 +75,7 @@ function denyUnapproved(tools: ToolSet, mode: PermissionMode): ToolSet {
     guarded[toolName] = {
       ...definition,
       execute: (input: unknown, options: unknown) => {
-        if (decideApproval({ mode, toolName, input }) === "user-approval") {
+        if (decideApproval({ mode, toolName, input, ...(alwaysAllow == null ? {} : { alwaysAllow }) }) === "user-approval") {
           throw new Error(`子代理不能执行需要审批的操作：${toolName}（当前权限模式 ${mode}）`);
         }
         return execute(input, options);
@@ -122,7 +124,7 @@ async function* streamChild(
  * user's approval in `allow-reads` exactly like a `write` would.
  */
 export function createSubagentTools(options: CreateSubagentToolsOptions): ToolSet {
-  const { model, repoPath, permissionMode, maxSteps } = options;
+  const { model, repoPath, permissionMode, maxSteps, alwaysAllow } = options;
   const codingTools = createCodingTools({ workDir: repoPath });
   const readOnlyTools: ToolSet = Object.fromEntries(
     Object.entries(codingTools).filter(([name]) => name === "read" || name === "grep" || name === "glob"),
@@ -131,14 +133,14 @@ export function createSubagentTools(options: CreateSubagentToolsOptions): ToolSe
   const exploreAgent = new ToolLoopAgent({
     model,
     instructions: EXPLORE_INSTRUCTIONS,
-    tools: denyUnapproved(readOnlyTools, permissionMode),
+    tools: denyUnapproved(readOnlyTools, permissionMode, alwaysAllow),
     stopWhen: [isStepCount(maxSteps ?? EXPLORE_MAX_STEPS)],
   });
 
   const coderAgent = new ToolLoopAgent({
     model,
     instructions: CODER_INSTRUCTIONS,
-    tools: denyUnapproved(codingTools, permissionMode),
+    tools: denyUnapproved(codingTools, permissionMode, alwaysAllow),
     stopWhen: [isStepCount(maxSteps ?? CODER_MAX_STEPS)],
   });
 

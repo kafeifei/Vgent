@@ -155,6 +155,7 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
           model: options.subagentModel == null ? model : resolveModel(options.subagentModel),
           repoPath,
           permissionMode,
+          ...(options.alwaysAllow == null ? {} : { alwaysAllow: options.alwaysAllow }),
         })
       : {}),
     ...options.extraTools,

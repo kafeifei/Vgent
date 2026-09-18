@@ -4,6 +4,7 @@ import type { Chat } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
 import type { ChangesView } from "@/features/changes/useChanges";
 import { Composer } from "@/features/composer/Composer";
+import { taskBranch, taskLocation } from "@/features/composer/location";
 import { TaskHeader } from "@/features/taskheader/TaskHeader";
 import { SetupNotice } from "@/features/workspace/SetupNotice";
 import { WorkLog } from "@/features/worklog/WorkLog";
@@ -186,6 +187,12 @@ function ThreadChatView({
     });
   };
 
+  // The row under the composer: this task's branch and the directory it edits.
+  // Both prefer the task's own record and fall back to the 变更快照, so the row
+  // is filled in before any diff has been fetched.
+  const branch = taskBranch(thread, changes.snapshot);
+  const location = taskLocation(thread, changes.snapshot);
+
   /**
    * Why the 排队条 says the queue is not moving. A turn that is still running
    * needs no explanation — it is about to take the next one.
@@ -269,8 +276,19 @@ function ThreadChatView({
             : { onSendQueued: (itemId: string) => actions.sendQueued(thread.id, itemId) })}
           onEditQueued={(itemId, text) => actions.editQueued(thread.id, itemId, text)}
           onDeleteQueued={(itemId) => actions.deleteQueued(thread.id, itemId)}
+          {...(branch != null ? { branch } : {})}
+          branchTitle={
+            thread.workspace == null ? "主目录当前分支，任务直接改这里的文件" : "这个任务自己的分支"
+          }
+          // 运行位置 is settled once the task exists, so here it is a label and
+          // not a picker; the directory itself is one hover away.
           location={
-            thread.workspace == null ? "主目录" : `worktree · ${thread.workspace.branch}`
+            <span
+              title={location.path ?? "位置未知"}
+              className="inline-flex min-w-0 items-center px-2xs text-fg-muted text-xs"
+            >
+              <span className="min-w-0 truncate">{location.label}</span>
+            </span>
           }
           completeFiles={completeFiles}
           messages={messages}

@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useState, type ComponentType } from "react";
 import type { Chat } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
-import { Plus, Settings } from "lucide-react";
+import { ListFilter, Plus, Search, Settings } from "lucide-react";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { BUILD_DETAIL, BUILD_LABEL } from "@/lib/build";
 import type { Project, ThreadSummary } from "@/lib/types";
@@ -11,7 +11,46 @@ import { TaskItem } from "./TaskItem";
 
 const GROUPINGS: readonly Grouping[] = ["project", "status", "updated"];
 
-/** Left column: new task, grouping control, grouped task list, settings foot. */
+/**
+ * One of the two plain entries at the top. They are entries, not buttons with
+ * frames: the sidebar's top is a list of places to go, and the task list below
+ * is what the eye should land on.
+ */
+function TopEntry({
+  icon: Icon,
+  label,
+  shortcut,
+  rail,
+  onClick,
+}: {
+  icon: ComponentType<{ className?: string }>;
+  label: string;
+  shortcut: string;
+  rail: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={`${label} ${shortcut}`}
+      className={cn(
+        "flex h-xl w-full items-center gap-xs rounded-md text-fg-muted text-sm hover:bg-bg-hover hover:text-fg",
+        rail ? "justify-center px-0" : "px-xs",
+      )}
+    >
+      <Icon className="size-md flex-none" />
+      {!rail && (
+        <>
+          <span>{label}</span>
+          <span className="ml-auto font-mono text-2xs text-fg-faint">{shortcut}</span>
+        </>
+      )}
+    </button>
+  );
+}
+
+/** Left column: the two top entries, the grouped task list, the settings foot. */
 export function Sidebar({
   projects,
   threads,
@@ -21,6 +60,7 @@ export function Sidebar({
   rail,
   onSelect,
   onNewTask,
+  onOpenPalette,
   onOpenSettings,
   settingsOpen,
   getChat,
@@ -36,6 +76,8 @@ export function Sidebar({
   rail: boolean;
   onSelect: (threadId: string) => void;
   onNewTask: () => void;
+  /** 搜索 ⌘K: the command palette, which is also how tasks are searched. */
+  onOpenPalette: () => void;
   onOpenSettings: () => void;
   settingsOpen: boolean;
   /** Live chats only: the sidebar reads the current action off them. */
@@ -52,38 +94,27 @@ export function Sidebar({
 
   return (
     <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-border border-r bg-bg">
-      <div className={cn("flex-none", rail ? "p-2xs" : "p-sm")}>
-        <button
-          type="button"
-          onClick={onNewTask}
-          title="新任务 ⌘N"
-          className={cn(
-            "flex h-xl w-full items-center gap-xs rounded-md border border-border bg-bg-elevated text-fg text-sm hover:border-border-strong hover:bg-bg-active",
-            rail ? "justify-center px-0" : "px-sm",
-          )}
-        >
-          <Plus className="size-md flex-none" />
-          {!rail && (
-            <>
-              <span>新任务</span>
-              <span className="ml-auto font-mono text-fg-faint text-xs">⌘N</span>
-            </>
-          )}
-        </button>
+      <div className={cn("flex flex-none flex-col gap-3xs", rail ? "p-2xs" : "p-sm pb-2xs")}>
+        <TopEntry icon={Plus} label="新任务" shortcut="⌘N" rail={rail} onClick={onNewTask} />
+        <TopEntry icon={Search} label="搜索" shortcut="⌘K" rail={rail} onClick={onOpenPalette} />
       </div>
 
+      {/* 任务 with one filter icon: what the list is grouped by is a setting of
+          the list, not a control that has to sit in the way of it. */}
       {!rail && (
-        <div className="flex flex-none px-sm pb-2xs">
+        <div className="flex flex-none items-center gap-2xs px-sm pt-xs pb-3xs">
+          <span className="min-w-0 flex-1 truncate text-2xs text-fg-faint tracking-wider">任务</span>
           <Popover
+            align="end"
             trigger={(props) => (
               <button
                 type="button"
                 {...props}
-                className="inline-flex h-lg items-center gap-3xs rounded-sm px-2xs text-2xs text-fg-faint hover:bg-bg-hover"
+                aria-label="筛选"
+                title={`分组方式：${GROUPING_LABELS[grouping]}`}
+                className="grid size-lg flex-none place-items-center rounded-sm text-fg-faint hover:bg-bg-hover hover:text-fg"
               >
-                <span>分组</span>
-                <span className="text-fg-muted">{GROUPING_LABELS[grouping]}</span>
-                <span>▾</span>
+                <ListFilter className="size-sm" />
               </button>
             )}
           >

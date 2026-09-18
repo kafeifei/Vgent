@@ -384,6 +384,18 @@ export function createApp(options: CreateAppOptions): VgentApp {
     return c.body(null, 204);
   });
 
+  /**
+   * 空状态那一行要显示的分支：新任务要么直接改这个检出，要么从它已提交的 HEAD
+   * 开出 worktree，两种都从这里出发。已经存在的任务不走这条路——它的分支在
+   * `workspace` 或者它自己的变更快照里。
+   */
+  app.get("/api/projects/:id/branch", async (c) => {
+    const id = c.req.param("id");
+    const project = await projects.get(id);
+    if (project == null) throw new NotFoundError(`项目不存在: ${id}`, "project_not_found");
+    return c.json({ repoPath: project.repoPath, branch: await git.branch(project.repoPath) });
+  });
+
   // --- changes ----------------------------------------------------------
 
   const threadOf = async (id: string): Promise<ThreadRecord> => {

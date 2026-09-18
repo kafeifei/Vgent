@@ -158,6 +158,12 @@ export function createClient(token: string) {
       }),
     deleteProject: (id: string) => api<void>(`/projects/${id}`, token, { method: "DELETE" }),
     /**
+     * The branch this project's checkout is on right now — what the row under
+     * the composer shows before a task exists. `null` means a detached HEAD.
+     */
+    getProjectBranch: (id: string) =>
+      api<{ repoPath: string; branch: string | null }>(`/projects/${id}/branch`, token),
+    /**
      * Native folder chooser — the desktop shell's own dialog when there is one,
      * the server's `osascript` panel otherwise. `null` means the user cancelled,
      * which must not be mistaken for "no native picker here".

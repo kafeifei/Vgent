@@ -1,11 +1,11 @@
-import { AlignJustify, Folder, Moon, Sun } from "lucide-react";
+import { Folder } from "lucide-react";
 import { ProjectPicker } from "@/components/ProjectPicker";
-import { usePrefs } from "@/lib/prefs";
 import type { Project } from "@/lib/types";
 
 /**
- * The 36px window bar: brand + project switch on the left, the two global
- * toggles and ⌘K on the right. Settings live at the sidebar foot, not here.
+ * The 36px window bar: brand + project switch on the left, the connection state
+ * on the right. Nothing else — 新任务 and 搜索 are sidebar entries, 主题 and 密度
+ * are an 外观 section in 设置, and 设置 itself is at the sidebar foot.
  */
 export function TitleBar({
   projects,
@@ -13,7 +13,6 @@ export function TitleBar({
   onSelectProject,
   onAddProject,
   onPickFolder,
-  onOpenPalette,
   connected,
 }: {
   projects: Project[];
@@ -21,10 +20,8 @@ export function TitleBar({
   onSelectProject: (projectId: string) => void;
   onAddProject: (repoPath: string) => Promise<void>;
   onPickFolder: () => Promise<string | null>;
-  onOpenPalette: () => void;
   connected: boolean;
 }) {
-  const { theme, density, toggleTheme, toggleDensity } = usePrefs();
   const project = projects.find((entry) => entry.id === projectId);
 
   return (
@@ -59,32 +56,6 @@ export function TitleBar({
       <span className="flex-1" />
 
       {!connected && <span className="text-danger text-xs">连接断开</span>}
-
-      <button
-        type="button"
-        title="密度（舒适 / 紧凑）"
-        onClick={toggleDensity}
-        className="inline-flex h-xl items-center gap-2xs rounded-sm px-xs text-fg-muted text-xs hover:bg-bg-hover hover:text-fg"
-      >
-        <AlignJustify className="size-md" />
-        {density === "compact" ? "紧凑" : "舒适"}
-      </button>
-      <button
-        type="button"
-        title="主题"
-        onClick={toggleTheme}
-        className="inline-flex h-xl items-center gap-2xs rounded-sm px-xs text-fg-muted text-xs hover:bg-bg-hover hover:text-fg"
-      >
-        {theme === "light" ? <Sun className="size-md" /> : <Moon className="size-md" />}
-        {theme === "light" ? "浅色" : "深色"}
-      </button>
-      <button
-        type="button"
-        onClick={onOpenPalette}
-        className="inline-flex h-xl items-center rounded-sm px-xs font-mono text-fg-muted text-xs hover:bg-bg-hover hover:text-fg"
-      >
-        ⌘K
-      </button>
     </header>
   );
 }

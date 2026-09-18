@@ -80,7 +80,6 @@ export function Shell({ token }: { token: string }) {
         onSelectProject={actions.selectProject}
         onAddProject={actions.addProject}
         onPickFolder={actions.pickFolder}
-        onOpenPalette={actions.openPalette}
         connected={state.connected}
       />
 
@@ -101,6 +100,7 @@ export function Shell({ token }: { token: string }) {
           rail={left === "rail"}
           onSelect={actions.selectThread}
           onNewTask={actions.newTask}
+          onOpenPalette={actions.openPalette}
           onOpenSettings={actions.openSettings}
           settingsOpen={settingsOpen}
           getChat={actions.getChat}

@@ -65,6 +65,8 @@ export interface FileDiff {
 export type DiffBase = string | { tree: string } | { from: string; to: string } | { none: true };
 
 export interface Git {
+  /** The branch a checkout is on right now; `null` when HEAD is detached. */
+  branch(repoPath: string): Promise<string | null>;
   /** `base` defaults to HEAD, or the empty tree in a repo with no commit yet. */
   changes(repoPath: string, base?: DiffBase): Promise<ChangesSnapshot>;
   fileDiff(repoPath: string, path: string, base?: DiffBase): Promise<FileDiff>;
@@ -286,6 +288,12 @@ export function createGit(options: CreateGitOptions = {}): Git {
     return changesWith(repoPath, await diffPair(repoPath, base));
   }
 
+  /** The branch alone, for a repo no task has claimed yet — the 空状态 row asks this. */
+  async function branch(repoPath: string): Promise<string | null> {
+    await assertRepo(repoPath);
+    return currentBranch(repoPath);
+  }
+
   /** Rejects anything that could escape the repo before it ever reaches git. */
   function checkPath(repoPath: string, raw: string): string {
     if (raw.length === 0) throw new BadRequestError("path 不能为空", "invalid_path");
@@ -374,5 +382,5 @@ export function createGit(options: CreateGitOptions = {}): Git {
     return { path: entry.path };
   }
 
-  return { changes, fileDiff, revert };
+  return { branch, changes, fileDiff, revert };
 }

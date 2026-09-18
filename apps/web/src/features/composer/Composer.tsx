@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { UIMessage } from "ai";
-import { ArrowUp, File, Folder, ListPlus, Plus, Square } from "lucide-react";
+import { ArrowUp, AtSign, File, Folder, ListPlus, Plus, Square, X } from "lucide-react";
 import { ModelPicker, effectiveModel } from "@/components/ModelPicker";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ReasoningPicker } from "@/components/ReasoningPicker";
@@ -9,8 +9,7 @@ import { baseName } from "@/lib/format";
 import { useToast } from "@/lib/toast";
 import type { ChangedFile, EngineDescriptor, EngineId, FileEntry, ModelCatalog, PermissionMode, QueuedMessage, ThreadMode } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { ContextRing } from "./ContextRing";
-import { sumChanges } from "./contextUsage";
+import { ComposerStatusBar } from "./ComposerStatusBar";
 import { QueueStrip } from "./QueueStrip";
 import { acceptMention, findMention, mentionSegments, type Mention } from "./mention";
 import { isImeKeyEvent } from "@/lib/ime";
@@ -30,10 +29,11 @@ const MAX_ROWS = 12;
 /**
  * The composer, shared by the thread view and the empty state.
  *
- * The review bar above it carries the task's 「改动收口」: the 运行位置 label,
- * the 审查 pill, and the context ring at the right end. The empty state has no
- * task, so it passes neither `messages` nor `changedFiles` and the row falls
- * back to the label alone — the location the new task will run in.
+ * Inside the box: 「+」, the 模式 chip (only when the mode is not the default
+ * Agent), 模型, 思考, and 发送 / 停止. Under the box, `ComposerStatusBar` carries
+ * the task's ground — 分支, 运行位置, 审查 pill, and the context ring — because
+ * 「在哪跑」 has to be readable in every task, not only while creating one. Above
+ * the box there is nothing left but the queue and the 能力缺失 notice.
  *
  * `@` opens a file completion when `completeFiles` is given; the accepted
  * token is plain text in the sent message — the engines read the file itself.
@@ -60,6 +60,8 @@ export function Composer({
   onInterruptWithQueued,
   onEditQueued,
   onDeleteQueued,
+  branch,
+  branchTitle,
   location,
   completeFiles,
   messages,
@@ -97,8 +99,11 @@ export function Composer({
   onInterruptWithQueued?: ((itemId: string) => void) | undefined;
   onEditQueued?: (itemId: string, text: string) => void;
   onDeleteQueued?: (itemId: string) => void;
-  /** Where this task runs, spelled out: 「主目录」 or 「worktree · <分支>」. */
-  location: string;
+  /** 分支 for the row under the box; absent on a detached HEAD or a non-repo. */
+  branch?: string | undefined;
+  branchTitle?: string | undefined;
+  /** 运行位置 for that same row: the picker in the empty state, a label in a task. */
+  location: ReactNode;
   /** Absent (the empty state) leaves `@` inert, and hides the 「+」 button. */
   completeFiles?: (q: string) => Promise<FileEntry[]>;
   /** This task's history, for the context ring. Absent = no ring. */
@@ -130,16 +135,17 @@ export function Composer({
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const running = effectiveModel(model, catalog);
   const contextWindow = catalog?.models.find((entry) => entry.id === running)?.contextWindow;
-  const sums = useMemo(() => (changedFiles == null ? null : sumChanges(changedFiles)), [changedFiles]);
 
   // 能力缺失就明说，不装：an engine that cannot ask gets a sentence, not a
   // control the user would only find out is dead by clicking it.
   const descriptor = engines.find((entry) => entry.id === engine);
   const noApprovals = descriptor != null && !descriptor.capabilities.approvals && runMode !== "allow-all";
-  // Same rule for Plan: the chip is dead rather than absent, and it says why.
+  // Same rule for Plan: the row is dead rather than absent, and it says why.
   const planSupported = descriptor?.capabilities.planMode === true;
   const planReason = planSupported ? undefined : `${descriptor?.label ?? "这个引擎"} 不支持 Plan 模式`;
   const canSwitchMode = !live && planSupported;
+  /** Leaving a non-default mode is allowed even where entering it no longer is. */
+  const canLeaveMode = !live;
 
   /**
    * Picking another engine's model can take Plan away. Falling back silently
@@ -214,30 +220,13 @@ export function Composer({
 
   return (
     <div className="mx-auto w-full max-w-log-max">
-      <div className="flex min-h-review-bar items-center gap-2xs pb-2xs">
-        <span
-          title="这个任务在哪里改文件"
-          className="inline-flex h-xl items-center rounded-full border border-border bg-bg-elevated px-sm text-fg-muted text-xs"
-        >
-          {location}
-        </span>
-        {noApprovals && (
-          <span className="min-w-0 truncate text-fg-faint text-xs">{descriptor?.label} 不支持审批，这个任务会全自动运行</span>
-        )}
-        {sums != null && sums.files > 0 && (
-          <button
-            type="button"
-            title={`${sums.files} 个文件有改动，点开右栏逐个看 diff`}
-            onClick={onOpenChanges}
-            className="inline-flex h-xl items-center gap-2xs rounded-full border border-border bg-bg-elevated px-sm text-fg-muted text-xs hover:border-border-strong hover:text-fg"
-          >
-            <span>审查</span>
-            <span className="font-mono text-diff-add-fg">+{sums.additions}</span>
-            <span className="font-mono text-diff-del-fg">−{sums.deletions}</span>
-          </button>
-        )}
-        {messages != null && <ContextRing messages={messages} {...(contextWindow != null ? { contextWindow } : {})} />}
-      </div>
+      {noApprovals && (
+        <div className="flex min-h-review-bar items-center pb-2xs">
+          <span className="min-w-0 truncate text-fg-faint text-xs">
+            {descriptor?.label} 不支持审批，这个任务会全自动运行
+          </span>
+        </div>
+      )}
 
       <div className="relative rounded-lg border border-border bg-bg-elevated focus-within:border-border-strong">
         {open && (
@@ -362,19 +351,8 @@ export function Composer({
         </div>
 
         <div className="flex items-center gap-2xs px-xs pt-2xs pb-xs">
-          {completeFiles != null && (
-            <button
-              type="button"
-              aria-label="添加上下文"
-              title="引用一个文件"
-              onClick={insertMention}
-              className="grid size-xl flex-none place-items-center rounded-full bg-bg-inset text-fg-muted hover:bg-bg-active hover:text-fg"
-            >
-              <Plus className="size-md" />
-            </button>
-          )}
-          {/* 模式 chip. Plan is the quiet accent: which mode the next message
-              runs in has to be readable without opening anything. */}
+          {/* 「+」: one small menu — 引用文件 and 模式. The mode chip is gone from
+              the default mode, so this is where Plan is reached by mouse. */}
           <Popover
             className="max-w-[calc(var(--spacing-3xl)*8)]"
             side="top"
@@ -382,39 +360,75 @@ export function Composer({
               <button
                 type="button"
                 {...props}
-                disabled={!canSwitchMode}
-                {...(planReason != null ? { title: planReason } : { title: "⇧Tab 切换模式" })}
-                className={cn(
-                  "inline-flex h-xl items-center gap-3xs rounded-sm px-xs text-xs disabled:cursor-not-allowed disabled:opacity-50",
-                  mode === "plan" ? "bg-brand-bg text-brand" : "text-fg-muted hover:bg-bg-hover hover:text-fg",
-                )}
+                aria-label="添加上下文和模式"
+                title="引用文件、切换模式"
+                className="grid size-xl flex-none place-items-center rounded-full bg-bg-inset text-fg-muted hover:bg-bg-active hover:text-fg"
               >
-                <span>{MODES.find((entry) => entry.id === mode)?.label}</span>
-                <span className="opacity-60">▾</span>
+                <Plus className="size-md" />
               </button>
             )}
           >
             {(close) => (
               <>
-                <PopTitle>模式</PopTitle>
-                {MODES.map((entry) => (
+                {completeFiles != null && (
                   <PopItem
-                    key={entry.id}
-                    selected={entry.id === mode}
+                    hint="@"
                     onClick={() => {
-                      onPickMode(entry.id);
                       close();
+                      insertMention();
                     }}
                   >
-                    <span className="flex flex-col gap-3xs whitespace-normal">
-                      <span className="text-fg">{entry.label}</span>
-                      <span className="text-fg-faint text-xs leading-snug">{entry.hint}</span>
+                    <span className="inline-flex items-center gap-2xs">
+                      <AtSign className="size-sm flex-none text-fg-faint" />
+                      引用文件
                     </span>
                   </PopItem>
-                ))}
+                )}
+                <PopTitle>模式</PopTitle>
+                {MODES.map((entry) => {
+                  const blocked = entry.id === "plan" && !planSupported;
+                  return (
+                    <PopItem
+                      key={entry.id}
+                      selected={entry.id === mode}
+                      // A live turn already runs in its mode; changing it now
+                      // would only be a lie about what is happening.
+                      disabled={blocked || (!canLeaveMode && entry.id !== mode)}
+                      {...(blocked && planReason != null ? { hint: "不支持", title: planReason } : {})}
+                      onClick={() => {
+                        onPickMode(entry.id);
+                        close();
+                      }}
+                    >
+                      <span className="flex flex-col gap-3xs whitespace-normal">
+                        <span className="text-fg">{entry.label}</span>
+                        <span className="text-fg-faint text-xs leading-snug">{entry.hint}</span>
+                      </span>
+                    </PopItem>
+                  );
+                })}
               </>
             )}
           </Popover>
+          {/* 模式 chip, only away from the default: what the next message does
+              differently has to be readable, and one × puts it back. */}
+          {mode !== "agent" && (
+            <span className="inline-flex h-xl flex-none items-center gap-3xs rounded-sm bg-brand-bg pr-3xs pl-xs text-brand text-xs">
+              <span title={MODES.find((entry) => entry.id === mode)?.hint}>
+                {MODES.find((entry) => entry.id === mode)?.label}
+              </span>
+              <button
+                type="button"
+                aria-label="回到 Agent 模式"
+                title="回到 Agent 模式（⇧Tab）"
+                disabled={!canLeaveMode}
+                onClick={() => onPickMode("agent")}
+                className="grid size-md place-items-center rounded-full hover:bg-bg-active disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <X className="size-xs" />
+              </button>
+            </span>
+          )}
           <ModelPicker
             engines={engines}
             engine={engine}
@@ -478,6 +492,16 @@ export function Composer({
           </button>
         </div>
       </div>
+
+      <ComposerStatusBar
+        {...(branch != null ? { branch } : {})}
+        {...(branchTitle != null ? { branchTitle } : {})}
+        location={location}
+        {...(changedFiles != null ? { changedFiles } : {})}
+        {...(onOpenChanges != null ? { onOpenChanges } : {})}
+        {...(messages != null ? { messages } : {})}
+        {...(contextWindow != null ? { contextWindow } : {})}
+      />
     </div>
   );
 }

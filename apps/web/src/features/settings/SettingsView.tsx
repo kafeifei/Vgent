@@ -6,6 +6,7 @@ import { ApiError, type ApiClient } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import type { EngineDescriptor, McpServerConfig, PermissionMode, Settings } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { AppearanceSection } from "./AppearanceSection";
 import { EMPTY_MCP_FORM, fromForm, toForm, type McpForm } from "./mcpForm";
 import { NotificationsSection } from "./NotificationsSection";
 import { ProvidersSection } from "./ProvidersSection";
@@ -50,6 +51,18 @@ const stableStringify = (value: unknown): string =>
       ? Object.fromEntries(Object.entries(val as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)))
       : val,
   );
+
+/**
+ * 主题 and 密度 are not part of this page's draft: 外观 applies and stores them
+ * on the click. Keeping them out of both the comparison and the payload is what
+ * stops 保存 from writing back the theme this page was *opened* with.
+ */
+function withoutAppearance(settings: Settings): Omit<Settings, "theme" | "density"> {
+  const { theme: _theme, density: _density, ...rest } = settings;
+  return rest;
+}
+
+const settingsKey = (settings: Settings): string => stableStringify(withoutAppearance(settings));
 
 function describeServer(config: McpServerConfig): { kind: string; detail: string } {
   if ("command" in config) return { kind: "stdio", detail: [config.command, ...(config.args ?? [])].join(" ") };
@@ -169,10 +182,13 @@ function McpFormPanel({
 }
 
 /**
- * The settings page: 运行模式, the global tool allowlist, the default model, the
- * worktree cap, and the MCP server list. One local draft, edited freely and
- * sent whole on 保存; the server snapshot only overwrites it while there is
- * nothing unsaved to lose.
+ * The settings page: 运行模式, the global tool allowlist, 外观, 系统通知, the
+ * model providers, the default model, the worktree cap, and the MCP server
+ * list. One local draft, edited freely and sent whole on 保存; the server
+ * snapshot only overwrites it while there is nothing unsaved to lose.
+ *
+ * 外观 is the exception — it writes on the click and is kept out of the draft
+ * entirely (see `withoutAppearance`).
  */
 export function SettingsView({
   settings,
@@ -188,7 +204,7 @@ export function SettingsView({
 }) {
   const toast = useToast();
   const [draft, setDraft] = useState<Settings | null>(settings);
-  const [savedSnapshot, setSavedSnapshot] = useState<string | null>(settings == null ? null : stableStringify(settings));
+  const [savedSnapshot, setSavedSnapshot] = useState<string | null>(settings == null ? null : settingsKey(settings));
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [form, setForm] = useState<McpForm | null>(null);
@@ -201,9 +217,9 @@ export function SettingsView({
   useEffect(() => {
     if (settings == null) return;
     setDraft((current) =>
-      current != null && savedSnapshot != null && stableStringify(current) !== savedSnapshot ? current : settings,
+      current != null && savedSnapshot != null && settingsKey(current) !== savedSnapshot ? current : settings,
     );
-    setSavedSnapshot(stableStringify(settings));
+    setSavedSnapshot(settingsKey(settings));
     // `savedSnapshot` is read as "the last snapshot before this update", not a dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings]);
@@ -220,7 +236,7 @@ export function SettingsView({
     return <div className="p-md text-fg-faint text-sm">加载中…</div>;
   }
 
-  const dirty = savedSnapshot != null && stableStringify(draft) !== savedSnapshot;
+  const dirty = savedSnapshot != null && settingsKey(draft) !== savedSnapshot;
   const update = (patch: Partial<Settings>) => setDraft((current) => (current == null ? current : { ...current, ...patch }));
   // 选模型即选引擎, here too: the pair is written together. `defaultModel` is
   // optional-string under `exactOptionalPropertyTypes`, so clearing it means
@@ -239,10 +255,12 @@ export function SettingsView({
     setSaving(true);
     setSaveError(null);
     void client
-      .putSettings(draft)
+      // 外观 owns 主题 / 密度 and writes them on the click, so they are left out
+      // of this payload — sending the snapshot back would undo a later change.
+      .putSettings(withoutAppearance(draft))
       .then((result) => {
         setDraft(result);
-        setSavedSnapshot(stableStringify(result));
+        setSavedSnapshot(settingsKey(result));
         toast("已保存");
       })
       .catch((error: Error) => setSaveError(error.message))
@@ -362,6 +380,8 @@ export function SettingsView({
           {allowlist.length === 0 && <p className="text-fg-faint text-xs">还没有一直允许的工具。审批卡上点「一直允许」会加到这里。</p>}
         </div>
       </section>
+
+      <AppearanceSection />
 
       <NotificationsSection
         enabled={draft.systemNotifications !== false}

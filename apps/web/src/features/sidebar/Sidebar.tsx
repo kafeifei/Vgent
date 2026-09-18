@@ -25,6 +25,7 @@ export function Sidebar({
   settingsOpen,
   getChat,
   onArchive,
+  onUnread,
   onDelete,
 }: {
   projects: Project[];
@@ -40,6 +41,8 @@ export function Sidebar({
   /** Live chats only: the sidebar reads the current action off them. */
   getChat: (threadId: string) => Chat<UIMessage>;
   onArchive: (threadId: string, archived: boolean) => void;
+  /** 标为未读 / 标为已读 from the row's menu. */
+  onUnread: (threadId: string, unread: boolean) => void;
   onDelete: (threadId: string) => void;
 }) {
   const groups = groupThreads(threads, projects, grouping);
@@ -138,6 +141,7 @@ export function Sidebar({
                     chat={thread.status === "running" ? getChat(thread.id) : undefined}
                     onSelect={() => onSelect(thread.id)}
                     onArchive={(archived) => onArchive(thread.id, archived)}
+                    onUnread={(unread) => onUnread(thread.id, unread)}
                     onDelete={() => onDelete(thread.id)}
                   />
                 ))}

@@ -154,6 +154,56 @@ describe("createVgentEngine", () => {
     expect(result.toolResults).toHaveLength(0);
   });
 
+  /**
+   * What 自动改文件 (the default run mode) does and does not hand over: writes
+   * inside the working directory run unattended, a write that points outside it
+   * fails in the tool rather than asking, and shell commands still stop for the
+   * human unless the allowlist names them.
+   */
+  it("in allow-edits, writes cannot leave the working directory and bash still asks", async () => {
+    const escape = join(repoPath, "..", `vgent-escape-${Date.now()}.txt`);
+    const model = new MockLanguageModelV3({
+      doGenerate: [
+        {
+          content: [
+            {
+              type: "tool-call" as const,
+              toolCallId: "call-1",
+              toolName: "write",
+              input: JSON.stringify({ file_path: escape, content: "escaped" }),
+            },
+          ],
+          finishReason: { unified: "tool-calls" as const },
+          usage: NO_USAGE,
+          warnings: [],
+        },
+        {
+          content: [
+            {
+              type: "tool-call" as const,
+              toolCallId: "call-2",
+              toolName: "bash",
+              input: JSON.stringify({ command: "rm -rf /" }),
+            },
+          ],
+          finishReason: { unified: "tool-calls" as const },
+          usage: NO_USAGE,
+          warnings: [],
+        },
+      ],
+    });
+    const { agent } = createVgentEngine({ model, repoPath, permissionMode: "allow-edits" });
+
+    const result = await agent.generate({ prompt: "Write outside, then clean up." });
+
+    const failed = result.steps[0]?.content.find((part) => part.type === "tool-error");
+    expect(String((failed as { error?: unknown } | undefined)?.error)).toMatch(/outside the working directory/);
+    await expect(readFile(escape, "utf8")).rejects.toThrow();
+    // The shell command is a different question, and 自动改文件 does not answer it.
+    expect(result.content.some((part) => part.type === "tool-approval-request")).toBe(true);
+    expect(result.toolResults).toHaveLength(0);
+  });
+
   it("appends the turn to the session file and loads it back", async () => {
     const sessionFile = join(repoPath, ".vgent", "session.jsonl");
     const { agent } = createVgentEngine({

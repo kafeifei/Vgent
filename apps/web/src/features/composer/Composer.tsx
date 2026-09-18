@@ -57,6 +57,7 @@ export function Composer({
   queue,
   queueNote,
   onSendQueued,
+  onInterruptWithQueued,
   onEditQueued,
   onDeleteQueued,
   location,
@@ -92,6 +93,8 @@ export function Composer({
   queueNote?: string | undefined;
   /** 「发送」 on the head item. Absent while the task is live. */
   onSendQueued?: ((itemId: string) => void) | undefined;
+  /** 「打断并发送」 on the head item. Present only while the task is live. */
+  onInterruptWithQueued?: ((itemId: string) => void) | undefined;
   onEditQueued?: (itemId: string, text: string) => void;
   onDeleteQueued?: (itemId: string) => void;
   /** Where this task runs, spelled out: 「主目录」 or 「worktree · <分支>」. */
@@ -272,6 +275,7 @@ export function Composer({
             items={queue}
             note={queueNote}
             onSend={onSendQueued}
+            onInterrupt={onInterruptWithQueued}
             onEdit={onEditQueued}
             onDelete={onDeleteQueued}
           />

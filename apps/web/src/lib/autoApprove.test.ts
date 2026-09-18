@@ -46,6 +46,21 @@ describe("pendingAutoApprovals", () => {
     expect(pendingAutoApprovals(bashCall("rm -rf /"), ["bash"])).toEqual(["ap1"]);
   });
 
+  /**
+   * This is the harness engines' only allowlist: they decide approvals inside
+   * themselves, so the sub-command rule has to hold here as well as in the
+   * engine's own `decideApproval`.
+   */
+  it("needs the sub-command for a composite head, and drops the legacy `bash(git)`", () => {
+    expect(pendingAutoApprovals(bashCall("git push"), ["bash(git push)"])).toEqual(["ap1"]);
+    expect(pendingAutoApprovals(bashCall("git push"), ["bash(git)"])).toEqual([]);
+    expect(pendingAutoApprovals(bashCall("git commit -m wip"), ["bash(git commit)"])).toEqual(["ap1"]);
+    expect(pendingAutoApprovals(bashCall("git commit -m wip && git push"), ["bash(git commit)"])).toEqual([]);
+    expect(pendingAutoApprovals(bashCall("git -C /other push"), ["bash(git push)"])).toEqual([]);
+    expect(pendingAutoApprovals(bashCall("docker compose up -d"), ["bash(docker compose)"])).toEqual(["ap1"]);
+    expect(pendingAutoApprovals(bashCall("docker rm -f box"), ["bash(docker compose)"])).toEqual([]);
+  });
+
   it("covers dynamic tools, which is how MCP tools arrive", () => {
     const part = {
       type: "dynamic-tool",

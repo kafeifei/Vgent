@@ -1,15 +1,18 @@
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
+import type { Settings, UiDensity, UiTheme } from "./types";
 
 /**
  * Theme and density live on `<html>` as `data-theme` / `data-density`, exactly
- * like the prototype, and are mirrored into `localStorage`. The bootstrap
- * script in `index.html` applies them before first paint; this module is only
- * the runtime toggle.
+ * like the prototype. The *stored* copy is the server's (`Settings.theme` /
+ * `Settings.density`): the desktop shell's WebView gets a new origin on every
+ * launch, so `localStorage` alone would forget them. The local copy stays only
+ * so the bootstrap script in `index.html` can paint the right theme before the
+ * first server response.
  *
  * Dark is the default and is never written; only `"light"` is stored.
  */
-export type Theme = "dark" | "light";
-export type Density = "comfortable" | "compact";
+export type Theme = UiTheme;
+export type Density = UiDensity;
 
 const THEME_KEY = "vgent.theme";
 const DENSITY_KEY = "vgent.density";
@@ -23,6 +26,11 @@ const subscribe = (listener: () => void) => {
   return () => listeners.delete(listener);
 };
 
+/** Set while the server's own value is being applied, so it is not sent straight back. */
+let applying = false;
+/** Registered by `usePrefsSync`; absent before the workbench mounts. */
+let push: ((prefs: { theme: Theme; density: Density }) => void) | undefined;
+
 const root = () => document.documentElement;
 
 function readTheme(): Theme {
@@ -31,6 +39,12 @@ function readTheme(): Theme {
 
 function readDensity(): Density {
   return root().dataset.density === "compact" ? "compact" : "comfortable";
+}
+
+/** Both values travel together, so the stored pair is always the one on screen. */
+function persist(): void {
+  if (applying) return;
+  push?.({ theme: readTheme(), density: readDensity() });
 }
 
 export function setTheme(theme: Theme): void {
@@ -42,6 +56,7 @@ export function setTheme(theme: Theme): void {
   } catch {
     /* private mode: the in-memory attribute is still correct */
   }
+  persist();
   emit();
 }
 
@@ -52,6 +67,7 @@ export function setDensity(density: Density): void {
   } catch {
     /* ignore */
   }
+  persist();
   emit();
 }
 
@@ -69,4 +85,47 @@ export function usePrefs(): {
     [],
   );
   return { theme, density, toggleTheme, toggleDensity };
+}
+
+/**
+ * Binds the two toggles to the server: every change is written to `Settings`,
+ * and every snapshot is applied to `<html>`.
+ *
+ * The very first snapshot of a server that has never stored them adopts what
+ * this browser had instead of resetting it — otherwise the move to the server
+ * would silently throw the user's theme away once.
+ */
+export function usePrefsSync(settings: Settings | null, write: (prefs: { theme: Theme; density: Density }) => void): void {
+  const writeRef = useRef(write);
+  writeRef.current = write;
+  useEffect(() => {
+    push = (prefs) => writeRef.current(prefs);
+    return () => {
+      push = undefined;
+    };
+  }, []);
+
+  // The snapshot object is new on every SSE event, so the effect watches the
+  // two values it actually applies.
+  const ready = settings != null;
+  const theme = settings?.theme;
+  const density = settings?.density;
+  const seen = useRef(false);
+  useEffect(() => {
+    if (!ready) return;
+    if (!seen.current) {
+      seen.current = true;
+      if (theme == null && density == null && (readTheme() !== "dark" || readDensity() !== "comfortable")) {
+        writeRef.current({ theme: readTheme(), density: readDensity() });
+        return;
+      }
+    }
+    applying = true;
+    try {
+      setTheme(theme ?? "dark");
+      setDensity(density ?? "comfortable");
+    } finally {
+      applying = false;
+    }
+  }, [density, ready, theme]);
 }

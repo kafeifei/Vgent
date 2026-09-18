@@ -8,7 +8,7 @@ import { Sidebar } from "@/features/sidebar/Sidebar";
 import { GROUPING_LABELS } from "@/features/sidebar/grouping";
 import type { QueueItem } from "@/features/worklog/queue";
 import { oneLine } from "@/lib/format";
-import { usePrefs } from "@/lib/prefs";
+import { usePrefs, usePrefsSync } from "@/lib/prefs";
 import { ThreadView } from "./ThreadView";
 import { TitleBar } from "./TitleBar";
 import { isLiveThread, useWorkbench } from "./useWorkbench";
@@ -33,6 +33,11 @@ export function Shell({ token }: { token: string }) {
     actions,
   } = workbench;
   const { toggleTheme, toggleDensity } = usePrefs();
+  // 主题和密度存在 server 上：桌面 app 每次启动换端口，浏览器本地存储等于清空。
+  usePrefsSync(
+    state.settings,
+    useCallback((prefs) => void client.putSettings(prefs).catch(() => undefined), [client]),
+  );
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [messages, setMessages] = useState<UIMessage[]>([]);
 
@@ -100,6 +105,7 @@ export function Shell({ token }: { token: string }) {
           settingsOpen={settingsOpen}
           getChat={actions.getChat}
           onArchive={actions.archiveThread}
+          onUnread={actions.markUnread}
           onDelete={actions.deleteThread}
         />
 
@@ -128,6 +134,7 @@ export function Shell({ token }: { token: string }) {
                 projectId={activeProjectId}
                 engines={engines}
                 settings={state.settings}
+                client={client}
                 onSelectProject={actions.selectProject}
                 onAddProject={actions.addProject}
                 onPickFolder={actions.pickFolder}

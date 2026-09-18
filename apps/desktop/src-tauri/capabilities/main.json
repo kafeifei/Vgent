@@ -1,10 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "工作台是远端 http://127.0.0.1 页面，只允许它调用 dialog 插件的 open（选择仓库目录 / 可执行文件）；其余 Tauri IPC 一律不开，原生对话框只从 Rust 侧调用。",
+  "description": "工作台是远端 http://127.0.0.1 页面，只允许它调用 dialog 插件的 open（选择仓库目录 / 可执行文件）和 notification 插件的三个命令（查权限、要权限、发通知）；其余 Tauri IPC 一律不开，原生对话框只从 Rust 侧调用。",
   "windows": ["main"],
   "remote": {
     "urls": ["http://127.0.0.1:*"]
   },
-  "permissions": ["dialog:allow-open"]
+  "permissions": [
+    "dialog:allow-open",
+    "notification:allow-is-permission-granted",
+    "notification:allow-request-permission",
+    "notification:allow-notify"
+  ]
 }

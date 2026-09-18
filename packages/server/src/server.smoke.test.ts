@@ -397,6 +397,9 @@ describe("@vgent/server (smoke)", () => {
       let parked: ThreadRecord;
       try {
         const project = (await (await postJson(appA, "/api/projects", { repoPath })).json()) as Project;
+        // 运行模式 defaults to 自动改文件, which would write without asking; this
+        // test is about the approval path, so it picks 询问 itself.
+        await request(appA, "/api/settings", { method: "PUT", body: JSON.stringify({ runMode: "allow-reads" }) });
         // No model: the factory falls back to `DEFAULT_VGENT_MODEL`.
         const created = await postJson(appA, "/api/threads", {
           projectId: project.id,

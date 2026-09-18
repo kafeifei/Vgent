@@ -241,6 +241,8 @@ export function createClient(token: string) {
         mode?: ThreadMode;
         /** 归档 also reclaims the task's worktree; un-archiving restores it. */
         archived?: boolean;
+        /** 未读. The one field a running task still takes, because reading is not editing. */
+        unread?: boolean;
       },
     ) => api<ThreadRecord>(`/threads/${id}`, token, { method: "PATCH", json: patch }),
     deleteThread: (id: string) => api<void>(`/threads/${id}`, token, { method: "DELETE" }),
@@ -270,12 +272,32 @@ export function createClient(token: string) {
       api<ThreadRecord>(`/threads/${threadId}/queue/${itemId}`, token, { method: "PATCH", json: { text } }),
     deleteQueued: (threadId: string, itemId: string) =>
       api<ThreadRecord>(`/threads/${threadId}/queue/${itemId}`, token, { method: "DELETE" }),
-    /** 「发送」 on a paused queue: run this one now. Refused while the task is live. */
-    sendQueued: (threadId: string, itemId: string) =>
-      api<ThreadRecord>(`/threads/${threadId}/queue/${itemId}/send`, token, { method: "POST" }),
+    /**
+     * 「发送」 on a paused queue: run this one now. Refused while the task is
+     * live, unless `interrupt` — 「打断并发送」 stops the running turn first.
+     */
+    sendQueued: (threadId: string, itemId: string, options: { interrupt?: boolean } = {}) =>
+      api<ThreadRecord>(`/threads/${threadId}/queue/${itemId}/send`, token, {
+        method: "POST",
+        json: options.interrupt === true ? { interrupt: true } : {},
+      }),
 
     /** What the project's worktree setup script printed, for the 终端 tab. */
     getSetupLog: (id: string) => api<SetupLog>(`/threads/${id}/workspace/setup-log`, token),
+
+    /**
+     * 草稿: the composer's half-typed text, per task (`NEW_TASK_DRAFT` for the
+     * empty state). It lives on the server because the desktop shell's WebView
+     * gets a new origin — and an empty `localStorage` — on every launch.
+     * `keepalive` lets the last write go out from a page that is already leaving.
+     */
+    getDraft: (key: string) => api<{ text: string }>(`/drafts/${encodeURIComponent(key)}`, token).then((body) => body.text),
+    putDraft: (key: string, text: string, options?: { keepalive?: boolean }) =>
+      api<{ text: string }>(`/drafts/${encodeURIComponent(key)}`, token, {
+        method: "PUT",
+        json: { text },
+        ...(options?.keepalive === true ? { keepalive: true } : {}),
+      }).then(() => undefined),
 
     /** 计划文档: the Plan turn's product, which the user edits before Build. Empty content = none yet. */
     getPlan: (threadId: string) => api<PlanDocument>(`/threads/${threadId}/plan`, token),

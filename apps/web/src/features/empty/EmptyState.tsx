@@ -1,8 +1,9 @@
-import { useCallback, useState } from "react";
+import { useRef, useState } from "react";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ProjectPicker } from "@/components/ProjectPicker";
 import { Composer } from "@/features/composer/Composer";
-import { clearDraft, NEW_TASK_DRAFT, readDraft, writeDraft } from "@/lib/drafts";
+import type { DraftTransport } from "@/lib/drafts";
+import { NEW_TASK_DRAFT, useDraft } from "@/lib/drafts";
 import { useToast } from "@/lib/toast";
 import type { EngineDescriptor, EngineId, Project, Settings, ThreadMode, WorkspaceMode } from "@/lib/types";
 
@@ -31,6 +32,7 @@ export function EmptyState({
   projectId,
   engines,
   settings,
+  client,
   onSelectProject,
   onAddProject,
   onPickFolder,
@@ -40,9 +42,12 @@ export function EmptyState({
   projectId: string | null;
   engines: EngineDescriptor[];
   settings: Settings | null;
+  /** The draft routes; this screen's draft lives on the server like every other. */
+  client: DraftTransport;
   onSelectProject: (projectId: string) => void;
   onAddProject: (repoPath: string) => Promise<void>;
   onPickFolder: () => Promise<string | null>;
+  /** Resolves `false` when the task could not be created, which keeps the draft. */
   onStart: (
     text: string,
     engine: EngineId,
@@ -50,16 +55,12 @@ export function EmptyState({
     model: string | null,
     reasoningEffort: string | null,
     mode: ThreadMode,
-  ) => void;
+  ) => Promise<boolean>;
 }) {
   const toast = useToast();
   // 草稿不丢, here too: the empty state has no task yet, so its draft is kept
   // under a fixed key until it becomes a task's first message.
-  const [draft, setDraft] = useState(() => readDraft(NEW_TASK_DRAFT));
-  const editDraft = useCallback((value: string) => {
-    setDraft(value);
-    writeDraft(NEW_TASK_DRAFT, value);
-  }, []);
+  const draft = useDraft(NEW_TASK_DRAFT, client);
   /**
    * The model this task will run on, and the engine that comes with it. Null
    * until the user picks one, so until then the settings answer — and keep
@@ -78,16 +79,21 @@ export function EmptyState({
   // `null` means「用默认」: the server falls back to `settings.defaultModel`.
   const model = picked?.model ?? (picked == null ? (settings?.defaultModel ?? null) : null);
 
+  /** One in-flight start at a time: the text stays until the task really exists. */
+  const starting = useRef(false);
   const submit = () => {
-    if (engine == null) return;
-    if (draft.trim() === "") return;
+    if (engine == null || starting.current) return;
+    const text = draft.value.trim();
+    if (text === "") return;
     if (project == null) {
       toast("先选一个项目");
       return;
     }
-    onStart(draft.trim(), engine, workspace, model, reasoningEffort, mode);
-    setDraft("");
-    clearDraft(NEW_TASK_DRAFT);
+    starting.current = true;
+    void onStart(text, engine, workspace, model, reasoningEffort, mode).then((started) => {
+      starting.current = false;
+      if (started) draft.clear();
+    });
   };
 
   // The engine list and the settings arrive in the same round trip; without
@@ -163,8 +169,8 @@ export function EmptyState({
 
       <div className="mx-auto w-full max-w-log-max py-sm">
         <Composer
-          value={draft}
-          onChange={editDraft}
+          value={draft.value}
+          onChange={draft.edit}
           onSubmit={submit}
           live={false}
           engines={engines}

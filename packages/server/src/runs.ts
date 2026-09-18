@@ -40,6 +40,16 @@ const RAW_ERROR_TEXT_MAX_LEN = 2000;
 const SLOW_CHECKPOINT_MS = 5_000;
 
 /**
+ * 未读: what a turn settling into one of these means is「它自己停下了，你还没
+ * 看过」—— done, failed, or parked on the human. `interrupted` is not among
+ * them: the user pressed 停止, so there is nothing to call them back for.
+ */
+const UNREAD_STATUSES: readonly ThreadStatus[] = ["idle", "error", "awaiting-approval", "awaiting-input"];
+
+/** Whether a turn that ended in `status` leaves the task 未读. */
+export const marksUnread = (status: ThreadStatus): boolean => UNREAD_STATUSES.includes(status);
+
+/**
  * The unmasked error text for a thread record. `getHarnessErrorMessage`
  * (used as `toUIMessageStream`'s `onError`) produces a client-safe string —
  * right for the SSE stream, but the thread record is local single-user data,
@@ -521,13 +531,16 @@ export function createRunManager(options: {
             status,
             error: rawStreamError ?? streamError,
             ...(stats != null ? { changeStats: stats } : {}),
+            // 未读: the turn ended on its own, so whoever sent it has not seen
+            // this yet. The client clears it when the task is really on screen.
+            ...(marksUnread(status) ? { unread: true } : {}),
           })
           .catch(async (error) => {
             // Never let a failed final write leave the thread stuck `running`.
             log.error(`保存线程 ${thread.id} 的最终状态失败`, error);
             park = false;
             await threads
-              .update(thread.id, { status: "error", error: getHarnessErrorMessage(error) })
+              .update(thread.id, { status: "error", error: getHarnessErrorMessage(error), unread: true })
               .catch((fallback) => log.error(`记录线程 ${thread.id} 的错误状态也失败`, fallback));
           });
       } else if (assistant != null && assistant.parts.length > 0) {

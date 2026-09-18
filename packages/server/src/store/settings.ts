@@ -1,10 +1,19 @@
 import { parseMcpServers, type McpServerConfig } from "@vgent/engine";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { EngineId, Logger, PermissionMode, Settings } from "../types.js";
+import type { EngineId, Logger, PermissionMode, Settings, UiDensity, UiTheme } from "../types.js";
 import { silentLogger } from "../types.js";
 import { readJsonOrQuarantine, writeJsonAtomic } from "./atomic-file.js";
 
+/**
+ * 运行模式 stays on 询问 by default. 自动改文件 would be the better default —
+ * worktree, checkpoints and the 改动 tab review files afterwards — but it is
+ * only contained on the in-house engine, whose write tools cannot leave the
+ * working directory. The Claude Code harness bridge answers every edit-kind
+ * tool with "allow" in that mode whatever the path, so a worktree task could
+ * edit the user's main checkout unasked, and the harness gives us no hook to
+ * stop it. Until that is closed the default does not opt anyone in.
+ */
 export const DEFAULT_SETTINGS: Settings = {
   defaultEngine: "claude-code",
   runMode: "allow-reads",
@@ -18,8 +27,13 @@ export interface SettingsPatch {
   /** The whole global allowlist. `[]` empties it. */
   allowlist?: string[];
   defaultModel?: string | undefined;
+  /** 系统通知. `undefined` drops the field, which is the same as on. */
+  systemNotifications?: boolean | undefined;
   mcpServers?: McpServerConfig[] | undefined;
   worktreeMaxCount?: number | undefined;
+  /** 界面偏好. `undefined` puts the built-in default back. */
+  theme?: UiTheme | undefined;
+  density?: UiDensity | undefined;
 }
 
 /**
@@ -91,9 +105,22 @@ export function createSettingsStore(dataDir: string, log: Logger = silentLogger)
         if (patch.defaultModel == null) delete next.defaultModel;
         else next.defaultModel = patch.defaultModel;
       }
+      // Absent means on, so an older file needs no migration; `false` is stored.
+      if ("systemNotifications" in patch) {
+        if (patch.systemNotifications == null) delete next.systemNotifications;
+        else next.systemNotifications = patch.systemNotifications;
+      }
       if ("worktreeMaxCount" in patch) {
         if (patch.worktreeMaxCount == null) delete next.worktreeMaxCount;
         else next.worktreeMaxCount = patch.worktreeMaxCount;
+      }
+      if ("theme" in patch) {
+        if (patch.theme == null) delete next.theme;
+        else next.theme = patch.theme;
+      }
+      if ("density" in patch) {
+        if (patch.density == null) delete next.density;
+        else next.density = patch.density;
       }
       settings = next;
       const work = () => writeJsonAtomic(path, next);

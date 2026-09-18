@@ -224,6 +224,8 @@ describe("计划文档", () => {
     // run is in flight — exactly the case a plain `isRunning` check would miss.
     const app = makeApp(dataDir, mockModel([toolCallStream("call-w", "write", WRITE_INPUT), textStream("写完了")]));
     const thread = (await (await makeThread(app, repoPath)).json()) as ThreadRecord;
+    // 运行模式 defaults to 自动改文件, which would not stop for a write at all.
+    await request(app, "/api/settings", { method: "PUT", body: JSON.stringify({ runMode: "allow-reads" }) });
 
     await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "新建 SMOKE.txt")] }));
     await waitForStatus(app, thread.id, "awaiting-approval");

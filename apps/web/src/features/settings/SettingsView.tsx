@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { BASH_TOOL, bashEntryHead } from "@vgent/engine/allowlist";
+import { BASH_TOOL, bashEntryCommand, isVoidedBashEntry } from "@vgent/engine/allowlist";
 import { ArrowLeft, Pencil, Plus, Trash2, X } from "lucide-react";
 import { ModelPicker } from "@/components/ModelPicker";
 import { ApiError, type ApiClient } from "@/lib/api";
@@ -7,6 +7,7 @@ import { useToast } from "@/lib/toast";
 import type { EngineDescriptor, McpServerConfig, PermissionMode, Settings } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { EMPTY_MCP_FORM, fromForm, toForm, type McpForm } from "./mcpForm";
+import { NotificationsSection } from "./NotificationsSection";
 import { ProvidersSection } from "./ProvidersSection";
 import { INPUT_CLASS, PILL, PILL_SELECTED, TEXTAREA_CLASS } from "./styles";
 import { isImeKeyEvent } from "@/lib/ime";
@@ -23,14 +24,23 @@ const RUN_MODES: ReadonlyArray<{ id: PermissionMode; label: string; hint: string
 ];
 
 /**
- * One allowlist entry, in words. `bash(git)` is a *command*, not a tool, and a
- * legacy bare `bash` is the blank cheque the old UI wrote — both have to be
- * recognisable here, because this list is the only place to take one back.
+ * One allowlist entry, in words. `bash(git push)` is a *command*, not a tool,
+ * and a legacy bare `bash` is the blank cheque the old UI wrote — both have to
+ * be recognisable here, because this list is the only place to take one back.
+ *
+ * `note` is for an entry that can no longer match anything: `bash(git)` was
+ * written when an entry named only the command word. Nothing is migrated (that
+ * would grant `git push` off the back of a `git status` click), so the entry is
+ * shown as 已失效 with the reason, and removing it is the user's call.
  */
-function describeAllowEntry(entry: string): string {
-  const head = bashEntryHead(entry);
-  if (head != null) return `命令 ${head}`;
-  return entry === BASH_TOOL ? "bash（全部命令）" : entry;
+function describeAllowEntry(entry: string): { label: string; note?: string } {
+  const command = bashEntryCommand(entry);
+  if (command != null) {
+    return isVoidedBashEntry(entry)
+      ? { label: `命令 ${command}`, note: `已失效：${command} 现在要写到子命令（如 ${command} <子命令>），这条不再放行任何命令，可以删掉。` }
+      : { label: `命令 ${command}` };
+  }
+  return { label: entry === BASH_TOOL ? "bash（全部命令）" : entry };
 }
 
 /** Deep-equal via a key-sorted `JSON.stringify`, so field order never causes a false "dirty". */
@@ -328,24 +338,35 @@ export function SettingsView({
       <section className="flex flex-col gap-sm">
         <h2 className="font-semibold text-fg text-sm">一直允许的工具</h2>
         <div className="flex flex-col gap-2xs">
-          {allowlist.map((tool) => (
-            <div key={tool} className="flex items-center gap-xs rounded-md border border-border bg-bg-elevated px-sm py-xs">
-              <span className="min-w-0 flex-1 truncate text-fg text-sm" title={tool}>
-                {describeAllowEntry(tool)}
-              </span>
-              <button
-                type="button"
-                title="撤销"
-                onClick={() => update({ allowlist: allowlist.filter((name) => name !== tool) })}
-                className="grid size-lg flex-none place-items-center rounded-md text-fg-muted hover:bg-danger-bg hover:text-danger"
-              >
-                <X className="size-xs" />
-              </button>
-            </div>
-          ))}
+          {allowlist.map((tool) => {
+            const { label, note } = describeAllowEntry(tool);
+            return (
+              <div key={tool} className="flex items-center gap-xs rounded-md border border-border bg-bg-elevated px-sm py-xs">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-fg text-sm" title={tool}>
+                    {label}
+                  </div>
+                  {note != null && <div className="text-fg-faint text-xs">{note}</div>}
+                </div>
+                <button
+                  type="button"
+                  title="撤销"
+                  onClick={() => update({ allowlist: allowlist.filter((name) => name !== tool) })}
+                  className="grid size-lg flex-none place-items-center rounded-md text-fg-muted hover:bg-danger-bg hover:text-danger"
+                >
+                  <X className="size-xs" />
+                </button>
+              </div>
+            );
+          })}
           {allowlist.length === 0 && <p className="text-fg-faint text-xs">还没有一直允许的工具。审批卡上点「一直允许」会加到这里。</p>}
         </div>
       </section>
+
+      <NotificationsSection
+        enabled={draft.systemNotifications !== false}
+        onChange={(value) => update({ systemNotifications: value })}
+      />
 
       <ProvidersSection client={client} engines={engines} onChanged={() => setCatalogVersion((version) => version + 1)} />
 

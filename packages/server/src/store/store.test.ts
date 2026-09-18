@@ -273,7 +273,7 @@ describe("createProjectStore / createSettingsStore", () => {
     expect(migrated).toMatchObject({ defaultEngine: "vgent", runMode: "allow-all", allowlist: [] });
     expect(migrated).not.toHaveProperty("defaultPermissionMode");
 
-    // A file with neither field falls back to 询问.
+    // A file with neither field falls back to the default, 自动改文件.
     const bare = await tempDir();
     await writeJsonAtomic(join(bare, "settings.json"), { defaultEngine: "codex" });
     expect(await createSettingsStore(bare).get()).toMatchObject({ runMode: "allow-reads", allowlist: [] });

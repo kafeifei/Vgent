@@ -136,3 +136,68 @@ describe("ThreadChats hydration and resume", () => {
     expect(streamCalls(calls)).toHaveLength(0);
   });
 });
+
+describe("ThreadChats send", () => {
+  /** The chat route answers `chat`; everything else is the thread's history. */
+  function chatServer(chat: () => Response): void {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes("/api/chat/")) return chat();
+        return new Response(JSON.stringify(record("2026-01-01T00:00:01.000Z", [message("m1")])), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    );
+  }
+
+  it("rejects when the server refuses the message, and takes the optimistic one back out", async () => {
+    const refused = "任务还在进行中（等待审批或回答），先处理或停止";
+    chatServer(
+      () =>
+        new Response(JSON.stringify({ error: { code: "thread_running", message: refused } }), {
+          status: 409,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+
+    const chat = chats.get(THREAD_ID);
+    await chats.whenReady(THREAD_ID);
+
+    // 草稿任何情况下不丢: the composer is only cleared when this resolves.
+    await expect(chats.send(THREAD_ID, "别把我吞了")).rejects.toThrow();
+    // The message never went out, so it may not sit in the log either.
+    expect(chat.messages.map((entry) => entry.id)).toEqual(["m1"]);
+    await vi.waitFor(() => expect(errors.map((error) => error.message)).toContain(refused));
+  });
+
+  it("resolves as soon as the server accepted it, long before the turn ends", async () => {
+    let close: (() => void) | undefined;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        close = () => controller.close();
+      },
+    });
+    chatServer(() => new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }));
+
+    const chat = chats.get(THREAD_ID);
+    await chats.whenReady(THREAD_ID);
+
+    // The stream is still open — 被接受 is all the composer waits for.
+    await expect(chats.send(THREAD_ID, "发出去了")).resolves.toBeUndefined();
+    expect(chat.messages).toHaveLength(2);
+    expect(errors).toHaveLength(0);
+    close?.();
+  });
+
+  it("rejects when the connection itself fails", async () => {
+    chatServer(() => {
+      throw new TypeError("Failed to fetch");
+    });
+
+    chats.get(THREAD_ID);
+    await chats.whenReady(THREAD_ID);
+    await expect(chats.send(THREAD_ID, "server 关了")).rejects.toThrow();
+  });
+});

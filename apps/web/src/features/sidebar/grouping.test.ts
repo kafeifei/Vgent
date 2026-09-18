@@ -63,6 +63,30 @@ describe("groupThreads", () => {
     ]);
   });
 
+  it("未读: a task that finished while you were away waits in 待处理, not 已完成", () => {
+    const unread = { ...thread("t10", "p1", "idle", ago(HOUR)), unread: true };
+    const read = { ...thread("t11", "p1", "idle", ago(HOUR)) };
+    // 待验收 is unchanged — it still wins over 未读, the dot just rides along.
+    const review = { ...unread, id: "t12", changeStats: { files: 1, additions: 1, deletions: 0 } };
+
+    const groups = groupThreads([unread, read, review], projects, "status", NOW);
+    expect(groups.map((group) => [group.title, group.threads.map((entry) => entry.id)])).toEqual([
+      ["待处理", ["t10"]],
+      ["待验收", ["t12"]],
+      ["已完成", ["t11"]],
+    ]);
+  });
+
+  it("未读 never moves a task out of 进行中 or 待处理", () => {
+    const running = { ...thread("t13", "p1", "running", ago(HOUR)), unread: true };
+    const failed = { ...thread("t14", "p1", "error", ago(HOUR)), unread: true };
+    const groups = groupThreads([running, failed], projects, "status", NOW);
+    expect(groups.map((group) => [group.title, group.count])).toEqual([
+      ["进行中", 1],
+      ["待处理", 1],
+    ]);
+  });
+
   it("collects archived tasks into one folded group at the bottom of every grouping", () => {
     const archived = { ...thread("t8", "p1", "idle", ago(HOUR)), archivedAt: ago(HOUR) };
     for (const grouping of ["project", "status", "updated"] as const) {

@@ -301,6 +301,33 @@ describe.skipIf(!hasGit)("排队", () => {
     expect((await getThread(app, thread.id)).queue ?? []).toHaveLength(0);
   });
 
+  it("「打断并发送」：运行中不带 interrupt 是 409，带上就先停这一轮再发这条", async () => {
+    const dir = await tempDir();
+    const repo = await repoWithHistory();
+    const engine = createGatedEngine();
+    const app = makeApp(dir, engine.factory);
+    const thread = await setupThread(app, repo);
+
+    const first = postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "慢活")] });
+    await waitFor("第一轮开始", () => engine.prompts.length === 1);
+    await postJson(app, `/api/threads/${thread.id}/queue`, { text: "改方向" });
+    const item = (await getThread(app, thread.id)).queue![0]!;
+
+    // Nothing jumps a running turn by accident.
+    expect((await postJson(app, `/api/threads/${thread.id}/queue/${item.id}/send`, {})).status).toBe(409);
+    // A stale id must not cost the user the running turn.
+    expect((await postJson(app, `/api/threads/${thread.id}/queue/nope/send`, { interrupt: true })).status).toBe(404);
+    expect((await getThread(app, thread.id)).status).toBe("running");
+
+    expect((await postJson(app, `/api/threads/${thread.id}/queue/${item.id}/send`, { interrupt: true })).status).toBe(200);
+    await (await first).text();
+    await waitFor("排队的那条发出", () => engine.prompts.some((text) => text.endsWith("改方向")));
+    expect(engine.prompts).toHaveLength(2);
+    expect((await getThread(app, thread.id)).queue ?? []).toHaveLength(0);
+    await engine.releaseTurn(2);
+    await waitForStatus(app, thread.id, "idle");
+  });
+
   it("出错的回合不发排队消息", async () => {
     const dir = await tempDir();
     const repo = await repoWithHistory();

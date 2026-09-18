@@ -11,7 +11,7 @@ import { pendingQueue, type QueueItem } from "@/features/worklog/queue";
 import type { TurnActions } from "@/features/worklog/Turn";
 import { pendingAutoApprovals } from "@/lib/autoApprove";
 import type { ApiClient } from "@/lib/api";
-import { readDraft, writeDraft } from "@/lib/drafts";
+import { useDraft } from "@/lib/drafts";
 import type { EngineDescriptor, PermissionMode, ThreadSummary } from "@/lib/types";
 import { isLiveThread, type WorkbenchActions } from "./useWorkbench";
 
@@ -76,18 +76,11 @@ function ThreadChatView({
 }) {
   /**
    * 草稿不丢: this view is remounted per task (`key={thread.id}`) and wiped by a
-   * reload, so the draft is read from and written to `localStorage` rather than
-   * living in React state alone. It is cleared only once the message really
-   * went out — sent, or accepted onto the queue.
+   * reload, so the draft is kept on the server — `localStorage` is only the
+   * cache that paints it before the server answers. It is cleared only once the
+   * message really went out: sent and accepted, or accepted onto the queue.
    */
-  const [draft, setDraft] = useState(() => readDraft(thread.id));
-  const editDraft = useCallback(
-    (value: string) => {
-      setDraft(value);
-      writeDraft(thread.id, value);
-    },
-    [thread.id],
-  );
+  const draft = useDraft(thread.id, client);
 
   // The smoke client's wiring, minus what moved onto the shared `Chat` itself:
   // `sendAutomaticallyWhen` lives in `ThreadChats` (see the note there), and so
@@ -158,25 +151,34 @@ function ThreadChatView({
     [client, thread.id],
   );
 
+  /** One in-flight submit at a time: the text now stays until the server answers. */
+  const sending = useRef(false);
   const submit = () => {
-    const text = draft.trim();
-    if (text === "") return;
+    const text = draft.value.trim();
+    if (text === "" || sending.current) return;
     // 运行中按 Enter = 排队。The server holds it and starts it itself once this
     // turn settles idle, so the draft may only be dropped once it took it.
     if (live) {
+      sending.current = true;
       void actions.queueMessage(thread.id, text).then((queued) => {
-        if (queued) editDraft("");
+        sending.current = false;
+        if (queued) draft.clear();
       });
       return;
     }
     // The one command the composer understands; everything else is a message.
     if (text === "/compact") {
       void actions.compactThread(thread.id);
-      editDraft("");
+      draft.clear();
       return;
     }
-    actions.send(thread.id, text);
-    editDraft("");
+    // 发送失败不吞草稿: the text only leaves the composer once the server took
+    // it; the error itself is already toasted by the chat registry.
+    sending.current = true;
+    void actions.send(thread.id, text).then((accepted) => {
+      sending.current = false;
+      if (accepted) draft.clear();
+    });
   };
 
   /**
@@ -228,8 +230,8 @@ function ThreadChatView({
 
       <div className="border-border border-t bg-bg px-md pt-sm pb-md">
         <Composer
-          value={draft}
-          onChange={editDraft}
+          value={draft.value}
+          onChange={draft.edit}
           onSubmit={submit}
           onStop={() => actions.stop(thread.id)}
           live={live}
@@ -254,9 +256,12 @@ function ThreadChatView({
           onPickMode={(mode) => (live ? actions.toast("运行中不能改，先停止") : actions.setMode(thread.id, mode))}
           queue={queued}
           queueNote={queueNote}
-          // Nothing may jump a turn that is still going; a paused queue is
-          // resumed by hand from its head item.
-          {...(live ? {} : { onSendQueued: (itemId: string) => actions.sendQueued(thread.id, itemId) })}
+          // A paused queue is resumed by hand from its head item. While a turn
+          // is still going the same spot offers 「打断并发送」 instead: nothing
+          // jumps a running turn unless the user says so.
+          {...(live
+            ? { onInterruptWithQueued: (itemId: string) => actions.sendQueued(thread.id, itemId, { interrupt: true }) }
+            : { onSendQueued: (itemId: string) => actions.sendQueued(thread.id, itemId) })}
           onEditQueued={(itemId, text) => actions.editQueued(thread.id, itemId, text)}
           onDeleteQueued={(itemId) => actions.deleteQueued(thread.id, itemId)}
           location={

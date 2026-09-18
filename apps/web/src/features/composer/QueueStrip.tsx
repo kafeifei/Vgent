@@ -10,12 +10,15 @@ import { isImeKeyEvent } from "@/lib/ime";
  * `note` is why the queue is not moving: a stopped or failed turn leaves it
  * parked until the user decides, and a turn waiting on an approval is not over
  * either. When there is no live turn the head item also gets 「发送」, which is
- * how a paused queue is resumed by hand.
+ * how a paused queue is resumed by hand. While a turn is live the same spot is
+ * 「打断并发送」: stop this turn and send the head item now, for when waiting
+ * for the turn to end would waste it.
  */
 export function QueueStrip({
   items,
   note,
   onSend,
+  onInterrupt,
   onEdit,
   onDelete,
 }: {
@@ -23,6 +26,8 @@ export function QueueStrip({
   note?: string | undefined;
   /** Absent while the task is live: nothing may jump the running turn. */
   onSend?: ((itemId: string) => void) | undefined;
+  /** Present only while the task is live: stop the turn, then send this item. */
+  onInterrupt?: ((itemId: string) => void) | undefined;
   onEdit: (itemId: string, text: string) => void;
   onDelete: (itemId: string) => void;
 }) {
@@ -80,6 +85,17 @@ export function QueueStrip({
             >
               <Send className="size-sm" />
               <span>发送</span>
+            </button>
+          )}
+          {index === 0 && onSend == null && onInterrupt != null && editing?.id !== item.id && (
+            <button
+              type="button"
+              title="停下当前这一轮，马上发这条"
+              onClick={() => onInterrupt(item.id)}
+              className="inline-flex h-lg flex-none items-center gap-3xs rounded-sm px-2xs text-fg-muted text-xs opacity-0 hover:bg-bg-active hover:text-fg focus-visible:opacity-100 group-hover:opacity-100"
+            >
+              <Send className="size-sm" />
+              <span>打断并发送</span>
             </button>
           )}
           {editing?.id !== item.id && (

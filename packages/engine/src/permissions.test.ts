@@ -81,6 +81,25 @@ describe("alwaysAllow", () => {
     expect(withEcho("rm -rf /")).toBe("user-approval");
   });
 
+  /**
+   * The same table the browser runs (`pendingAutoApprovals`), here on the
+   * decision the in-house engine actually makes for its own `bash` tool.
+   */
+  it("needs the sub-command for a composite head, in every mode that asks", () => {
+    const decide = (command: string, alwaysAllow: string[], mode: "allow-reads" | "allow-edits" = "allow-reads") =>
+      decideApproval({ mode, toolName: "bash", input: { command }, alwaysAllow });
+
+    expect(decide("git push", ["bash(git push)"])).toBe("not-applicable");
+    // The legacy entry: it no longer answers anything.
+    expect(decide("git push", ["bash(git)"])).toBe("user-approval");
+    expect(decide("git push", ["bash(git status)"])).toBe("user-approval");
+    expect(decide("git commit -m wip && git push", ["bash(git commit)"])).toBe("user-approval");
+    expect(decide("git -C /other push", ["bash(git push)"])).toBe("user-approval");
+    // 自动改文件 does not widen shell commands: they still go through the list.
+    expect(decide("git push", ["bash(git)"], "allow-edits")).toBe("user-approval");
+    expect(decide("git push", ["bash(git push)"], "allow-edits")).toBe("not-applicable");
+  });
+
   it("leaves every other tool alone", () => {
     expect(decideApproval({ mode: "allow-reads", toolName: "write", input: {}, alwaysAllow: ["bash(rm)"] })).toBe("user-approval");
     expect(decideApproval({ mode: "allow-reads", toolName: "write", input: {}, alwaysAllow: [] })).toBe("user-approval");

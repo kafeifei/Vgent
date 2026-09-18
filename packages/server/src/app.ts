@@ -30,6 +30,7 @@ import { createModelCatalog, type ModelEntry } from "./models.js";
 import { createQueueStore, readQueueText } from "./queue.js";
 import { createRunManager, recoverInterruptedThreads } from "./runs.js";
 import { registerStatic } from "./static.js";
+import { createDraftStore, isDraftKey, MAX_DRAFT_BYTES } from "./store/drafts.js";
 import { createPlanStore, MAX_PLAN_BYTES } from "./store/plans.js";
 import { createProjectStore, type ProjectStore } from "./store/projects.js";
 import { createProviderStore } from "./store/providers.js";
@@ -46,6 +47,8 @@ import type {
   ThreadMode,
   ThreadRecord,
   ThreadWorkspace,
+  UiDensity,
+  UiTheme,
 } from "./types.js";
 import { silentLogger } from "./types.js";
 import { createWorktree, reclaimWorktree, removeWorktree, restoreWorktree } from "./workspace.js";
@@ -124,6 +127,36 @@ function readThreadMode(value: unknown): ThreadMode {
   throw new BadRequestError('mode 只能是 "plan" 或 "agent"', "invalid_mode");
 }
 
+/** The 草稿 key from a URL segment: a thread id, or `new` for the empty state. */
+function readDraftKey(value: unknown): string {
+  if (!isDraftKey(value)) throw new BadRequestError("草稿 key 不合法", "invalid_draft_key");
+  return value;
+}
+
+/** The 草稿 text from a `PUT` body. `""` deletes it, which is how a sent message clears it. */
+function readDraftText(value: unknown): string {
+  if (typeof value !== "string") throw new BadRequestError("text 必须是字符串", "invalid_draft");
+  if (Buffer.byteLength(value, "utf8") > MAX_DRAFT_BYTES) {
+    throw new VgentServerError({ message: `草稿超过 ${MAX_DRAFT_BYTES / 1024} KB`, status: 413, code: "draft_too_large" });
+  }
+  return value;
+}
+
+/** 界面偏好 from a settings body. `null` puts the default back; anything unknown is a 400. */
+function readTheme(value: unknown): UiTheme | undefined {
+  if (value == null) return undefined;
+  if (value !== "dark" && value !== "light") throw new BadRequestError('theme 只能是 "dark" 或 "light"', "invalid_theme");
+  return value;
+}
+
+function readDensity(value: unknown): UiDensity | undefined {
+  if (value == null) return undefined;
+  if (value !== "comfortable" && value !== "compact") {
+    throw new BadRequestError('density 只能是 "comfortable" 或 "compact"', "invalid_density");
+  }
+  return value;
+}
+
 /** The plan document from a `PUT` body: a string, and not an absurd one. */
 function readPlanContent(value: unknown): string {
   if (typeof value !== "string") throw new BadRequestError("content 必须是字符串", "invalid_plan");
@@ -183,6 +216,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
   const projects = createProjectStore(dataDir, log);
   const threads = createThreadStore(dataDir, log);
   const plans = createPlanStore(dataDir, log);
+  const drafts = createDraftStore(dataDir, log);
   const settings = createSettingsStore(dataDir, log);
   const providers = createProviderStore(dataDir, log);
   const queue = createQueueStore(threads);
@@ -691,7 +725,14 @@ export function createApp(options: CreateAppOptions): VgentApp {
   app.patch("/api/threads/:id", async (c) => {
     const id = c.req.param("id");
     const body = (await c.req.json().catch(() => undefined)) as Record<string, unknown> | undefined;
-    if (runs.isRunning(id)) throw new ConflictError(`线程正在运行，无法修改: ${id}`, "thread_running");
+    const marksRead = "unread" in (body ?? {});
+    if (marksRead && typeof body?.unread !== "boolean") throw new BadRequestError("unread 只能是布尔值", "invalid_unread");
+    // 未读 is bookkeeping the client writes while it looks at the task, and a
+    // turn can start under it (排队) — so an unread-only PATCH is the one edit a
+    // running thread still takes. Everything else waits for the turn.
+    if (!(marksRead && Object.keys(body ?? {}).length === 1) && runs.isRunning(id)) {
+      throw new ConflictError(`线程正在运行，无法修改: ${id}`, "thread_running");
+    }
     const current = await threads.get(id);
     if (current == null) throw new NotFoundError(`线程不存在: ${id}`, "thread_not_found");
 
@@ -741,6 +782,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
       ...(typeof body?.title === "string" ? { title: body.title } : {}),
       ...(engine != null ? { engine } : {}),
       ...(mode != null ? { mode } : {}),
+      ...(marksRead ? { unread: body?.unread === true } : {}),
       ...("model" in (body ?? {}) ? { model: typeof body?.model === "string" ? body.model : undefined } : {}),
       // `null` clears it; an absent key leaves it alone.
       ...("reasoningEffort" in (body ?? {}) ? { reasoningEffort: readReasoningEffort(body?.reasoningEffort) } : {}),
@@ -784,11 +826,27 @@ export function createApp(options: CreateAppOptions): VgentApp {
   /**
    * 「发送」 on a paused queue: the user decides the stopped or failed turn is
    * dealt with and this item may go now. Same start path as everything else.
+   *
+   * `{ interrupt: true }` is 「打断并发送」 on a live task: the running (or
+   * parked) turn is stopped first, exactly as 停止 would, and then this item
+   * goes. Without it a live task still answers 409 — nothing jumps a running
+   * turn by accident.
    */
   app.post("/api/threads/:id/queue/:itemId/send", async (c) => {
     const id = c.req.param("id");
-    assertNotLive(await threadOf(id));
-    await runs.sendQueued(id, c.req.param("itemId"));
+    const itemId = c.req.param("itemId");
+    const body = (await c.req.json().catch(() => undefined)) as { interrupt?: unknown } | undefined;
+    const thread = await threadOf(id);
+    if (body?.interrupt === true && isLive(thread)) {
+      // Checked before stopping: a stale item id must not cost the user their turn.
+      if (thread.queue?.some((item) => item.id === itemId) !== true) {
+        throw new NotFoundError("这条排队消息不存在", "queue_item_not_found");
+      }
+      await runs.stop(id);
+    } else {
+      assertNotLive(thread);
+    }
+    await runs.sendQueued(id, itemId);
     return c.json(await threadOf(id));
   });
 
@@ -805,6 +863,22 @@ export function createApp(options: CreateAppOptions): VgentApp {
     assertNotLive(thread);
     const body = (await c.req.json().catch(() => undefined)) as { content?: unknown } | undefined;
     return c.json(await plans.put(thread.id, readPlanContent(body?.content)));
+  });
+
+  // --- 草稿 -------------------------------------------------------------
+
+  // 草稿任何情况下不丢: the composer's half-typed text, per task (or `new` for
+  // the empty state). It lives here rather than in the browser because the
+  // desktop shell's WebView gets a new origin — and so an empty `localStorage` —
+  // on every launch. The client still caches it locally for the first paint.
+  app.get("/api/drafts/:key", async (c) => c.json({ text: await drafts.get(readDraftKey(c.req.param("key"))) }));
+
+  app.put("/api/drafts/:key", async (c) => {
+    const key = readDraftKey(c.req.param("key"));
+    const body = (await c.req.json().catch(() => undefined)) as { text?: unknown } | undefined;
+    const text = readDraftText(body?.text);
+    await drafts.put(key, text);
+    return c.json({ text });
   });
 
   /**
@@ -843,6 +917,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     // refused to touch.
     if (thread?.workspace != null) await removeWorktree({ dataDir, project: await projectOf(thread), thread });
     await plans.remove(id).catch((error: unknown) => log.warn(`删除线程 ${id} 的计划文档失败`, error));
+    await drafts.remove(id).catch((error: unknown) => log.warn(`删除线程 ${id} 的草稿失败`, error));
     // Checkpoint refs live in the project's own ref store, which every worktree
     // shares — removing the directory above does not take them with it.
     const project = thread == null ? undefined : await projects.get(thread.projectId);
@@ -862,11 +937,19 @@ export function createApp(options: CreateAppOptions): VgentApp {
       ...(asPermissionMode(body?.runMode) != null ? { runMode: asPermissionMode(body?.runMode)! } : {}),
       ...("allowlist" in (body ?? {}) ? { allowlist: readAllowlist(body?.allowlist) } : {}),
       ...("defaultModel" in (body ?? {}) ? { defaultModel: typeof body?.defaultModel === "string" ? body.defaultModel : undefined } : {}),
+      // 系统通知: anything but `false` is「开」, which is the absence of the field.
+      ...("systemNotifications" in (body ?? {})
+        ? { systemNotifications: body?.systemNotifications === false ? false : undefined }
+        : {}),
       // Unlike the scalars above, a malformed server list is rejected rather
       // than dropped: silently ignoring it would look exactly like an MCP
       // server whose tools never showed up.
       ...("mcpServers" in (body ?? {}) ? { mcpServers: readMcpServers(body?.mcpServers) } : {}),
       ...("worktreeMaxCount" in (body ?? {}) ? { worktreeMaxCount: readWorktreeMaxCount(body?.worktreeMaxCount) } : {}),
+      // 界面偏好: the title bar's two toggles write them here, so they survive
+      // the desktop shell's per-launch origin.
+      ...("theme" in (body ?? {}) ? { theme: readTheme(body?.theme) } : {}),
+      ...("density" in (body ?? {}) ? { density: readDensity(body?.density) } : {}),
     };
     return c.json(await settings.update(patch));
   });

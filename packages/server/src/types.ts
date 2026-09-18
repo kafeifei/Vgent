@@ -203,6 +203,14 @@ export interface ThreadRecord {
   mode?: ThreadMode;
   status: ThreadStatus;
   error?: string;
+  /**
+   * 未读: the task changed while nobody was looking. Set by the run manager when
+   * a turn leaves `running` by itself — finished, failed, or parked on the
+   * human — and cleared by the client once the task is on screen in a focused
+   * window (or by hand, from the sidebar row's menu). Absent means 已读; 停止
+   * never sets it, because the user is the one who pressed it.
+   */
+  unread?: boolean;
   /** Present only for a task running in its own git worktree. */
   workspace?: ThreadWorkspace;
   /**
@@ -256,11 +264,29 @@ export interface Settings {
    */
   allowlist: string[];
   defaultModel?: string;
+  /**
+   * 系统通知: whether a finished turn — or one that needs the user — calls them
+   * back through the OS while the window is not focused. Absent means on, so an
+   * older settings file needs no migration.
+   */
+  systemNotifications?: boolean;
   /** MCP servers the `vgent` engine connects to per turn. Their tools are deferred; see `connectMcpServers`. */
   mcpServers?: McpServerConfig[];
   /** How many live worktrees to keep before the oldest idle ones are reclaimed. Absent = `DEFAULT_WORKTREE_MAX_COUNT`. */
   worktreeMaxCount?: number;
+  /**
+   * 界面偏好, kept here rather than in the browser: the desktop shell's WebView
+   * gets a new origin on every launch, so `localStorage` alone would forget
+   * them. Absent = the built-in default (深色 / 舒适).
+   */
+  theme?: UiTheme;
+  density?: UiDensity;
 }
+
+/** 主题: dark is the default and the app never follows the system. */
+export type UiTheme = "dark" | "light";
+/** 密度 of the list rows and the log. */
+export type UiDensity = "comfortable" | "compact";
 
 /**
  * Harness resume state for one thread, in `threads/<id>.harness.json` (0600).

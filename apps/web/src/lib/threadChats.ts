@@ -63,6 +63,12 @@ export class ThreadChats {
   private readonly latest = new Map<string, ThreadSummary>();
   /** `updatedAt` of the record each chat's messages were last loaded from. */
   private readonly hydratedAt = new Map<string, string>();
+  /**
+   * 发出去了没有: one waiter per in-flight `send`, settled by the chat POST's own
+   * response. Only that first response decides — a turn that fails later really
+   * did leave the composer.
+   */
+  private readonly accepting = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
   /** Bumped by `dispose()`; every in-flight promise checks it before writing. */
   private generation = 0;
 
@@ -89,6 +95,11 @@ export class ThreadChats {
     return chat;
   }
 
+  /** The chat a thread already has, or nothing — unlike `get`, this never creates one. */
+  peek(threadId: string): Chat<UIMessage> | undefined {
+    return this.chats.get(threadId);
+  }
+
   /** Awaits the initial history load, so a view never renders a half-filled chat. */
   whenReady(threadId: string): Promise<void> {
     this.get(threadId);
@@ -103,11 +114,20 @@ export class ThreadChats {
         api: `/api/chat/${threadId}`,
         headers,
         prepareReconnectToStreamRequest: ({ id }) => ({ api: `/api/chat/${id}/stream`, headers }),
-        // The chat routes bypass `api()`, so they report a rejected token here.
+        // The chat routes bypass `api()`, so they report a rejected token here —
+        // and this is also where a `send` learns whether the server took the
+        // message at all. A GET is the resume, which decides nothing.
         fetch: async (input, init) => {
-          const response = await fetch(input, init);
-          if (response.status === 401) reportUnauthorized();
-          return response;
+          const isSend = (init?.method ?? "GET").toUpperCase() === "POST";
+          try {
+            const response = await fetch(input, init);
+            if (response.status === 401) reportUnauthorized();
+            if (isSend) this.settleAccept(threadId, response.ok ? undefined : new Error(`${response.status}`));
+            return response;
+          } catch (error) {
+            if (isSend) this.settleAccept(threadId, error instanceof Error ? error : new Error(String(error)));
+            throw error;
+          }
         },
       },
       // The message a replayed continuation stream addresses: the one this
@@ -258,10 +278,45 @@ export class ThreadChats {
     }
   }
 
+  /** Settles the waiter a `send` is holding, if there is one. */
+  private settleAccept(threadId: string, error?: Error): void {
+    const waiter = this.accepting.get(threadId);
+    if (waiter == null) return;
+    this.accepting.delete(threadId);
+    if (error == null) waiter.resolve();
+    else waiter.reject(error);
+  }
+
+  /**
+   * 发送失败不吞草稿: resolves once the server has *accepted* the message, and
+   * rejects when it refused it (409 运行中, 503 引擎不可用, a dead connection).
+   * The caller clears the composer on the first and puts the text back on the
+   * second.
+   *
+   * `sendMessage` itself only settles when the whole turn is over, and reports
+   * its failures through `onError` rather than by throwing, so acceptance is
+   * taken from the POST's own response — see the transport's `fetch` above.
+   */
   async send(threadId: string, text: string): Promise<void> {
     const chat = this.get(threadId);
     await this.whenReady(threadId);
-    await chat.sendMessage({ text });
+    const before = chat.messages;
+    const accepted = new Promise<void>((resolve, reject) => {
+      this.accepting.set(threadId, { resolve, reject });
+    });
+    // Not awaited: it runs for as long as the turn does. Its outcome is only a
+    // backstop for a request that never reached `fetch` at all.
+    void chat.sendMessage({ text }).then(
+      () => this.settleAccept(threadId),
+      (error: unknown) => this.settleAccept(threadId, error instanceof Error ? error : new Error(String(error))),
+    );
+    try {
+      await accepted;
+    } catch (error) {
+      // The optimistic user message must not stay in the log: it never went out.
+      if (this.chats.get(threadId) === chat) chat.messages = before;
+      throw error;
+    }
   }
 
   /** Client-side abort plus the server-side stop the abort alone cannot do. */
@@ -273,6 +328,7 @@ export class ThreadChats {
 
   /** Drops a thread's chat, e.g. after it is deleted server-side. */
   forget(threadId: string): void {
+    this.settleAccept(threadId, new Error("任务已删除"));
     this.chats.delete(threadId);
     this.ready.delete(threadId);
     this.resuming.delete(threadId);
@@ -282,6 +338,7 @@ export class ThreadChats {
 
   dispose(): void {
     this.generation += 1;
+    for (const threadId of [...this.accepting.keys()]) this.settleAccept(threadId, new Error("已断开"));
     for (const chat of this.chats.values()) void chat.stop().catch(() => undefined);
     this.chats.clear();
     this.ready.clear();

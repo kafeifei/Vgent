@@ -20,13 +20,14 @@ export { createToolApproval, decideApproval, type ApprovalDecision, type Permiss
 export {
   BASH_TOOL,
   bashEntry,
-  bashEntryHead,
-  commandHeads,
+  bashEntryCommand,
+  commandsToAllow,
   isAllowlisted,
   isReadOnlyCommand,
-  segmentHead,
+  isVoidedBashEntry,
+  segmentCommand,
   splitShellSegments,
-  unlistedHeads,
+  unlistedCommands,
 } from "./allowlist.js";
 export { buildInstructions, planModeInstructions, type BuildInstructionsOptions, type VgentContext } from "./instructions.js";
 export {

@@ -41,19 +41,23 @@ function LiveAction({ chat }: { chat: Chat<UIMessage> }) {
   return <>{currentAction(messages) ?? "运行中"}</>;
 }
 
-/** The row's own menu: 归档 / 取消归档 and a two-step 删除任务. */
+/** The row's own menu: 标为未读 / 已读, 归档 / 取消归档 and a two-step 删除任务. */
 function RowMenu({
   archived,
+  unread,
   live,
   openRef,
   onArchive,
+  onUnread,
   onDelete,
 }: {
   archived: boolean;
+  unread: boolean;
   /** Archiving reclaims the worktree, so a turn that still owns it blocks it. Deleting stops the run first, so it does not. */
   live: boolean;
   openRef: RefObject<(() => void) | null>;
   onArchive: (archived: boolean) => void;
+  onUnread: (unread: boolean) => void;
   onDelete: () => void;
 }) {
   const [confirming, setConfirming] = useState(false);
@@ -97,6 +101,14 @@ function RowMenu({
         ) : (
           <>
             <PopItem
+              onClick={() => {
+                close();
+                onUnread(!unread);
+              }}
+            >
+              {unread ? "标为已读" : "标为未读"}
+            </PopItem>
+            <PopItem
               disabled={live}
               {...(live ? { hint: "进行中", title: LIVE_REASON } : {})}
               onClick={() => {
@@ -121,6 +133,7 @@ export function TaskItem({
   chat,
   onSelect,
   onArchive,
+  onUnread,
   onDelete,
 }: {
   thread: ThreadSummary;
@@ -130,9 +143,11 @@ export function TaskItem({
   chat: Chat<UIMessage> | undefined;
   onSelect: () => void;
   onArchive: (archived: boolean) => void;
+  onUnread: (unread: boolean) => void;
   onDelete: () => void;
 }) {
   const openMenu = useRef<(() => void) | null>(null);
+  const unread = thread.unread === true;
   const meta =
     thread.status === "awaiting-approval"
       ? "等待审批"
@@ -160,7 +175,9 @@ export function TaskItem({
       {selected && <span className="absolute top-xs bottom-xs left-0 w-[2px] rounded-full bg-brand" />}
       <span className={cn("flex items-center gap-xs", rail && "justify-center")}>
         <StatusDot status={thread.status} />
-        {!rail && <span className="min-w-0 flex-1 truncate text-sm">{thread.title}</span>}
+        {!rail && <span className={cn("min-w-0 flex-1 truncate text-sm", unread && "font-medium")}>{thread.title}</span>}
+        {/* 未读: it changed while you were away and you have not looked yet. */}
+        {!rail && unread && <span aria-label="未读" title="未读" className="size-xs flex-none rounded-full bg-brand" />}
       </span>
       {!rail && (
         <span className="mt-3xs flex items-center gap-xs pl-md text-fg-faint text-xs">
@@ -192,9 +209,11 @@ export function TaskItem({
       {row}
       <RowMenu
         archived={thread.archivedAt != null}
+        unread={unread}
         live={(LIVE_STATUSES as readonly string[]).includes(thread.status)}
         openRef={openMenu}
         onArchive={onArchive}
+        onUnread={onUnread}
         onDelete={onDelete}
       />
     </div>

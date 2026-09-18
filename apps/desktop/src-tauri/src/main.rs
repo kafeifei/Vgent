@@ -156,6 +156,10 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
+        // 系统通知: the page calls it through `window.__TAURI__.notification`,
+        // the same way it reaches the dialog plugin. Only the three commands
+        // listed in `capabilities/main.json` are open to it.
+        .plugin(tauri_plugin_notification::init())
         .manage(lifecycle)
         .setup(|app| {
             let menu = Menu::default(app.handle())?;

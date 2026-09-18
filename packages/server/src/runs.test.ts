@@ -947,9 +947,13 @@ describe("vgent engine", () => {
     return instance;
   }
 
-  /** 运行模式 is global and defaults to 询问, which is what the approval tests want. */
+  /**
+   * 运行模式 is global and now defaults to 自动改文件, so the approval tests set
+   * 询问 explicitly rather than leaning on a default that has moved once.
+   */
   async function setupVgentThread(app: VgentApp, repoPath: string): Promise<ThreadRecord> {
     const project = (await (await postJson(app, "/api/projects", { repoPath })).json()) as Project;
+    await request(app, "/api/settings", { method: "PUT", body: JSON.stringify({ runMode: "allow-reads" }) });
     return (await (
       await postJson(app, "/api/threads", { projectId: project.id, title: "自研引擎", engine: "vgent" })
     ).json()) as ThreadRecord;
@@ -1021,6 +1025,38 @@ describe("vgent engine", () => {
     const done = await waitForStatus(app, thread.id, "idle");
 
     expect(await readFile(written, "utf8")).toBe(WRITE_INPUT.content);
+    expect(done.messages.at(-1)?.parts.find(isToolUIPart)?.state).toBe("output-available");
+  });
+
+  /**
+   * 「一直允许」 down to the sub-command, through the whole server path. A
+   * settings file written before the change holds `bash(git)`, which used to
+   * wave `git push` through; it must now park on approval. The entry the card
+   * writes today, `bash(git show)`, still answers its own command.
+   */
+  it("stops honouring a legacy bash(git) entry, and honours the sub-command one", async () => {
+    const dataDir = await tempDir();
+    const repoPath = await tempDir();
+    const app = makeVgentApp(dataDir, mockModel([toolCallStream("call-b", "bash", { command: "git push" }), textStream("没推")]));
+    const thread = await setupVgentThread(app, repoPath);
+    // 自动改文件 is the default run mode now; shell commands still ask in it.
+    await request(app, "/api/settings", { method: "PUT", body: JSON.stringify({ runMode: "allow-edits" }) });
+    await postJson(app, "/api/settings/allowlist", { tool: "bash(git)" });
+
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "推一下分支")] }));
+    const parked = await waitForStatus(app, thread.id, "awaiting-approval");
+
+    const pending = parked.messages.at(-1)?.parts.find(isToolUIPart);
+    expect(pending?.state).toBe("approval-requested");
+    expect(pending?.input).toMatchObject({ command: "git push" });
+
+    // A read-only sub-command the list does name runs without asking, even in 询问.
+    const other = makeVgentApp(await tempDir(), mockModel([toolCallStream("call-s", "bash", { command: "git show" }), textStream("看过了")]));
+    const readThread = await setupVgentThread(other, repoPath);
+    await postJson(other, "/api/settings/allowlist", { tool: "bash(git show)" });
+
+    await readSse(await postJson(other, `/api/chat/${readThread.id}`, { messages: [userMessage("u1", "看一眼提交")] }));
+    const done = await waitForStatus(other, readThread.id, "idle");
     expect(done.messages.at(-1)?.parts.find(isToolUIPart)?.state).toBe("output-available");
   });
 
@@ -1140,5 +1176,110 @@ describe("auto title", () => {
     expect(deriveThreadTitle([{ id: "a", role: "assistant", parts: [{ type: "text", text: "嗨" }] }])).toBeUndefined();
     expect(deriveThreadTitle([userMessage("u1", "   \n  ")])).toBeUndefined();
     expect(deriveThreadTitle([userMessage("u1", "\n\n真正的标题")])).toBe("真正的标题");
+  });
+});
+
+describe("未读", () => {
+  const patch = (app: VgentApp, threadId: string, body: unknown) =>
+    request(app, `/api/threads/${threadId}`, { method: "PATCH", body: JSON.stringify(body) });
+
+  it("回合自己停下就是未读：跑完、等审批都算，读过之后清掉", async () => {
+    const dir = await tempDir();
+    const app = makeApp(dir, createApprovalEngine().factory);
+    const thread = await setupThread(app, dir);
+    expect(thread.unread).toBeUndefined();
+
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "随便说点什么")] }));
+    expect((await waitForStatus(app, thread.id, "idle")).unread).toBe(true);
+
+    // 看过了：客户端在任务真的摆在眼前时发的那一下。
+    const read = (await (await patch(app, thread.id, { unread: false })).json()) as ThreadRecord;
+    expect(read.unread).toBeUndefined();
+    expect((await getThread(app, thread.id)).unread).toBeUndefined();
+
+    // 停在等审批同样是「它不动了，等你」。
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u2", "用工具跑一下 uname")] }));
+    expect((await waitForStatus(app, thread.id, "awaiting-approval")).unread).toBe(true);
+
+    // 右键菜单的「标为未读 / 标为已读」走同一个字段。
+    expect(((await (await patch(app, thread.id, { unread: false })).json()) as ThreadRecord).unread).toBeUndefined();
+    expect(((await (await patch(app, thread.id, { unread: true })).json()) as ThreadRecord).unread).toBe(true);
+  });
+
+  it("出错也是未读", async () => {
+    const dir = await tempDir();
+    const factory: EngineFactoryOverride = {
+      async create() {
+        return {
+          hasUnfinishedTurn: () => false,
+          async finish() {},
+          async destroy() {},
+          async stream() {
+            return { stream: toStream([{ type: "start" }, { type: "error", error: new Error("boom") }]) };
+          },
+        } satisfies EngineRunner;
+      },
+    };
+    const app = makeApp(dir, factory);
+    const thread = await setupThread(app, dir);
+
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "写个文件")] }));
+    expect((await waitForStatus(app, thread.id, "error")).unread).toBe(true);
+  });
+
+  it("你按的停止不算未读，而未读这一个字段运行中也能改", async () => {
+    const dir = await tempDir();
+    let release = () => {};
+    const factory: EngineFactoryOverride = {
+      async create() {
+        return {
+          hasUnfinishedTurn: () => false,
+          async finish() {},
+          async destroy() {},
+          async stream() {
+            return {
+              stream: new ReadableStream<TextStreamPart<ToolSet>>({
+                start(controller) {
+                  controller.enqueue({ type: "start" });
+                  // Deliberately never closed until the test lets it go.
+                  release = () => controller.close();
+                },
+              }),
+            };
+          },
+        } satisfies EngineRunner;
+      },
+    };
+    const app = makeApp(dir, factory, 100);
+    const thread = await setupThread(app, dir);
+
+    const post = postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "跑个久的")] });
+    for (let attempt = 0; attempt < 100 && (await request(app, `/api/chat/${thread.id}/stream`)).status !== 200; attempt++) {
+      await sleep(10);
+    }
+
+    // 运行中：改标题 409，标未读 200 —— 读一眼不是改任务。
+    expect((await patch(app, thread.id, { title: "改名" })).status).toBe(409);
+    const marked = await patch(app, thread.id, { unread: true });
+    expect(marked.status).toBe(200);
+    expect(((await marked.json()) as ThreadRecord).unread).toBe(true);
+    await patch(app, thread.id, { unread: false });
+
+    expect((await postJson(app, `/api/chat/${thread.id}/stop`, {})).status).toBe(204);
+    const stopped = await getThread(app, thread.id);
+    expect(stopped.status).toBe("interrupted");
+    expect(stopped.unread).toBeUndefined();
+
+    release();
+    await readSse(await post);
+  });
+
+  it("unread 只收布尔值", async () => {
+    const dir = await tempDir();
+    const app = makeApp(dir, createApprovalEngine().factory);
+    const thread = await setupThread(app, dir);
+    const bad = await patch(app, thread.id, { unread: "yes" });
+    expect(bad.status).toBe(400);
+    expect(await bad.json()).toMatchObject({ error: { code: "invalid_unread" } });
   });
 });

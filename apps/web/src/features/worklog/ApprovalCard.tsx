@@ -1,4 +1,4 @@
-import { BASH_TOOL, bashEntry, unlistedHeads } from "@vgent/engine/allowlist";
+import { BASH_TOOL, bashEntry, unlistedCommands } from "@vgent/engine/allowlist";
 import { getToolName } from "ai";
 import { describeTool, toolTitle, type ToolPart } from "./toolMeta";
 
@@ -8,16 +8,18 @@ type AlwaysAllow = { label: string; entries: string[] };
 /**
  * The always-allow offer for one call, or null when there is nothing honest to
  * offer: a shell command we cannot read confidently, or one the list already
- * covers. A `bash` entry names the *command* (`bash(git)`), never the whole
- * shell — one click must not sign off every future command in every task.
+ * covers. A `bash` entry names the *command* (`bash(git push)`), never the whole
+ * shell — one click must not sign off every future command in every task. The
+ * label is what will be written, verbatim and one per segment, so 「一直允许 git
+ * push」 never quietly means every `git`.
  */
-function alwaysAllowOffer(toolName: string, input: unknown, allowlist: readonly string[]): AlwaysAllow | null {
+export function alwaysAllowOffer(toolName: string, input: unknown, allowlist: readonly string[]): AlwaysAllow | null {
   if (toolName !== BASH_TOOL) return { label: toolTitle(toolName), entries: [toolName] };
   const command = (input as { command?: unknown } | null | undefined)?.command;
   if (typeof command !== "string") return null;
-  const heads = unlistedHeads(command, allowlist);
-  if (heads == null || heads.length === 0) return null;
-  return { label: heads.join("、"), entries: heads.map(bashEntry) };
+  const missing = unlistedCommands(command, allowlist);
+  if (missing == null || missing.length === 0) return null;
+  return { label: missing.join("、"), entries: missing.map(bashEntry) };
 }
 
 /**

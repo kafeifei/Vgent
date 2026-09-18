@@ -360,8 +360,8 @@ describe("createApp", () => {
     const app = makeApp(dir, createFakeEngine().factory);
     const project = (await (await postJson(app, "/api/projects", { repoPath: dir })).json()) as Project;
 
-    // 询问 is the default run mode, and Codex cannot ask; the task is created
-    // anyway and simply runs 全自动 — see `effectivePermission`.
+    // 自动改文件 is the default run mode, and Codex cannot ask; the task is
+    // created anyway and simply runs 全自动 — see `effectivePermission`.
     const created = await postJson(app, "/api/threads", { projectId: project.id, engine: "codex" });
     expect(created.status).toBe(200);
     expect((await created.json()) as ThreadRecord).toMatchObject({ engine: "codex" });
@@ -1038,6 +1038,15 @@ describe("createApp", () => {
     });
     const updated = await request(app, "/api/settings", { method: "PUT", body: JSON.stringify({ runMode: "allow-edits" }) });
     expect(await updated.json()).toMatchObject({ runMode: "allow-edits" });
+  });
+
+  it("系统通知默认开：只有明确关掉才落盘，再打开就把这个字段去掉", async () => {
+    const app = makeApp(await tempDir());
+    const put = (body: unknown) => request(app, "/api/settings", { method: "PUT", body: JSON.stringify(body) });
+
+    expect((await (await request(app, "/api/settings")).json()).systemNotifications).toBeUndefined();
+    expect((await (await put({ systemNotifications: false })).json()).systemNotifications).toBe(false);
+    expect((await (await put({ systemNotifications: true })).json()).systemNotifications).toBeUndefined();
   });
 
   it("serves a built web app at / with an SPA fallback, without touching /api", async () => {

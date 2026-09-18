@@ -8,7 +8,9 @@
  * pulls in `ai`, zod or a node builtin belongs in another module.
  *
  * An entry is either a plain tool name (`write`, `edit`, an MCP tool's name) or
- * `bash(<head>)`, the command word of a shell segment (`git`, `pnpm`, `echo`).
+ * `bash(<命令>)`, the command a shell segment runs: the command word on its own
+ * (`echo`, `rm`), or the command word plus its sub-command for the tools whose
+ * sub-command is what really decides what happens (`git status`, `docker ps`).
  * A bare `bash` entry means「任何命令」: the UI no longer writes one, but an
  * older settings file may carry it and it still means what it said.
  */
@@ -18,12 +20,74 @@ export const BASH_TOOL = "bash";
 
 const BASH_ENTRY = /^bash\((.+)\)$/;
 
-/** The allowlist entry that pre-approves one command head. */
-export const bashEntry = (head: string): string => `${BASH_TOOL}(${head})`;
+/** The allowlist entry that pre-approves one command. */
+export const bashEntry = (command: string): string => `${BASH_TOOL}(${command})`;
 
-/** The head an entry covers, or undefined when it is not a `bash(...)` entry. */
-export function bashEntryHead(entry: string): string | undefined {
+/** The command an entry covers, or undefined when it is not a `bash(...)` entry. */
+export function bashEntryCommand(entry: string): string | undefined {
   return BASH_ENTRY.exec(entry)?.[1];
+}
+
+/**
+ * Command words whose *sub-command* is the thing that decides what happens, so
+ * an entry has to name both: `bash(git status)` must not also mean `git push`.
+ *
+ * Membership is earned, not guessed. Each of these dispatches to sub-commands
+ * that differ in kind — read vs. write, local vs. remote, install vs. run — and
+ * each is common enough in a repository that a single blanket entry would be
+ * written on the first task and regretted later:
+ * - `git`, `gh`: `status` vs. `push`; `pr view` vs. `pr merge`.
+ * - `docker`, `kubectl`: `ps`/`get` vs. `run`/`rm`/`delete`.
+ * - `npm`, `pnpm`, `yarn`, `bun`, `cargo`, `go`, `pip`, `pip3`, `brew`: `test`
+ *   or `list` vs. `install`, `publish`, `run`.
+ * - `npx`, `bunx`: the first word *is* the package that runs, so a head-only
+ *   entry would be a blank cheque for any package on the registry.
+ * - `make`: the target names what the Makefile does — `build` vs. `deploy`.
+ *
+ * Two words is the whole rule; there is no three-word form. `docker compose up`
+ * therefore becomes `bash(docker compose)`, which still keeps compose apart
+ * from `docker run` and `docker rm` — the boundary that matters — while a
+ * nested table would have to be grown and maintained per tool, and the same
+ * argument would immediately reopen for `gh pr`, `cargo run` and the rest.
+ * `pnpm run <script>` has the same shape and the same answer: the entry is
+ * `bash(pnpm run)`.
+ */
+const COMPOSITE_HEADS = new Set([
+  "git",
+  "gh",
+  "docker",
+  "kubectl",
+  "npm",
+  "npx",
+  "pnpm",
+  "yarn",
+  "bun",
+  "bunx",
+  "cargo",
+  "go",
+  "pip",
+  "pip3",
+  "brew",
+  "make",
+]);
+
+/**
+ * The sub-command of a composite head has to be a bare word. A flag (`git -C x
+ * status`) or anything else means we cannot say what this command does, so the
+ * segment is not allowlistable at all — the same answer an unparseable command
+ * has always got.
+ */
+const BARE_WORD = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
+ * True for an entry that can no longer match anything: `bash(git)` and friends,
+ * written before entries went down to the sub-command. Nothing is migrated —
+ * widening `bash(git)` into every `git <sub>` would grant what the user never
+ * granted — so the settings list marks these and lets them be removed.
+ */
+export function isVoidedBashEntry(entry: string): boolean {
+  const command = bashEntryCommand(entry);
+  return command != null && COMPOSITE_HEADS.has(command);
 }
 
 /**
@@ -101,12 +165,12 @@ function readableWords(segment: string): string[] | undefined {
 }
 
 /**
- * The command word of one segment — what a `bash(...)` entry names — or
+ * The command one segment runs — what a `bash(...)` entry has to name — or
  * undefined when the segment cannot be read confidently: a subshell, a
- * substitution, a redirection, a quote, an `FOO=1` prefix, or a wrapper that
- * hides the real command.
+ * substitution, a redirection, a quote, an `FOO=1` prefix, a wrapper that hides
+ * the real command, or a composite head whose sub-command is not a bare word.
  */
-export function segmentHead(segment: string): string | undefined {
+export function segmentCommand(segment: string): string | undefined {
   const words = readableWords(segment);
   const head = words?.[0];
   if (head == null) return undefined;
@@ -114,24 +178,28 @@ export function segmentHead(segment: string): string | undefined {
   // honestly「the command」.
   if (head.includes("=")) return undefined;
   if (COMMAND_WRAPPERS.has(head)) return undefined;
-  return head;
+  if (!COMPOSITE_HEADS.has(head)) return head;
+  // `git` with no sub-command, `git -C x status`: nothing to name honestly, so
+  // this segment always asks and is never offered as an entry.
+  const sub = words?.[1];
+  return sub != null && BARE_WORD.test(sub) ? `${head} ${sub}` : undefined;
 }
 
 /**
- * Every segment's head, in order and deduped — what 「一直允许」 would have to
- * write to cover this command. Undefined when any segment is unparseable, which
- * is also why such a call gets no always-allow button at all.
+ * Every segment's command, in order and deduped — what 「一直允许」 would have to
+ * write to cover this command line. Undefined when any segment is unparseable,
+ * which is also why such a call gets no always-allow button at all.
  */
-export function commandHeads(command: string): string[] | undefined {
+export function commandsToAllow(command: string): string[] | undefined {
   const segments = splitShellSegments(command);
   if (segments.length === 0) return undefined;
-  const heads: string[] = [];
+  const commands: string[] = [];
   for (const segment of segments) {
-    const head = segmentHead(segment);
-    if (head == null) return undefined;
-    if (!heads.includes(head)) heads.push(head);
+    const runs = segmentCommand(segment);
+    if (runs == null) return undefined;
+    if (!commands.includes(runs)) commands.push(runs);
   }
-  return heads;
+  return commands;
 }
 
 function isSafeListedSegment(segment: string): boolean {
@@ -161,21 +229,21 @@ export function isReadOnlyCommand(command: string): boolean {
 }
 
 /**
- * The heads of this command the allowlist does not cover yet — what the
- * approval card offers to add. Empty means the call is already covered;
- * undefined means the command is unparseable and there is nothing honest to
- * offer.
+ * The commands in this command line the allowlist does not cover yet — what the
+ * approval card offers to add, spelled exactly as the entry will be written
+ * (`git push`). Empty means the call is already covered; undefined means the
+ * command is unparseable and there is nothing honest to offer.
  */
-export function unlistedHeads(command: string, allowlist: readonly string[]): string[] | undefined {
+export function unlistedCommands(command: string, allowlist: readonly string[]): string[] | undefined {
   const segments = splitShellSegments(command);
   if (segments.length === 0) return undefined;
   const missing: string[] = [];
   for (const segment of segments) {
     if (isSafeListedSegment(segment)) continue;
-    const head = segmentHead(segment);
-    if (head == null) return undefined;
-    if (allowlist.includes(bashEntry(head))) continue;
-    if (!missing.includes(head)) missing.push(head);
+    const runs = segmentCommand(segment);
+    if (runs == null) return undefined;
+    if (allowlist.includes(bashEntry(runs))) continue;
+    if (!missing.includes(runs)) missing.push(runs);
   }
   return missing;
 }
@@ -183,9 +251,11 @@ export function unlistedHeads(command: string, allowlist: readonly string[]): st
 /**
  * Whether the global 「一直允许」 list already answers this tool call.
  *
- * For `bash` that is per *command*, not per tool: every segment has to have a
- * head the list names, or be on the built-in safe list. A legacy bare `bash`
- * entry covers everything, because that is what it promised when it was written.
+ * For `bash` that is per *command*, not per tool: every segment has to run a
+ * command the list names, or be on the built-in safe list. A legacy bare `bash`
+ * entry covers everything, because that is what it promised when it was written;
+ * a legacy `bash(git)` covers nothing, because `git` alone never was a promise
+ * about `git push`.
  */
 export function isAllowlisted({
   toolName,
@@ -201,6 +271,6 @@ export function isAllowlisted({
   if (allowlist.includes(BASH_TOOL)) return true;
   const command = (input as { command?: unknown } | null | undefined)?.command;
   if (typeof command !== "string") return false;
-  const missing = unlistedHeads(command, allowlist);
+  const missing = unlistedCommands(command, allowlist);
   return missing != null && missing.length === 0;
 }

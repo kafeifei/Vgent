@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   bashEntry,
-  bashEntryHead,
-  commandHeads,
+  bashEntryCommand,
+  commandsToAllow,
   isAllowlisted,
   isReadOnlyCommand,
-  segmentHead,
+  isVoidedBashEntry,
+  segmentCommand,
   splitShellSegments,
-  unlistedHeads,
+  unlistedCommands,
 } from "./allowlist.js";
 
 describe("isReadOnlyCommand", () => {
@@ -95,40 +96,68 @@ describe("splitShellSegments", () => {
   });
 });
 
-describe("segmentHead", () => {
+describe("segmentCommand", () => {
   it("reads the command word of a plain segment", () => {
-    expect(segmentHead("git status")).toBe("git");
-    expect(segmentHead("pnpm run build --filter x")).toBe("pnpm");
-    expect(segmentHead("./scripts/deploy.sh")).toBe("./scripts/deploy.sh");
+    expect(segmentCommand("echo hi")).toBe("echo");
+    expect(segmentCommand("rm -rf build")).toBe("rm");
+    expect(segmentCommand("./scripts/deploy.sh")).toBe("./scripts/deploy.sh");
+  });
+
+  it("takes head plus sub-command for a composite head", () => {
+    const cases: ReadonlyArray<readonly [string, string | undefined]> = [
+      ["git status", "git status"],
+      ["git status -s --porcelain", "git status"],
+      ["git push origin main", "git push"],
+      ["gh pr merge 12", "gh pr"],
+      ["docker ps -a", "docker ps"],
+      ["docker compose up -d", "docker compose"],
+      ["kubectl get pods", "kubectl get"],
+      ["pnpm run build", "pnpm run"],
+      ["npx vitest run", "npx vitest"],
+      ["make deploy", "make deploy"],
+      // The sub-command has to be a bare word: a flag before it hides what runs.
+      ["git -C /other status", undefined],
+      ["pnpm --filter @vgent/web build", undefined],
+      ["docker --context prod ps", undefined],
+      // A composite head with nothing after it names nothing.
+      ["git", undefined],
+      ["docker  ", undefined],
+    ];
+    for (const [segment, expected] of cases) {
+      expect(segmentCommand(segment), segment).toBe(expected);
+    }
   });
 
   it("refuses an env prefix — the assignment changes what runs", () => {
-    expect(segmentHead("FOO=1 echo hi")).toBeUndefined();
+    expect(segmentCommand("FOO=1 echo hi")).toBeUndefined();
   });
 
   it("refuses a wrapper that hides the real command", () => {
-    for (const segment of ["sudo rm -rf /", "env rm x", "xargs cat", "bash script.sh", "time pnpm test"]) {
-      expect(segmentHead(segment), segment).toBeUndefined();
+    // `sudo git status` included on purpose: a wrapper wins over the composite
+    // table, so it stays unallowlistable rather than becoming `bash(sudo git)`.
+    for (const segment of ["sudo rm -rf /", "sudo git status", "env rm x", "xargs cat", "bash script.sh", "time pnpm test"]) {
+      expect(segmentCommand(segment), segment).toBeUndefined();
     }
   });
 
   it("refuses substitution, redirection, globs and quotes", () => {
-    for (const segment of ["echo $(whoami)", "echo `whoami`", "echo hi > /etc/passwd", "rm *", "echo 'a b'"]) {
-      expect(segmentHead(segment), segment).toBeUndefined();
+    for (const segment of ["echo $(whoami)", "echo `whoami`", "echo hi > /etc/passwd", "rm *", "echo 'a b'", "git log $(cat x)"]) {
+      expect(segmentCommand(segment), segment).toBeUndefined();
     }
   });
 });
 
-describe("commandHeads", () => {
-  it("collects one head per segment, deduped and in order", () => {
-    expect(commandHeads("echo a")).toEqual(["echo"]);
-    expect(commandHeads("git status -s && git diff --stat")).toEqual(["git"]);
-    expect(commandHeads("pnpm build | tee out; git status")).toEqual(["pnpm", "tee", "git"]);
+describe("commandsToAllow", () => {
+  it("collects one command per segment, deduped and in order", () => {
+    expect(commandsToAllow("echo a")).toEqual(["echo"]);
+    expect(commandsToAllow("git status -s && git diff --stat")).toEqual(["git status", "git diff"]);
+    expect(commandsToAllow("pnpm build | tee out; git status")).toEqual(["pnpm build", "tee", "git status"]);
   });
 
   it("gives up on a command with an unreadable segment", () => {
-    expect(commandHeads("echo a && rm $(cat x)")).toBeUndefined();
-    expect(commandHeads("")).toBeUndefined();
+    expect(commandsToAllow("echo a && rm $(cat x)")).toBeUndefined();
+    expect(commandsToAllow("git status && git -C other push")).toBeUndefined();
+    expect(commandsToAllow("")).toBeUndefined();
   });
 });
 
@@ -167,29 +196,72 @@ describe("isAllowlisted", () => {
     expect(allowed("echo $(rm x)", [bashEntry("echo")])).toBe(false);
     expect(isAllowlisted({ toolName: "bash", input: {}, allowlist: [bashEntry("echo")] })).toBe(false);
   });
+
+  it("matches a composite head only down to its sub-command", () => {
+    // The recorded gap, closed: one entry per sub-command, and `bash(git)`
+    // — what an older settings file may hold — matches nothing at all.
+    const cases: ReadonlyArray<readonly [string, string[], boolean]> = [
+      // `git status` is on the built-in safe list, so it is covered either way;
+      // what the entry shape decides is every *other* git sub-command.
+      ["git status -s", [bashEntry("git status")], true],
+      ["git commit -m wip", [bashEntry("git commit")], true],
+      ["git commit -m wip", [bashEntry("git")], false],
+      ["git push", [bashEntry("git status")], false],
+      ["git push", [bashEntry("git push")], true],
+      ["git push", [bashEntry("git")], false],
+      ["git commit -m wip && git push", [bashEntry("git commit")], false],
+      ["git commit -m wip && git push", [bashEntry("git commit"), bashEntry("git push")], true],
+      // A flag before the sub-command is not allowlistable, so no entry helps.
+      ["git -C /other push", [bashEntry("git push"), bashEntry("git")], false],
+      ["docker compose up -d", [bashEntry("docker compose")], true],
+      ["docker rm -f box", [bashEntry("docker compose")], false],
+      // A plain head keeps matching on its own word.
+      ["rm -rf build", [bashEntry("rm")], true],
+    ];
+    for (const [command, allowlist, expected] of cases) {
+      expect(allowed(command, allowlist), `${command} / ${allowlist.join(",")}`).toBe(expected);
+    }
+  });
 });
 
-describe("unlistedHeads", () => {
+describe("unlistedCommands", () => {
   it("names only what an entry is still missing for", () => {
-    expect(unlistedHeads("git push && pnpm build", [])).toEqual(["git", "pnpm"]);
-    expect(unlistedHeads("git push && pnpm build", [bashEntry("git")])).toEqual(["pnpm"]);
-    expect(unlistedHeads("echo a && echo b", [])).toEqual(["echo"]);
+    expect(unlistedCommands("git push && pnpm build", [])).toEqual(["git push", "pnpm build"]);
+    expect(unlistedCommands("git push && pnpm build", [bashEntry("git push")])).toEqual(["pnpm build"]);
+    expect(unlistedCommands("echo a && echo b", [])).toEqual(["echo"]);
     // Already covered by the built-in safe list, so there is nothing to add.
-    expect(unlistedHeads("git status", [])).toEqual([]);
+    expect(unlistedCommands("git status", [])).toEqual([]);
+    // The card offers exactly the command that is still missing, `git push` —
+    // never the bare head, and never the segment the safe list already covers.
+    expect(unlistedCommands("git status && git push", [bashEntry("git status")])).toEqual(["git push"]);
   });
 
   it("is undefined when there is nothing honest to offer", () => {
-    expect(unlistedHeads("rm $(cat x)", [])).toBeUndefined();
-    expect(unlistedHeads("sudo rm x", [])).toBeUndefined();
-    expect(unlistedHeads("", [])).toBeUndefined();
+    expect(unlistedCommands("rm $(cat x)", [])).toBeUndefined();
+    expect(unlistedCommands("sudo rm x", [])).toBeUndefined();
+    expect(unlistedCommands("git -C /other status", [])).toBeUndefined();
+    expect(unlistedCommands("", [])).toBeUndefined();
   });
 });
 
-describe("bashEntryHead", () => {
+describe("bashEntryCommand", () => {
   it("reads a bash entry back, and only a bash entry", () => {
-    expect(bashEntryHead("bash(git)")).toBe("git");
-    expect(bashEntryHead("bash")).toBeUndefined();
-    expect(bashEntryHead("write")).toBeUndefined();
+    expect(bashEntryCommand("bash(git status)")).toBe("git status");
+    expect(bashEntryCommand("bash(git)")).toBe("git");
+    expect(bashEntryCommand("bash")).toBeUndefined();
+    expect(bashEntryCommand("write")).toBeUndefined();
+  });
+});
+
+describe("isVoidedBashEntry", () => {
+  it("flags a head-only entry for a composite head, and nothing else", () => {
+    expect(isVoidedBashEntry("bash(git)")).toBe(true);
+    expect(isVoidedBashEntry("bash(docker)")).toBe(true);
+    expect(isVoidedBashEntry("bash(git status)")).toBe(false);
+    expect(isVoidedBashEntry("bash(echo)")).toBe(false);
+    // A bare `bash` still means every command; it is not voided, just broad.
+    expect(isVoidedBashEntry("bash")).toBe(false);
+    expect(isVoidedBashEntry("write")).toBe(false);
   });
 });
 

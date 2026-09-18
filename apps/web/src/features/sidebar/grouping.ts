@@ -48,7 +48,16 @@ export function needsReview(thread: ThreadSummary): boolean {
   return thread.status === "idle" && (thread.changeStats?.files ?? 0) > 0 && thread.outcome == null && !isArchived(thread);
 }
 
-const bucketOf = (thread: ThreadSummary): StatusBucket => (needsReview(thread) ? "review" : STATUS_BUCKET[thread.status]);
+/**
+ * 待验收 wins as before — it is the group the user most needs. Otherwise a task
+ * that finished while nobody was looking waits in 待处理 instead of dropping
+ * silently into 已完成; reading it moves it on.
+ */
+const bucketOf = (thread: ThreadSummary): StatusBucket => {
+  if (needsReview(thread)) return "review";
+  const bucket = STATUS_BUCKET[thread.status];
+  return bucket === "done" && thread.unread === true ? "waiting" : bucket;
+};
 
 const DAY = 24 * 60 * 60 * 1000;
 

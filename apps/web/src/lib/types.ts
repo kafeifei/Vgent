@@ -43,6 +43,8 @@ export type {
   ThreadStatus,
   ThreadSummary,
   ThreadWorkspace,
+  UiDensity,
+  UiTheme,
   UndoApplyResult,
   ProviderAgent,
   ProviderAgentConfig,

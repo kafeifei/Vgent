@@ -60,6 +60,8 @@ export type ThreadPatch = Partial<{
   mode: ThreadMode | undefined;
   status: ThreadStatus;
   error: string | undefined;
+  /** 未读. `false` is 已读, which is the absence of the field. */
+  unread: boolean | undefined;
   /** Attached right after the worktree is created, cleared when it is removed. */
   workspace: ThreadWorkspace | undefined;
   /** 任务基线 of a main-checkout task: set on its first turn, moved forward by 提交. */
@@ -295,6 +297,11 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
         if ("error" in patch) {
           if (patch.error == null) delete next.error;
           else next.error = patch.error;
+        }
+        // 已读 is the absence of a flag, so it is stored as one.
+        if ("unread" in patch) {
+          if (patch.unread !== true) delete next.unread;
+          else next.unread = true;
         }
         if ("workspace" in patch) {
           if (patch.workspace == null) delete next.workspace;

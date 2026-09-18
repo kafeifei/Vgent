@@ -8,6 +8,8 @@ import type { EngineDescriptor, EngineId, ThreadMessageMetadata, ThreadMode, Thr
 import { LIVE_STATUSES } from "@/lib/types";
 import { repoRelative } from "@/features/changes/paths";
 import { useChanges } from "@/features/changes/useChanges";
+import { notificationsEnabled, pendingApprovalLabel } from "@/features/notify/notify";
+import { useNotifications } from "@/features/notify/useNotifications";
 import type { Grouping } from "@/features/sidebar/grouping";
 import type { RightTab } from "@/features/rightpane/RightPane";
 
@@ -104,12 +106,58 @@ export function useWorkbench(token: string) {
     toast,
   });
 
+  /**
+   * A task the user just marked 未读 by hand must not be read again by the
+   * effect below while it is still the selected one. Switching away ends the
+   * exemption, so coming back reads it like anything else.
+   */
+  const keepUnread = useRef<string | null>(null);
+
   const selectThread = useCallback((threadId: string | null) => {
+    keepUnread.current = null;
     setSelectedThreadId(threadId);
     writeThreadToUrl(threadId);
     setView(threadId == null ? "empty" : "thread");
     setSettingsOpen(false);
   }, []);
+
+  /**
+   * 未读 clears when the task is really on screen: selected, in a window that is
+   * visible and focused. A transition that lands while it is already open in a
+   * focused window is therefore read straight away, and one that lands while the
+   * window is in the background waits — which is what the sidebar dot and the
+   * notification are for.
+   */
+  const unread = thread?.unread === true;
+  useEffect(() => {
+    if (selectedThreadId == null || !unread) return;
+    let cleared = false;
+    const clear = () => {
+      if (cleared || document.hidden || !document.hasFocus()) return;
+      if (keepUnread.current === selectedThreadId) return;
+      cleared = true;
+      // A failed clear is not worth interrupting anyone: the next focus event,
+      // or the next snapshot, tries again.
+      void client.patchThread(selectedThreadId, { unread: false }).catch(() => undefined);
+    };
+    clear();
+    window.addEventListener("focus", clear);
+    document.addEventListener("visibilitychange", clear);
+    return () => {
+      window.removeEventListener("focus", clear);
+      document.removeEventListener("visibilitychange", clear);
+    };
+  }, [client, selectedThreadId, unread]);
+
+  /** 等你审批 in a notification names what for, when this window has the chat. */
+  const detailOf = useCallback((threadId: string) => pendingApprovalLabel(chats.peek(threadId)?.messages.at(-1)), [chats]);
+
+  useNotifications({
+    threads: state.threads,
+    enabled: notificationsEnabled(state.settings),
+    onSelect: selectThread,
+    detailOf,
+  });
 
   /**
    * A selected thread the server dropped falls back to the empty state — but
@@ -190,20 +238,26 @@ export function useWorkbench(token: string) {
       /** Native folder chooser: the desktop shell's own dialog, or the server's. */
       pickFolder: () => client.pickFolder(),
 
-      /** Empty state: create the thread, select it, send the first message. */
-      startThread: (
+      /**
+       * Empty state: create the thread, send the first message, open it.
+       * Resolves `false` when the task could not even be created — the empty
+       * state keeps its draft then. A task that exists but whose first message
+       * the server refused keeps the text too, as *that task's* draft, so it
+       * travels with the task the user is now looking at.
+       */
+      startThread: async (
         text: string,
         engine: EngineId,
         workspace: WorkspaceMode,
         model: string | null,
         reasoningEffort: string | null,
         mode: ThreadMode,
-      ) => {
+      ): Promise<boolean> => {
         if (activeProjectId == null) {
           toast("先添加一个项目");
-          return;
+          return false;
         }
-        void client
+        const record = await client
           .createThread({
             projectId: activeProjectId,
             engine,
@@ -213,16 +267,31 @@ export function useWorkbench(token: string) {
             ...(reasoningEffort == null ? {} : { reasoningEffort }),
             mode,
           })
-          .then(async (record) => {
-            selectThread(record.id);
-            await chats.send(record.id, text);
-          })
-          .catch((error: Error) => toast(error.message));
+          .catch((error: Error) => {
+            toast(error.message);
+            return null;
+          });
+        if (record == null) return false;
+        const accepted = await chats.send(record.id, text).then(
+          () => true,
+          () => false,
+        );
+        // Written before the task is opened, so its composer reads it on mount.
+        if (!accepted) await client.putDraft(record.id, text).catch(() => undefined);
+        selectThread(record.id);
+        return true;
       },
 
-      send: (threadId: string, text: string) => {
-        void chats.send(threadId, text).catch((error: Error) => toast(error.message));
-      },
+      /**
+       * Resolves `true` only once the server accepted the message. The composer
+       * keeps the text until then, so a refused send never eats it; the error
+       * itself is already toasted by the chat registry.
+       */
+      send: (threadId: string, text: string): Promise<boolean> =>
+        chats.send(threadId, text).then(
+          () => true,
+          () => false,
+        ),
 
       /**
        * 运行中按 Enter：the message goes onto the task's queue on the *server*,
@@ -246,9 +315,12 @@ export function useWorkbench(token: string) {
         void client.deleteQueued(threadId, itemId).catch((error: Error) => toast(error.message));
       },
 
-      /** 「发送」 on a paused queue: run this one now instead of waiting. */
-      sendQueued: (threadId: string, itemId: string) => {
-        void client.sendQueued(threadId, itemId).catch((error: Error) => toast(error.message));
+      /**
+       * 「发送」 on a paused queue: run this one now instead of waiting. With
+       * `interrupt` it is 「打断并发送」: the live turn is stopped first.
+       */
+      sendQueued: (threadId: string, itemId: string, options: { interrupt?: boolean } = {}) => {
+        void client.sendQueued(threadId, itemId, options).catch((error: Error) => toast(error.message));
       },
 
       stop: (threadId: string) => {
@@ -305,6 +377,15 @@ export function useWorkbench(token: string) {
           () => toast(archived ? "已归档，worktree 已回收" : "已取消归档"),
           (error: Error) => toast(error.message),
         );
+      },
+
+      /**
+       * 标为未读 / 标为已读 from the sidebar row. Marking the selected task unread
+       * sticks: the auto-clear above stands down until you switch away.
+       */
+      markUnread: (threadId: string, unread: boolean) => {
+        keepUnread.current = unread ? threadId : null;
+        void client.patchThread(threadId, { unread }).catch((error: Error) => toast(error.message));
       },
 
       deleteThread: (threadId: string) => {

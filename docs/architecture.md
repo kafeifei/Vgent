@@ -168,9 +168,9 @@ docs/
 - 本地 sandbox 跑 Claude Code bridge 官方无先例，freecode 证明可行但用了脏办法，我们要找干净的。
 - 自研引擎不走 HarnessV1，resume / compact / permissionMode 是自己的实现，和官方引擎语义可能有差；壳用统一配置抽象盖住。
 
-## 当前状态（2026-09-18，阶段五完成）
+## 当前状态（2026-09-18，阶段六完成）
 
-三条引擎路全部本地跑通并有真实冒烟测试（`VGENT_SMOKE=1`）；桌面壳、worktree 隔离、子代理/MCP/skills、动态模型清单、`pnpm start` 全部落地。全仓构建绿，`pnpm test` 40 文件 / 289 测试通过（另 5 文件 / 11 测试是 `VGENT_SMOKE` 门控的真机冒烟，默认跳过）。
+三条引擎路全部本地跑通并有真实冒烟测试（`VGENT_SMOKE=1`）；桌面壳、worktree 隔离、子代理/MCP/skills、动态模型清单、`pnpm start` 全部落地。全仓构建绿，`pnpm test` 49 文件 / 368 测试通过（另 5 文件 / 11 测试是 `VGENT_SMOKE` 门控的真机冒烟，默认跳过）。
 
 - `packages/sandbox-local`：freecode 移植，`createLocalSandboxProvider`，`loopbackOnly` 预加载已验证 bridge 只绑 127.0.0.1。
 - `packages/engines`：`createClaudeCodeEngine` / `createCodexEngine` → `{ agent, session, dispose }`，`toTUIAgent`，共享逻辑在 `shared.ts`。仓库路径靠覆写 `doStart` 传 `sessionWorkDir`。Claude 保留真实 HOME 复用登录（副作用：`~/.claude/CLAUDE.md` 影响回复）；Codex 用隔离 `CODEX_HOME`（真实 `~/.codex/config.toml` 与 pinned SDK 不兼容），登录态走 env 转发不受影响。Codex 的 permissionMode 只能 `allow-all`，SDK 构造时自己抛错。
@@ -251,13 +251,24 @@ docs/
 - 验证：`pnpm build && pnpm test` → 48 文件 / 359 测试通过（另 5 文件 / 11 测试 `VGENT_SMOKE` 门控默认跳过；含合并 main 的 `c208c9d` 之后）。浏览器实测（`node packages/server/dist/main.js --port 7477 --repo <本仓库>`，自研引擎 + allow-reads + 独立 worktree）：设置页改默认引擎并增删 MCP 条目落盘正确；任务里 `updatePlan` → bash 审批卡片 → 点「本任务内一直允许 命令」后 bash 直接跑（`alwaysAllow: ['bash']` 落盘，权限弹层显示名单）；审查 pill `+1 −0` 出现并能点开变更 tab；文件 tab 列出 worktree 树并查看 `now.txt`；终端 tab 有 `$ date > now.txt`；计划 tab 3 / 3 完成；输入 `@pack` 弹出补全、Tab 接受成 `@packages/` 且镜像层 span 带 pill 类；ring 的 title 是「上下文 3.8k / 200k（2%）（窗口大小未知，按 200k 计）」；回收后 pill 显示「已回收」、审查 pill 消失、worktree 目录删掉、快照留下；恢复后全部回来。每条助手消息的 `metadata.usage` / `totalUsage` 都落了盘。
 - 已知未修（阶段五）：任务头的 pill 行不换行，窄窗口 + 右栏展开时分支 pill 被右栏盖住；ring 在模型「默认」时分母未知；harness 引擎的 usage 只按协议核实、没真机跑；`alwaysAllow` 不传给 explore / coder 子代理（它们遇到需审批的操作还是直接拒）；Codex 计划分支不可达；`RightPane` 的 `open` prop 现在没人用；阶段三、四列的已知未修都还在。
 
-### 明确未做（阶段五之后）
+### 阶段六进度
+
+- 2026-09-18：起点 `6fcaa14`。按「下一步」清单挑了前四条，实例锁没做（桌面壳用 `--port 0` + connection.json 里的 pid 握手，目前没有撞车场景）。两个切片各开 worktree 并行，叠加型合并，无冲突。
+- **记忆（自研引擎）**。`packages/engine/src/memory.ts` 的 `createMemoryTool(memoryDir)`：一个 `memory` 工具，`action: list | read | write | delete`，条目是 `memoryDir` 下平铺的 `.md` 文件（一文件一事实，名字 kebab-case，首行一句摘要；`list` 列文件名 + 首个非空行）；名字含 `/`、`\`、以 `.` 开头一律拒绝，`.md` 自动补。`createVgentEngine({ memoryDir })` 给了才注册，不给 explore / coder 子代理；`buildInstructions` 多一段「记忆」：目录、现有条目清单（`readdirSync`，目录不存在视为空）、何时读何时写。进 `READ_ONLY_TOOLS`（只碰仓库外自己的目录，不审批）。server 端 `engines/vgent.ts` 的 `memoryDirOf(ctx)` = `<dataDir>/memory/<project.name>-<project.id 前 8 位>`（非 `[A-Za-z0-9._-]` 换成 `-`），按项目不按 worktree，同一项目的任务共享。
+- **手动 compact（自研引擎）**。`POST /api/threads/:id/compact`：运行中 409 `thread_running`；非 vgent 引擎 400 `compact_unsupported`（harness 引擎的对话在 harness 自己的 session 里，存的消息不是唯一真相）；`awaiting-approval` / `awaiting-input` 409 `compact_pending`；不足 2 条 400 `compact_empty`；模型调用失败 502 `model_failed`（新 `UpstreamModelError`）。`packages/server/src/compact.ts` 的 `compactThread({ thread, model })`：`convertToModelMessages(..., { ignoreIncompleteToolCalls: true })` + `generateText({ model, instructions })` 出摘要（AI SDK v7 没有内建摘要压缩，只有规则式 `pruneMessages`），然后**整体替换**线程消息为两条：user「上下文已压缩，以下是之前对话的摘要：…」（`metadata.compacted = { before, at }`）+ assistant「已了解摘要，继续。」。选整体替换而不是记边界：runner 每轮只从盘上读 `thread.messages`、`mergeIncoming` 只并客户端最后一条，旧客户端复活不了历史；`threads.update` 抬 `updatedAt`，前端 `refreshIfStale` 自动重拉。模型用 `resolveModel(thread.model ?? DEFAULT_VGENT_MODEL)`，测试用 `CreateAppOptions.compactModel` 注入。Web：⌘K「压缩上下文」（仅 vgent 且非运行中）、输入框敲 `/compact`（只认这一条，没做通用斜杠命令）、成功 toast「已压缩：N 条消息 → 摘要」、工作日志在摘要消息上方一行灰字「上下文已压缩（原 N 条消息）」。
+- **`alwaysAllow` 下沉子代理**。`createSubagentTools({ alwaysAllow })` → `denyUnapproved` 把名单传给 `decideApproval`；主 agent 批过「一直允许 bash」后 coder 子代理的 bash 不再被拒。
+- **任务头换行**。TaskHeader 行拆成左组（标题 + pill，`flex min-w-0 flex-wrap`）和右组（停止 / 右栏按钮，`ml-auto flex-none`），窄窗口下 pill 折到第二行，按钮留在右上。
+- **harness 引擎真机核实**。Claude Code：allow-reads 下 bash 审批卡片 → 点「本任务内一直允许 命令」→ 第二条 bash 自动放行（落盘 `alwaysAllow: ["bash"]`，两条 approval 都 `approved: true`），助手消息 `metadata.usage` / `totalUsage` 都在（含 `cachedInputTokens`）。Codex：`totalUsage` 正确，但每步 `usage` 全零（bridge 的 finish-step 不带 usage），ring 原本会显示 0，改成 `inputTokens` 为 0 视作未上报、回退到字符估算。`VGENT_SMOKE=1 pnpm --filter @vgent/engines test` 3 文件 / 5 测试过。
+- 验证：`pnpm build && pnpm test` → 49 文件 / 368 测试通过。浏览器实测（`node packages/server/dist/main.js --port 7481 --repo <本仓库>`，`VGENT_DATA_DIR` 指临时目录；自研引擎 + allow-reads + 主工作区）：「记住用户偏好 pnpm」→ `memory/Vgent-2805cba3/user-prefers-pnpm.md` 落盘、`list` 返回 1 条、全程无审批；`/compact` 后消息变两条并带标记行；再问「刚才记住了什么」答对；⌘K 面板有「压缩上下文」；900 px 宽 + 右栏开时权限 pill 折到第二行、右栏按钮仍在右上。注意 `pnpm build` 只跑 `tsc -b`，实测前要单独 `pnpm --filter @vgent/web build`。
+- 已知未修（阶段六）：compact 把整段历史换掉，UI 里看不到旧消息（磁盘上也没留快照）；compact 后 ring 到下一轮才有真实 usage；`memory` 工具不给子代理；记忆条目没有 UI 可查看 / 删除；Codex 每步 usage 为零是上游 bridge 行为；实例锁未做；阶段三到五的已知未修仍在。
+
+### 明确未做（阶段六之后）
 
 - **自研引擎的 session 管理**：server 把存好的 UI 消息喂回 agent（每轮 `convertToModelMessages` 重放），JSONL 的 `sessionFile` 路径现在只有 `apps/cli` 在用。
 - `server` 未做：实例锁（`instance-lock.ts` 还没搬）。
 - `askUserQuestions` 在 TUI 里不可用（需要 Web `useChat`）。
-- 记忆、手动 compact、`@ai-sdk/otel`。
+- `@ai-sdk/otel`。
 - Web：checkpoint / 回退、麦克风、侧聊 `/side`、运行位置下拉（写死「本机」）、模式 chip（写死 `Agent`）、子代理的嵌套流、虚拟滚动、无障碍焦点管理、任务头换行。
 - 桌面壳：Windows / Linux、签名与公证、自动更新、多窗口。
 
-下一步：阶段六候选，按优先级：记忆 + 手动 compact（自研引擎）；Claude Code / Codex 真机跑一轮确认 usage 元数据和「一直允许」的客户端自动审批；`alwaysAllow` 下沉到 explore / coder 子代理；任务头 pill 行换行；实例锁。发布工程（签名 / 公证、自动更新、Windows）只在有明确需求时再启动。
+下一步：不再按阶段排路线图，以用户实际用 Vgent.app 的痛点为准，一次一小步。手边的候选：实例锁；compact 前留一份旧消息快照可回看；设置页查看 / 删除记忆条目；给上游提 Codex bridge finish-step 不带 usage 的 issue。发布工程（签名 / 公证、自动更新、Windows）只在有明确需求时再启动。

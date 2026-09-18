@@ -33,7 +33,10 @@ export interface ContextUsage {
  */
 function reportedInputTokens(message: UIMessage): number | undefined {
   const usage = (message.metadata as ThreadMessageMetadata | undefined)?.usage;
-  return typeof usage?.inputTokens === "number" ? usage.inputTokens : undefined;
+  const inputTokens = usage?.inputTokens;
+  // 0 is never a real prompt size — the Codex harness bridge emits `finish-step` without
+  // usage, which lands here as all-zero counts, not as `undefined`.
+  return typeof inputTokens === "number" && inputTokens > 0 ? inputTokens : undefined;
 }
 
 /** Everything the model would have had to read, as characters. */
@@ -60,7 +63,8 @@ function promptChars(messages: readonly UIMessage[]): number {
  * (see `ThreadMessageMetadata`) — its `inputTokens` *is* the prompt that call
  * sent. A thread whose engine reports nothing, or one still on its first turn,
  * falls back to counting characters, and says so through `source` so the UI can
- * mark the number as approximate.
+ * mark the number as approximate. A message with `inputTokens: 0` (the Codex
+ * harness bridge's `finish-step` without usage) counts as unreported too.
  */
 export function contextUsage(messages: readonly UIMessage[]): ContextUsage {
   for (let index = messages.length - 1; index >= 0; index--) {

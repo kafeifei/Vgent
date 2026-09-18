@@ -38,6 +38,12 @@ describe("contextUsage", () => {
     expect(contextUsage(messages)).toEqual({ tokens: 100, source: "usage" });
   });
 
+  it("skips assistant messages with zero inputTokens (Codex bridge's unreported usage)", () => {
+    const messages = [assistant("a1", "好", { usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cachedInputTokens: 0 } })];
+
+    expect(contextUsage(messages)).toEqual({ tokens: 0, source: "estimate" });
+  });
+
   it("estimates from characters when no engine reported anything", () => {
     // 40 characters of text + 20 of tool JSON ⇒ 60 / 4 = 15.
     const messages: UIMessage[] = [

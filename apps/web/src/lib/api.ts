@@ -131,6 +131,11 @@ export function createClient(token: string) {
     /** Native folder chooser on the server; `null` means the user cancelled. */
     pickFolder: () =>
       api<{ path: string } | undefined>("/projects/pick", token, { method: "POST" }).then((body) => body?.path ?? null),
+    /** Same chooser, restricted to a single file — for an MCP server's executable. */
+    pickFile: () =>
+      api<{ path: string } | undefined>("/projects/pick", token, { method: "POST", json: { kind: "file" } }).then(
+        (body) => body?.path ?? null,
+      ),
 
     // Changes are keyed by thread: a task in its own worktree diffs that
     // directory, every other task diffs the project's working tree.

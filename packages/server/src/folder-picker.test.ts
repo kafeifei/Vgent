@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { NotImplementedError, VgentServerError } from "./errors.js";
-import { pickFolder, type ExecFileFn } from "./folder-picker.js";
+import { pickFile, pickFolder, type ExecFileFn } from "./folder-picker.js";
 
 const succeeds =
   (stdout: string): ExecFileFn =>
@@ -35,6 +35,35 @@ describe("pickFolder", () => {
 
   it("is a 501 off macOS so the UI can fall back to typing a path", async () => {
     const result = pickFolder({ platform: "linux", exec: succeeds("/never") });
+    await expect(result).rejects.toBeInstanceOf(NotImplementedError);
+    await expect(result).rejects.toMatchObject({ status: 501, code: "picker_unavailable" });
+  });
+});
+
+describe("pickFile", () => {
+  it("returns the chosen file, with no trailing slash to strip", async () => {
+    await expect(pickFile({ platform: "darwin", exec: succeeds("/usr/local/bin/my-server\n") })).resolves.toBe(
+      "/usr/local/bin/my-server",
+    );
+  });
+
+  it("treats Cancel as no choice, not an error", async () => {
+    const cancel = Object.assign(new Error("Command failed"), { stderr: "execution error: User canceled. (-128)\n" });
+    await expect(pickFile({ platform: "darwin", exec: fails(cancel) })).resolves.toBeNull();
+    await expect(pickFile({ platform: "darwin", exec: succeeds("  \n") })).resolves.toBeNull();
+  });
+
+  it("turns any other osascript failure into a typed 500", async () => {
+    const boom = Object.assign(new Error("osascript 挂了"), { stderr: "" });
+    await expect(pickFile({ platform: "darwin", exec: fails(boom) })).rejects.toBeInstanceOf(VgentServerError);
+    await expect(pickFile({ platform: "darwin", exec: fails(boom) })).rejects.toMatchObject({
+      status: 500,
+      code: "picker_failed",
+    });
+  });
+
+  it("is a 501 off macOS so the UI can fall back to typing a path", async () => {
+    const result = pickFile({ platform: "linux", exec: succeeds("/never") });
     await expect(result).rejects.toBeInstanceOf(NotImplementedError);
     await expect(result).rejects.toMatchObject({ status: 501, code: "picker_unavailable" });
   });

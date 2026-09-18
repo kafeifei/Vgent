@@ -3,14 +3,9 @@ import { GitBranch } from "lucide-react";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ProjectPicker } from "@/components/ProjectPicker";
 import { Composer } from "@/features/composer/Composer";
+import { ENGINES } from "@/lib/engineOptions";
 import { useToast } from "@/lib/toast";
 import type { EngineId, Project, Settings, WorkspaceMode } from "@/lib/types";
-
-const ENGINES: ReadonlyArray<{ id: EngineId; label: string }> = [
-  { id: "claude-code", label: "Claude Code" },
-  { id: "codex", label: "Codex" },
-  { id: "vgent", label: "Vgent（自研）" },
-];
 
 /**
  * 「配置 + 输入」, not 「欢迎语 + 建议」: pick the repo and the run location

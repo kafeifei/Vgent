@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import { CommandPalette, type Command } from "@/features/cmdk/CommandPalette";
 import { EmptyState } from "@/features/empty/EmptyState";
 import { RightPane } from "@/features/rightpane/RightPane";
+import { SettingsView } from "@/features/settings/SettingsView";
 import { Sidebar } from "@/features/sidebar/Sidebar";
 import { GROUPING_LABELS } from "@/features/sidebar/grouping";
 import type { QueueItem } from "@/features/worklog/queue";
@@ -14,8 +15,20 @@ import { useWorkbench } from "./useWorkbench";
 /** The three-column grid. Widths come straight from the spacing tokens. */
 export function Shell({ token }: { token: string }) {
   const workbench = useWorkbench(token);
-  const { state, client, thread, selectedThreadId, activeProjectId, view, left, right, palette, grouping, actions } =
-    workbench;
+  const {
+    state,
+    client,
+    thread,
+    selectedThreadId,
+    activeProjectId,
+    view,
+    left,
+    right,
+    palette,
+    grouping,
+    settingsOpen,
+    actions,
+  } = workbench;
   const { toggleTheme, toggleDensity } = usePrefs();
   const [queue, setQueue] = useState<QueueItem[]>([]);
 
@@ -59,7 +72,7 @@ export function Shell({ token }: { token: string }) {
         className="grid min-h-0 transition-[grid-template-columns] duration-[var(--duration-base)]"
         style={{
           gridTemplateColumns: `${left === "rail" ? "var(--spacing-sidebar-rail)" : "var(--spacing-sidebar)"} minmax(0,1fr) ${
-            right.open ? "var(--spacing-rightpane)" : "0px"
+            right.open && !settingsOpen ? "var(--spacing-rightpane)" : "0px"
           }`,
         }}
       >
@@ -72,11 +85,17 @@ export function Shell({ token }: { token: string }) {
           rail={left === "rail"}
           onSelect={actions.selectThread}
           onNewTask={actions.newTask}
+          onOpenSettings={actions.openSettings}
+          settingsOpen={settingsOpen}
           getChat={actions.getChat}
         />
 
         <main className="grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto]">
-          {view === "thread" && thread != null ? (
+          {settingsOpen ? (
+            <div className="row-span-3 min-h-0 overflow-y-auto">
+              <SettingsView settings={state.settings} client={client} onClose={actions.closeSettings} />
+            </div>
+          ) : view === "thread" && thread != null ? (
             <ThreadView thread={thread} actions={actions} rightOpen={right.open} onQueue={onQueue} />
           ) : (
             <div className="row-span-3 min-h-0 overflow-y-auto">
@@ -93,19 +112,21 @@ export function Shell({ token }: { token: string }) {
           )}
         </main>
 
-        <RightPane
-          queue={queue}
-          open={right.open}
-          tab={right.tab}
-          onTab={actions.setRightTab}
-          onClose={actions.toggleRight}
-          client={client}
-          threadId={selectedThreadId}
-          file={right.file}
-          onSelectFile={actions.selectChange}
-          refreshKey={thread?.updatedAt ?? ""}
-          toast={actions.toast}
-        />
+        {!settingsOpen && (
+          <RightPane
+            queue={queue}
+            open={right.open}
+            tab={right.tab}
+            onTab={actions.setRightTab}
+            onClose={actions.toggleRight}
+            client={client}
+            threadId={selectedThreadId}
+            file={right.file}
+            onSelectFile={actions.selectChange}
+            refreshKey={thread?.updatedAt ?? ""}
+            toast={actions.toast}
+          />
+        )}
       </div>
 
       {palette && <CommandPalette commands={commands} onClose={actions.closePalette} />}

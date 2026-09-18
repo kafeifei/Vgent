@@ -55,6 +55,7 @@ export function useWorkbench(token: string) {
   const [right, setRight] = useState<RightState>(RIGHT_CLOSED);
   const [palette, setPalette] = useState(false);
   const [grouping, setGrouping] = useState<Grouping>("project");
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const thread = state.threads.find((entry) => entry.id === selectedThreadId);
   // A selected thread always wins over the manual project pick.
@@ -64,6 +65,7 @@ export function useWorkbench(token: string) {
     setSelectedThreadId(threadId);
     writeThreadToUrl(threadId);
     setView(threadId == null ? "empty" : "thread");
+    setSettingsOpen(false);
   }, []);
 
   /**
@@ -94,6 +96,8 @@ export function useWorkbench(token: string) {
         writeThreadToUrl(null);
       },
       setGrouping,
+      openSettings: () => setSettingsOpen(true),
+      closeSettings: () => setSettingsOpen(false),
       toggleLeft: () => setLeft((mode) => (mode === "on" ? "rail" : "on")),
       toggleRight: () => setRight((state) => ({ ...state, open: !state.open })),
       openRight: () => setRight((state) => ({ ...state, open: true })),
@@ -219,6 +223,7 @@ export function useWorkbench(token: string) {
     right,
     palette,
     grouping,
+    settingsOpen,
     actions,
   };
 }

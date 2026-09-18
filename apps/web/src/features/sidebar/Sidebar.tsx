@@ -2,7 +2,6 @@ import type { Chat } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
 import { Plus, Settings } from "lucide-react";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
-import { useToast } from "@/lib/toast";
 import type { Project, ThreadSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { GROUPING_LABELS, groupThreads, type Grouping } from "./grouping";
@@ -20,6 +19,8 @@ export function Sidebar({
   rail,
   onSelect,
   onNewTask,
+  onOpenSettings,
+  settingsOpen,
   getChat,
 }: {
   projects: Project[];
@@ -30,10 +31,11 @@ export function Sidebar({
   rail: boolean;
   onSelect: (threadId: string) => void;
   onNewTask: () => void;
+  onOpenSettings: () => void;
+  settingsOpen: boolean;
   /** Live chats only: the sidebar reads the current action off them. */
   getChat: (threadId: string) => Chat<UIMessage>;
 }) {
-  const toast = useToast();
   const groups = groupThreads(threads, projects, grouping);
 
   return (
@@ -128,8 +130,12 @@ export function Sidebar({
             <button
               type="button"
               title="设置"
-              onClick={() => toast("下一步")}
-              className="grid size-xl flex-none place-items-center rounded-md text-fg-muted hover:bg-bg-hover hover:text-fg"
+              aria-pressed={settingsOpen}
+              onClick={onOpenSettings}
+              className={cn(
+                "grid size-xl flex-none place-items-center rounded-md text-fg-muted hover:bg-bg-hover hover:text-fg",
+                settingsOpen && "bg-bg-active text-fg",
+              )}
             >
               <Settings className="size-md" />
             </button>

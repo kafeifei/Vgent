@@ -507,6 +507,13 @@ describe("createApp", () => {
     expect((await execFileAsync("git", ["worktree", "list", "--porcelain"], { cwd: repo })).stdout).not.toContain(workspacePath);
   });
 
+  it("rejects an unknown kind on the native picker route", async () => {
+    const app = makeApp(await tempDir());
+    const rejected = await postJson(app, "/api/projects/pick", { kind: "nope" });
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toMatchObject({ error: { code: "invalid_pick_kind" } });
+  });
+
   it("reads and writes settings", async () => {
     const app = makeApp(await tempDir());
     expect(await (await request(app, "/api/settings")).json()).toMatchObject({ defaultEngine: "claude-code" });

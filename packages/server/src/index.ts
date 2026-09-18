@@ -15,7 +15,7 @@ export {
   UnauthorizedError,
   VgentServerError,
 } from "./errors.js";
-export { pickFolder, type ExecFileFn, type PickFolderOptions } from "./folder-picker.js";
+export { pickFile, pickFolder, type ExecFileFn, type PickFolderOptions } from "./folder-picker.js";
 export {
   createGit,
   type ChangeStatus,
@@ -74,3 +74,5 @@ export type {
   ThreadSummary,
   ThreadWorkspace,
 } from "./types.js";
+/** Re-exported so the web client can type its settings form without depending on `@vgent/engine` directly. */
+export type { McpHttpServerConfig, McpServerConfig, McpStdioServerConfig } from "@vgent/engine";

@@ -7,7 +7,7 @@ import type { EngineRegistry } from "./engines/registry.js";
 import { createEngineRegistry } from "./engines/registry.js";
 import type { Git } from "./git.js";
 import { createGit } from "./git.js";
-import { pickFolder } from "./folder-picker.js";
+import { pickFile, pickFolder } from "./folder-picker.js";
 import { createModelCatalog } from "./models.js";
 import { createRunManager, recoverInterruptedThreads } from "./runs.js";
 import { registerStatic } from "./static.js";
@@ -72,6 +72,16 @@ function assertEngineSupportsMode(engine: EngineId, permissionMode: PermissionMo
   if (engine === "codex" && permissionMode !== "allow-all") {
     throw new BadRequestError("Codex 引擎没有内建工具审批，只支持 allow-all 权限模式", "codex_permission_mode");
   }
+}
+
+const PICK_KINDS = ["folder", "file"] as const;
+type PickKind = (typeof PICK_KINDS)[number];
+
+/** Defaults to `"folder"`, the route's original (and only) behaviour. */
+function asPickKind(value: unknown): PickKind {
+  if (value === undefined) return "folder";
+  if (typeof value === "string" && (PICK_KINDS as readonly string[]).includes(value)) return value as PickKind;
+  throw new BadRequestError('kind 只能是 "folder" 或 "file"', "invalid_pick_kind");
 }
 
 /** `mcpServers` from a request body, as a 400 instead of an exception. */
@@ -148,10 +158,13 @@ export function createApp(options: CreateAppOptions): VgentApp {
     return c.json(await projects.create({ repoPath, ...(typeof name === "string" ? { name } : {}) }));
   });
 
-  // Adding a repo should never mean typing a path, so the native chooser runs
-  // here: one implementation for the browser and the desktop shell alike.
+  // Adding a repo (or, with `{ kind: "file" }`, an MCP server's executable)
+  // should never mean typing a path, so the native chooser runs here: one
+  // implementation for the browser and the desktop shell alike.
   app.post("/api/projects/pick", async (c) => {
-    const path = await pickFolder();
+    const body = await c.req.json().catch(() => undefined);
+    const kind = asPickKind((body as { kind?: unknown } | undefined)?.kind);
+    const path = kind === "file" ? await pickFile() : await pickFolder();
     if (path == null) return c.body(null, 204);
     return c.json({ path });
   });

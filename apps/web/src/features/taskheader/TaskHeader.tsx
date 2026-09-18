@@ -2,16 +2,9 @@ import { useEffect, useState } from "react";
 import { GitBranch, PanelRight, Square } from "lucide-react";
 import { ModelPicker, modelLabel } from "@/components/ModelPicker";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
+import { ENGINES, PERMISSIONS } from "@/lib/engineOptions";
 import type { EngineId, PermissionMode, ThreadSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
-
-const ENGINES: ReadonlyArray<{ id: EngineId; label: string }> = [
-  { id: "claude-code", label: "Claude Code" },
-  { id: "codex", label: "Codex" },
-  { id: "vgent", label: "Vgent（自研）" },
-];
-
-const PERMISSIONS: readonly PermissionMode[] = ["allow-reads", "allow-edits", "allow-all"];
 
 const PILL_CLASS =
   "inline-flex h-xl min-w-0 flex-none items-center gap-2xs overflow-hidden rounded-full border border-border bg-bg-elevated px-xs text-fg-muted text-xs";

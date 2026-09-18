@@ -49,15 +49,13 @@ function agreedLevels(entries: readonly ModelEntry[]): ModelEntry | undefined {
  * catalog. Renders nothing when that model has none, so an engine or a model
  * without a reasoning knob never shows a dead chip.
  *
- * `model` is what the task picked; `fallbackModel` is the setting the server
- * would fall back to when it picked nothing, so the empty state still knows
- * which levels are on offer before a task exists. With neither, the catalog's
- * own `defaultModel` — the model the engine really runs — answers instead.
+ * `model` is what the task picked; when it picked nothing, the catalog's own
+ * `defaultModel` — which the server resolves per engine — is the model that
+ * will really run, so it answers instead.
  */
 export function ReasoningPicker({
   engine,
   model,
-  fallbackModel,
   level,
   onPick,
   trigger,
@@ -66,7 +64,6 @@ export function ReasoningPicker({
 }: {
   engine: EngineId;
   model: string | undefined;
-  fallbackModel?: string | undefined;
   /** The task's own choice; unset means the model's default. */
   level: string | undefined;
   onPick: (level: string) => void;
@@ -76,7 +73,7 @@ export function ReasoningPicker({
 }) {
   const state = useModelCatalog(engine);
   const entries = state.status === "ready" ? state.catalog.models : [];
-  const named = model ?? fallbackModel ?? (state.status === "ready" ? state.catalog.defaultModel : undefined);
+  const named = model ?? (state.status === "ready" ? state.catalog.defaultModel : undefined);
   const entry = named == null ? agreedLevels(entries) : entries.find((candidate) => candidate.id === named);
   const levels = entry?.reasoningLevels ?? [];
   const current = level ?? entry?.defaultReasoningLevel;

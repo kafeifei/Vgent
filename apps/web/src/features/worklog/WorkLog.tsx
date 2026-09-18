@@ -20,12 +20,15 @@ export function WorkLog({
   live,
   error,
   actions,
+  allowlist,
 }: {
   messages: UIMessage[];
   thread: ThreadSummary;
   live: boolean;
   error: string | undefined;
   actions: TurnActions;
+  /** The global 「一直允许」 list; only the approval card reads it. */
+  allowlist: readonly string[];
 }) {
   const turns = useMemo(() => buildTurns(messages), [messages]);
 
@@ -33,7 +36,14 @@ export function WorkLog({
     <Conversation className="min-h-0 flex-1">
       <ConversationContent className="mx-auto flex w-full max-w-log-max flex-col gap-0 px-md pb-2xl">
         {turns.map((turn, index) => (
-          <Turn key={turn.key} turn={turn} isLast={index === turns.length - 1} live={live} actions={actions} />
+          <Turn
+            key={turn.key}
+            turn={turn}
+            isLast={index === turns.length - 1}
+            live={live}
+            actions={actions}
+            allowlist={allowlist}
+          />
         ))}
 
         {error != null && (

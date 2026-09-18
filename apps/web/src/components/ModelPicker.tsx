@@ -173,14 +173,16 @@ export function ModelPicker({
   const label = engines.find((entry) => entry.id === engine)?.label ?? engine;
 
   const effective = effectiveModel(model, catalog);
+  /** What the catalog calls a model; its raw id until the list is loaded. */
+  const nameOf = (id: string): string => catalog?.models.find((entry) => entry.id === id)?.label ?? id;
   // The 「默认」 row below stays the selected one: what runs is shown, what the
   // task persists is unchanged. When nobody knows the default, the engine's own
   // name keeps the chip from reading as「哪个引擎的默认？」.
   const chip: ModelChip =
     model != null
-      ? { label: model }
+      ? { label: nameOf(model) }
       : effective != null
-        ? { label: effective, title: DEFAULT_MODEL_TITLE }
+        ? { label: nameOf(effective), title: DEFAULT_MODEL_TITLE }
         : { label: `${label} 默认`, title: label };
   // A thread can carry a model the catalog no longer lists (another machine, an
   // older list). Losing the ability to see it would be worse than an odd row.
@@ -201,7 +203,9 @@ export function ModelPicker({
             const state = states[entry.id];
             const locked = engineLocked && entry.id !== engine;
             const entries = state?.status === "ready" ? state.catalog.models : [];
-            const groupDefault = state?.status === "ready" ? state.catalog.defaultModel : undefined;
+            const defaultId = state?.status === "ready" ? state.catalog.defaultModel : undefined;
+            const groupDefault =
+              defaultId == null ? undefined : (entries.find((row) => row.id === defaultId)?.label ?? defaultId);
             const footer = footerOf(state);
             const pick = (next: string | undefined) => {
               onPick(entry.id, next);

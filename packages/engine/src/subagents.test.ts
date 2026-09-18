@@ -166,7 +166,8 @@ describe("coder subagent", () => {
       model: child,
       repoPath,
       permissionMode: "allow-reads",
-      alwaysAllow: ["bash"],
+      // Command-scoped, like the real list: the child gets `echo`, nothing else.
+      alwaysAllow: ["bash(echo)"],
     });
 
     const execute = tools.coder!.execute as (input: unknown, options: unknown) => AsyncIterable<UIMessage>;

@@ -220,9 +220,15 @@ export function useWorkbench(token: string) {
         void client.patchThread(threadId, { reasoningEffort }).catch((error: Error) => toast(error.message));
       },
 
-      /** 「一直允许」: one more tool on the *global* allowlist, from an approval card. */
-      allowTool: (toolName: string) => {
-        void client.allowTool(toolName).catch((error: Error) => toast(error.message));
+      /**
+       * 「一直允许」: more entries on the *global* allowlist, from an approval
+       * card. One POST each, chained — each one reads the stored list before it
+       * writes, so firing them together would lose all but the last.
+       */
+      allowTools: (entries: readonly string[]) => {
+        void entries
+          .reduce((chain, entry) => chain.then(() => client.allowTool(entry)).then(() => {}), Promise.resolve())
+          .catch((error: Error) => toast(error.message));
       },
 
       // 归档 also reclaims the task's worktree, and un-archiving restores it —

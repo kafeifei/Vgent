@@ -12,8 +12,8 @@ import { approvalAnchor, compactedOf, isOpenApproval, isOpenQuestion, questionAn
 
 export interface TurnActions {
   respondToApproval: (approvalId: string, approved: boolean) => void;
-  /** Approve this call and add its tool to the task's allowlist. */
-  alwaysAllow: (approvalId: string, toolName: string) => void;
+  /** Approve this call and add these entries to the global allowlist. */
+  alwaysAllow: (approvalId: string, entries: string[]) => void;
   answerQuestions: (toolCallId: string, output: AskUserQuestionsOutput) => void;
   openFile: (file: string) => void;
 }
@@ -39,11 +39,13 @@ export function Turn({
   isLast,
   live,
   actions,
+  allowlist,
 }: {
   turn: TurnModel;
   isLast: boolean;
   live: boolean;
   actions: TurnActions;
+  allowlist: readonly string[];
 }) {
   const { ref, pinned } = usePinned(isLast);
   // A finished turn folds its process blocks away; the running one stays open.
@@ -75,7 +77,7 @@ export function Turn({
 
       {runsOf(turn.blocks).map((run) =>
         run.kind === "foldable" && folded ? (
-          <Fold key={run.key} run={run} actions={actions} />
+          <Fold key={run.key} run={run} actions={actions} allowlist={allowlist} />
         ) : (
           <div key={run.key} className="flex flex-col gap-2xs">
             {run.blocks.map((block, index) => (
@@ -83,6 +85,7 @@ export function Turn({
                 key={block.key}
                 block={block}
                 actions={actions}
+                allowlist={allowlist}
                 running={live && isLast && index === run.blocks.length - 1}
               />
             ))}
@@ -94,7 +97,7 @@ export function Turn({
 }
 
 /** `查看 N 步 ▸` — a finished turn's process, collapsed. No timings available. */
-function Fold({ run, actions }: { run: Run; actions: TurnActions }) {
+function Fold({ run, actions, allowlist }: { run: Run; actions: TurnActions; allowlist: readonly string[] }) {
   const [open, setOpen] = useState(false);
   return (
     <div>
@@ -109,7 +112,7 @@ function Fold({ run, actions }: { run: Run; actions: TurnActions }) {
       {open && (
         <div className="mt-2xs flex flex-col gap-3xs border-border border-l pl-sm">
           {run.blocks.map((block) => (
-            <BlockView key={block.key} block={block} actions={actions} running={false} />
+            <BlockView key={block.key} block={block} actions={actions} allowlist={allowlist} running={false} />
           ))}
         </div>
       )}
@@ -117,7 +120,12 @@ function Fold({ run, actions }: { run: Run; actions: TurnActions }) {
   );
 }
 
-function BlockView({ block, actions, running }: { block: Block; actions: TurnActions; running: boolean }): ReactNode {
+function BlockView({
+  block,
+  actions,
+  allowlist,
+  running,
+}: { block: Block; actions: TurnActions; allowlist: readonly string[]; running: boolean }): ReactNode {
   if (block.kind === "reasoning") {
     return (
       <Reasoning className="mb-0" defaultOpen={false} isStreaming={block.part.state === "streaming"}>
@@ -147,8 +155,9 @@ function BlockView({ block, actions, running }: { block: Block; actions: TurnAct
       <ApprovalCard
         part={part}
         id={approvalAnchor(part.toolCallId)}
+        allowlist={allowlist}
         onRespond={(approved) => actions.respondToApproval(part.approval.id, approved)}
-        onAlwaysAllow={(toolName) => actions.alwaysAllow(part.approval.id, toolName)}
+        onAlwaysAllow={(entries) => actions.alwaysAllow(part.approval.id, entries)}
       />
     );
   }

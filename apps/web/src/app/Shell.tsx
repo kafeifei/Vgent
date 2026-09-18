@@ -116,7 +116,6 @@ export function Shell({ token }: { token: string }) {
               changes={changes}
               rightOpen={right.open}
               engines={engines}
-              defaultModel={state.settings?.defaultModel}
               runMode={state.settings?.runMode}
               allowlist={state.settings?.allowlist}
               onQueue={onQueue}

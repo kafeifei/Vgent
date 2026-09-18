@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./allowlist": {
+      "types": "./dist/allowlist.d.ts",
+      "default": "./dist/allowlist.js"
     }
   },
   "files": [

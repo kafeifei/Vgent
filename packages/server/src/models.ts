@@ -114,9 +114,7 @@ const GATEWAY_ENV_VARS = ["AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"] as const;
 
 const CODEX_BUILTIN: ModelEntry[] = [{ id: "gpt-5.5", label: "gpt-5.5" }];
 
-const VGENT_BUILTIN: ModelEntry[] = [
-  { id: `${CODEX_SUBSCRIPTION_PREFIX}gpt-5.5`, label: `${CODEX_SUBSCRIPTION_PREFIX}gpt-5.5` },
-];
+const VGENT_BUILTIN: ModelEntry[] = [{ id: `${CODEX_SUBSCRIPTION_PREFIX}gpt-5.5`, label: "gpt-5.5" }];
 
 /**
  * The Claude Agent SDK has no list endpoint, and the harness passes `model`
@@ -369,8 +367,11 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
       models.push(
         ...codex.models.map((entry) => ({
           id: `${CODEX_SUBSCRIPTION_PREFIX}${entry.slug}`,
-          label: `${CODEX_SUBSCRIPTION_PREFIX}${entry.slug}`,
-          ...(entry.display_name != null ? { description: entry.display_name } : {}),
+          // The same model as the Codex engine's row, so it is called the same
+          // thing; the prefixed id is an implementation detail of the route, and
+          // the group heading already says which engine this is.
+          label: entry.display_name ?? entry.slug,
+          ...(entry.description != null ? { description: entry.description } : {}),
           // Same model behind the subscription prefix, so the same levels and
           // the same window apply.
           ...codexReasoning(entry),

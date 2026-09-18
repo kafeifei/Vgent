@@ -23,8 +23,6 @@ export function ThreadView(props: {
   rightOpen: boolean;
   /** 引擎能力表, for the composer's model picker and its 「不支持审批」 notice. */
   engines: EngineDescriptor[];
-  /** `settings.defaultModel`, so the 思考 chip still knows the model of a task that named none. */
-  defaultModel: string | undefined;
   /** The global 运行模式; the composer's notice reads it. */
   runMode: PermissionMode | undefined;
   /** The global 「一直允许」 list, which auto-answers matching approvals. */
@@ -57,7 +55,6 @@ function ThreadChatView({
   changes,
   rightOpen,
   engines,
-  defaultModel,
   runMode,
   allowlist,
   onQueue,
@@ -70,7 +67,6 @@ function ThreadChatView({
   changes: ChangesView;
   rightOpen: boolean;
   engines: EngineDescriptor[];
-  defaultModel: string | undefined;
   runMode: PermissionMode | undefined;
   allowlist: readonly string[] | undefined;
   onQueue: (queue: QueueItem[]) => void;
@@ -94,8 +90,8 @@ function ThreadChatView({
   const turnActions: TurnActions = useMemo(
     () => ({
       respondToApproval: (id, approved) => void addToolApprovalResponse({ id, approved }),
-      alwaysAllow: (id, toolName) => {
-        actions.allowTool(toolName);
+      alwaysAllow: (id, entries) => {
+        actions.allowTools(entries);
         void addToolApprovalResponse({ id, approved: true });
       },
       answerQuestions: (toolCallId, output) => void addToolOutput({ tool: "askUserQuestions", toolCallId, output }),
@@ -165,6 +161,7 @@ function ThreadChatView({
         live={live}
         error={thread.error ?? error?.message}
         actions={turnActions}
+        allowlist={allowlist ?? []}
       />
 
       <div className="border-border border-t bg-bg px-md pt-sm pb-md">
@@ -180,7 +177,6 @@ function ThreadChatView({
           // other groups out and says why.
           engineLocked={thread.messageCount > 0}
           model={thread.model}
-          defaultModel={defaultModel}
           runMode={runMode}
           // Same rule as the 思考 chip below: a running turn already carries
           // the model it started with, so switching it mid-flight would be a lie.

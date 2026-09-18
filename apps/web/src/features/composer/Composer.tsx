@@ -39,7 +39,6 @@ export function Composer({
   engine,
   engineLocked,
   model,
-  defaultModel,
   runMode,
   onPickModel,
   reasoningEffort,
@@ -63,8 +62,6 @@ export function Composer({
   /** A task with history cannot cross engines; the picker greys the others out. */
   engineLocked?: boolean;
   model: string | undefined;
-  /** What the server would use when no model is picked; only the 思考 chip reads it. */
-  defaultModel?: string | undefined;
   /** The global 运行模式, so an engine that cannot ask can say so. */
   runMode?: PermissionMode | undefined;
   onPickModel: (engine: EngineId, model: string | undefined) => void;
@@ -334,7 +331,6 @@ export function Composer({
           <ReasoningPicker
             engine={engine}
             model={model}
-            fallbackModel={defaultModel}
             level={reasoningEffort}
             onPick={onPickReasoning}
             side="top"

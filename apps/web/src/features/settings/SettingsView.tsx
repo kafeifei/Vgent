@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { BASH_TOOL, bashEntryHead } from "@vgent/engine/allowlist";
 import { ArrowLeft, Pencil, Plus, Trash2, X } from "lucide-react";
 import { ModelPicker } from "@/components/ModelPicker";
 import { ApiError, type ApiClient } from "@/lib/api";
@@ -17,6 +18,17 @@ const RUN_MODES: ReadonlyArray<{ id: PermissionMode; label: string; hint: string
   { id: "allow-edits", label: "自动改文件", hint: "改文件不问，跑命令先问" },
   { id: "allow-all", label: "全自动", hint: "都不问" },
 ];
+
+/**
+ * One allowlist entry, in words. `bash(git)` is a *command*, not a tool, and a
+ * legacy bare `bash` is the blank cheque the old UI wrote — both have to be
+ * recognisable here, because this list is the only place to take one back.
+ */
+function describeAllowEntry(entry: string): string {
+  const head = bashEntryHead(entry);
+  if (head != null) return `命令 ${head}`;
+  return entry === BASH_TOOL ? "bash（全部命令）" : entry;
+}
 
 /** Deep-equal via a key-sorted `JSON.stringify`, so field order never causes a false "dirty". */
 const stableStringify = (value: unknown): string =>
@@ -322,7 +334,9 @@ export function SettingsView({
         <div className="flex flex-col gap-2xs">
           {allowlist.map((tool) => (
             <div key={tool} className="flex items-center gap-xs rounded-md border border-border bg-bg-elevated px-sm py-xs">
-              <span className="min-w-0 flex-1 truncate font-mono text-fg text-sm">{tool}</span>
+              <span className="min-w-0 flex-1 truncate text-fg text-sm" title={tool}>
+                {describeAllowEntry(tool)}
+              </span>
               <button
                 type="button"
                 title="撤销"

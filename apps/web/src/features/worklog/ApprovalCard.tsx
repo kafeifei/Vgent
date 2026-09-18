@@ -1,5 +1,24 @@
+import { BASH_TOOL, bashEntry, unlistedHeads } from "@vgent/engine/allowlist";
 import { getToolName } from "ai";
 import { describeTool, toolTitle, type ToolPart } from "./toolMeta";
+
+/** What 「一直允许」 would write, and what the button calls it. */
+type AlwaysAllow = { label: string; entries: string[] };
+
+/**
+ * The always-allow offer for one call, or null when there is nothing honest to
+ * offer: a shell command we cannot read confidently, or one the list already
+ * covers. A `bash` entry names the *command* (`bash(git)`), never the whole
+ * shell — one click must not sign off every future command in every task.
+ */
+function alwaysAllowOffer(toolName: string, input: unknown, allowlist: readonly string[]): AlwaysAllow | null {
+  if (toolName !== BASH_TOOL) return { label: toolTitle(toolName), entries: [toolName] };
+  const command = (input as { command?: unknown } | null | undefined)?.command;
+  if (typeof command !== "string") return null;
+  const heads = unlistedHeads(command, allowlist);
+  if (heads == null || heads.length === 0) return null;
+  return { label: heads.join("、"), entries: heads.map(bashEntry) };
+}
 
 /**
  * An `approval-requested` tool call, inline in the log — Vgent's own thing,
@@ -8,17 +27,20 @@ import { describeTool, toolTitle, type ToolPart } from "./toolMeta";
 export function ApprovalCard({
   part,
   id,
+  allowlist,
   onRespond,
   onAlwaysAllow,
 }: {
   part: ToolPart;
   id: string;
+  /** The global 「一直允许」 list, so the offer only names what is still missing. */
+  allowlist: readonly string[];
   onRespond: (approved: boolean) => void;
-  /** Approves this call *and* adds the tool to the global allowlist. */
-  onAlwaysAllow: (toolName: string) => void;
+  /** Approves this call *and* adds these entries to the global allowlist. */
+  onAlwaysAllow: (entries: string[]) => void;
 }) {
   const display = describeTool(part);
-  const toolName = getToolName(part);
+  const offer = alwaysAllowOffer(getToolName(part), part.input, allowlist);
 
   return (
     <article id={id} className="rounded-md border border-warning bg-warning-bg">
@@ -46,14 +68,16 @@ export function ApprovalCard({
           >
             拒绝
           </button>
-          <button
-            type="button"
-            onClick={() => onAlwaysAllow(toolName)}
-            title="以后所有任务都不再询问这个工具，可在设置里撤销"
-            className="inline-flex h-xl items-center rounded-md border border-border bg-bg-elevated px-sm text-fg text-xs hover:border-border-strong hover:bg-bg-hover"
-          >
-            一直允许 {toolTitle(toolName)}
-          </button>
+          {offer != null && (
+            <button
+              type="button"
+              onClick={() => onAlwaysAllow(offer.entries)}
+              title="以后所有任务都不再询问这个工具，可在设置里撤销"
+              className="inline-flex h-xl items-center rounded-md border border-border bg-bg-elevated px-sm text-fg text-xs hover:border-border-strong hover:bg-bg-hover"
+            >
+              一直允许 {offer.label}
+            </button>
+          )}
         </div>
       </div>
     </article>

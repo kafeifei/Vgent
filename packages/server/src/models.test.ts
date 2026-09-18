@@ -114,10 +114,11 @@ describe("createModelCatalog", () => {
       { id: "gpt-6-astra", label: "GPT-6-Astra", contextWindow: 272_000 },
       { id: "gpt-old", label: "GPT-Old" },
     ]);
-    // The `vgent` engine's prefixed mapping inherits the same window.
+    // The `vgent` engine's prefixed mapping inherits the same window — and the
+    // same name: it is the same model, and only the id carries the prefix.
     expect((await catalog.list("vgent")).models).toEqual([
-      { id: "codex-subscription:gpt-6-astra", label: "codex-subscription:gpt-6-astra", description: "GPT-6-Astra", contextWindow: 272_000 },
-      { id: "codex-subscription:gpt-old", label: "codex-subscription:gpt-old", description: "GPT-Old" },
+      { id: "codex-subscription:gpt-6-astra", label: "GPT-6-Astra", contextWindow: 272_000 },
+      { id: "codex-subscription:gpt-old", label: "GPT-Old" },
     ]);
   });
 

@@ -159,7 +159,6 @@ export function EmptyState({
           engines={engines}
           engine={engine}
           model={model ?? undefined}
-          defaultModel={settings?.defaultModel}
           runMode={settings?.runMode}
           onPickModel={(nextEngine, nextModel) => {
             setPicked({ engine: nextEngine, model: nextModel ?? null });

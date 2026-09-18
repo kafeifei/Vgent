@@ -79,7 +79,23 @@ function ThreadChatView({
     [actions, addToolApprovalResponse, addToolOutput, thread.id],
   );
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+  // Every approval the task's allowlist already answers, answered once. The
+  // `Chat`'s own `sendAutomaticallyWhen` then continues the turn, exactly as it
+  // does for a click on 允许.
+  const autoApproved = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const id of pendingAutoApprovals(messages, thread.alwaysAllow)) {
+      if (autoApproved.current.has(id)) continue;
+      autoApproved.current.add(id);
+      void addToolApprovalResponse({ id, approved: true });
+    }
+  }, [addToolApprovalResponse, messages, thread.alwaysAllow]);
+  // Stable: the composer debounces on this identity, and a streaming turn
+  // re-renders this view constantly.
+  const completeFiles = useCallback(
+    (q: string) => client.listFiles(thread.id, { q, limit: 12 }).then((listing) => listing.entries),
+    [client, thread.id],
+  );
 
   const submit = () => {
     if (draft.trim() === "") return;

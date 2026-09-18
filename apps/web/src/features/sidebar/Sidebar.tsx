@@ -2,7 +2,7 @@ import type { Chat } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
 import { Plus, Settings } from "lucide-react";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
-import { BUILD_ID } from "@/lib/build";
+import { BUILD_DETAIL, BUILD_LABEL } from "@/lib/build";
 import type { Project, ThreadSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { GROUPING_LABELS, groupThreads, type Grouping } from "./grouping";
@@ -131,9 +131,9 @@ export function Sidebar({
               <span className="truncate text-fg-muted text-sm leading-tight">本机</span>
               <span
                 className="truncate font-mono text-2xs text-fg-faint leading-tight"
-                title={`构建 ${BUILD_ID}`}
+                title={BUILD_DETAIL}
               >
-                build {BUILD_ID}
+                {BUILD_LABEL}
               </span>
             </div>
             <button

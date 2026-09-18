@@ -125,7 +125,7 @@ export function createClient(token: string) {
 
     listProjects: () => api<{ projects: Project[] }>("/projects", token).then((body) => body.projects),
     createProject: (repoPath: string, name?: string) =>
-      api<Project>("/projects", token, {
+      api<Project & { note?: string }>("/projects", token, {
         method: "POST",
         json: { repoPath, ...(name != null ? { name } : {}) },
       }),

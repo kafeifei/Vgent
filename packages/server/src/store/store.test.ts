@@ -1,6 +1,8 @@
-import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import type { HarnessState, ThreadRecord } from "../types.js";
 import { readJsonOrQuarantine, writeJsonAtomic } from "./atomic-file.js";
@@ -14,6 +16,21 @@ async function tempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "vgent-store-"));
   dirs.push(dir);
   return dir;
+}
+
+const execFileAsync = promisify(execFile);
+
+/** A repo with one commit and a local git identity, so `git worktree add` has something to check out. */
+async function gitRepo(): Promise<string> {
+  const repo = await tempDir();
+  await execFileAsync("git", ["init", "-q", "-b", "main"], { cwd: repo });
+  await execFileAsync("git", ["config", "user.email", "test@vgent.local"], { cwd: repo });
+  await execFileAsync("git", ["config", "user.name", "Vgent Test"], { cwd: repo });
+  await execFileAsync("git", ["config", "commit.gpgsign", "false"], { cwd: repo });
+  await writeFile(join(repo, "tracked.txt"), "line1\n");
+  await execFileAsync("git", ["add", "-A"], { cwd: repo });
+  await execFileAsync("git", ["commit", "-q", "-m", "初始"], { cwd: repo });
+  return repo;
 }
 
 afterEach(async () => {
@@ -145,6 +162,35 @@ describe("createProjectStore / createSettingsStore", () => {
     const project = await store.create({ repoPath: dir });
     expect(project.name).toBe(dir.split("/").at(-1));
     expect((await createProjectStore(dir).list()).map((entry) => entry.id)).toEqual([project.id]);
+  });
+
+  it("registers a plain non-git folder as itself, without a note", async () => {
+    const dataDir = await tempDir();
+    const plain = await tempDir();
+    const store = createProjectStore(dataDir);
+    const project = await store.create({ repoPath: plain });
+    expect(project.repoPath).toBe(await realpath(plain));
+    expect(project).not.toHaveProperty("note");
+  });
+
+  it("redirects a linked git worktree to its main checkout, with a note, and dedups against it", async () => {
+    const dataDir = await tempDir();
+    const repo = await gitRepo();
+    const worktreesParent = await tempDir();
+    const worktreePath = join(worktreesParent, "linked");
+    await execFileAsync("git", ["worktree", "add", "-b", "feature", worktreePath], { cwd: repo });
+
+    const store = createProjectStore(dataDir);
+    const project = await store.create({ repoPath: worktreePath });
+    expect(project.repoPath).toBe(await realpath(repo));
+    expect(project.name).toBe(basename(await realpath(repo)));
+    expect(project.note).toMatch(/git worktree.*已归到主仓库/);
+
+    // Registering the main repo directly must land on the very same project.
+    const again = await store.create({ repoPath: repo });
+    expect(again.id).toBe(project.id);
+    expect(again).not.toHaveProperty("note");
+    expect(await store.list()).toHaveLength(1);
   });
 
   it("round-trips settings and clears an optional field", async () => {

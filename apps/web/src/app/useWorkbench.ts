@@ -143,6 +143,7 @@ export function useWorkbench(token: string) {
 
       addProject: async (repoPath: string) => {
         const project = await client.createProject(repoPath);
+        if (project.note != null) toast(project.note);
         setProjectId(project.id);
       },
 

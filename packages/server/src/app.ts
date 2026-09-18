@@ -18,9 +18,10 @@ import { createModelCatalog } from "./models.js";
 import { createRunManager, recoverInterruptedThreads } from "./runs.js";
 import { registerStatic } from "./static.js";
 import { createProjectStore, type ProjectStore } from "./store/projects.js";
+import { createPlanStore, MAX_PLAN_BYTES } from "./store/plans.js";
 import { asMcpServers, createSettingsStore, type SettingsPatch } from "./store/settings.js";
 import { createThreadStore, type ThreadPatch } from "./store/threads.js";
-import type { ChangeStats, EngineId, Logger, PermissionMode, Project, ThreadRecord, ThreadWorkspace } from "./types.js";
+import type { ChangeStats, EngineId, Logger, PermissionMode, Project, ThreadMode, ThreadRecord, ThreadWorkspace } from "./types.js";
 import { silentLogger } from "./types.js";
 import { createWorktree, reclaimWorktree, removeWorktree, restoreWorktree } from "./workspace.js";
 import { DEFAULT_WORKTREE_MAX_COUNT, enforceWorktreeLimit } from "./worktree-limit.js";
@@ -90,6 +91,21 @@ function readReasoningEffort(value: unknown): string | undefined {
   return trimmed;
 }
 
+/** 模式 from a request body. Absent means「不改」; anything but the two words is a 400. */
+function readThreadMode(value: unknown): ThreadMode {
+  if (value === "plan" || value === "agent") return value;
+  throw new BadRequestError('mode 只能是 "plan" 或 "agent"', "invalid_mode");
+}
+
+/** The plan document from a `PUT` body: a string, and not an absurd one. */
+function readPlanContent(value: unknown): string {
+  if (typeof value !== "string") throw new BadRequestError("content 必须是字符串", "invalid_plan");
+  if (Buffer.byteLength(value, "utf8") > MAX_PLAN_BYTES) {
+    throw new VgentServerError({ message: `计划文档超过 ${MAX_PLAN_BYTES / 1024} KB`, status: 413, code: "plan_too_large" });
+  }
+  return value;
+}
+
 const PICK_KINDS = ["folder", "file"] as const;
 type PickKind = (typeof PICK_KINDS)[number];
 
@@ -139,6 +155,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   const projects = createProjectStore(dataDir, log);
   const threads = createThreadStore(dataDir, log);
+  const plans = createPlanStore(dataDir, log);
   const settings = createSettingsStore(dataDir, log);
   const registry = options.registry ?? createEngineRegistry();
   const git = options.git ?? createGit();
@@ -151,6 +168,16 @@ export function createApp(options: CreateAppOptions): VgentApp {
   const asEngine = (value: unknown): EngineId | undefined =>
     typeof value === "string" && (ids as readonly string[]).includes(value) ? (value as EngineId) : undefined;
   const capabilitiesOf = (engine: EngineId) => registry[engine].descriptor.capabilities;
+
+  /**
+   * 「明说，不装」: an engine that cannot run a read-only turn may not be put in
+   * Plan mode at all, whichever half of the pair the request changed.
+   */
+  const assertModeSupported = (mode: ThreadMode, engine: EngineId): void => {
+    if (mode === "plan" && !capabilitiesOf(engine).planMode) {
+      throw new BadRequestError(`${registry[engine].descriptor.label} 不支持 Plan 模式`, "plan_unsupported");
+    }
+  };
 
   /**
    * 「+N −M」 for one task, against its baseline. Undefined — never an error —
@@ -173,6 +200,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     dataDir,
     log,
     changeStats: changeStatsFor,
+    savePlan: (threadId, content) => plans.put(threadId, content).then(() => {}),
     ...(options.stopTimeoutMs != null ? { stopTimeoutMs: options.stopTimeoutMs } : {}),
   });
 
@@ -482,6 +510,8 @@ export function createApp(options: CreateAppOptions): VgentApp {
     // that id, so it starts on its own default instead.
     const model = body?.model ?? (engine === defaults.defaultEngine ? defaults.defaultModel : undefined);
     const reasoningEffort = readReasoningEffort(body?.reasoningEffort);
+    const mode = body?.mode === undefined ? "agent" : readThreadMode(body.mode);
+    assertModeSupported(mode, engine);
     // `permissionMode` is no longer a thread field — 运行模式 is global — but an
     // older client may still send it; ignoring it is kinder than a 400.
     const record = await threads.create({
@@ -490,6 +520,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
       engine,
       ...(typeof model === "string" ? { model } : {}),
       ...(reasoningEffort != null ? { reasoningEffort } : {}),
+      mode,
     });
     if (body?.workspace !== "worktree") return c.json(record);
     // The worktree is named after the thread, so the record has to exist
@@ -542,6 +573,13 @@ export function createApp(options: CreateAppOptions): VgentApp {
       throw new ConflictError("已有对话的任务不能换引擎，请新建任务", "engine_locked");
     }
 
+    // 模式 decides what the *next* turn does, so it cannot change under a turn
+    // that is already running or parked on a question.
+    const mode = body?.mode === undefined ? undefined : readThreadMode(body.mode);
+    if (mode != null) assertNotLive(current);
+    // Either half of「模式 + 引擎」may be the one that breaks the pair.
+    assertModeSupported(mode ?? current.mode ?? "agent", engine ?? current.engine);
+
     // 归档 is a lifecycle move, not a field edit: it reclaims the task's
     // worktree on the way in and restores it on the way out, and a failure
     // there fails the whole request rather than leaving the two out of step.
@@ -567,11 +605,27 @@ export function createApp(options: CreateAppOptions): VgentApp {
       ...lifecycle,
       ...(typeof body?.title === "string" ? { title: body.title } : {}),
       ...(engine != null ? { engine } : {}),
+      ...(mode != null ? { mode } : {}),
       ...("model" in (body ?? {}) ? { model: typeof body?.model === "string" ? body.model : undefined } : {}),
       // `null` clears it; an absent key leaves it alone.
       ...("reasoningEffort" in (body ?? {}) ? { reasoningEffort: readReasoningEffort(body?.reasoningEffort) } : {}),
     });
     return c.json(record);
+  });
+
+  // --- 计划文档 -----------------------------------------------------------
+
+  // The Plan turn's product: a markdown file the user edits by hand and Build
+  // hands back to Agent mode verbatim. Not part of the thread record — see
+  // `store/plans.ts`.
+  app.get("/api/threads/:id/plan", async (c) => c.json(await plans.get((await threadOf(c.req.param("id"))).id)));
+
+  app.put("/api/threads/:id/plan", async (c) => {
+    const thread = await threadOf(c.req.param("id"));
+    // Saving under a running turn would be overwritten by it the moment it ends.
+    assertNotLive(thread);
+    const body = (await c.req.json().catch(() => undefined)) as { content?: unknown } | undefined;
+    return c.json(await plans.put(thread.id, readPlanContent(body?.content)));
   });
 
   /**
@@ -609,6 +663,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     // thing that still points at a worktree, so it outlives a directory we
     // refused to touch.
     if (thread?.workspace != null) await removeWorktree({ dataDir, project: await projectOf(thread), thread });
+    await plans.remove(id).catch((error: unknown) => log.warn(`删除线程 ${id} 的计划文档失败`, error));
     await threads.remove(id);
     return c.body(null, 204);
   });

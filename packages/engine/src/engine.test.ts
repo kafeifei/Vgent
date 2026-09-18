@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LanguageModelV3CallOptions, LanguageModelV3Usage } from "@ai-sdk/provider";
 import { MockLanguageModelV3 } from "ai/test";
+import { z } from "zod";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   createVgentEngine,
@@ -71,6 +72,18 @@ describe("createVgentEngine", () => {
     expect(JSON.stringify(result.toolResults[0]!.output)).toContain("hello from vgent");
     expect(result.steps).toHaveLength(2);
     await dispose();
+  });
+
+  it("offers only the read-only tools in a 计划 turn", async () => {
+    const { agent } = createVgentEngine({
+      model: readThenAnswer("done"),
+      repoPath,
+      plan: true,
+      memoryDir: join(repoPath, "memory"),
+      extraTools: { deploy: { description: "写点什么", inputSchema: z.object({}), execute: async () => "ok" } },
+    });
+    // No `write` / `edit` / `bash` / `coder` / `memory`, and no MCP tool either.
+    expect(Object.keys(agent.tools ?? {}).sort()).toEqual(["askUserQuestions", "explore", "glob", "grep", "read", "updatePlan"]);
   });
 
   it("exposes the built-in tools plus askUserQuestions, updatePlan and the subagents, and askUserQuestions has no execute", async () => {

@@ -44,6 +44,8 @@ export interface BuildInstructionsOptions {
   extra?: string;
   /** Whether the `explore` / `coder` subagent tools are in the tool set. */
   subagents?: boolean;
+  /** A 计划 turn: read-only research that ends in the plan document. Adds {@link planModeInstructions}. */
+  plan?: boolean;
   /** Whether deferred tools (MCP servers) are reachable through `toolSearch`. */
   toolSearch?: boolean;
   /** Names and descriptions of the skills on this machine. Bodies are never inlined. */
@@ -61,6 +63,31 @@ const SUBAGENTS_SECTION = `Subagents:
   rather than choose.
 - Both return only a summary, not their transcript. If you need a detail they did not report, ask again or
   look yourself. Neither can ask the user anything; a step that would need approval fails inside them.`;
+
+/**
+ * The Plan-mode addendum, shared by every engine that can run a 计划 turn — the
+ * in-house one through {@link buildInstructions}, Claude Code through the
+ * harness agent's own `instructions`. One text, so the two cannot drift.
+ *
+ * `askTool` is the only difference between them: the in-house engine can ask
+ * with `askUserQuestions`, a harness engine has to ask in prose and stop.
+ */
+export function planModeInstructions({ askTool }: { askTool: boolean }): string {
+  return `Plan mode. This turn is read-only: you have no tool that writes files or runs shell commands, and
+any attempt to change the repository will fail. Do not promise to make an edit in this turn.
+- Research first. Read and search until you can name the real files and the real call sites; never plan
+  against code you have not opened.
+- When the goal is genuinely ambiguous, ask instead of guessing. ${
+    askTool
+      ? "Use `askUserQuestions`; it is the one tool here that stops and waits for the human."
+      : "Ask in plain text and stop; the user answers in their next message."
+  }
+- Finish with the plan itself, as Markdown, in the user's language: the goal, the approach, the files to
+  touch, the steps in order, and how to verify it. Nothing after it — no closing summary, no offer to
+  proceed.
+- That final reply is saved verbatim as this task's plan document. The user edits it before pressing
+  Build, so write a document they can edit, not a message addressed to them.`;
+}
 
 const TOOL_SEARCH_SECTION = `Extra tools:
 - More tools than the ones described here are available but hidden. Call \`toolSearch\` with a few keywords
@@ -107,6 +134,7 @@ export function buildInstructions({
   permissionMode,
   extra,
   subagents,
+  plan,
   toolSearch,
   skills,
   memory,
@@ -148,6 +176,8 @@ has to decide. No preamble, no restating the request, no pasted diffs.`;
 
   const sections = [
     head,
+    // Right after the head: it narrows everything the rules above allow.
+    ...(plan === true ? [planModeInstructions({ askTool: true })] : []),
     ...(subagents === true ? [SUBAGENTS_SECTION] : []),
     ...(toolSearch === true ? [TOOL_SEARCH_SECTION] : []),
     ...(skills != null && skills.length > 0 ? [skillsSection(skills)] : []),

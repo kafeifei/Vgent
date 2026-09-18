@@ -3,6 +3,7 @@ import { FileDiff, FolderTree, ListChecks, ListTodo, Terminal, X } from "lucide-
 import { ChangesPanel } from "@/features/changes/ChangesPanel";
 import type { ChangesView } from "@/features/changes/useChanges";
 import { FilesPanel } from "@/features/files/FilesPanel";
+import { PlanDocument } from "@/features/plan/PlanDocument";
 import { PlanPanel } from "@/features/plan/PlanPanel";
 import { TerminalPanel } from "@/features/terminal/TerminalPanel";
 import type { QueueItem } from "@/features/worklog/queue";
@@ -49,6 +50,7 @@ export function RightPane({
   messages,
   thread,
   live,
+  onBuild,
 }: {
   queue: QueueItem[];
   open: boolean;
@@ -67,6 +69,8 @@ export function RightPane({
   thread: ThreadSummary | undefined;
   /** Whether that task's turn is still alive; every 收口 action is off while it is. */
   live: boolean;
+  /** 「Build」 in the 计划 tab: back to Agent mode, with the document as the message. */
+  onBuild: (threadId: string, content: string) => Promise<void>;
 }) {
   const changeCount = changes.snapshot?.files.length ?? 0;
 
@@ -144,7 +148,13 @@ export function RightPane({
         ) : tab === "term" ? (
           <TerminalPanel messages={messages} client={client} threadId={threadId} refreshKey={refreshKey} />
         ) : (
-          <PlanPanel messages={messages} />
+          <>
+            {/* The document first — it is what Plan mode produces; the todo
+                list below is what any engine reports while it works. */}
+            <PlanDocument client={client} threadId={threadId} refreshKey={refreshKey} live={live} onBuild={onBuild} />
+            <div className="mb-xs text-fg-muted text-xs">待办</div>
+            <PlanPanel messages={messages} />
+          </>
         )}
       </div>
     </aside>

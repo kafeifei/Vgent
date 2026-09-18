@@ -36,6 +36,19 @@ export interface ClaudeCodeEngineOptions {
   thinking?: ClaudeCodeThinkingConfig;
   /** AI SDK tools executed in this host process when Claude calls them. */
   tools?: ToolSet;
+  /**
+   * The only tools the runtime may call this session, by their harness names
+   * (`read`, `grep`, `glob`, `TodoWrite`, …). Everything else is excluded —
+   * the adapter passes the complement to the CLI as `disallowedTools` *and*
+   * refuses it at the bridge's permission layer, so this is a real restriction
+   * rather than a request. Unset leaves the whole built-in set available.
+   */
+  activeTools?: readonly string[];
+  /**
+   * Extra instructions for the runtime, appended to its native system prompt.
+   * This is the harness's own mechanism (`HarnessAgentSettings.instructions`).
+   */
+  instructions?: string;
   /** Instruction bundles surfaced to the runtime. */
   skills?: readonly HarnessAgentSkill[];
   /**
@@ -235,6 +248,10 @@ export async function createClaudeCodeEngine(options: ClaudeCodeEngineOptions): 
     ...(options.model != null ? { model: options.model } : {}),
     ...(options.tools != null ? { tools: options.tools } : {}),
     ...(options.skills != null ? { skills: options.skills } : {}),
+    ...(options.instructions != null ? { instructions: options.instructions } : {}),
+    // `activeTools` is typed against the adapter's own tool map; the caller
+    // names the tools as plain strings and the harness validates them.
+    ...(options.activeTools != null ? { activeTools: options.activeTools as never } : {}),
   });
 
   let session: HarnessAgentSession;

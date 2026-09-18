@@ -125,6 +125,8 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
         repoPath: ctx.project.repoPath,
         permissionMode: ctx.permissionMode,
         ...(ctx.alwaysAllow.length > 0 ? { alwaysAllow: ctx.alwaysAllow } : {}),
+        // 计划回合只读：the engine drops every writing tool, MCP included.
+        ...(ctx.planMode ? { plan: true } : {}),
         extraTools: mcp.tools,
         skills,
         memoryDir: memoryDirOf(ctx),

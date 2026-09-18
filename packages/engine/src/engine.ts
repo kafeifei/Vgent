@@ -16,6 +16,15 @@ import { updatePlanTool } from "./update-plan.js";
 /** Prefix that routes a model string to the machine's ChatGPT/Codex login instead of the gateway. */
 export const CODEX_SUBSCRIPTION_PREFIX = "codex-subscription:";
 
+/**
+ * The only tools a 计划 turn is given. Read-only by construction rather than by
+ * policy: `write` / `edit` / `bash` / `coder` / `memory` and every MCP tool are
+ * simply not in the set, so there is nothing for the model to be denied.
+ * `explore`'s own child is read-only too, and `askUserQuestions` / `updatePlan`
+ * only ever reach the user interface.
+ */
+const PLAN_TOOL_NAMES = ["read", "grep", "glob", "explore", "askUserQuestions", "updatePlan"] as const;
+
 const DEFAULT_MAX_STEPS = 100;
 const DEFAULT_CONTEXT_TOKEN_BUDGET = 150_000;
 
@@ -59,6 +68,11 @@ export interface VgentEngineOptions {
   onEvent?: (event: VgentEngineEvent) => void;
   /** Whether the `explore` / `coder` subagent tools are offered. Defaults to true. */
   subagents?: boolean;
+  /**
+   * Run this turn as a 计划 turn: only {@link PLAN_TOOL_NAMES} are offered, and
+   * the system prompt says what the plan document has to look like.
+   */
+  plan?: boolean;
   /** The model the subagents run on. Defaults to `model`. */
   subagentModel?: LanguageModel | string;
   /**
@@ -198,7 +212,9 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
   const model = resolveModel(options.model);
   const subagents = options.subagents !== false;
 
-  const tools: ToolSet = {
+  const plan = options.plan === true;
+
+  const all: ToolSet = {
     ...createCodingTools({ workDir: repoPath }),
     askUserQuestions: askUserQuestionsTool,
     updatePlan: updatePlanTool,
@@ -215,8 +231,13 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
       : {}),
     ...options.extraTools,
   };
+  const tools: ToolSet = plan
+    ? Object.fromEntries(PLAN_TOOL_NAMES.filter((name) => all[name] != null).map((name) => [name, all[name]!]))
+    : all;
   // Deferred tools are invisible to the model until something looks them up.
-  const deferred = hasDeferredTools(tools);
+  // A 计划 turn has none — no MCP tool survived the filter — so it gets no
+  // `toolSearch` either.
+  const deferred = !plan && hasDeferredTools(tools);
   if (deferred) tools.toolSearch = toolSearch();
 
   // The TUI and the web UI both hand the agent a prompt, not a message list, so
@@ -245,9 +266,12 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
       ...(options.context == null ? {} : { context: options.context }),
       permissionMode,
       subagents,
+      ...(plan ? { plan: true } : {}),
       toolSearch: deferred,
       ...(skills == null ? {} : { skills }),
-      ...(memoryDir == null ? {} : { memory: { dir: memoryDir, entries: memoryEntries(memoryDir) } }),
+      // The tool did not survive the Plan filter, so the prompt must not
+      // advertise it either.
+      ...(memoryDir == null || plan ? {} : { memory: { dir: memoryDir, entries: memoryEntries(memoryDir) } }),
       ...(options.instructions == null ? {} : { extra: options.instructions }),
     }),
     tools,

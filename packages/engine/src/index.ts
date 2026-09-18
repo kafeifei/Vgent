@@ -28,7 +28,7 @@ export {
   splitShellSegments,
   unlistedHeads,
 } from "./allowlist.js";
-export { buildInstructions, type BuildInstructionsOptions, type VgentContext } from "./instructions.js";
+export { buildInstructions, planModeInstructions, type BuildInstructionsOptions, type VgentContext } from "./instructions.js";
 export {
   askUserQuestionsTool,
   askUserQuestionsInputSchema,

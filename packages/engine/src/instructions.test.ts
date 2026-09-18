@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildInstructions } from "./instructions.js";
+import { buildInstructions, planModeInstructions } from "./instructions.js";
 
 const base = { repoPath: "/repo", permissionMode: "allow-edits" as const };
 
@@ -52,6 +52,17 @@ describe("buildInstructions", () => {
     expect(buildInstructions({ ...base, memory: { dir: "/data/memory/demo", entries: [] } })).toContain("现有条目：暂无");
     // No memory dir, no section at all.
     expect(buildInstructions(base)).not.toContain("跨任务记忆");
+  });
+
+  it("adds the Plan section only for a 计划 turn, and only the in-house engine is told to use askUserQuestions", () => {
+    const planning = buildInstructions({ ...base, plan: true });
+    expect(planning).toContain("Plan mode.");
+    expect(planning).toContain("saved verbatim as this task's plan document");
+    expect(buildInstructions(base)).not.toContain("Plan mode.");
+
+    // Claude Code has no such tool, so its copy of the same text says to ask in prose.
+    expect(planModeInstructions({ askTool: true })).toContain("`askUserQuestions`");
+    expect(planModeInstructions({ askTool: false })).toContain("Ask in plain text and stop");
   });
 
   it("tells the model to check with tools before asking the user to explain a contradiction", () => {

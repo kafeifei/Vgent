@@ -2,17 +2,24 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { UIMessage } from "ai";
 import { ArrowUp, File, Folder, Plus, Square } from "lucide-react";
 import { ModelPicker, effectiveModel } from "@/components/ModelPicker";
+import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ReasoningPicker } from "@/components/ReasoningPicker";
 import { dirName } from "@/features/changes/paths";
 import { baseName } from "@/lib/format";
 import { useToast } from "@/lib/toast";
-import type { ChangedFile, EngineDescriptor, EngineId, FileEntry, ModelCatalog, PermissionMode } from "@/lib/types";
+import type { ChangedFile, EngineDescriptor, EngineId, FileEntry, ModelCatalog, PermissionMode, ThreadMode } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { ContextRing } from "./ContextRing";
 import { sumChanges } from "./contextUsage";
 import { acceptMention, findMention, mentionSegments, type Mention } from "./mention";
 
 export const COMPOSER_PLACEHOLDER = "规划、构建，/ 输入命令，@ 引用上下文";
+
+/** 模式: what the next message does. One line each, because that is the whole choice. */
+const MODES: ReadonlyArray<{ id: ThreadMode; label: string; hint: string }> = [
+  { id: "agent", label: "Agent", hint: "直接动手" },
+  { id: "plan", label: "Plan", hint: "先只读调研、出计划，你改完再 Build" },
+];
 
 /** Keystrokes settle before we ask the server for candidates. */
 const COMPLETE_DEBOUNCE_MS = 120;
@@ -43,6 +50,8 @@ export function Composer({
   onPickModel,
   reasoningEffort,
   onPickReasoning,
+  mode,
+  onPickMode,
   location,
   completeFiles,
   messages,
@@ -67,6 +76,9 @@ export function Composer({
   onPickModel: (engine: EngineId, model: string | undefined) => void;
   reasoningEffort: string | undefined;
   onPickReasoning: (level: string) => void;
+  /** 模式 of the next message. The chip and ⇧Tab both write it. */
+  mode: ThreadMode;
+  onPickMode: (mode: ThreadMode) => void;
   /** Where this task runs, spelled out: 「主目录」 or 「worktree · <分支>」. */
   location: string;
   /** Absent (the empty state) leaves `@` inert, and hides the 「+」 button. */
@@ -106,6 +118,22 @@ export function Composer({
   // control the user would only find out is dead by clicking it.
   const descriptor = engines.find((entry) => entry.id === engine);
   const noApprovals = descriptor != null && !descriptor.capabilities.approvals && runMode !== "allow-all";
+  // Same rule for Plan: the chip is dead rather than absent, and it says why.
+  const planSupported = descriptor?.capabilities.planMode === true;
+  const planReason = planSupported ? undefined : `${descriptor?.label ?? "这个引擎"} 不支持 Plan 模式`;
+  const canSwitchMode = !live && planSupported;
+
+  /**
+   * Picking another engine's model can take Plan away. Falling back silently
+   * would run the next message in a mode the chip no longer shows, so it says so.
+   */
+  const pickModel = (nextEngine: EngineId, nextModel: string | undefined): void => {
+    onPickModel(nextEngine, nextModel);
+    const next = engines.find((entry) => entry.id === nextEngine);
+    if (mode !== "plan" || next == null || next.capabilities.planMode) return;
+    onPickMode("agent");
+    toast(`${next.label} 不支持 Plan 模式，已切回 Agent`);
+  };
 
   // Auto-grow: reset, then take the content height.
   useEffect(() => {
@@ -278,6 +306,14 @@ export function Composer({
                   return;
                 }
               }
+              // ⇧Tab switches 模式. `preventDefault` only when it really does —
+              // otherwise the key keeps its normal job of leaving the textarea.
+              if (event.key === "Tab" && event.shiftKey && !event.nativeEvent.isComposing) {
+                if (!canSwitchMode) return;
+                event.preventDefault();
+                onPickMode(mode === "plan" ? "agent" : "plan");
+                return;
+              }
               if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                 event.preventDefault();
                 // 排队是 M5 的事；在那之前 Enter 只提示，绝不清掉草稿。
@@ -307,13 +343,54 @@ export function Composer({
               <Plus className="size-md" />
             </button>
           )}
-          <span className="inline-flex h-xl items-center rounded-sm px-xs text-fg-muted text-xs">Agent</span>
+          {/* 模式 chip. Plan is the quiet accent: which mode the next message
+              runs in has to be readable without opening anything. */}
+          <Popover
+            className="max-w-[calc(var(--spacing-3xl)*8)]"
+            side="top"
+            trigger={(props) => (
+              <button
+                type="button"
+                {...props}
+                disabled={!canSwitchMode}
+                {...(planReason != null ? { title: planReason } : { title: "⇧Tab 切换模式" })}
+                className={cn(
+                  "inline-flex h-xl items-center gap-3xs rounded-sm px-xs text-xs disabled:cursor-not-allowed disabled:opacity-50",
+                  mode === "plan" ? "bg-brand-bg text-brand" : "text-fg-muted hover:bg-bg-hover hover:text-fg",
+                )}
+              >
+                <span>{MODES.find((entry) => entry.id === mode)?.label}</span>
+                <span className="opacity-60">▾</span>
+              </button>
+            )}
+          >
+            {(close) => (
+              <>
+                <PopTitle>模式</PopTitle>
+                {MODES.map((entry) => (
+                  <PopItem
+                    key={entry.id}
+                    selected={entry.id === mode}
+                    onClick={() => {
+                      onPickMode(entry.id);
+                      close();
+                    }}
+                  >
+                    <span className="flex flex-col gap-3xs whitespace-normal">
+                      <span className="text-fg">{entry.label}</span>
+                      <span className="text-fg-faint text-xs leading-snug">{entry.hint}</span>
+                    </span>
+                  </PopItem>
+                ))}
+              </>
+            )}
+          </Popover>
           <ModelPicker
             engines={engines}
             engine={engine}
             model={model}
             {...(engineLocked === true ? { engineLocked: true } : {})}
-            onPick={onPickModel}
+            onPick={pickModel}
             onCatalog={setCatalog}
             side="top"
             trigger={(props, chip) => (

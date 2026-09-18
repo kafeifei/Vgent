@@ -188,6 +188,8 @@ function ThreadChatView({
           onPickReasoning={(level) =>
             live ? actions.toast("运行中不能改，先停止") : actions.setReasoningEffort(thread.id, level)
           }
+          mode={thread.mode ?? "agent"}
+          onPickMode={(mode) => (live ? actions.toast("运行中不能改，先停止") : actions.setMode(thread.id, mode))}
           location={
             thread.workspace == null ? "主目录" : `worktree · ${thread.workspace.branch}`
           }

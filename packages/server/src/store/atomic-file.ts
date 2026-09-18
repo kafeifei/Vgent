@@ -9,11 +9,15 @@ import type { Logger } from "../types.js";
  * → rename → fsync the parent directory.
  */
 export async function writeJsonAtomic(path: string, value: unknown, options?: { mode?: number }): Promise<void> {
+  await writeFileAtomic(path, `${JSON.stringify(value, null, 2)}\n`, options);
+}
+
+/** The same durability dance for a plain text file — the plan document uses it. */
+export async function writeFileAtomic(path: string, content: string, options?: { mode?: number }): Promise<void> {
   const dir = dirname(path);
   const tmpPath = join(dir, `${basename(path)}.tmp-${randomBytes(6).toString("hex")}`);
-  const json = `${JSON.stringify(value, null, 2)}\n`;
   try {
-    await writeFile(tmpPath, json, options?.mode != null ? { mode: options.mode } : {});
+    await writeFile(tmpPath, content, options?.mode != null ? { mode: options.mode } : {});
     const handle = await open(tmpPath, "r");
     try {
       await handle.sync();

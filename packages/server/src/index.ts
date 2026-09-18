@@ -74,7 +74,8 @@ export {
   type ModelEntry,
 } from "./models.js";
 export { AUTO_TITLE_MAX_LEN, createRunManager, deriveThreadTitle, recoverInterruptedThreads, type RunManager } from "./runs.js";
-export { readJsonOrQuarantine, writeJsonAtomic } from "./store/atomic-file.js";
+export { readJsonOrQuarantine, writeFileAtomic, writeJsonAtomic } from "./store/atomic-file.js";
+export { createPlanStore, MAX_PLAN_BYTES, type PlanDocument, type PlanStore } from "./store/plans.js";
 export { createProjectStore, type ProjectStore } from "./store/projects.js";
 export { createSettingsStore, DEFAULT_SETTINGS, migrateSettings, type SettingsPatch, type SettingsStore } from "./store/settings.js";
 export { createThreadStore, DEFAULT_THREAD_TITLE, summarize, type CreateThreadInput, type ThreadPatch, type ThreadStore } from "./store/threads.js";
@@ -107,6 +108,7 @@ export type {
   Project,
   Settings,
   ThreadMessageMetadata,
+  ThreadMode,
   ThreadOutcome,
   ThreadRecord,
   ThreadStatus,

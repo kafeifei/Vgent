@@ -6,6 +6,13 @@ export type EngineId = "claude-code" | "codex" | "vgent";
 export type PermissionMode = "allow-reads" | "allow-edits" | "allow-all";
 export type ThreadStatus = "idle" | "running" | "awaiting-approval" | "awaiting-input" | "interrupted" | "error";
 
+/**
+ * 模式: what the *next* turn on a task does. `agent` goes straight to work;
+ * `plan` researches read-only and leaves its answer in the task's 计划文档,
+ * which the user edits before pressing Build (which switches back to `agent`).
+ */
+export type ThreadMode = "plan" | "agent";
+
 export interface Project {
   id: string;
   name: string;
@@ -118,6 +125,8 @@ export interface ThreadRecord {
    * means「用引擎自己的默认」.
    */
   reasoningEffort?: string;
+  /** 模式 for the next turn. Absent means `agent`; only a Plan-capable engine may carry `plan`. */
+  mode?: ThreadMode;
   status: ThreadStatus;
   error?: string;
   /** Present only for a task running in its own git worktree. */

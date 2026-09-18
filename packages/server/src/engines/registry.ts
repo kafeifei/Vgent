@@ -64,6 +64,13 @@ export interface EngineContext {
   permissionMode: PermissionMode;
   /** The global「一直允许」list, same resolution. Empty means nothing is pre-allowed. */
   alwaysAllow: string[];
+  /**
+   * True when this is a 计划 turn (`thread.mode === "plan"`). The factory has to
+   * *enforce* it: run with a tool set that cannot write, and add the Plan
+   * addendum to the prompt. Only an engine whose `capabilities.planMode` is true
+   * ever sees it — the routes refuse the mode otherwise.
+   */
+  planMode: boolean;
   harnessState?: HarnessState;
   /**
    * True when this turn continues the open one (the converted history ends in a

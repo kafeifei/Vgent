@@ -1,4 +1,5 @@
 import { collectHarnessAgentToolApprovalContinuations, collectHarnessAgentToolResultContinuations } from "@ai-sdk/harness/agent";
+import { planModeInstructions } from "@vgent/engine";
 import { claudeCodeThinking, createClaudeCodeEngine } from "@vgent/engines";
 import type { TextStreamPart, ToolSet } from "ai";
 import { TurnResumeFailedError } from "../errors.js";
@@ -19,6 +20,18 @@ const DESCRIPTOR: EngineDescriptor = {
     extensions: false,
   },
 };
+
+/**
+ * The tools a 计划 turn leaves active, by their harness names. Everything else
+ * — `write`, `edit`, `bash`, `Agent`, the Task tools, MCP — is excluded, which
+ * the adapter enforces twice: the complement goes to the CLI as
+ * `disallowedTools`, and the bridge's permission layer refuses an inactive tool
+ * outright. `TodoWrite` stays because it only drives the 计划 tab's todo list.
+ */
+const PLAN_ACTIVE_TOOLS = ["read", "grep", "glob", "TodoWrite"] as const;
+
+/** Claude Code has no `askUserQuestions`, so the addendum tells it to ask in prose. */
+const PLAN_INSTRUCTIONS = planModeInstructions({ askTool: false });
 
 /**
  * The real Claude Code engine, one harness session per thread.
@@ -60,6 +73,8 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
         // 「思考等级」for this engine *is* the harness `thinking` setting, and
         // `summarized` is what puts the reasoning in the stream.
         thinking: claudeCodeThinking(ctx.thread.reasoningEffort),
+        // 计划回合只读：enforced at the SDK level, not asked for in prose.
+        ...(ctx.planMode ? { activeTools: PLAN_ACTIVE_TOOLS, instructions: PLAN_INSTRUCTIONS } : {}),
         sessionId: ctx.thread.id,
         ...(continueFrom != null ? { continueFrom } : {}),
         ...(resumeFrom != null ? { resumeFrom } : {}),

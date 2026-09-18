@@ -8,9 +8,11 @@ import type {
   IntegrateAction,
   IntegrationStatus,
   ModelCatalog,
+  PlanDocument,
   Project,
   Settings,
   SetupLog,
+  ThreadMode,
   ThreadRecord,
   ThreadSummary,
   WorkspaceMode,
@@ -195,6 +197,8 @@ export function createClient(token: string) {
       reasoningEffort?: string;
       /** `worktree` gives the task its own checkout; the default edits the project. */
       workspace?: WorkspaceMode;
+      /** 模式 of the first turn; `plan` needs an engine with `capabilities.planMode`. */
+      mode?: ThreadMode;
     }) => api<ThreadRecord>("/threads", token, { method: "POST", json: input }),
     getThread: (id: string) => api<ThreadRecord>(`/threads/${id}`, token),
     patchThread: (
@@ -206,6 +210,8 @@ export function createClient(token: string) {
         model?: string | null;
         /** `null` clears it and hands the level back to the engine. */
         reasoningEffort?: string | null;
+        /** Agent / Plan for the next turn. Refused while the task is live. */
+        mode?: ThreadMode;
         /** 归档 also reclaims the task's worktree; un-archiving restores it. */
         archived?: boolean;
       },
@@ -220,6 +226,11 @@ export function createClient(token: string) {
 
     /** What the project's worktree setup script printed, for the 终端 tab. */
     getSetupLog: (id: string) => api<SetupLog>(`/threads/${id}/workspace/setup-log`, token),
+
+    /** 计划文档: the Plan turn's product, which the user edits before Build. Empty content = none yet. */
+    getPlan: (threadId: string) => api<PlanDocument>(`/threads/${threadId}/plan`, token),
+    putPlan: (threadId: string, content: string) =>
+      api<PlanDocument>(`/threads/${threadId}/plan`, token, { method: "PUT", json: { content } }),
 
     /** `/compact`: replaces the task's whole history with a summary of it. Vgent engine only. */
     compactThread: (id: string) => api<ThreadRecord>(`/threads/${id}/compact`, token, { method: "POST" }),

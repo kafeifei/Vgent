@@ -8,6 +8,7 @@ import type {
   EngineId,
   HarnessState,
   Logger,
+  ThreadMode,
   ThreadOutcome,
   ThreadRecord,
   ThreadStatus,
@@ -42,6 +43,8 @@ export interface CreateThreadInput {
   engine: EngineId;
   model?: string;
   reasoningEffort?: string;
+  /** 模式 of the first turn. Omitted (or `agent`) leaves the field off the record. */
+  mode?: ThreadMode;
 }
 
 export type ThreadPatch = Partial<{
@@ -50,6 +53,8 @@ export type ThreadPatch = Partial<{
   engine: EngineId;
   model: string | undefined;
   reasoningEffort: string | undefined;
+  /** `undefined` (or `agent`) clears it back to 直接动手. */
+  mode: ThreadMode | undefined;
   status: ThreadStatus;
   error: string | undefined;
   /** Attached right after the worktree is created, cleared when it is removed. */
@@ -235,6 +240,7 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
         engine: input.engine,
         ...(input.model != null ? { model: input.model } : {}),
         ...(input.reasoningEffort != null ? { reasoningEffort: input.reasoningEffort } : {}),
+        ...(input.mode === "plan" ? { mode: "plan" as const } : {}),
         status: "idle",
         createdAt: now,
         updatedAt: now,
@@ -268,6 +274,11 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
         if ("reasoningEffort" in patch) {
           if (patch.reasoningEffort == null) delete next.reasoningEffort;
           else next.reasoningEffort = patch.reasoningEffort;
+        }
+        // `agent` is the absence of a mode, so it is stored as one.
+        if ("mode" in patch) {
+          if (patch.mode !== "plan") delete next.mode;
+          else next.mode = "plan";
         }
         if ("error" in patch) {
           if (patch.error == null) delete next.error;

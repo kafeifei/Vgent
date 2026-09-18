@@ -151,6 +151,7 @@ export function Shell({ token }: { token: string }) {
             messages={messages}
             thread={thread}
             live={isLiveThread(thread)}
+            onBuild={actions.buildFromPlan}
           />
         )}
       </div>

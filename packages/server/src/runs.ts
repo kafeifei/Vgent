@@ -142,6 +142,11 @@ export function createRunManager(options: {
    * a rejection is logged and the previous value kept — it never fails a turn.
    */
   changeStats?: (thread: ThreadRecord) => Promise<ChangeStats | undefined>;
+  /**
+   * Where a finished 计划 turn's answer goes. Injected because the plan store
+   * belongs to the app, not here; a rejection is logged and the turn stands.
+   */
+  savePlan?: (threadId: string, content: string) => Promise<void>;
 }): RunManager {
   const { threads, projects, settings, registry, dataDir } = options;
   const log = options.log ?? silentLogger;
@@ -161,6 +166,21 @@ export function createRunManager(options: {
    * destroys it and starts over (new user prompt).
    */
   const parked = new Map<string, ParkedEngine>();
+
+  /**
+   * The 计划文档 a finished Plan turn leaves behind: the assistant message's text
+   * parts, joined. Never throws, and an empty answer overwrites nothing.
+   */
+  const savePlanFrom = async (threadId: string, assistant: UIMessage | undefined): Promise<void> => {
+    if (options.savePlan == null || assistant == null) return;
+    const content = assistant.parts
+      .filter((part): part is { type: "text"; text: string } => part.type === "text")
+      .map((part) => part.text)
+      .join("")
+      .trim();
+    if (content === "") return;
+    await options.savePlan(threadId, content).catch((error: unknown) => log.warn(`保存线程 ${threadId} 的计划文档失败`, error));
+  };
 
   /** Never throws: a diff we could not count must not turn a good turn into a failed one. */
   const measureChanges = async (thread: ThreadRecord): Promise<ChangeStats | undefined> => {
@@ -348,6 +368,7 @@ export function createRunManager(options: {
           dataDir,
           permissionMode: permission.permissionMode,
           alwaysAllow: permission.alwaysAllow,
+          planMode: thread.mode === "plan",
           ...(harnessState != null ? { harnessState } : {}),
           // A parked runner was reused above, so reaching here with
           // `continuesTurn` means the open turn lives in another process.
@@ -416,6 +437,10 @@ export function createRunManager(options: {
 
       if (!run.stopped) {
         const stats = await measureChanges(thread);
+        // 计划回合的最终回复就是计划文档。Only a turn that really ended writes it:
+        // one parked on a question is still mid-research, and an interrupted or
+        // failed one has no plan to speak of.
+        if (thread.mode === "plan" && status === "idle") await savePlanFrom(thread.id, settled);
         await threads
           .update(thread.id, {
             messages: withAssistant(settled),

@@ -3,7 +3,7 @@ import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ProjectPicker } from "@/components/ProjectPicker";
 import { Composer } from "@/features/composer/Composer";
 import { useToast } from "@/lib/toast";
-import type { EngineDescriptor, EngineId, Project, Settings, WorkspaceMode } from "@/lib/types";
+import type { EngineDescriptor, EngineId, Project, Settings, ThreadMode, WorkspaceMode } from "@/lib/types";
 
 /**
  * The two run locations, with the sentence that tells them apart. 「独立检出」
@@ -48,6 +48,7 @@ export function EmptyState({
     workspace: WorkspaceMode,
     model: string | null,
     reasoningEffort: string | null,
+    mode: ThreadMode,
   ) => void;
 }) {
   const toast = useToast();
@@ -62,6 +63,8 @@ export function EmptyState({
   // model's own default applies again.
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [workspace, setWorkspace] = useState<WorkspaceMode>("project");
+  /** 模式 rides on the creation request; there is no task to PATCH yet. */
+  const [mode, setMode] = useState<ThreadMode>("agent");
   const project = projects.find((entry) => entry.id === projectId);
 
   const engine = picked?.engine ?? settings?.defaultEngine ?? engines[0]?.id;
@@ -75,7 +78,7 @@ export function EmptyState({
       toast("先选一个项目");
       return;
     }
-    onStart(draft.trim(), engine, workspace, model, reasoningEffort);
+    onStart(draft.trim(), engine, workspace, model, reasoningEffort, mode);
     setDraft("");
   };
 
@@ -166,6 +169,8 @@ export function EmptyState({
           }}
           reasoningEffort={reasoningEffort ?? undefined}
           onPickReasoning={setReasoningEffort}
+          mode={mode}
+          onPickMode={setMode}
           location={workspace === "worktree" ? "worktree" : "主目录"}
           autoFocus
           big

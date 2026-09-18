@@ -3,7 +3,7 @@ import { createClient } from "@/lib/api";
 import { ThreadChats } from "@/lib/threadChats";
 import { useServerState } from "@/lib/useServerState";
 import { useToast } from "@/lib/toast";
-import type { EngineDescriptor, EngineId, ThreadMessageMetadata, ThreadSummary, WorkspaceMode } from "@/lib/types";
+import type { EngineDescriptor, EngineId, ThreadMessageMetadata, ThreadMode, ThreadStatus, ThreadSummary, WorkspaceMode } from "@/lib/types";
 import { LIVE_STATUSES } from "@/lib/types";
 import { repoRelative } from "@/features/changes/paths";
 import { useChanges } from "@/features/changes/useChanges";
@@ -123,6 +123,22 @@ export function useWorkbench(token: string) {
     }
   }, [chats, selectThread, selectedThreadId, state.connected, state.threads]);
 
+  /**
+   * A 计划 turn that just ended has produced a document nobody asked to see.
+   * The right column opens on it once, on that transition — never again on a
+   * re-render, so closing it stays closed.
+   */
+  const lastStatus = useRef<Map<string, ThreadStatus>>(new Map());
+  useEffect(() => {
+    for (const entry of state.threads) {
+      const previous = lastStatus.current.get(entry.id);
+      lastStatus.current.set(entry.id, entry.status);
+      if (entry.id !== selectedThreadId || entry.mode !== "plan" || entry.status !== "idle") continue;
+      if (previous == null || !(LIVE_STATUSES as readonly string[]).includes(previous)) continue;
+      setRight({ open: true, tab: "plan", file: null });
+    }
+  }, [selectedThreadId, state.threads]);
+
   const actions = useMemo(
     () => ({
       selectThread,
@@ -175,6 +191,7 @@ export function useWorkbench(token: string) {
         workspace: WorkspaceMode,
         model: string | null,
         reasoningEffort: string | null,
+        mode: ThreadMode,
       ) => {
         if (activeProjectId == null) {
           toast("先添加一个项目");
@@ -188,6 +205,7 @@ export function useWorkbench(token: string) {
             // Omitted, not null: the server reads「没传」as「用 defaultModel」.
             ...(model == null ? {} : { model }),
             ...(reasoningEffort == null ? {} : { reasoningEffort }),
+            mode,
           })
           .then(async (record) => {
             selectThread(record.id);
@@ -219,6 +237,22 @@ export function useWorkbench(token: string) {
       setReasoningEffort: (threadId: string, reasoningEffort: string | null) => {
         void client.patchThread(threadId, { reasoningEffort }).catch((error: Error) => toast(error.message));
       },
+
+      /** 模式 of the next turn: Agent 直接动手, Plan 只读出计划. */
+      setMode: (threadId: string, mode: ThreadMode) => {
+        void client.patchThread(threadId, { mode }).catch((error: Error) => toast(error.message));
+      },
+
+      /**
+       * Build: leave Plan mode and hand the document — the one on screen, not
+       * the one the agent wrote — to an Agent turn, through the same send path
+       * the composer uses.
+       */
+      buildFromPlan: (threadId: string, content: string): Promise<void> =>
+        client
+          .patchThread(threadId, { mode: "agent" })
+          .then(() => chats.send(threadId, `按下面的计划执行。\n\n${content}`))
+          .catch((error: Error) => toast(error.message)),
 
       /**
        * 「一直允许」: more entries on the *global* allowlist, from an approval

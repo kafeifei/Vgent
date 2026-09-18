@@ -189,9 +189,29 @@ export function createApp(options: CreateAppOptions): VgentApp {
   const recovered = recoverInterruptedThreads(threads, registry, log)
     .then(() => failInterruptedSetups(threads, log))
     .catch((error) => log.warn("恢复中断线程失败", error));
-  // Detached: trimming snapshots directories, and the first `/api/state` waits
-  // on `recovered` — it must not also wait on a housekeeping copy.
-  void recovered.then(trimWorktrees);
+  /**
+   * Tasks whose last turn ended before 收口 existed carry no `changeStats`, so
+   * one with real un-integrated work sits in 已完成 instead of 待验收. Counted
+   * once, after the trim — a task whose directory that just reclaimed has
+   * nothing left to count. A path that is gone is skipped without a word.
+   */
+  const backfillChangeStats = async (): Promise<void> => {
+    for (const summary of await threads.list()) {
+      if (summary.changeStats != null || summary.archivedAt != null || summary.workspace?.reclaimed === true) continue;
+      const thread = await threads.get(summary.id);
+      if (thread == null || thread.changeStats != null || isLive(thread)) continue;
+      const stats = await changeStatsFor(thread).catch(() => undefined);
+      if (stats != null) await threads.update(thread.id, { changeStats: stats });
+    }
+  };
+
+  // Detached: trimming snapshots directories and the backfill shells out to
+  // git once per task, and the first `/api/state` waits on `recovered` — it
+  // must not also wait on housekeeping.
+  void recovered
+    .then(trimWorktrees)
+    .then(backfillChangeStats)
+    .catch((error: unknown) => log.warn("补算改动统计失败", error));
 
   const app = new Hono();
 
@@ -271,10 +291,23 @@ export function createApp(options: CreateAppOptions): VgentApp {
    * The two directories and the baseline this task's diff is measured against:
    * its own worktree from `workspace.baseCommit`, or the project from HEAD.
    */
-  const targetOf = async (threadId: string): Promise<TaskTarget> => {
-    const thread = await threadOf(threadId);
+  const targetFor = async (thread: ThreadRecord): Promise<TaskTarget> => {
     if (thread.workspace?.reclaimed === true) throw new ConflictError("此任务的工作目录已回收", "workspace_reclaimed");
     return taskTarget(thread, await projectOf(thread));
+  };
+
+  const targetOf = async (threadId: string): Promise<TaskTarget> => targetFor(await threadOf(threadId));
+
+  /**
+   * A turn that is parked on an approval or a question has no run entry, but its
+   * engine is still alive and still owns the working tree — 收口 or 归档
+   * underneath it would pull the files out from under a live step.
+   */
+  const isLive = (thread: ThreadRecord): boolean =>
+    runs.isRunning(thread.id) || thread.status === "awaiting-approval" || thread.status === "awaiting-input";
+
+  const assertNotLive = (thread: ThreadRecord): void => {
+    if (isLive(thread)) throw new ConflictError("任务还在进行中（等待审批或回答），先处理或停止", "thread_running");
   };
 
   /** Keeps the record's 「+N −M」 current after an action that changed the tree. */
@@ -289,8 +322,20 @@ export function createApp(options: CreateAppOptions): VgentApp {
   };
 
   app.get("/api/threads/:id/changes", async (c) => {
-    const target = await targetOf(c.req.param("id"));
-    return c.json(await git.changes(target.repoPath, target.baseCommit));
+    const thread = await threadOf(c.req.param("id"));
+    const target = await targetFor(thread);
+    const snapshot = await git.changes(target.repoPath, target.baseCommit);
+    // The user can commit, edit or `git checkout` outside Vgent, which leaves
+    // the record's 「+N −M」 — and with it the 待验收 bucket — describing a tree
+    // that no longer exists. This panel just counted the real one, for free.
+    if (!isLive(thread)) {
+      const stats = changeStatsOf(snapshot);
+      const stored = thread.changeStats;
+      if (stored?.files !== stats.files || stored.additions !== stats.additions || stored.deletions !== stats.deletions) {
+        await threads.update(thread.id, { changeStats: stats });
+      }
+    }
+    return c.json(snapshot);
   });
 
   app.get("/api/threads/:id/changes/file", async (c) => {
@@ -316,17 +361,18 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   app.post("/api/threads/:id/integrate", async (c) => {
     const id = c.req.param("id");
-    if (runs.isRunning(id)) throw new ConflictError(`线程正在运行，无法收口: ${id}`, "thread_running");
-    const target = await targetOf(id);
+    const thread = await threadOf(id);
+    assertNotLive(thread);
+    const target = await targetFor(thread);
     const body = (await c.req.json().catch(() => undefined)) as { action?: unknown; message?: unknown } | undefined;
     const action = asIntegrateAction(body?.action);
     const outcome = await integrator.integrate(target, {
       action,
       ...(typeof body?.message === "string" ? { message: body.message } : {}),
     });
-    const thread = await threads.update(id, { outcome });
+    const updated = await threads.update(id, { outcome });
     await restat(id);
-    return c.json((await threads.get(id)) ?? thread);
+    return c.json((await threads.get(id)) ?? updated);
   });
 
   // --- files ------------------------------------------------------------
@@ -502,6 +548,8 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const lifecycle: ThreadPatch = {};
     if ("archived" in (body ?? {})) {
       if (typeof body?.archived !== "boolean") throw new BadRequestError("archived 只能是布尔值", "invalid_archived");
+      // Archiving reclaims the worktree, so it needs the same guard 收口 does.
+      assertNotLive(current);
       if (body.archived) {
         if (current.archivedAt == null) {
           const workspace = await reclaimFor(current);

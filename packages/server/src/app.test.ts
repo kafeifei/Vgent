@@ -756,6 +756,78 @@ describe("createApp", () => {
     expect(await bad.json()).toMatchObject({ error: { code: "invalid_action" } });
   });
 
+  it("看变更时顺手把过期的统计改正过来", async () => {
+    const repo = await gitRepo();
+    const app = makeApp(await tempDir());
+    const project = (await (await postJson(app, "/api/projects", { repoPath: repo })).json()) as Project;
+    const thread = (await (
+      await postJson(app, "/api/threads", { projectId: project.id, workspace: "worktree" })
+    ).json()) as ThreadRecord;
+    const workspacePath = thread.workspace?.path ?? "";
+    const record = async () => (await (await request(app, `/api/threads/${thread.id}`)).json()) as ThreadRecord;
+
+    expect((await record()).changeStats).toBeUndefined();
+    await writeFile(join(workspacePath, "tracked.txt"), "line1\nline2\n加一行\n");
+    await request(app, `/api/threads/${thread.id}/changes`);
+    expect((await record()).changeStats).toEqual({ files: 1, additions: 1, deletions: 0 });
+
+    // Undone outside Vgent: the panel counts zero, so the record must say zero.
+    await writeFile(join(workspacePath, "tracked.txt"), "line1\nline2\n");
+    await request(app, `/api/threads/${thread.id}/changes`);
+    expect((await record()).changeStats).toEqual({ files: 0, additions: 0, deletions: 0 });
+  });
+
+  it("启动时给没有统计的老任务补算改动", async () => {
+    const repo = await gitRepo();
+    const dir = await tempDir();
+    const first = makeApp(dir);
+    const project = (await (await postJson(first, "/api/projects", { repoPath: repo })).json()) as Project;
+    const thread = (await (
+      await postJson(first, "/api/threads", { projectId: project.id, workspace: "worktree" })
+    ).json()) as ThreadRecord;
+    // A task that never ran a turn under M1 has no `changeStats` at all.
+    await writeFile(join(thread.workspace?.path ?? "", "新文件.txt"), "一行\n");
+    expect(((await (await request(first, `/api/threads/${thread.id}`)).json()) as ThreadRecord).changeStats).toBeUndefined();
+
+    const second = makeApp(dir);
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const record = (await (await request(second, `/api/threads/${thread.id}`)).json()) as ThreadRecord;
+      if (record.changeStats != null) {
+        expect(record.changeStats).toEqual({ files: 1, additions: 1, deletions: 0 });
+        return;
+      }
+      await sleep(20);
+    }
+    throw new Error("启动补算没有写入 changeStats");
+  });
+
+  it("等审批的任务不能收口也不能归档，但可以删除", async () => {
+    const repo = await gitRepo();
+    const dir = await tempDir();
+    const app = makeApp(dir);
+    const project = (await (await postJson(app, "/api/projects", { repoPath: repo })).json()) as Project;
+    const thread = (await (
+      await postJson(app, "/api/threads", { projectId: project.id, workspace: "worktree" })
+    ).json()) as ThreadRecord;
+    await writeFile(join(thread.workspace?.path ?? "", "tracked.txt"), "line1\nline2\n改了\n");
+
+    // The turn is parked on an approval: no run entry, but the engine is alive.
+    await createThreadStore(dir).update(thread.id, { status: "awaiting-approval" });
+
+    const integrate = await postJson(app, `/api/threads/${thread.id}/integrate`, { action: "commit", message: "不该成功" });
+    expect(integrate.status).toBe(409);
+    expect(await integrate.json()).toMatchObject({ error: { code: "thread_running" } });
+
+    const archive = await request(app, `/api/threads/${thread.id}`, { method: "PATCH", body: JSON.stringify({ archived: true }) });
+    expect(archive.status).toBe(409);
+    expect(await archive.json()).toMatchObject({ error: { code: "thread_running" } });
+
+    // And nothing was committed behind its back.
+    expect((await execFileAsync("git", ["log", "--oneline"], { cwd: thread.workspace?.path ?? "" })).stdout.trim().split("\n")).toHaveLength(1);
+    // 删除 stops the run first, so it is still allowed.
+    expect((await request(app, `/api/threads/${thread.id}`, { method: "DELETE" })).status).toBe(204);
+  });
+
   it("归档：worktree 目录消失，取消归档又回来", async () => {
     const repo = await gitRepo();
     const app = makeApp(await tempDir());

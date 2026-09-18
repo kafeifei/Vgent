@@ -121,18 +121,23 @@ export function PopItem({
   selected = false,
   disabled = false,
   hint,
+  title,
 }: {
   children: ReactNode;
   onClick?: () => void;
   selected?: boolean;
   disabled?: boolean;
+  /** A short suffix shown in the row, e.g. why it is disabled. */
   hint?: string;
+  /** The long version of that reason, on hover. */
+  title?: string;
 }) {
   return (
     <button
       type="button"
       role="menuitem"
       disabled={disabled}
+      {...(title != null ? { title } : {})}
       onClick={onClick}
       className="flex w-full items-center gap-xs rounded-sm px-xs py-2xs text-left text-fg-muted text-sm hover:bg-bg-active hover:text-fg disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-fg-muted"
     >

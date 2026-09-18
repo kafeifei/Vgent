@@ -6,7 +6,7 @@ import { MoreHorizontal } from "lucide-react";
 import { OutcomeBadge } from "@/components/OutcomeBadge";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { relativeTime } from "@/lib/format";
-import type { ThreadStatus, ThreadSummary } from "@/lib/types";
+import { LIVE_REASON, LIVE_STATUSES, type ThreadStatus, type ThreadSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { describeTool } from "@/features/worklog/toolMeta";
 
@@ -44,11 +44,14 @@ function LiveAction({ chat }: { chat: Chat<UIMessage> }) {
 /** The row's own menu: 归档 / 取消归档 and a two-step 删除任务. */
 function RowMenu({
   archived,
+  live,
   openRef,
   onArchive,
   onDelete,
 }: {
   archived: boolean;
+  /** Archiving reclaims the worktree, so a turn that still owns it blocks it. Deleting stops the run first, so it does not. */
+  live: boolean;
   openRef: RefObject<(() => void) | null>;
   onArchive: (archived: boolean) => void;
   onDelete: () => void;
@@ -94,6 +97,8 @@ function RowMenu({
         ) : (
           <>
             <PopItem
+              disabled={live}
+              {...(live ? { hint: "进行中", title: LIVE_REASON } : {})}
               onClick={() => {
                 close();
                 onArchive(!archived);
@@ -185,7 +190,13 @@ export function TaskItem({
       }}
     >
       {row}
-      <RowMenu archived={thread.archivedAt != null} openRef={openMenu} onArchive={onArchive} onDelete={onDelete} />
+      <RowMenu
+        archived={thread.archivedAt != null}
+        live={(LIVE_STATUSES as readonly string[]).includes(thread.status)}
+        openRef={openMenu}
+        onArchive={onArchive}
+        onDelete={onDelete}
+      />
     </div>
   );
 }

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { OutcomeBadge } from "@/components/OutcomeBadge";
 import { baseName } from "@/lib/format";
-import type { ChangeStatus, ChangedFile, ThreadOutcome } from "@/lib/types";
+import { LIVE_REASON, type ChangeStatus, type ChangedFile, type ThreadOutcome } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { DiffView } from "./DiffView";
 import { parseUnifiedDiff } from "./diff";
@@ -133,7 +133,9 @@ function ActionBar({
 
   if (integration == null) return null;
   const blocked = live || integrating;
-  const hint = live ? { title: "任务运行中" } : {};
+  // `live` covers a turn parked on an approval or a question too: its engine
+  // still owns the working tree, which is exactly what these buttons move.
+  const hint = live ? { title: LIVE_REASON } : {};
   const worktree = integration.mode === "worktree";
 
   const commit = () => {

@@ -168,9 +168,9 @@ docs/
 - 本地 sandbox 跑 Claude Code bridge 官方无先例，freecode 证明可行但用了脏办法，我们要找干净的。
 - 自研引擎不走 HarnessV1，resume / compact / permissionMode 是自己的实现，和官方引擎语义可能有差；壳用统一配置抽象盖住。
 
-## 当前状态（2026-09-18，阶段六完成）
+## 当前状态（2026-09-18，阶段六完成；之后按 `docs/product.md` 的里程碑推进，M1、M2 已落地）
 
-三条引擎路全部本地跑通并有真实冒烟测试（`VGENT_SMOKE=1`）；桌面壳、worktree 隔离、子代理/MCP/skills、动态模型清单、`pnpm start` 全部落地。全仓构建绿，`pnpm test` 51 文件 / 385 测试通过（另 5 文件 / 12 测试是 `VGENT_SMOKE` 门控的真机冒烟，默认跳过）。
+三条引擎路全部本地跑通并有真实冒烟测试（`VGENT_SMOKE=1`）；桌面壳、worktree 隔离、子代理/MCP/skills、动态模型清单、`pnpm start` 全部落地。全仓构建绿，`pnpm test` 54 文件 / 427 测试 通过（另 5 文件 / 12 测试是 `VGENT_SMOKE` 门控的真机冒烟，默认跳过）。
 
 - `packages/sandbox-local`：freecode 移植，`createLocalSandboxProvider`，`loopbackOnly` 预加载已验证 bridge 只绑 127.0.0.1。
 - `packages/engines`：`createClaudeCodeEngine` / `createCodexEngine` → `{ agent, session, dispose }`，`toTUIAgent`，共享逻辑在 `shared.ts`。仓库路径靠覆写 `doStart` 传 `sessionWorkDir`。Claude 保留真实 HOME 复用登录（副作用：`~/.claude/CLAUDE.md` 影响回复）；Codex 用隔离 `CODEX_HOME`（真实 `~/.codex/config.toml` 与 pinned SDK 不兼容），登录态走 env 转发不受影响。Codex 的 permissionMode 只能 `allow-all`，SDK 构造时自己抛错。
@@ -273,11 +273,32 @@ docs/
 - 验证：`pnpm build && pnpm test` → 52 文件 / 399 测试通过（另 5 文件 / 12 测试 `VGENT_SMOKE` 门控默认跳过；含合并 main 的 `28505af`（M2 在哪跑）之后是 53 文件 / 408 测试）；实例锁用临时 `--data-dir` 实测：预放一个活持有者的锁 → stderr 一行提示、退出码 75、没写 connection.json、锁原样；正常启动 → 锁里是 server 的 pid，SIGTERM 后 connection.json 和 server.lock 都删掉；`VGENT_DESKTOP=1` 下 `kill -9` 父进程 → server 5 秒内自退且两个文件都不留；`cargo test` 6 个通过（含新的 `a_locked_data_directory_fails_fast_as_already_running`）。没有启动桌面 GUI 验证 single-instance 回调（用户的旧版 app 正在 `~/.vgent` 上运行，不做实验），只到 `cargo check` / `cargo test`。
 - 已知未修（阶段六）：UI 里仍看不到旧消息（盘上已有 `pre-compact` 快照，没做回看界面）；compact 后 ring 到下一轮才有真实 usage；`memory` 工具不给子代理；记忆条目没有 UI 可查看 / 删除；Codex 每步 usage 为零是上游 bridge 行为；阶段三到五的已知未修仍在。
 
-### 明确未做（阶段六之后）
+### 里程碑进度（`docs/product.md` 的 M1–M5）
+
+2026-09-18 起不再按阶段排，做什么以 `docs/product.md` 为准，这里只记怎么实现的。
+
+- **M1 收口**（`5584b61`）。
+  - 任务基线：`git.ts` 的 `changes / fileDiff / revert` 多一个可选 `base`。tracked 走 `git diff <base> --name-status -z -M`，untracked 走 `git ls-files --others --exclude-standard`，两种基线一条代码路径（porcelain v2 解析删了）。worktree 任务的 `base` 是 `workspace.baseCommit`，主目录任务是 `HEAD`；`app.ts` 的 `targetOf` 统一给出 `{ cwd, base }`。
+  - `packages/server/src/integrate.ts`：`createIntegrator({ exec? })`。`GET /api/threads/:id/integration` → `{ mode, branch?, commitsAhead, dirty, canCommit, canApply, canDiscardAll, pr: { available, reason? } }`；`POST /api/threads/:id/integrate { action: "commit" | "pr" | "apply" | "discard", message? }` → `ThreadRecord`（409 `thread_running` / `apply_conflict` / `workspace_reclaimed`，400 `nothing_to_commit` 等，502 `tool_failed` 是 push / gh 失败）。
+  - 带回主目录：用临时 `GIT_INDEX_FILE` 把 worktree 的全部内容（含未提交、未跟踪）写成一棵 tree，不动 worktree 自己的 index；`git diff --binary <base> <tree>` 出补丁写临时文件，主检出先 `git apply --check`，过了才真 apply。主检出 HEAD 不动，改动以未提交状态出现；冲突时整体不动并回冲突文件清单。
+  - 开 PR：push 分支后 `gh pr create --fill`；没有 origin 或没装 / 没登录 gh 时按钮不出现，动作条写明原因。全部丢弃只对 worktree 任务：`reset --hard <base>` + `clean -fd`（不带 `-x`，被忽略的 `node_modules` 留着）。
+  - `ThreadRecord.outcome`（`committed` 带 sha / `pr` 带 url / `applied` / `discarded`，新一轮开始时清掉）、`changeStats { files, additions, deletions }`（回合结束时写）、`archivedAt`。`PATCH { archived }`：归档顺带回收 worktree（留快照），取消归档恢复。
+  - Web：`ChangesPanel` 底部动作条、`components/OutcomeBadge.tsx`（任务头 / 侧栏行 / 动作条共用）、`sidebar/grouping.ts` 五组（进行中 / 待处理 / 待验收 / 已完成 / 已归档，已归档默认折叠；`interrupted`、`error` 归待处理）、`TaskItem` 行菜单（`…` 和右键：归档 / 取消归档 / 删除任务…，删除二次确认）和 `+N −M`。
+- **M2 在哪跑**（`28505af`）。
+  - 空状态一个「运行位置」选择器（本机 · 主目录 / 本机 · worktree，各带一句说明），聊天框上方的位置 chip 显示真实位置（`worktree · vgent/<id8>`）。
+  - `packages/server/src/worktree-setup.ts`：配置发现顺序 `.vgent/worktrees.json` → `.cursor/worktrees.json`，键 `setup-worktree-unix` 优先于 `setup-worktree`，按键逐个回落；值是数组 = 命令列表，是字符串 = 相对配置文件的脚本路径（Cursor 的 schema）。cwd 是新 worktree，环境变量 `ROOT_WORKTREE_PATH` 指主检出。异步跑，`workspace.setup { status, startedAt, finishedAt?, exitCode? }` 落盘，`runs.start` 先 `await whenSetupSettled`；日志 `<dataDir>/workspaces/<threadId>.setup.log`（约 1 MB 截断），`GET /api/threads/:id/workspace/setup-log`，终端 tab 第一条就是它。失败只给警告（「工作目录准备失败（退出码 N），任务仍可运行」），不拦回合；恢复工作目录不重跑 setup。server 重启时把还在 `running` 的 setup 标成失败。
+  - `packages/server/src/worktree-limit.ts`：`Settings.worktreeMaxCount`（默认 25，`PUT /api/settings` 校验），建新 worktree 后和启动时（都是 detached）回收最旧的非运行任务的 worktree，走和手动回收同一条留快照的路。
+  - 假按钮：「+」在光标处插入 `@` 并打开文件补全（空状态没有补全来源，不显示）；「规划一个想法」「打开编辑器」删掉；运行中按 Enter 只 toast「运行中，先停止或等它结束」，草稿不动；模型 chip 运行中不可改。
+  - 本仓库自带 `.vgent/worktrees.json`（`pnpm install --frozen-lockfile`）。
+- 验证：`pnpm build && pnpm test` → 54 文件 / 427 测试 通过（另 5 文件 / 12 测试 `VGENT_SMOKE` 门控默认跳过；含合并 main 的实例锁之后）。浏览器实测（临时 `--data-dir` + 一个临时 git 仓库，Claude Code 真跑）：worktree 任务里 agent 改一个文件、新建一个文件、自己 `git commit` 一次、再留一个未跟踪文件，合并 M1 之前「审查」只剩 `+1 −0`，之后是 `+3 −0`、面板列全三个文件并标「领先基线 1 个提交」；带回主目录后主检出 HEAD 不动、出现同样三处未提交改动（当时主检出已比任务基线多一个提交，补丁照样干净应用）；再点一次给出三个冲突文件、主检出不动；提交后任务头 / 侧栏行 / 动作条都是「已提交 <sha>」且文件清单仍是全量；全部丢弃二次确认后 worktree 干净、被忽略的 setup 产物还在；归档后 worktree 目录消失、留快照、任务进折叠的「已归档」，取消归档后提交和未跟踪文件都回来；删除任务后 worktree、记录、空分支都没了。setup：字符串值指向不存在的脚本 → 退出码 127 的警告、任务照跑；数组值含 `sleep 3` → 期间显示「正在准备工作目录…」，回合等它结束才开始，标记文件里的 `ROOT_WORKTREE_PATH` 是主检出。M2 验收标准：本仓库的克隆登记成项目，新 worktree 任务 setup 2.4s 装完依赖，在该 worktree 里 `pnpm build && pnpm test` 全绿。
+- M1 验收补丁（`f8693c3`）：启动时（detached，排在上限回收之后）给没有 `changeStats` 的旧任务补算，否则它们会错落在「已完成」；`GET /api/threads/:id/changes` 顺手把过期的统计改正并落盘（用户在 Vgent 外面提交 / 改文件后侧栏跟着变，不多跑 git）；停在等审批 / 等回答的任务也算进行中，收口和归档回 409 `thread_running`，动作条和行菜单的「归档」禁用并用 `title` 说明，删除不受影响。三条都在浏览器里实测过。
+- 已知未修：**Claude Code 任务点「拒绝」审批后一直停在「进行中」**，只能手动停止（2026-09-18 验收时发现，全新任务可复现，正在查是否回归）；新一轮对话清掉 `outcome` 后，已开的 PR 链接不再出现在界面上；`worktreeMaxCount` 还没有设置界面（M3）；上限回收只有单测、没在界面里实测。
+
+### 明确未做
 
 - `askUserQuestions` 在 TUI 里不可用（需要 Web `useChat`）。
 - `@ai-sdk/otel`。
-- Web：checkpoint / 回退、麦克风、侧聊 `/side`、运行位置下拉（写死「本机」）、模式 chip（写死 `Agent`）、harness 引擎的子代理嵌套流（自研引擎已是实时嵌套流；Claude Code 的 Task 目前是一行 spinner + 结束后原始 JSON）、虚拟滚动、无障碍焦点管理。
+- Web：checkpoint / 回退（M5）、麦克风、侧聊 `/side`、模式 chip（写死 `Agent`，M4）、harness 引擎的子代理嵌套流（自研引擎已是实时嵌套流；Claude Code 的 Task 目前是一行 spinner + 结束后原始 JSON）、虚拟滚动、无障碍焦点管理。
 - 桌面壳：Windows / Linux、签名与公证、自动更新、多窗口。
 
-下一步：不再按阶段排路线图，以用户实际用 Vgent.app 的痛点为准，一次一小步。手边的候选：设置页查看 / 删除记忆条目；给上游提 Codex bridge finish-step 不带 usage 的 issue。发布工程（签名 / 公证、自动更新、Windows）只在有明确需求时再启动。
+下一步：按 `docs/product.md` 的工作计划走，M3（模型在前、运行模式全局化）→ M4（Plan 模式）→ M5（排队和 checkpoint）；每个里程碑落 main 后打包装到 /Applications。发布工程（签名 / 公证、自动更新、Windows）只在有明确需求时再启动。

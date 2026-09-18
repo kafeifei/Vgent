@@ -81,4 +81,7 @@ export type AskUserQuestionsOutput =
 /** A thread whose turn is still alive on the server. */
 export const LIVE_STATUSES = ["running", "awaiting-approval", "awaiting-input"] as const;
 
+/** Why 收口 and 归档 are off while a turn lives — the server's own 409 says the same. */
+export const LIVE_REASON = "任务还在进行中（等待审批或回答），先处理或停止";
+
 export type UIMessagePart = UIMessage["parts"][number];

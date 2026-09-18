@@ -81,16 +81,19 @@ async function waitForStatus(app: VgentApp, threadId: string, wanted: string): P
 }
 
 /** Answers a pending approval the way `useChat`'s `addToolApprovalResponse` does. */
-function approve(message: UIMessage): UIMessage {
+function respond(message: UIMessage, approved: boolean): UIMessage {
   return {
     ...message,
     parts: message.parts.map((part) =>
       isToolUIPart(part) && part.state === "approval-requested"
-        ? { ...part, state: "approval-responded", approval: { ...part.approval, approved: true } }
+        ? { ...part, state: "approval-responded", approval: { ...part.approval, approved } }
         : part,
     ),
   } as UIMessage;
 }
+
+const approve = (message: UIMessage): UIMessage => respond(message, true);
+const deny = (message: UIMessage): UIMessage => respond(message, false);
 
 /** A throwaway git repo for an engine that is about to write into it. */
 async function tempRepo(): Promise<string> {
@@ -165,6 +168,77 @@ describe("@vgent/server (smoke)", () => {
       expect(secondState.updatedAt).not.toBe(firstState.updatedAt);
 
       await rm(dataDir, { recursive: true, force: true, maxRetries: 5 });
+    },
+    15 * 60 * 1000,
+  );
+
+  /**
+   * The regression this pins down: 「拒绝」 on a Claude Code approval used to
+   * leave the thread 「进行中」 forever, because the denial never reached the
+   * runtime (see `stripDeniedApprovalResults`). Only a real bridge can prove
+   * the turn now ends by itself, so this one costs a request.
+   */
+  smoke(
+    "ends a Claude Code turn by itself when the approval is denied",
+    async () => {
+      const dataDir = await mkdtemp(join(tmpdir(), "vgent-server-smoke-deny-"));
+      const repoPath = await tempRepo();
+      const target = join(repoPath, "deny-probe.txt");
+
+      const app = createApp({ dataDir, token: TOKEN, log: consoleLogger });
+      try {
+        const project = (await (await postJson(app, "/api/projects", { repoPath })).json()) as Project;
+        const thread = (await (
+          await postJson(app, "/api/threads", {
+            projectId: project.id,
+            title: "拒绝审批冒烟",
+            engine: "claude-code",
+            // 运行模式 defaults to 询问, which gates every shell command, so the
+            // turn has to stop and ask.
+          })
+        ).json()) as ThreadRecord;
+        const threadId = thread.id;
+
+        const first = await postJson(app, `/api/chat/${threadId}`, {
+          id: threadId,
+          messages: [
+            {
+              id: "u1",
+              role: "user",
+              parts: [{ type: "text", text: "用 Bash 工具执行这一条命令：date > deny-probe.txt。只执行这一条，不要做别的。" }],
+            },
+          ],
+        });
+        expect(first.status).toBe(200);
+        await first.text();
+
+        const parked = await waitForStatus(app, threadId, "awaiting-approval");
+        expect(await stat(target).catch(() => undefined)).toBeUndefined();
+
+        const denied = deny(parked.messages.at(-1)!);
+        const second = await postJson(app, `/api/chat/${threadId}`, {
+          id: threadId,
+          messages: [...parked.messages.slice(0, -1), denied],
+        });
+        expect(second.status).toBe(200);
+        await second.text();
+
+        // The whole point: nobody presses 「停止」 here. `waitForStatus` polls
+        // for five minutes and throws if the thread is still `running`.
+        const done = await waitForStatus(app, threadId, "idle");
+        console.log(`[smoke][deny] 拒绝后最后一条消息: ${JSON.stringify(done.messages.at(-1))}`);
+        // Denied means denied: the command never ran.
+        expect(await stat(target).catch(() => undefined)).toBeUndefined();
+        // And the runtime answered in text instead of hanging on the approval.
+        expect(done.messages.some((message) => message.parts.some((part) => isToolUIPart(part) && part.state === "approval-requested"))).toBe(
+          false,
+        );
+      } finally {
+        await app.shutdown();
+      }
+
+      await rm(dataDir, { recursive: true, force: true, maxRetries: 5 });
+      await rm(repoPath, { recursive: true, force: true, maxRetries: 5 });
     },
     15 * 60 * 1000,
   );

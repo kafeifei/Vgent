@@ -3,6 +3,7 @@ import { describeSubscriptionAuth } from "@vgent/providers";
 import type { TextStreamPart, ToolSet } from "ai";
 import { EngineUnavailableError } from "../errors.js";
 import type { EngineDescriptor } from "./capabilities.js";
+import { stripDeniedApprovalResults } from "./harness-messages.js";
 import type { EngineContext, EngineFactory, EngineRunner } from "./registry.js";
 
 /**
@@ -89,7 +90,15 @@ export function createCodexEngineFactory(): EngineFactory {
           // owns its own native history and collapses the array to its last
           // `role: 'user'` message.
           // `options: undefined` is required by the call-options generic; this agent has no `callOptionsSchema`.
-          const result = await engine.harnessAgent.stream({ session: engine.session, messages, abortSignal, options: undefined });
+          // A Codex turn cannot pause on an approval today, so the deny fix-up
+          // is a no-op here — it is applied anyway so both harness runners hand
+          // the agent the same shape.
+          const result = await engine.harnessAgent.stream({
+            session: engine.session,
+            messages: stripDeniedApprovalResults(messages),
+            abortSignal,
+            options: undefined,
+          });
           return { stream: result.stream as ReadableStream<TextStreamPart<ToolSet>> };
         },
 

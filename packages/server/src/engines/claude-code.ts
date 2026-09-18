@@ -3,6 +3,7 @@ import { claudeCodeThinking, createClaudeCodeEngine } from "@vgent/engines";
 import type { TextStreamPart, ToolSet } from "ai";
 import { TurnResumeFailedError } from "../errors.js";
 import type { EngineDescriptor } from "./capabilities.js";
+import { stripDeniedApprovalResults } from "./harness-messages.js";
 import type { EngineContext, EngineFactory, EngineRunner } from "./registry.js";
 
 /** 引擎能力表, the Claude Code row: it can ask, and it can plan; the rest is not wired. */
@@ -77,6 +78,11 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
         hasUnfinishedTurn: () => engine.session.hasUnfinishedTurn(),
 
         async stream({ messages, abortSignal }) {
+          // A denied approval reaches the harness as an approval continuation,
+          // never as the synthetic result `convertToModelMessages` pairs it
+          // with — see `stripDeniedApprovalResults`. Both paths below collect
+          // their continuations from this array, so it is sanitized once here.
+          const harnessMessages = stripDeniedApprovalResults(messages);
           if (pendingContinuation) {
             pendingContinuation = false;
             // The session was created from `continueFrom`, so its turn is
@@ -85,8 +91,8 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
             // trailing `role: 'tool'` parts `stream()` would have picked out.
             const result = await engine.harnessAgent.continueStream({
               session: engine.session,
-              toolApprovalContinuations: collectHarnessAgentToolApprovalContinuations({ messages }),
-              toolResultContinuations: collectHarnessAgentToolResultContinuations({ messages }),
+              toolApprovalContinuations: collectHarnessAgentToolApprovalContinuations({ messages: harnessMessages }),
+              toolResultContinuations: collectHarnessAgentToolResultContinuations({ messages: harnessMessages }),
               abortSignal,
             });
             return { stream: result.stream as ReadableStream<TextStreamPart<ToolSet>> };
@@ -97,7 +103,12 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
           // matching `tool-approval-request` from the prior assistant message
           // to still be in the array to resolve its approval id.
           // `options: undefined` is required by the call-options generic; this agent has no `callOptionsSchema`.
-          const result = await engine.harnessAgent.stream({ session: engine.session, messages, abortSignal, options: undefined });
+          const result = await engine.harnessAgent.stream({
+            session: engine.session,
+            messages: harnessMessages,
+            abortSignal,
+            options: undefined,
+          });
           return { stream: result.stream as ReadableStream<TextStreamPart<ToolSet>> };
         },
 

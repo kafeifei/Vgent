@@ -6,6 +6,7 @@ import { isToolUIPart, simulateReadableStream, type LanguageModel, type ModelMes
 import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp, type VgentApp } from "./app.js";
+import { stripDeniedApprovalResults } from "./engines/harness-messages.js";
 import { createEngineRegistry, type EngineContext, type EngineFactoryOverride, type EngineRunner } from "./engines/registry.js";
 import { createVgentEngineFactory } from "./engines/vgent.js";
 import { TurnResumeFailedError } from "./errors.js";
@@ -167,9 +168,22 @@ const continuationParts = (): TextStreamPart<ToolSet>[] =>
     ...textParts("命令已执行").slice(1),
   ] as unknown as TextStreamPart<ToolSet>[];
 
+/**
+ * The continuation after 「拒绝」: the runtime is told the call was denied, says
+ * so, and the turn ends. Nothing re-issues the call.
+ */
+const deniedContinuationParts = (): TextStreamPart<ToolSet>[] =>
+  [
+    { type: "start" },
+    { type: "tool-approval-response", approvalId: "ap-1", toolCallId: TOOL_CALL.toolCallId, approved: false },
+    ...textParts("好的，那我不执行这条命令").slice(1),
+  ] as unknown as TextStreamPart<ToolSet>[];
+
 interface FakeRunner extends EngineRunner {
   readonly id: number;
   readonly streams: ModelMessage[][];
+  /** What the harness would have been able to collect from each `stream()` call. */
+  readonly continuations: unknown[][];
 }
 
 /** What a frozen turn's payload looks like: adapter-opaque, naming a live bridge. */
@@ -201,17 +215,25 @@ function createApprovalEngine(options: { suspend?: "ok" | "fail" } = {}) {
       created.push(ctx);
       const id = runners.length + 1;
       const streams: ModelMessage[][] = [];
+      const continuations: unknown[][] = [];
       let unfinished = false;
       const runner: FakeRunner = {
         id,
         streams,
+        continuations,
         hasUnfinishedTurn: () => unfinished,
         async stream({ messages }) {
           streams.push(messages);
+          // The real harness runner sanitizes the history before the harness
+          // collects continuations from it; mirroring that here is what makes
+          // a denied approval visible to this fake at all.
+          const collected = collectHarnessAgentToolApprovalContinuations({ messages: stripDeniedApprovalResults(messages) });
+          continuations.push(collected);
           const last = messages.at(-1);
           if (last?.role === "tool") {
             unfinished = false;
-            return { stream: toStream(continuationParts()) };
+            const denied = collected.some((part) => part.approved === false);
+            return { stream: toStream(denied ? deniedContinuationParts() : continuationParts()) };
           }
           const wantsTool = JSON.stringify(last).includes("工具");
           unfinished = wantsTool;
@@ -310,6 +332,43 @@ describe("approval parking", () => {
     expect(tool?.state).toBe("output-available");
     expect(tool).toMatchObject({ output: { stdout: "     137" } });
     expect(JSON.stringify(done.messages)).toContain("命令已执行");
+  });
+
+  /**
+   * Regression: 「拒绝」 used to leave the thread 「进行中」 forever. The denial
+   * reached the run manager fine, but `convertToModelMessages` pairs it with a
+   * synthetic `execution-denied` result that made the harness skip the approval
+   * response — so nothing ever answered the runtime and the stream never ended.
+   * See `stripDeniedApprovalResults`.
+   */
+  it("ends the turn on its own when the approval is denied", async () => {
+    const dir = await tempDir();
+    const engine = createApprovalEngine();
+    const app = makeApp(dir, engine.factory);
+    const thread = await setupThread(app, dir);
+
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "用工具跑一下 uname")] }));
+    const parked = await waitForStatus(app, thread.id, "awaiting-approval");
+
+    const denied = respond(parked.messages.at(-1)!, false);
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [...parked.messages.slice(0, -1), denied] }));
+    const done = await waitForStatus(app, thread.id, "idle");
+    // `finish()` runs after the status write; the harness file is its receipt.
+    await waitForFile(join(dir, "threads", `${thread.id}.harness.json`));
+
+    // The denial reached the engine as an approval continuation — the thing the
+    // synthetic result used to swallow.
+    expect(engine.runners).toHaveLength(1);
+    expect(engine.runners[0]?.continuations[1]).toMatchObject([{ type: "tool-approval-response", approvalId: "ap-1", approved: false }]);
+    // Same session, continued in place, then closed for real.
+    expect(engine.runners[0]?.streams).toHaveLength(2);
+    expect(engine.finished).toEqual([1]);
+    expect(engine.destroyed).toEqual([]);
+    // And the turn really is over: no pending approval left, and the reply is there.
+    expect(done.messages.some((message) => message.parts.some((part) => isToolUIPart(part) && part.state === "approval-requested"))).toBe(
+      false,
+    );
+    expect(JSON.stringify(done.messages)).toContain("好的，那我不执行这条命令");
   });
 
   it("destroys the parked engine when a new prompt arrives and restarts from the last finished state", async () => {
@@ -963,6 +1022,31 @@ describe("vgent engine", () => {
 
     expect(await readFile(written, "utf8")).toBe(WRITE_INPUT.content);
     expect(done.messages.at(-1)?.parts.find(isToolUIPart)?.state).toBe("output-available");
+  });
+
+  /**
+   * The self-built engine's deny path. It runs the AI SDK loop in this process,
+   * so the denial travels the other way round from the harness engines': the
+   * synthetic `execution-denied` result in the history *is* what the model sees,
+   * which is why `stripDeniedApprovalResults` must stay off this engine.
+   */
+  it("leaves the file alone and finishes the turn when the write approval is denied", async () => {
+    const dataDir = await tempDir();
+    const repoPath = await tempDir();
+    const app = makeVgentApp(dataDir, mockModel([toolCallStream("call-w", "write", WRITE_INPUT), textStream("好的，我不写这个文件")]));
+    const thread = await setupVgentThread(app, repoPath);
+    const written = join(repoPath, "SMOKE.txt");
+
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "在根目录新建 SMOKE.txt")] }));
+    const parked = await waitForStatus(app, thread.id, "awaiting-approval");
+
+    const denied = respond(parked.messages.at(-1)!, false);
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [...parked.messages.slice(0, -1), denied] }));
+    const done = await waitForStatus(app, thread.id, "idle");
+
+    expect(await exists(written)).toBe(false);
+    expect(done.messages.at(-1)?.parts.find(isToolUIPart)?.state).toBe("output-denied");
+    expect(JSON.stringify(done.messages)).toContain("好的，我不写这个文件");
   });
 
   it("ends the turn `awaiting-input` when the model calls askUserQuestions", async () => {

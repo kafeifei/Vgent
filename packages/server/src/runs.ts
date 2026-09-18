@@ -19,10 +19,11 @@ import { BadRequestError, ConflictError, NotFoundError, TurnResumeFailedError, V
 import { effectivePermission } from "./engines/capabilities.js";
 import type { EngineRegistry, EngineRunner } from "./engines/registry.js";
 import { statelessEngines } from "./engines/registry.js";
+import type { QueueStore } from "./queue.js";
 import type { ProjectStore } from "./store/projects.js";
 import type { SettingsStore } from "./store/settings.js";
 import { DEFAULT_THREAD_TITLE, type ThreadStore } from "./store/threads.js";
-import type { ChangeStats, Logger, MessageCheckpoint, ThreadMessageMetadata, ThreadRecord, ThreadStatus, UsageInfo } from "./types.js";
+import type { ChangeStats, Logger, MessageCheckpoint, QueuedMessage, ThreadMessageMetadata, ThreadRecord, ThreadStatus, UsageInfo } from "./types.js";
 import { silentLogger } from "./types.js";
 import { whenSetupSettled } from "./worktree-setup.js";
 
@@ -124,6 +125,16 @@ interface ParkedEngine {
 
 export interface RunManager {
   start(threadId: string, uiMessages: unknown): Promise<ChunkHub>;
+  /**
+   * 排队「发送」: take one queued message out and run it as a turn, right now.
+   * The item goes back to the head of the queue if the turn could not start.
+   */
+  sendQueued(threadId: string, itemId: string): Promise<void>;
+  /**
+   * Run the head of a thread's queue if — and only if — the thread is idle,
+   * unarchived and has one. Used at boot; after a turn it schedules itself.
+   */
+  dispatchQueue(threadId: string): Promise<void>;
   stop(threadId: string): Promise<void>;
   subscribe(threadId: string, signal?: AbortSignal): ReadableStream<UIMessageChunk> | undefined;
   isRunning(threadId: string): boolean;
@@ -151,6 +162,11 @@ export function createRunManager(options: {
    * belongs to the app, not here; a rejection is logged and the turn stands.
    */
   savePlan?: (threadId: string, content: string) => Promise<void>;
+  /**
+   * 排队. Absent leaves the manager without a dispatcher — nothing is ever sent
+   * by itself, which is what a test that only drives turns by hand wants.
+   */
+  queue?: QueueStore;
 }): RunManager {
   const { threads, projects, settings, registry, dataDir } = options;
   const log = options.log ?? silentLogger;
@@ -543,68 +559,148 @@ export function createRunManager(options: {
           if (finishing.get(thread.id) === cleanup) finishing.delete(thread.id);
         }
       }
+      // 排队: the slot is free and the engine is put away, so the thread can
+      // take its next queued message. `dispatchQueue` re-reads the record and
+      // only acts on a clean `idle`, so a parked, stopped or failed turn here
+      // simply leaves the queue where it is.
+      scheduleDispatch(thread.id);
     }
   };
 
+  /**
+   * Start a turn on a thread. The one path into the engine, whichever side
+   * asked: an HTTP `POST /api/chat/:id`, the 排队 dispatcher below, or the
+   * 「发送」 route. Everything a turn needs to be a real turn — the setup wait,
+   * 每回合快照, Plan mode, the title, the cleared 收口 — lives here.
+   */
+  const startTurn = async (threadId: string, uiMessages: unknown): Promise<ChunkHub> => {
+    const thread = await threads.get(threadId);
+    if (thread == null) throw new NotFoundError(`线程不存在: ${threadId}`, "thread_not_found");
+    if (thread.workspace?.reclaimed === true) {
+      throw new ConflictError("此任务的工作目录已回收，请先恢复后再运行", "workspace_reclaimed");
+    }
+    const active = runs.get(threadId);
+    if (active != null) {
+      if (!active.hub.closed) throw new ConflictError(`线程已在运行: ${threadId}`, "thread_running");
+      // The turn is over — the client saw the stream close — and the run is
+      // only finishing its bookkeeping. Answering an approval that fast is
+      // normal, so wait for the slot instead of rejecting it.
+      await active.done.catch(() => {});
+    }
+    // A fresh worktree may still be installing dependencies: the user could
+    // submit their first message the moment the task appeared. A *failed*
+    // setup does not hold the turn back — the task simply runs without it.
+    await whenSetupSettled(threadId);
+    const factory = registry[thread.engine];
+    if (factory == null) throw new BadRequestError(`未知引擎: ${thread.engine}`, "unknown_engine");
+    // Awaited: the probe can touch the filesystem (a login store, an
+    // environment credential), and a rejected precondition has to become the
+    // HTTP response instead of an unhandled rejection.
+    await factory.ensureAvailable?.({ thread });
+    // The previous turn's engine may still be persisting its resume state.
+    await finishing.get(threadId);
+
+    let validated: UIMessage[];
+    try {
+      validated = await validateUIMessages({ messages: uiMessages });
+    } catch (error) {
+      throw new BadRequestError(`消息格式不合法: ${error instanceof Error ? error.message : String(error)}`, "invalid_messages");
+    }
+    if (validated.length === 0) throw new BadRequestError("消息为空", "invalid_messages");
+
+    // Setup has settled and the engine has not started: this is the moment
+    // the working directory still looks the way the user saw it.
+    const messages = mergeIncoming(thread.messages, withCheckpoint(validated, await checkpointForTurn(thread, validated)));
+    // A thread is named by its first user message; an explicit title is kept.
+    const title = thread.title === DEFAULT_THREAD_TITLE ? deriveThreadTitle(messages) : undefined;
+    const updated = await threads.update(threadId, {
+      messages,
+      status: "running",
+      error: undefined,
+      // The task is working again, so whatever it was wound up as no longer
+      // describes what is on disk.
+      outcome: undefined,
+      ...(title != null ? { title } : {}),
+    });
+
+    const run: LiveRun = { hub: createChunkHub(), abort: new AbortController(), done: Promise.resolve(), stopped: false };
+    runs.set(threadId, run);
+    // Detached on purpose: an HTTP client disconnecting must not cancel the turn.
+    run.done = runTurn(updated, messages, run);
+    run.done.catch((error) => log.error(`线程 ${threadId} 的运行崩溃`, error));
+
+    return run.hub;
+  };
+
+  /**
+   * 排队 dispatch: pull the head of the queue out and run it as an ordinary
+   * turn. `itemId` names one item instead — that is what 「发送」 does on a
+   * queue the user paused.
+   *
+   * The item is removed before the turn starts, so nothing can edit or delete
+   * one that is already on its way to the engine, and it is put back at the
+   * head whenever the start fails — including the 409 a client's own `POST
+   * /api/chat` wins by a hair. Never two turns, never a lost message.
+   */
+  const runQueued = async (threadId: string, itemId?: string): Promise<QueuedMessage | undefined> => {
+    if (options.queue == null) return undefined;
+    const queue = options.queue;
+    const item = await queue.take(threadId, itemId == null ? undefined : { itemId });
+    if (item == null) return undefined;
+    try {
+      // Built the way the web builds it, because from here on it is the same
+      // message: `start` stamps its checkpoint and folds it into the history.
+      await startTurn(threadId, [{ id: randomUUID(), role: "user", parts: [{ type: "text", text: item.text }] }]);
+      return item;
+    } catch (error) {
+      await queue.putBack(threadId, item).catch((failure: unknown) => log.error(`排队消息放回线程 ${threadId} 失败`, failure));
+      throw error;
+    }
+  };
+
+  /** Threads with a dispatch scheduled or in flight — one at a time, per thread. */
+  const dispatching = new Set<string>();
+
+  /**
+   * The next queued message, if this thread is really free to take it. A turn
+   * that stopped on an approval, a question, an error or 停止 is *not* over, so
+   * its queue stays put until the user says otherwise.
+   */
+  const dispatchQueue = async (threadId: string): Promise<void> => {
+    if (options.queue == null || runs.has(threadId)) return;
+    const thread = await threads.get(threadId).catch(() => undefined);
+    if (thread == null || thread.archivedAt != null || thread.status !== "idle") return;
+    if ((thread.queue?.length ?? 0) === 0) return;
+    const item = await runQueued(threadId).catch((error: unknown) => {
+      log.warn(`线程 ${threadId} 的排队消息没能发出`, error);
+      return undefined;
+    });
+    if (item != null) log.info(`线程 ${threadId} 自动发出了一条排队消息`);
+  };
+
+  /**
+   * Scheduled, never called inline from a turn's `finally`: the slot has to be
+   * really free and the stack really unwound before the next turn starts, or a
+   * queue of twenty would nest twenty turns deep.
+   */
+  const scheduleDispatch = (threadId: string): void => {
+    if (options.queue == null || dispatching.has(threadId)) return;
+    dispatching.add(threadId);
+    const timer = setTimeout(() => {
+      void dispatchQueue(threadId).finally(() => dispatching.delete(threadId));
+    }, 0);
+    timer.unref?.();
+  };
+
   return {
-    async start(threadId, uiMessages) {
-      const thread = await threads.get(threadId);
-      if (thread == null) throw new NotFoundError(`线程不存在: ${threadId}`, "thread_not_found");
-      if (thread.workspace?.reclaimed === true) {
-        throw new ConflictError("此任务的工作目录已回收，请先恢复后再运行", "workspace_reclaimed");
-      }
-      const active = runs.get(threadId);
-      if (active != null) {
-        if (!active.hub.closed) throw new ConflictError(`线程已在运行: ${threadId}`, "thread_running");
-        // The turn is over — the client saw the stream close — and the run is
-        // only finishing its bookkeeping. Answering an approval that fast is
-        // normal, so wait for the slot instead of rejecting it.
-        await active.done.catch(() => {});
-      }
-      // A fresh worktree may still be installing dependencies: the user could
-      // submit their first message the moment the task appeared. A *failed*
-      // setup does not hold the turn back — the task simply runs without it.
-      await whenSetupSettled(threadId);
-      const factory = registry[thread.engine];
-      if (factory == null) throw new BadRequestError(`未知引擎: ${thread.engine}`, "unknown_engine");
-      // Awaited: the probe can touch the filesystem (a login store, an
-      // environment credential), and a rejected precondition has to become the
-      // HTTP response instead of an unhandled rejection.
-      await factory.ensureAvailable?.({ thread });
-      // The previous turn's engine may still be persisting its resume state.
-      await finishing.get(threadId);
+    start: startTurn,
 
-      let validated: UIMessage[];
-      try {
-        validated = await validateUIMessages({ messages: uiMessages });
-      } catch (error) {
-        throw new BadRequestError(`消息格式不合法: ${error instanceof Error ? error.message : String(error)}`, "invalid_messages");
-      }
-      if (validated.length === 0) throw new BadRequestError("消息为空", "invalid_messages");
-
-      // Setup has settled and the engine has not started: this is the moment
-      // the working directory still looks the way the user saw it.
-      const messages = mergeIncoming(thread.messages, withCheckpoint(validated, await checkpointForTurn(thread, validated)));
-      // A thread is named by its first user message; an explicit title is kept.
-      const title = thread.title === DEFAULT_THREAD_TITLE ? deriveThreadTitle(messages) : undefined;
-      const updated = await threads.update(threadId, {
-        messages,
-        status: "running",
-        error: undefined,
-        // The task is working again, so whatever it was wound up as no longer
-        // describes what is on disk.
-        outcome: undefined,
-        ...(title != null ? { title } : {}),
-      });
-
-      const run: LiveRun = { hub: createChunkHub(), abort: new AbortController(), done: Promise.resolve(), stopped: false };
-      runs.set(threadId, run);
-      // Detached on purpose: an HTTP client disconnecting must not cancel the turn.
-      run.done = runTurn(updated, messages, run);
-      run.done.catch((error) => log.error(`线程 ${threadId} 的运行崩溃`, error));
-
-      return run.hub;
+    async sendQueued(threadId, itemId) {
+      const item = await runQueued(threadId, itemId);
+      if (item == null) throw new NotFoundError("这条排队消息不存在", "queue_item_not_found");
     },
+
+    dispatchQueue,
 
     async stop(threadId) {
       await releaseParked(threadId, STOP_INTERRUPT_TEXT);

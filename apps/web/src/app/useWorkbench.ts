@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/api";
+import { pruneDrafts } from "@/lib/drafts";
 import { ThreadChats } from "@/lib/threadChats";
 import { useServerState } from "@/lib/useServerState";
 import { useToast } from "@/lib/toast";
@@ -48,6 +49,11 @@ export function useWorkbench(token: string) {
   const chats = useMemo(() => new ThreadChats(token, (error) => toast(error.message)), [token, toast]);
   useEffect(() => () => chats.dispose(), [chats]);
   useEffect(() => chats.observeThreads(state.threads), [chats, state.threads]);
+  // 草稿 of a task that no longer exists — deleted here or in another window —
+  // is the one thing nothing else would ever clean up.
+  useEffect(() => {
+    if (state.connected) pruneDrafts(state.threads.map((entry) => entry.id));
+  }, [state.connected, state.threads]);
 
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(() => readThreadFromUrl());
   const [projectId, setProjectId] = useState<string | null>(null);
@@ -216,6 +222,33 @@ export function useWorkbench(token: string) {
 
       send: (threadId: string, text: string) => {
         void chats.send(threadId, text).catch((error: Error) => toast(error.message));
+      },
+
+      /**
+       * 运行中按 Enter：the message goes onto the task's queue on the *server*,
+       * which starts it itself once the turn settles idle. Resolves `true` only
+       * when it really landed — the composer keeps the draft otherwise.
+       */
+      queueMessage: (threadId: string, text: string): Promise<boolean> =>
+        client.queueMessage(threadId, text).then(
+          () => true,
+          (error: Error) => {
+            toast(error.message);
+            return false;
+          },
+        ),
+
+      editQueued: (threadId: string, itemId: string, text: string) => {
+        void client.editQueued(threadId, itemId, text).catch((error: Error) => toast(error.message));
+      },
+
+      deleteQueued: (threadId: string, itemId: string) => {
+        void client.deleteQueued(threadId, itemId).catch((error: Error) => toast(error.message));
+      },
+
+      /** 「发送」 on a paused queue: run this one now instead of waiting. */
+      sendQueued: (threadId: string, itemId: string) => {
+        void client.sendQueued(threadId, itemId).catch((error: Error) => toast(error.message));
       },
 
       stop: (threadId: string) => {

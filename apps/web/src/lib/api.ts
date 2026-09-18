@@ -233,6 +233,21 @@ export function createClient(token: string) {
     restoreCheckpoint: (threadId: string, target: { messageId: string } | { commit: string }) =>
       api<CheckpointRestore>(`/threads/${threadId}/checkpoints/restore`, token, { method: "POST", json: target }),
 
+    /**
+     * 排队: what Enter does while a turn is live. The item lives on the server,
+     * so it goes out even with no browser open. Every call answers with the
+     * whole record, which is what carries the new `queue` back.
+     */
+    queueMessage: (threadId: string, text: string) =>
+      api<ThreadRecord>(`/threads/${threadId}/queue`, token, { method: "POST", json: { text } }),
+    editQueued: (threadId: string, itemId: string, text: string) =>
+      api<ThreadRecord>(`/threads/${threadId}/queue/${itemId}`, token, { method: "PATCH", json: { text } }),
+    deleteQueued: (threadId: string, itemId: string) =>
+      api<ThreadRecord>(`/threads/${threadId}/queue/${itemId}`, token, { method: "DELETE" }),
+    /** 「发送」 on a paused queue: run this one now. Refused while the task is live. */
+    sendQueued: (threadId: string, itemId: string) =>
+      api<ThreadRecord>(`/threads/${threadId}/queue/${itemId}/send`, token, { method: "POST" }),
+
     /** What the project's worktree setup script printed, for the 终端 tab. */
     getSetupLog: (id: string) => api<SetupLog>(`/threads/${id}/workspace/setup-log`, token),
 

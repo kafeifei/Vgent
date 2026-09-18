@@ -1,16 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { UIMessage } from "ai";
-import { ArrowUp, File, Folder, Plus, Square } from "lucide-react";
+import { ArrowUp, File, Folder, ListPlus, Plus, Square } from "lucide-react";
 import { ModelPicker, effectiveModel } from "@/components/ModelPicker";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ReasoningPicker } from "@/components/ReasoningPicker";
 import { dirName } from "@/features/changes/paths";
 import { baseName } from "@/lib/format";
 import { useToast } from "@/lib/toast";
-import type { ChangedFile, EngineDescriptor, EngineId, FileEntry, ModelCatalog, PermissionMode, ThreadMode } from "@/lib/types";
+import type { ChangedFile, EngineDescriptor, EngineId, FileEntry, ModelCatalog, PermissionMode, QueuedMessage, ThreadMode } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { ContextRing } from "./ContextRing";
 import { sumChanges } from "./contextUsage";
+import { QueueStrip } from "./QueueStrip";
 import { acceptMention, findMention, mentionSegments, type Mention } from "./mention";
 
 export const COMPOSER_PLACEHOLDER = "规划、构建，/ 输入命令，@ 引用上下文";
@@ -52,6 +53,11 @@ export function Composer({
   onPickReasoning,
   mode,
   onPickMode,
+  queue,
+  queueNote,
+  onSendQueued,
+  onEditQueued,
+  onDeleteQueued,
   location,
   completeFiles,
   messages,
@@ -79,6 +85,14 @@ export function Composer({
   /** 模式 of the next message. The chip and ⇧Tab both write it. */
   mode: ThreadMode;
   onPickMode: (mode: ThreadMode) => void;
+  /** 排队的消息, oldest first. Empty or absent hides the strip. */
+  queue?: readonly QueuedMessage[];
+  /** Why the queue is not moving — 已停止 / 出错 / 等审批. Absent while a turn runs. */
+  queueNote?: string | undefined;
+  /** 「发送」 on the head item. Absent while the task is live. */
+  onSendQueued?: ((itemId: string) => void) | undefined;
+  onEditQueued?: (itemId: string, text: string) => void;
+  onDeleteQueued?: (itemId: string) => void;
   /** Where this task runs, spelled out: 「主目录」 or 「worktree · <分支>」. */
   location: string;
   /** Absent (the empty state) leaves `@` inert, and hides the 「+」 button. */
@@ -252,6 +266,16 @@ export function Composer({
           </div>
         )}
 
+        {queue != null && queue.length > 0 && onEditQueued != null && onDeleteQueued != null && (
+          <QueueStrip
+            items={queue}
+            note={queueNote}
+            onSend={onSendQueued}
+            onEdit={onEditQueued}
+            onDelete={onDeleteQueued}
+          />
+        )}
+
         <div className="relative">
           {/* The pill layer: the textarea's own text is transparent above it. */}
           <div
@@ -316,11 +340,10 @@ export function Composer({
               }
               if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                 event.preventDefault();
-                // 排队是 M5 的事；在那之前 Enter 只提示，绝不清掉草稿。
-                if (live) {
-                  toast("运行中，先停止或等它结束");
-                  return;
-                }
+                // 运行中按 Enter = 排队。Which of the two it is, is the caller's
+                // business: `onSubmit` sends or queues by itself, and only it
+                // knows whether the request went through — the draft is cleared
+                // there, never here.
                 onSubmit();
               }
             }}
@@ -424,6 +447,20 @@ export function Composer({
             )}
           />
           <span className="flex-1" />
+          {/* 运行中，发送键读「排队」: the same message, one turn later. The round
+              stop button stays where it is, so 停止 never moves under the cursor. */}
+          {live && (
+            <button
+              type="button"
+              aria-label="排队"
+              title="排到队列，这一轮结束后自动发出"
+              onClick={onSubmit}
+              className="inline-flex h-xl flex-none items-center gap-3xs rounded-full border border-border px-sm text-fg-muted text-xs hover:border-border-strong hover:text-fg"
+            >
+              <ListPlus className="size-sm" />
+              <span>排队</span>
+            </button>
+          )}
           <button
             type="button"
             aria-label={live ? "停止" : "发送"}

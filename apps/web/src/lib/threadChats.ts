@@ -173,7 +173,11 @@ export class ThreadChats {
         // the resume itself once the messages are in.
         if (this.resuming.has(summary.id) || this.ready.has(summary.id)) continue;
         if (chat.status === "error") chat.clearError();
-        if (chat.status === "ready") void this.resume(summary.id);
+        // A settled chat on a live thread means this client did not start the
+        // turn: another window did, or the server's own 排队 dispatcher did. Its
+        // user message is in the record and not in this chat, so the history
+        // has to come first — see `attach`.
+        if (chat.status === "ready") void this.attach(summary, chat);
         continue;
       }
 
@@ -205,6 +209,38 @@ export class ThreadChats {
       });
     // Parked in `ready` so a concurrent observe/resume does not race it.
     this.ready.set(summary.id, pending);
+  }
+
+  /**
+   * Join a turn this client did not start: the history the server wrote when it
+   * began, and only then the stream.
+   *
+   * Without the reload the user message the server appended by itself — 排队's
+   * whole point — would be missing, and the replayed chunks would address an
+   * assistant message that is not in this chat either. The load is parked in
+   * `ready` so a concurrent snapshot does not race it, exactly like
+   * `refreshIfStale` does.
+   */
+  private attach(summary: ThreadSummary, chat: Chat<UIMessage>): Promise<void> {
+    const generation = this.generation;
+    const fresh = this.hydratedAt.get(summary.id) === summary.updatedAt;
+    const pending = (fresh ? Promise.resolve(undefined) : this.history(summary.id))
+      .then((record) => {
+        if (record == null || generation !== this.generation || this.chats.get(summary.id) !== chat) return;
+        // Only a settled chat may be replaced wholesale; a resume that slipped
+        // in first already owns the message list.
+        if (chat.status !== "ready" || this.resuming.has(summary.id)) return;
+        chat.messages = record.messages;
+        this.hydratedAt.set(summary.id, record.updatedAt);
+      })
+      .catch((error: unknown) => {
+        if (error instanceof Error) this.onError(error);
+      })
+      .finally(() => {
+        if (this.ready.get(summary.id) === pending) this.ready.delete(summary.id);
+      });
+    this.ready.set(summary.id, pending);
+    return pending.then(() => this.resume(summary.id));
   }
 
   /** Attach to the thread's active run. An idle thread answers 204 and resolves. */

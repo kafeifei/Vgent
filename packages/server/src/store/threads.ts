@@ -8,6 +8,7 @@ import type {
   EngineId,
   HarnessState,
   Logger,
+  QueuedMessage,
   ThreadMode,
   ThreadOutcome,
   ThreadRecord,
@@ -62,6 +63,8 @@ export type ThreadPatch = Partial<{
   /** 收口 result. `undefined` clears it, which a new turn does. */
   outcome: ThreadOutcome | undefined;
   changeStats: ChangeStats | undefined;
+  /** 排队的消息. An empty array clears it — the field is never stored empty. */
+  queue: QueuedMessage[] | undefined;
   /** `undefined` un-archives. */
   archivedAt: string | undefined;
   messages: UIMessage[];
@@ -295,6 +298,11 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
         if ("changeStats" in patch) {
           if (patch.changeStats == null) delete next.changeStats;
           else next.changeStats = patch.changeStats;
+        }
+        // An empty queue is the absence of one, so it is stored as one.
+        if ("queue" in patch) {
+          if (patch.queue == null || patch.queue.length === 0) delete next.queue;
+          else next.queue = patch.queue;
         }
         if ("archivedAt" in patch) {
           if (patch.archivedAt == null) delete next.archivedAt;

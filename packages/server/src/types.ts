@@ -129,6 +129,17 @@ export interface ThreadOutcome {
   url?: string;
 }
 
+/**
+ * 排队: one message typed while a turn was live, waiting its turn on the
+ * server. It outlives the browser — the run manager sends the head of the queue
+ * itself once a turn settles back to `idle`.
+ */
+export interface QueuedMessage {
+  id: string;
+  text: string;
+  createdAt: string;
+}
+
 /** The task's diff against its baseline, in three numbers, for the sidebar. */
 export interface ChangeStats {
   files: number;
@@ -162,6 +173,8 @@ export interface ThreadRecord {
   outcome?: ThreadOutcome;
   /** Recomputed at the end of every turn and after every 收口 action. */
   changeStats?: ChangeStats;
+  /** 排队的消息, oldest first. Never stored empty — an absent field is an empty queue. */
+  queue?: QueuedMessage[];
   /** Set when the task was archived; its worktree is reclaimed at the same time. */
   archivedAt?: string;
   createdAt: string;

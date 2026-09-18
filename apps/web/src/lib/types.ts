@@ -31,6 +31,7 @@ export type {
   PlanDocument,
   PermissionMode,
   Project,
+  QueuedMessage,
   Settings,
   ThreadMessageMetadata,
   ThreadMode,

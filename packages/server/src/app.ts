@@ -16,6 +16,7 @@ import { createGit } from "./git.js";
 import { pickFile, pickFolder } from "./folder-picker.js";
 import { asIntegrateAction, changeStatsOf, createIntegrator, taskTarget, type Integrator, type TaskTarget } from "./integrate.js";
 import { createModelCatalog } from "./models.js";
+import { createQueueStore, readQueueText } from "./queue.js";
 import { createRunManager, recoverInterruptedThreads } from "./runs.js";
 import { registerStatic } from "./static.js";
 import { createPlanStore, MAX_PLAN_BYTES } from "./store/plans.js";
@@ -169,6 +170,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
   const threads = createThreadStore(dataDir, log);
   const plans = createPlanStore(dataDir, log);
   const settings = createSettingsStore(dataDir, log);
+  const queue = createQueueStore(threads);
   const registry = options.registry ?? createEngineRegistry();
   const git = options.git ?? createGit();
   const files = options.files ?? createFiles();
@@ -213,6 +215,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     log,
     changeStats: changeStatsFor,
     savePlan: (threadId, content) => plans.put(threadId, content).then(() => {}),
+    queue,
     ...(options.stopTimeoutMs != null ? { stopTimeoutMs: options.stopTimeoutMs } : {}),
   });
 
@@ -245,12 +248,26 @@ export function createApp(options: CreateAppOptions): VgentApp {
     }
   };
 
+  /**
+   * 排队 survives a restart: a task that was idle with messages waiting when
+   * the process died picks them up now. A task recovered as `interrupted` does
+   * not — its queue stays paused until the user says otherwise, which is
+   * exactly what `dispatchQueue` decides for itself from the status.
+   */
+  const dispatchQueuesAtBoot = async (): Promise<void> => {
+    for (const summary of await threads.list()) {
+      if (summary.status !== "idle" || summary.archivedAt != null || (summary.queue?.length ?? 0) === 0) continue;
+      await runs.dispatchQueue(summary.id).catch((error: unknown) => log.warn(`线程 ${summary.id} 的排队消息没能发出`, error));
+    }
+  };
+
   // Detached: trimming snapshots directories and the backfill shells out to
   // git once per task, and the first `/api/state` waits on `recovered` — it
   // must not also wait on housekeeping.
   void recovered
     .then(trimWorktrees)
     .then(backfillChangeStats)
+    .then(dispatchQueuesAtBoot)
     .catch((error: unknown) => log.warn("补算改动统计失败", error));
 
   const app = new Hono();
@@ -677,6 +694,50 @@ export function createApp(options: CreateAppOptions): VgentApp {
       ...("reasoningEffort" in (body ?? {}) ? { reasoningEffort: readReasoningEffort(body?.reasoningEffort) } : {}),
     });
     return c.json(record);
+  });
+
+  // --- 排队 -------------------------------------------------------------
+
+  /**
+   * 运行中按 Enter 就排到这里，回合正常结束后 server 自己发出下一条 —— 浏览器
+   * 关掉也一样。Queueing itself is allowed in any status: the user is typing
+   * while something runs, and 「等它结束」 is the whole point.
+   */
+  app.post("/api/threads/:id/queue", async (c) => {
+    const id = c.req.param("id");
+    await threadOf(id);
+    const body = (await c.req.json().catch(() => undefined)) as { text?: unknown } | undefined;
+    const record = await queue.append(id, readQueueText(body?.text));
+    // A turn can settle between the client seeing 「运行中」 and this write
+    // landing. The dispatcher already ran on an empty queue by then, so it is
+    // nudged again — it re-checks the status and does nothing unless the
+    // thread really is idle.
+    void runs.dispatchQueue(id).catch((error: unknown) => log.warn(`线程 ${id} 的排队消息没能发出`, error));
+    return c.json(record);
+  });
+
+  app.patch("/api/threads/:id/queue/:itemId", async (c) => {
+    const id = c.req.param("id");
+    await threadOf(id);
+    const body = (await c.req.json().catch(() => undefined)) as { text?: unknown } | undefined;
+    return c.json(await queue.edit(id, c.req.param("itemId"), readQueueText(body?.text)));
+  });
+
+  app.delete("/api/threads/:id/queue/:itemId", async (c) => {
+    const id = c.req.param("id");
+    await threadOf(id);
+    return c.json(await queue.remove(id, c.req.param("itemId")));
+  });
+
+  /**
+   * 「发送」 on a paused queue: the user decides the stopped or failed turn is
+   * dealt with and this item may go now. Same start path as everything else.
+   */
+  app.post("/api/threads/:id/queue/:itemId/send", async (c) => {
+    const id = c.req.param("id");
+    assertNotLive(await threadOf(id));
+    await runs.sendQueued(id, c.req.param("itemId"));
+    return c.json(await threadOf(id));
   });
 
   // --- 计划文档 -----------------------------------------------------------

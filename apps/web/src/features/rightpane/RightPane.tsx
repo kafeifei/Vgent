@@ -18,7 +18,7 @@ const TABS: ReadonlyArray<{ id: RightTab; label: string; Icon: typeof FileDiff }
   { id: "files", label: "文件", Icon: FolderTree },
   { id: "term", label: "终端", Icon: Terminal },
   { id: "plan", label: "计划", Icon: ListTodo },
-  { id: "queue", label: "队列", Icon: ListChecks },
+  { id: "queue", label: "待处理", Icon: ListChecks },
 ];
 
 /** Scrolls the log to a card and flashes it, without a keyframe of its own. */
@@ -31,7 +31,9 @@ function jumpTo(anchor: string): void {
 }
 
 /**
- * Right column. 队列、变更、文件、终端、计划 all have content.
+ * Right column. 待处理、变更、文件、终端、计划 all have content. 「待处理」 is
+ * what this task is waiting on *you* for — open approvals and questions. The
+ * messages waiting to be *sent* are 排队, and they live in the composer.
  *
  * The changes snapshot comes in as a prop: `useWorkbench` owns that fetch,
  * because the composer's 审查 pill reads the same numbers and neither view may

@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ProjectPicker } from "@/components/ProjectPicker";
 import { Composer } from "@/features/composer/Composer";
+import { clearDraft, NEW_TASK_DRAFT, readDraft, writeDraft } from "@/lib/drafts";
 import { useToast } from "@/lib/toast";
 import type { EngineDescriptor, EngineId, Project, Settings, ThreadMode, WorkspaceMode } from "@/lib/types";
 
@@ -52,7 +53,13 @@ export function EmptyState({
   ) => void;
 }) {
   const toast = useToast();
-  const [draft, setDraft] = useState("");
+  // 草稿不丢, here too: the empty state has no task yet, so its draft is kept
+  // under a fixed key until it becomes a task's first message.
+  const [draft, setDraft] = useState(() => readDraft(NEW_TASK_DRAFT));
+  const editDraft = useCallback((value: string) => {
+    setDraft(value);
+    writeDraft(NEW_TASK_DRAFT, value);
+  }, []);
   /**
    * The model this task will run on, and the engine that comes with it. Null
    * until the user picks one, so until then the settings answer — and keep
@@ -80,6 +87,7 @@ export function EmptyState({
     }
     onStart(draft.trim(), engine, workspace, model, reasoningEffort, mode);
     setDraft("");
+    clearDraft(NEW_TASK_DRAFT);
   };
 
   // The engine list and the settings arrive in the same round trip; without
@@ -156,7 +164,7 @@ export function EmptyState({
       <div className="mx-auto w-full max-w-log-max py-sm">
         <Composer
           value={draft}
-          onChange={setDraft}
+          onChange={editDraft}
           onSubmit={submit}
           live={false}
           engines={engines}

@@ -83,6 +83,7 @@ export {
   type ModelCatalogService,
   type ModelEntry,
 } from "./models.js";
+export { createQueueStore, QUEUE_ITEM_MAX_BYTES, QUEUE_MAX_ITEMS, readQueueText, type QueueStore } from "./queue.js";
 export { AUTO_TITLE_MAX_LEN, createRunManager, deriveThreadTitle, recoverInterruptedThreads, type RunManager } from "./runs.js";
 export { readJsonOrQuarantine, writeFileAtomic, writeJsonAtomic } from "./store/atomic-file.js";
 export { createPlanStore, MAX_PLAN_BYTES, type PlanDocument, type PlanStore } from "./store/plans.js";
@@ -118,6 +119,7 @@ export type {
   MessageCheckpoint,
   PermissionMode,
   Project,
+  QueuedMessage,
   Settings,
   ThreadMessageMetadata,
   ThreadMode,

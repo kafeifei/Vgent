@@ -11,6 +11,7 @@ import { pendingQueue, type QueueItem } from "@/features/worklog/queue";
 import type { TurnActions } from "@/features/worklog/Turn";
 import { pendingAutoApprovals } from "@/lib/autoApprove";
 import type { ApiClient } from "@/lib/api";
+import { readDraft, writeDraft } from "@/lib/drafts";
 import type { EngineDescriptor, PermissionMode, ThreadSummary } from "@/lib/types";
 import { isLiveThread, type WorkbenchActions } from "./useWorkbench";
 
@@ -73,7 +74,20 @@ function ThreadChatView({
   onMessages: (messages: UIMessage[]) => void;
   chat: Chat<UIMessage>;
 }) {
-  const [draft, setDraft] = useState("");
+  /**
+   * 草稿不丢: this view is remounted per task (`key={thread.id}`) and wiped by a
+   * reload, so the draft is read from and written to `localStorage` rather than
+   * living in React state alone. It is cleared only once the message really
+   * went out — sent, or accepted onto the queue.
+   */
+  const [draft, setDraft] = useState(() => readDraft(thread.id));
+  const editDraft = useCallback(
+    (value: string) => {
+      setDraft(value);
+      writeDraft(thread.id, value);
+    },
+    [thread.id],
+  );
 
   // The smoke client's wiring, minus what moved onto the shared `Chat` itself:
   // `sendAutomaticallyWhen` lives in `ThreadChats` (see the note there), and so
@@ -147,15 +161,37 @@ function ThreadChatView({
   const submit = () => {
     const text = draft.trim();
     if (text === "") return;
+    // 运行中按 Enter = 排队。The server holds it and starts it itself once this
+    // turn settles idle, so the draft may only be dropped once it took it.
+    if (live) {
+      void actions.queueMessage(thread.id, text).then((queued) => {
+        if (queued) editDraft("");
+      });
+      return;
+    }
     // The one command the composer understands; everything else is a message.
     if (text === "/compact") {
       void actions.compactThread(thread.id);
-      setDraft("");
+      editDraft("");
       return;
     }
     actions.send(thread.id, text);
-    setDraft("");
+    editDraft("");
   };
+
+  /**
+   * Why the 排队条 says the queue is not moving. A turn that is still running
+   * needs no explanation — it is about to take the next one.
+   */
+  const queued = thread.queue ?? [];
+  const queueNote =
+    thread.status === "interrupted"
+      ? "已停止，排队暂停"
+      : thread.status === "error"
+        ? "上一轮出错，排队暂停"
+        : thread.status === "awaiting-approval" || thread.status === "awaiting-input"
+          ? "等你处理审批或回答后继续"
+          : undefined;
 
   return (
     <>
@@ -193,7 +229,7 @@ function ThreadChatView({
       <div className="border-border border-t bg-bg px-md pt-sm pb-md">
         <Composer
           value={draft}
-          onChange={setDraft}
+          onChange={editDraft}
           onSubmit={submit}
           onStop={() => actions.stop(thread.id)}
           live={live}
@@ -216,6 +252,13 @@ function ThreadChatView({
           }
           mode={thread.mode ?? "agent"}
           onPickMode={(mode) => (live ? actions.toast("运行中不能改，先停止") : actions.setMode(thread.id, mode))}
+          queue={queued}
+          queueNote={queueNote}
+          // Nothing may jump a turn that is still going; a paused queue is
+          // resumed by hand from its head item.
+          {...(live ? {} : { onSendQueued: (itemId: string) => actions.sendQueued(thread.id, itemId) })}
+          onEditQueued={(itemId, text) => actions.editQueued(thread.id, itemId, text)}
+          onDeleteQueued={(itemId) => actions.deleteQueued(thread.id, itemId)}
           location={
             thread.workspace == null ? "主目录" : `worktree · ${thread.workspace.branch}`
           }

@@ -79,6 +79,23 @@ const toolCallStream = (toolCallId: string, toolName: string, input: unknown) =>
   }),
 });
 
+/** One `doStream` result shaped like a real step: the agent narrates, then calls a tool. */
+const narrateThenToolCall = (narration: string, toolCallId: string, toolName: string, input: unknown) => ({
+  stream: simulateReadableStream({
+    chunks: [
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "n1" },
+      { type: "text-delta", id: "n1", delta: narration },
+      { type: "text-end", id: "n1" },
+      { type: "tool-input-start", id: toolCallId, toolName },
+      { type: "tool-input-delta", id: toolCallId, delta: JSON.stringify(input) },
+      { type: "tool-input-end", id: toolCallId },
+      { type: "tool-call", toolCallId, toolName, input: JSON.stringify(input) },
+      { type: "finish", finishReason: { unified: "tool-calls" }, usage: NO_USAGE },
+    ],
+  }),
+});
+
 const textStream = (text: string) => ({
   stream: simulateReadableStream({
     chunks: [
@@ -86,6 +103,16 @@ const textStream = (text: string) => ({
       { type: "text-start", id: "t1" },
       { type: "text-delta", id: "t1", delta: text },
       { type: "text-end", id: "t1" },
+      { type: "finish", finishReason: { unified: "stop" }, usage: NO_USAGE },
+    ],
+  }),
+});
+
+/** A step that produces nothing at all — the turn stops right after a tool call. */
+const emptyStream = () => ({
+  stream: simulateReadableStream({
+    chunks: [
+      { type: "stream-start", warnings: [] },
       { type: "finish", finishReason: { unified: "stop" }, usage: NO_USAGE },
     ],
   }),
@@ -110,6 +137,8 @@ async function makeThread(app: VgentApp, repoPath: string, body: Record<string, 
 }
 
 const PLAN_TEXT = "## 目标\n给 README 加一节 Usage\n\n## 步骤\n1. 改 README.md\n";
+/** What the agent says *before* it starts reading — never part of the plan. */
+const NARRATION = "我先看一下 README.md 现状。";
 const WRITE_INPUT = { file_path: "SMOKE.txt", content: "写好了\n" };
 
 describe("模式 validation", () => {
@@ -214,9 +243,10 @@ describe("计划回合", () => {
     const dataDir = await tempDir();
     const repoPath = await tempDir();
     await writeFile(join(repoPath, "README.md"), "# 项目\n");
-    // The model tries to write anyway. In a 计划 turn the tool is not in the set
-    // at all, so the call cannot execute — and the turn still ends with a plan.
-    const app = makeApp(dataDir, mockModel([toolCallStream("call-w", "write", WRITE_INPUT), textStream(PLAN_TEXT)]));
+    // The model narrates, tries to write anyway, then answers with the plan. In a
+    // 计划 turn the write tool is not in the set at all, so the call cannot
+    // execute — and only the text after it becomes the document.
+    const app = makeApp(dataDir, mockModel([narrateThenToolCall(NARRATION, "call-w", "write", WRITE_INPUT), textStream(PLAN_TEXT)]));
     const thread = (await (await makeThread(app, repoPath, { mode: "plan" })).json()) as ThreadRecord;
 
     await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "给 README 加一节 Usage")] }));
@@ -227,8 +257,31 @@ describe("计划回合", () => {
     // Nothing was approved either: a 计划 turn never parks on a write.
     expect(done.status).toBe("idle");
 
-    expect(await readFile(join(dataDir, "plans", `${thread.id}.md`), "utf8")).toBe(PLAN_TEXT.trim());
+    // The plan is the text *after* the last tool call; the narration before it
+    // is not part of the document.
+    const stored = await readFile(join(dataDir, "plans", `${thread.id}.md`), "utf8");
+    expect(stored).toBe(PLAN_TEXT.trim());
+    expect(stored).not.toContain(NARRATION);
+    // It was in the turn, though — the document is a slice of the reply, not the whole of it.
+    expect(JSON.stringify(done.messages)).toContain(NARRATION);
     expect(await (await request(app, `/api/threads/${thread.id}/plan`)).json()).toMatchObject({ content: PLAN_TEXT.trim() });
+  });
+
+  it("keeps the previous document when the turn ends on a tool call with nothing after it", async () => {
+    const dataDir = await tempDir();
+    const repoPath = await tempDir();
+    await writeFile(join(repoPath, "README.md"), "# 项目\n");
+    const app = makeApp(dataDir, mockModel([toolCallStream("call-r", "read", { file_path: "README.md" }), emptyStream()]));
+    const thread = (await (await makeThread(app, repoPath, { mode: "plan" })).json()) as ThreadRecord;
+
+    // A plan the user already has. A turn that produced no closing text must not
+    // replace it with an empty file.
+    await putJson(app, `/api/threads/${thread.id}/plan`, { content: PLAN_TEXT });
+
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "再看看")] }));
+    await waitForStatus(app, thread.id, "idle");
+
+    expect(await readFile(join(dataDir, "plans", `${thread.id}.md`), "utf8")).toBe(PLAN_TEXT);
   });
 
   it("writes no plan document for an Agent turn", async () => {

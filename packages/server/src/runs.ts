@@ -193,11 +193,16 @@ export function createRunManager(options: {
    */
   const savePlanFrom = async (threadId: string, assistant: UIMessage | undefined): Promise<void> => {
     if (options.savePlan == null || assistant == null) return;
+    // Only the text *after* the last tool call. Everything before it is the
+    // agent narrating its research ("我先看一下 …"), and gluing that to the
+    // plan gives the user a document whose first line is not part of the plan.
+    const lastNonText = assistant.parts.findLastIndex((part) => part.type !== "text");
     const content = assistant.parts
-      .filter((part): part is { type: "text"; text: string } => part.type === "text")
-      .map((part) => part.text)
-      .join("")
+      .slice(lastNonText + 1)
+      .map((part) => (part as { text: string }).text)
+      .join("\n\n")
       .trim();
+    // The turn ended on a tool call, so it produced no plan; the previous one stands.
     if (content === "") return;
     await options.savePlan(threadId, content).catch((error: unknown) => log.warn(`保存线程 ${threadId} 的计划文档失败`, error));
   };

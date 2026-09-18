@@ -36,8 +36,6 @@ VGENT_SMOKE=1 pnpm --filter @vgent/providers test   # 真跑 Codex 订阅 provid
 node apps/cli/dist/index.js --engine claude-code --repo <path> --permission allow-reads
 ```
 
-代码改动一律派 Coder 子代理做（机械活 Sonnet，接线和难点 Opus），主线只读结论、不读大文件。
-
 ### 更新本地资料
 
 ```bash

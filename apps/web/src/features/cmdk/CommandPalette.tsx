@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
+import { isImeKeyEvent } from "@/lib/ime";
 
 export interface Command {
   id: string;
@@ -46,6 +47,7 @@ export function CommandPalette({ commands, onClose }: { commands: Command[]; onC
           placeholder="输入命令或任务名…"
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => {
+            if (isImeKeyEvent(event)) return;
             if (event.key === "Escape") {
               event.preventDefault();
               onClose();

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { bootstrapToken, setToken, UNAUTHORIZED_EVENT } from "@/lib/api";
 import { ToastProvider } from "@/lib/toast";
 import { Shell } from "./Shell";
+import { isImeKeyEvent } from "@/lib/ime";
 
 /**
  * The app is nothing but the token gate plus the shell: everything else lives
@@ -55,6 +56,7 @@ function TokenGate({ onToken }: { onToken: (token: string) => void }) {
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
+            if (isImeKeyEvent(event)) return;
             if (event.key === "Enter") submit();
           }}
           placeholder="x-vgent-token"

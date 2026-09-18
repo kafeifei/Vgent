@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Pencil, Send, X } from "lucide-react";
 import type { QueuedMessage } from "@/lib/types";
+import { isImeKeyEvent } from "@/lib/ime";
 
 /**
  * 排队条, right above the textarea and inside the composer's frame — the queue
@@ -53,7 +54,7 @@ export function QueueStrip({
               onChange={(event) => setEditing({ id: item.id, text: event.target.value })}
               onBlur={save}
               onKeyDown={(event) => {
-                if (event.nativeEvent.isComposing) return;
+                if (isImeKeyEvent(event)) return;
                 if (event.key === "Enter") {
                   event.preventDefault();
                   save();

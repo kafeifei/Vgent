@@ -7,6 +7,7 @@ import { useToast } from "@/lib/toast";
 import type { EngineDescriptor, McpServerConfig, PermissionMode, Settings } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { EMPTY_MCP_FORM, fromForm, toForm, type McpForm } from "./mcpForm";
+import { isImeKeyEvent } from "@/lib/ime";
 
 /**
  * 运行模式: three steps, each described by what it does *to you* rather than by
@@ -204,7 +205,7 @@ export function SettingsView({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape" && !isImeKeyEvent(event)) onClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);

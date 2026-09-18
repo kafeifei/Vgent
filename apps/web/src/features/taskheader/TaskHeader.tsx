@@ -4,6 +4,7 @@ import { OutcomeBadge } from "@/components/OutcomeBadge";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import type { ThreadSummary, ThreadWorkspace } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { isImeKeyEvent } from "@/lib/ime";
 
 const PILL_CLASS =
   "inline-flex h-xl min-w-0 flex-none items-center gap-2xs overflow-hidden rounded-full border border-border bg-bg-elevated px-xs text-fg-muted text-xs";
@@ -122,6 +123,7 @@ export function TaskHeader({
             onChange={(event) => setDraft(event.target.value)}
             onBlur={commit}
             onKeyDown={(event) => {
+              if (isImeKeyEvent(event)) return;
               if (event.key === "Enter") commit();
               if (event.key === "Escape") {
                 setDraft(thread.title);

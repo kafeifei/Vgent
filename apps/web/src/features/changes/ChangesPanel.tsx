@@ -8,6 +8,7 @@ import { DiffView } from "./DiffView";
 import { parseUnifiedDiff } from "./diff";
 import { groupByDir } from "./paths";
 import type { ChangesView } from "./useChanges";
+import { isImeKeyEvent } from "@/lib/ime";
 
 const GLYPH: Record<ChangeStatus, string> = {
   modified: "M",
@@ -200,6 +201,7 @@ function ActionBar({
           placeholder="提交信息"
           onChange={(event) => setMessage(event.target.value)}
           onKeyDown={(event) => {
+            if (isImeKeyEvent(event)) return;
             if (event.key === "Enter") commit();
             if (event.key === "Escape") setComposing(false);
           }}

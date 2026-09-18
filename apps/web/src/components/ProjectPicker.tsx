@@ -4,6 +4,7 @@ import { PopItem, PopTitle, Popover } from "./Popover";
 import { ApiError } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import type { Project } from "@/lib/types";
+import { isImeKeyEvent } from "@/lib/ime";
 
 /**
  * The project switcher, shared by the window bar and the empty state. Adding a
@@ -132,6 +133,7 @@ function ProjectPanel({
             placeholder="/absolute/repo/path"
             onChange={(event) => setPath(event.target.value)}
             onKeyDown={(event) => {
+              if (isImeKeyEvent(event)) return;
               if (event.key === "Enter") submit();
               if (event.key === "Escape") setTyping(false);
             }}

@@ -13,6 +13,7 @@ import { ContextRing } from "./ContextRing";
 import { sumChanges } from "./contextUsage";
 import { QueueStrip } from "./QueueStrip";
 import { acceptMention, findMention, mentionSegments, type Mention } from "./mention";
+import { isImeKeyEvent } from "@/lib/ime";
 
 export const COMPOSER_PLACEHOLDER = "规划、构建，/ 输入命令，@ 引用上下文";
 
@@ -305,6 +306,9 @@ export function Composer({
             }}
             onBlur={() => setMention(null)}
             onKeyDown={(event) => {
+              // A key the input method is still using is not ours: confirming a
+              // candidate with Enter must not send, arrows must not move our list.
+              if (isImeKeyEvent(event)) return;
               if (open) {
                 if (event.key === "ArrowDown") {
                   event.preventDefault();
@@ -323,7 +327,6 @@ export function Composer({
                 }
                 // Enter picks a candidate here; it must not also send the turn.
                 if (event.key === "Enter" || event.key === "Tab") {
-                  if (event.nativeEvent.isComposing) return;
                   event.preventDefault();
                   const entry = rows[active];
                   if (entry != null) accept(entry);
@@ -332,13 +335,13 @@ export function Composer({
               }
               // ⇧Tab switches 模式. `preventDefault` only when it really does —
               // otherwise the key keeps its normal job of leaving the textarea.
-              if (event.key === "Tab" && event.shiftKey && !event.nativeEvent.isComposing) {
+              if (event.key === "Tab" && event.shiftKey) {
                 if (!canSwitchMode) return;
                 event.preventDefault();
                 onPickMode(mode === "plan" ? "agent" : "plan");
                 return;
               }
-              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+              if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
                 // 运行中按 Enter = 排队。Which of the two it is, is the caller's
                 // business: `onSubmit` sends or queues by itself, and only it

@@ -8,6 +8,7 @@ import {
   type RefObject,
 } from "react";
 import { cn } from "@/lib/utils";
+import { isImeKeyEvent } from "@/lib/ime";
 
 type TriggerProps = {
   ref: RefObject<HTMLButtonElement | null>;
@@ -76,7 +77,7 @@ export function Popover({
       setOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && !isImeKeyEvent(event)) {
         event.stopPropagation();
         setOpen(false);
       }

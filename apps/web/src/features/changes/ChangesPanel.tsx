@@ -210,8 +210,18 @@ function ActionBar({
         />
       )}
 
-      {/* 提交 in the user's own checkout only carries what the task changed — say how much that is. */}
-      {(integration.commitFiles ?? 0) > 0 && <p className="text-2xs text-fg-faint">提交 {integration.commitFiles} 个文件（只提交这个任务改的）</p>}
+      {/*
+        提交 in the user's own checkout only carries what the task changed — say
+        how much that is, and that a file the user had already been editing goes
+        in whole, their own lines with it.
+      */}
+      {(integration.commitFiles ?? 0) > 0 && (
+        <p className="text-2xs text-fg-faint">
+          {(integration.commitFilesWithOwnEdits ?? 0) > 0
+            ? `提交 ${integration.commitFiles} 个文件，其中 ${integration.commitFilesWithOwnEdits} 个含你之前未提交的改动，会一起提交`
+            : `提交 ${integration.commitFiles} 个文件（只提交这个任务改的）`}
+        </p>
+      )}
       {integration.note != null && <p className="text-2xs text-warning">{integration.note}</p>}
       {worktree && !integration.pr.available && integration.pr.reason != null && (
         <p className="text-2xs text-fg-faint">开 PR 不可用：{integration.pr.reason}</p>

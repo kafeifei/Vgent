@@ -118,6 +118,33 @@ describe.skipIf(!hasGit)("createIntegrator", () => {
     });
   });
 
+  it("主目录任务：任务改了用户本来就改过的文件，动作条要数出来", async () => {
+    const { project, target } = await projectTask();
+    const integrator = createIntegrator();
+
+    // One file the user had already modified, one they never touched.
+    await writeFile(join(project, "用户的.txt"), "原样\n用户改的\n任务也加了一行\n");
+    await writeFile(join(project, "tracked.txt"), "line1\nline2\n任务加的\n");
+
+    expect(await integrator.status(target)).toMatchObject({ commitFiles: 2, commitFilesWithOwnEdits: 1 });
+
+    // Committed whole, so the user's earlier line is in there too — which is
+    // exactly what the count above is warning about.
+    await integrator.integrate(target, { action: "commit", message: "任务收个口" });
+    expect(await committedPaths(project)).toEqual(["tracked.txt", "用户的.txt"]);
+    expect((await run(project, "show", "HEAD:用户的.txt")).stdout).toBe("原样\n用户改的\n任务也加了一行\n");
+  });
+
+  it("主目录任务：只碰用户没动过的文件时，不提那句警告", async () => {
+    const { project, target } = await projectTask();
+    await writeFile(join(project, "tracked.txt"), "line1\nline2\n任务加的\n");
+    await writeFile(join(project, "任务的.txt"), "任务建的\n");
+
+    const status = await createIntegrator().status(target);
+    expect(status).toMatchObject({ commitFiles: 2 });
+    expect(status.commitFilesWithOwnEdits).toBeUndefined();
+  });
+
   it("主目录任务：基线功能之前建的任务照旧全提交，但把话说明白", async () => {
     const { project } = await projectTask();
     const legacy: TaskTarget = { mode: "project", repoPath: project, projectPath: project };

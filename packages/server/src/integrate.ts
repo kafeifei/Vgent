@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { snapshotTree } from "./checkpoints.js";
 import { BadRequestError, ConflictError, ExternalToolError, GitError } from "./errors.js";
 import { runCommand, type ToolExec } from "./exec.js";
-import type { ChangesSnapshot, DiffBase } from "./git.js";
+import { EMPTY_TREE, type ChangesSnapshot, type DiffBase } from "./git.js";
 import type { ChangeStats, Project, ThreadOutcome, ThreadRecord } from "./types.js";
 
 /** Pushes and `gh` calls go over the network; give them room. */
@@ -92,6 +92,12 @@ export interface IntegrationStatus {
   canDiscardAll: boolean;
   /** How many files 提交 would commit. Only for a task with a 任务基线; a worktree task commits its whole directory. */
   commitFiles?: number;
+  /**
+   * Of those, how many the user had already edited before the task started. A
+   * commit takes whole files, so those earlier uncommitted lines go in with the
+   * task's — absent when there are none.
+   */
+  commitFilesWithOwnEdits?: number;
   /** Something the user has to know before pressing a button — today only the missing-baseline warning. */
   note?: string;
   /** 开 PR needs a worktree task, an `origin`, and a logged-in `gh`. */
@@ -195,6 +201,26 @@ export function createIntegrator(options: CreateIntegratorOptions = {}): Integra
   };
 
   /**
+   * Of the task's paths, the ones the user had already been editing: their
+   * content in the 任务基线 is not what HEAD has (or HEAD does not have them at
+   * all). A commit takes whole files, so committing those carries the user's
+   * earlier uncommitted lines too, and the action bar has to say so.
+   *
+   * `git diff` takes no pathspec file, so the whole baseline is compared to HEAD
+   * once — that is the user's uncommitted state at the moment the task started —
+   * and the task's paths are looked up in it.
+   */
+  const ownEditCount = async (target: TaskTarget, paths: string[]): Promise<number> => {
+    const baseline = target.baseline;
+    if (paths.length === 0 || baseline == null || typeof baseline === "string" || "none" in baseline) return 0;
+    const head = await git(target.repoPath, ["rev-parse", "--verify", "--quiet", "HEAD"]);
+    const committed = head.code === 0 && head.stdout.trim() !== "" ? "HEAD" : EMPTY_TREE;
+    const out = await gitOk(target.repoPath, ["diff", "--name-only", "-z", "--no-renames", committed, baseline.tree]);
+    const dirtyAtStart = new Set(out.split("\0").filter((path) => path !== ""));
+    return paths.filter((path) => dirtyAtStart.has(path)).length;
+  };
+
+  /**
    * `git commit`, in whichever directory the task owns.
    *
    * `paths` — the task's own, for a main-checkout task — scopes both the staging
@@ -293,6 +319,7 @@ export function createIntegrator(options: CreateIntegratorOptions = {}): Integra
       ]);
       const worktree = target.mode === "worktree";
       const hasWork = dirty || commitsAhead > 0;
+      const ownEdits = paths == null ? 0 : await ownEditCount(target, paths);
       return {
         mode: target.mode,
         ...(target.branch != null ? { branch: target.branch } : {}),
@@ -302,6 +329,7 @@ export function createIntegrator(options: CreateIntegratorOptions = {}): Integra
         // ever carries what this task did.
         canCommit: paths == null ? dirty : paths.length > 0,
         ...(paths != null ? { commitFiles: paths.length } : {}),
+        ...(ownEdits > 0 ? { commitFilesWithOwnEdits: ownEdits } : {}),
         ...(!worktree && target.baseline == null ? { note: NO_BASELINE_NOTE } : {}),
         canApply: worktree && hasWork,
         // A main-checkout task cannot tell its own untracked files from the

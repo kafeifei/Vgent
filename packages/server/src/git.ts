@@ -73,7 +73,7 @@ export interface CreateGitOptions {
 }
 
 /** `git hash-object -t tree /dev/null` — the diff base when HEAD is unborn. */
-const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+export const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_DIFF_BYTES = 1024 * 1024;

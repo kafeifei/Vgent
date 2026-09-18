@@ -168,9 +168,9 @@ docs/
 - 本地 sandbox 跑 Claude Code bridge 官方无先例，freecode 证明可行但用了脏办法，我们要找干净的。
 - 自研引擎不走 HarnessV1，resume / compact / permissionMode 是自己的实现，和官方引擎语义可能有差；壳用统一配置抽象盖住。
 
-## 当前状态（2026-09-18，阶段六完成；之后按 `docs/product.md` 的里程碑推进，M1–M4 和 M5 的 checkpoint 已落地）
+## 当前状态（2026-09-18，阶段六完成；之后按 `docs/product.md` 的里程碑推进，M1–M5 已落地）
 
-三条引擎路全部本地跑通并有真实冒烟测试（`VGENT_SMOKE=1`）；桌面壳、worktree 隔离、子代理/MCP/skills、动态模型清单、`pnpm start` 全部落地。全仓构建绿，`pnpm test` 59 文件 / 481 测试通过（另 5 文件 / 12 测试是 `VGENT_SMOKE` 门控的真机冒烟，默认跳过）。
+三条引擎路全部本地跑通并有真实冒烟测试（`VGENT_SMOKE=1`）；桌面壳、worktree 隔离、子代理/MCP/skills、动态模型清单、`pnpm start` 全部落地。全仓构建绿，`pnpm test` 60 文件 / 493 测试通过（另 5 文件 / 12 测试是 `VGENT_SMOKE` 门控的真机冒烟，默认跳过）。
 
 - `packages/sandbox-local`：freecode 移植，`createLocalSandboxProvider`，`loopbackOnly` 预加载已验证 bridge 只绑 127.0.0.1。
 - `packages/engines`：`createClaudeCodeEngine` / `createCodexEngine` → `{ agent, session, dispose }`，`toTUIAgent`，共享逻辑在 `shared.ts`。仓库路径靠覆写 `doStart` 传 `sessionWorkDir`。Claude 保留真实 HOME 复用登录（副作用：`~/.claude/CLAUDE.md` 影响回复）；Codex 用隔离 `CODEX_HOME`（真实 `~/.codex/config.toml` 与 pinned SDK 不兼容），登录态走 env 转发不受影响。Codex 的 permissionMode 只能 `allow-all`，SDK 构造时自己抛错。
@@ -310,7 +310,13 @@ docs/
   - `POST /api/threads/:id/checkpoints/restore`，`{ messageId }` 或 `{ commit }` 二选一 → `{ restored, undo, changeStats? }`；进行中（含停在审批 / 提问）409，commit 不在该任务的 checkpoint refs 下 404（不允许恢复任意 sha），worktree 已回收 409。恢复前先把当前状态打成 `…/undo-<n>`，所以可撤销。`restoreCheckpoint` 拿目标树和当前树做 `diff --name-status`：只在当前树里的路径删掉，其余从临时 index `checkout-index -f` 写回；真 index、HEAD、被忽略的文件都不动。
   - Web：`worklog/Turn.tsx` 的用户消息块在 hover / 键盘焦点时露出「恢复到此处」，两步确认沿用「全部丢弃」的样式，主目录任务多一句「包括你自己在这之后改的文件」；成功后 toast「已恢复到此处」带「撤销」（`lib/toast.tsx` 新增可选 action，带 action 时停留 8s），并刷新变更面板和审查 pill。
   - 浏览器实测（主目录任务，仓库里本来就有未提交改动，Claude Code 真跑两轮）：恢复到第二条 → `ck-a.txt` 回到 one、`ck-b.txt` 消失，原有的未提交改动和暂存区原样；恢复到第一条 → 两个文件都没了；恢复后立刻点撤销 → 回到恢复前；审查 pill 的数字每次都跟着变；两条消息始终在日志里。
-- 验证：`pnpm build && pnpm test` → 59 文件 / 481 测试通过（另 5 文件 / 12 测试 `VGENT_SMOKE` 门控默认跳过；含合并 main 的实例锁之后）。浏览器实测（临时 `--data-dir` + 一个临时 git 仓库，Claude Code 真跑）：worktree 任务里 agent 改一个文件、新建一个文件、自己 `git commit` 一次、再留一个未跟踪文件，合并 M1 之前「审查」只剩 `+1 −0`，之后是 `+3 −0`、面板列全三个文件并标「领先基线 1 个提交」；带回主目录后主检出 HEAD 不动、出现同样三处未提交改动（当时主检出已比任务基线多一个提交，补丁照样干净应用）；再点一次给出三个冲突文件、主检出不动；提交后任务头 / 侧栏行 / 动作条都是「已提交 <sha>」且文件清单仍是全量；全部丢弃二次确认后 worktree 干净、被忽略的 setup 产物还在；归档后 worktree 目录消失、留快照、任务进折叠的「已归档」，取消归档后提交和未跟踪文件都回来；删除任务后 worktree、记录、空分支都没了。setup：字符串值指向不存在的脚本 → 退出码 127 的警告、任务照跑；数组值含 `sleep 3` → 期间显示「正在准备工作目录…」，回合等它结束才开始，标记文件里的 `ROOT_WORKTREE_PATH` 是主检出。M2 验收标准：本仓库的克隆登记成项目，新 worktree 任务 setup 2.4s 装完依赖，在该 worktree 里 `pnpm build && pnpm test` 全绿。
+- **M5 的排队一半**（`a1e3364`）。
+  - `ThreadRecord.queue?: { id, text, createdAt }[]`（空了就删字段，不存 `[]`），随 `/api/state` 下发。`packages/server/src/queue.ts`：上限 20 条 / 每条 32 KB，`createQueueStore` 用每任务一条 promise 链当锁，`append / edit / remove / take / putBack`。路由都回整条 `ThreadRecord`：`POST /api/threads/:id/queue`、`PATCH …/queue/:itemId`、`DELETE …/queue/:itemId`、`POST …/queue/:itemId/send`（进行中 409，暂停的队列靠它手动续上）。
+  - 派发在 run manager 里：`start()` 的主体抽成 `startTurn`，server 自己发的回合和 HTTP 发的走同一条路（checkpoint、plan 模式、等 setup 都有）。回合的 `finally` 释放槽位后 `setTimeout(0)` 调度 `dispatchQueue`，它重读记录，只在 `idle` + 未归档 + 队列非空时取队首。不重复派发靠四层：取队首是在锁里先删后发；每任务一个 `dispatching` 标记；不在 `finally` 里内联调用；和客户端 POST 抢跑时以 `start()` 的 409 为准，输的一方把条目放回队首。等审批 / 等回答、出错、被停止都不派发；启动时 `idle` 且有队列的任务补派一次，恢复成 `interrupted` 的不派。
+  - 偏离任务书的一处：往**空闲**任务排队会立刻派发，堵住「客户端以为还在跑、POST 到的时候回合刚结束」的缝；所以空闲任务不会挂着队列，「发送」只出现在真暂停的队列上。
+  - Web：运行中回车 / 点「排队」→ POST，成功才清草稿；聊天框框内上方是 `composer/QueueStrip.tsx`（「排队 N」、行内编辑 Enter 存 Esc 取消、删除、暂停原因「已停止，排队暂停」等、队首「发送」）。`lib/drafts.ts`：`vgent.draft.<threadId>` / `vgent.draft.new`，每次访问 try/catch，任务没了就清。`lib/threadChats.ts` 的 `attach()`：任务变成进行中而本客户端没发过消息时，先重载历史再续流，server 自己追加的用户消息才会出现。右栏「队列」tab 改名「待处理」。
+  - 浏览器实测（Claude Code 真跑，全自动）：`sleep 20` 的回合里排两条，把第二条改成写 `two`，中途刷新页面；两条按顺序自己跑完，`q1.txt` 是 1、`q2.txt` 是 two，三条用户消息各带一个 checkpoint，刷新后的页面日志齐全；再起一轮排一条后点停止 → 「排队 1 · 已停止，排队暂停」，点「发送」跑完；草稿切任务回来还在，刷新后还在。
+- 验证：`pnpm build && pnpm test` → 60 文件 / 493 测试通过（另 5 文件 / 12 测试 `VGENT_SMOKE` 门控默认跳过；含合并 main 的实例锁之后）。浏览器实测（临时 `--data-dir` + 一个临时 git 仓库，Claude Code 真跑）：worktree 任务里 agent 改一个文件、新建一个文件、自己 `git commit` 一次、再留一个未跟踪文件，合并 M1 之前「审查」只剩 `+1 −0`，之后是 `+3 −0`、面板列全三个文件并标「领先基线 1 个提交」；带回主目录后主检出 HEAD 不动、出现同样三处未提交改动（当时主检出已比任务基线多一个提交，补丁照样干净应用）；再点一次给出三个冲突文件、主检出不动；提交后任务头 / 侧栏行 / 动作条都是「已提交 <sha>」且文件清单仍是全量；全部丢弃二次确认后 worktree 干净、被忽略的 setup 产物还在；归档后 worktree 目录消失、留快照、任务进折叠的「已归档」，取消归档后提交和未跟踪文件都回来；删除任务后 worktree、记录、空分支都没了。setup：字符串值指向不存在的脚本 → 退出码 127 的警告、任务照跑；数组值含 `sleep 3` → 期间显示「正在准备工作目录…」，回合等它结束才开始，标记文件里的 `ROOT_WORKTREE_PATH` 是主检出。M2 验收标准：本仓库的克隆登记成项目，新 worktree 任务 setup 2.4s 装完依赖，在该 worktree 里 `pnpm build && pnpm test` 全绿。
 - M1 验收补丁（`f8693c3`）：启动时（detached，排在上限回收之后）给没有 `changeStats` 的旧任务补算，否则它们会错落在「已完成」；`GET /api/threads/:id/changes` 顺手把过期的统计改正并落盘（用户在 Vgent 外面提交 / 改文件后侧栏跟着变，不多跑 git）；停在等审批 / 等回答的任务也算进行中，收口和归档回 409 `thread_running`，动作条和行菜单的「归档」禁用并用 `title` 说明，删除不受影响。三条都在浏览器里实测过。
 - **拒绝审批后卡在「进行中」**（`907aa64`，不是回归，harness 引擎接上那天起就有）。根因：`convertToModelMessages` 把 `approval: { approved: false }` 转成尾部 `role: "tool"` 消息里的两个 part，一个 `tool-approval-response`，外加一个合成的 `tool-result`（`output: { type: "execution-denied" }`）；harness 的 `collectHarnessAgentToolApprovalContinuations` 见到该调用已有 tool result 就当它了结、跳过审批回应，于是 `submitToolApproval({ approved: false })` 永远不被调用，bridge 的 `canUseTool` 一直挂着。批准不受影响（不合成结果）。修法：`packages/server/src/engines/harness-messages.ts` 的 `stripDeniedApprovalResults` 在交给 harness 前去掉被拒调用的合成结果，Claude Code 的 `stream` / `continueStream` 两条路都过一遍（Codex 同样处理，但它不会停在审批上，等于空操作）；自研引擎必须保留那条合成结果，那是模型知道被拒的唯一途径。真机冒烟（`VGENT_SMOKE=1`，`server.smoke.test.ts`）：修之前挂 11 分钟以上，修之后 9.5s 结束并回一句「命令被拒了」。值得给上游提 issue。
 - 已知未修：新一轮对话清掉 `outcome` 后，已开的 PR 链接不再出现在界面上；allowlist 的 `bash(git)` 同时放行 `git status` 和 `git push`，没细到子命令；上限回收只有单测、没在界面里实测。
@@ -322,4 +328,4 @@ docs/
 - Web：麦克风、侧聊 `/side`、harness 引擎的子代理嵌套流（自研引擎已是实时嵌套流；Claude Code 的 Task 目前是一行 spinner + 结束后原始 JSON）、虚拟滚动、无障碍焦点管理。
 - 桌面壳：Windows / Linux、签名与公证、自动更新、多窗口。
 
-下一步：按 `docs/product.md` 的工作计划走，剩 M5 的排队和草稿持久化；每个里程碑落 main 后打包装到 /Applications。发布工程（签名 / 公证、自动更新、Windows）只在有明确需求时再启动。
+下一步：五个里程碑都已落地，先停止加功能。按 `docs/product.md`「现状对照」里加粗的缺口修（主目录任务的基线和提交范围排第一），然后等用户在真 app 里把七步走一遍、给 Cursor 对应界面的截图做一轮对齐；每个里程碑落 main 后打包装到 /Applications。发布工程（签名 / 公证、自动更新、Windows）只在有明确需求时再启动。

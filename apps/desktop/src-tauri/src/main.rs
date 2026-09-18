@@ -2,7 +2,7 @@
 
 mod backend;
 
-use backend::{Backend, BackendReady};
+use backend::{Backend, BackendReady, SpawnError};
 use std::{
     path::PathBuf,
     sync::{
@@ -144,6 +144,17 @@ fn main() {
     let lifecycle = Lifecycle::default();
     let cleanup = lifecycle.clone();
     let builder = tauri::Builder::default()
+        // Must be the first plugin registered (the plugin's own requirement). A
+        // second launch hands its arguments here and exits, so it never gets as
+        // far as starting a rival server on the same data directory.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            // Before the backend is up there is no window yet; nothing to raise.
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .manage(lifecycle)
         .setup(|app| {
@@ -154,10 +165,12 @@ fn main() {
             app.set_menu(menu)?;
 
             let lifecycle = app.state::<Lifecycle>().inner().clone();
-            let started = locate_bundle(app.handle()).and_then(|bundle| {
-                let dir = data_dir()?;
-                Backend::spawn(&bundle.node, &bundle.script, &bundle.web_dist, &dir)
-            });
+            let started = locate_bundle(app.handle())
+                .and_then(|bundle| data_dir().map(|dir| (bundle, dir)))
+                .map_err(SpawnError::from)
+                .and_then(|(bundle, dir)| {
+                    Backend::spawn(&bundle.node, &bundle.script, &bundle.web_dist, &dir)
+                });
             match started {
                 Ok((backend, ready)) => {
                     *lifecycle
@@ -194,8 +207,8 @@ fn main() {
                 Err(error) => {
                     let handle = app.handle().clone();
                     app.dialog()
-                        .message(error)
-                        .title("无法启动 Vgent")
+                        .message(error.message())
+                        .title(error.title())
                         .kind(MessageDialogKind::Error)
                         .show(move |_| handle.exit(1));
                 }

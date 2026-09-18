@@ -556,6 +556,11 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const { messages } = await compactThread({ thread, model }).catch((error: unknown) => {
       throw new UpstreamModelError(`压缩失败: ${error instanceof Error ? error.message : String(error)}`);
     });
+    // Snapshot the pre-compact history before it's overwritten; if that fails,
+    // abort rather than discard messages nothing kept a copy of.
+    await threads.snapshotBeforeCompact(id, thread.messages).catch((error: unknown) => {
+      throw new VgentServerError({ message: `压缩快照失败: ${error instanceof Error ? error.message : String(error)}`, status: 500, code: "snapshot_failed" });
+    });
     return c.json(await threads.update(id, { messages }));
   });
 

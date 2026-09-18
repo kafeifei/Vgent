@@ -18,9 +18,58 @@ struct ConnectionFile {
     pid: u32,
 }
 
+/// Mirrors `INSTANCE_LOCKED_EXIT_CODE` in `packages/server/src/instance-lock.ts`:
+/// the server found another Vgent holding the data directory's `server.lock`.
+/// Change both together.
+const INSTANCE_LOCKED_EXIT_CODE: i32 = 75;
+
 pub struct BackendReady {
     pub url: Url,
     pub token: String,
+}
+
+/// Why the backend never came up. Everything is a message for the native dialog;
+/// only the "already running" case gets its own title and its own advice.
+pub enum SpawnError {
+    AlreadyRunning(String),
+    Failed(String),
+}
+
+impl SpawnError {
+    pub fn title(&self) -> &'static str {
+        match self {
+            Self::AlreadyRunning(_) => "Vgent 已在运行",
+            Self::Failed(_) => "无法启动 Vgent",
+        }
+    }
+
+    pub fn message(&self) -> &str {
+        match self {
+            Self::AlreadyRunning(message) | Self::Failed(message) => message,
+        }
+    }
+
+    fn with_detail(self, detail: &str) -> Self {
+        if detail.is_empty() {
+            return self;
+        }
+        match self {
+            Self::AlreadyRunning(message) => Self::AlreadyRunning(format!("{message}\n\n{detail}")),
+            Self::Failed(message) => Self::Failed(format!("{message}\n\n{detail}")),
+        }
+    }
+}
+
+impl From<String> for SpawnError {
+    fn from(message: String) -> Self {
+        Self::Failed(message)
+    }
+}
+
+impl From<&str> for SpawnError {
+    fn from(message: &str) -> Self {
+        Self::Failed(message.into())
+    }
 }
 
 pub struct Backend {
@@ -106,7 +155,7 @@ impl Backend {
         script: &Path,
         web_dist: &Path,
         data_dir: &Path,
-    ) -> Result<(Self, BackendReady), String> {
+    ) -> Result<(Self, BackendReady), SpawnError> {
         if !node.is_file() || !script.is_file() {
             return Err("应用缺少内置运行时或后端资源，请重新构建完整的 Vgent.app。".into());
         }
@@ -177,13 +226,20 @@ impl Backend {
                 // A stale file from another instance keeps a foreign pid, so the
                 // mismatch is not fatal: keep waiting for ours to land.
                 Some(connection) if connection.pid == child_pid => {
-                    break validate_ready(connection, child_pid)
+                    break validate_ready(connection, child_pid).map_err(SpawnError::from)
                 }
                 _ => {}
             }
             match backend.child.try_wait() {
-                Ok(Some(status)) => break Err(format!("内置服务启动失败（{status}）。")),
-                Err(error) => break Err(format!("无法读取内置服务状态：{error}")),
+                // The server refused the data directory: another Vgent owns it.
+                // Nothing will ever land in `connection.json`, so stop waiting now.
+                Ok(Some(status)) if status.code() == Some(INSTANCE_LOCKED_EXIT_CODE) => {
+                    break Err(SpawnError::AlreadyRunning(
+                        "这个数据目录已被另一个 Vgent 占用（可能是 `pnpm start` 起的服务，或一个仍在运行的 Vgent）。请先退出它，再重新打开 Vgent。".into(),
+                    ))
+                }
+                Ok(Some(status)) => break Err(format!("内置服务启动失败（{status}）。").into()),
+                Err(error) => break Err(format!("无法读取内置服务状态：{error}").into()),
                 _ => {}
             }
             if Instant::now() >= deadline {
@@ -193,7 +249,7 @@ impl Backend {
         };
         match result {
             Ok(ready) => Ok((backend, ready)),
-            Err(message) => {
+            Err(error) => {
                 backend.shutdown();
                 // A fast startup failure can reach us before the stderr thread
                 // has drained; give the closed pipe a bounded moment.
@@ -202,11 +258,7 @@ impl Backend {
                     .lock()
                     .map(|tail| tail.iter().cloned().collect::<Vec<_>>().join("\n"))
                     .unwrap_or_default();
-                Err(if detail.is_empty() {
-                    message
-                } else {
-                    format!("{message}\n\n{detail}")
-                })
+                Err(error.with_detail(&detail))
             }
         }
     }
@@ -353,7 +405,7 @@ setInterval(() => {{}}, 1000);
         .unwrap();
 
         let (mut backend, ready) = Backend::spawn(&node, &script, &directory, &data_dir)
-            .unwrap_or_else(|error| panic!("{error}"));
+            .unwrap_or_else(|error| panic!("{}", error.message()));
         assert_eq!(ready.url.port(), Some(42001));
         backend.shutdown();
         assert!(backend.has_exited());
@@ -380,10 +432,61 @@ setInterval(() => {{}}, 1000);
         )
         .unwrap();
         let result = Backend::spawn(&node, &script, &directory, &directory);
-        assert!(result
+        let error = result.err().unwrap();
+        assert!(matches!(error, SpawnError::Failed(_)));
+        assert!(error.message().contains("数据目录已被另一个实例使用"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// The server's own refusal (`server.lock` held by a live process) must come
+    /// back at once as its own error, not as a 30s wait for a handshake file
+    /// that is never going to be written.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_locked_data_directory_fails_fast_as_already_running() {
+        let node = bundled_node();
+        if !node.is_file() {
+            eprintln!("跳过：未准备内置 Node（先跑 scripts/prepare-desktop.mjs）");
+            return;
+        }
+        let directory = scratch("locked");
+        let data_dir = directory.join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        // The lock names this test process, which is very much alive.
+        std::fs::write(
+            data_dir.join("server.lock"),
+            format!(
+                r#"{{"pid":{},"nonce":"held","createdAt":"2026-01-01T00:00:00.000Z"}}"#,
+                std::process::id()
+            ),
+        )
+        .unwrap();
+        let script = directory.join("main.js");
+        // A stand-in for the real server's `acquireInstanceLock` refusal path.
+        std::fs::write(
+            &script,
+            format!(
+                r#"const fs = require('node:fs');
+const lock = JSON.parse(fs.readFileSync({data_dir:?} + '/server.lock', 'utf8'));
+try {{ process.kill(lock.pid, 0); }} catch {{ process.exit(0); }}
+process.stderr.write(`Vgent 已在运行（进程 ${{lock.pid}}）。\n`);
+process.exit(75);
+"#
+            ),
+        )
+        .unwrap();
+
+        let started = Instant::now();
+        let error = Backend::spawn(&node, &script, &directory, &data_dir)
             .err()
-            .unwrap()
-            .contains("数据目录已被另一个实例使用"));
+            .unwrap();
+        assert!(matches!(error, SpawnError::AlreadyRunning(_)));
+        assert_eq!(error.title(), "Vgent 已在运行");
+        assert!(error.message().contains("已被另一个 Vgent 占用"));
+        // The stderr tail carries the owner's pid into the dialog.
+        assert!(error.message().contains(&std::process::id().to_string()));
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(!data_dir.join("connection.json").exists());
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

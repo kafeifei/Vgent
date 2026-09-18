@@ -2,8 +2,9 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
-import { boolFlag, defaultWebDist, flagValue, resolveWebDist, shouldOpenBrowser } from "./main.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { INSTANCE_LOCKED_EXIT_CODE, InstanceLockedError } from "./instance-lock.js";
+import { boolFlag, defaultWebDist, describeStartupFailure, flagValue, resolveWebDist, shouldOpenBrowser, watchParentExit } from "./main.js";
 
 const dirs: string[] = [];
 
@@ -73,6 +74,61 @@ describe("resolveWebDist", () => {
 
   it("returns undefined when the default dir doesn't exist at all", () => {
     expect(resolveWebDist(undefined, "/does/not/exist")).toBeUndefined();
+  });
+});
+
+describe("describeStartupFailure", () => {
+  it("turns a taken data directory into the dedicated exit code and a message naming the owner", () => {
+    const described = describeStartupFailure(
+      new InstanceLockedError({ message: "占用", pid: 4321, lockPath: "/tmp/vgent-data/server.lock" }),
+    );
+    expect(described?.exitCode).toBe(INSTANCE_LOCKED_EXIT_CODE);
+    expect(described?.message).toContain("Vgent 已在运行");
+    expect(described?.message).toContain("4321");
+    expect(described?.message).toContain("/tmp/vgent-data");
+    expect(described?.message).toContain("/tmp/vgent-data/server.lock");
+  });
+
+  it("leaves every other failure to the caller", () => {
+    expect(describeStartupFailure(new Error("端口不合法: abc"))).toBeUndefined();
+  });
+});
+
+describe("watchParentExit", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("stops the server once the parent it was spawned from is gone", () => {
+    vi.useFakeTimers();
+    let ppid = 900;
+    const onOrphaned = vi.fn();
+    watchParentExit({ getPpid: () => ppid, onOrphaned, intervalMs: 10 });
+
+    vi.advanceTimersByTime(50);
+    expect(onOrphaned).not.toHaveBeenCalled();
+
+    ppid = 1; // reparented to launchd: the shell is gone
+    vi.advanceTimersByTime(10);
+    expect(onOrphaned).toHaveBeenCalledTimes(1);
+
+    // The watch is one-shot; it must not keep firing after it reported.
+    vi.advanceTimersByTime(100);
+    expect(onOrphaned).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops the server when the shell was already gone at the first sample", () => {
+    vi.useFakeTimers();
+    const onOrphaned = vi.fn();
+    // Reparented to launchd before we ever looked: no change is coming.
+    watchParentExit({ getPpid: () => 1, onOrphaned, intervalMs: 10 });
+
+    expect(onOrphaned).not.toHaveBeenCalled(); // never synchronously, `stop` may not be wired yet
+    vi.advanceTimersByTime(10);
+    expect(onOrphaned).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(100);
+    expect(onOrphaned).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -74,6 +74,12 @@ export { readJsonOrQuarantine, writeJsonAtomic } from "./store/atomic-file.js";
 export { createProjectStore, type ProjectStore } from "./store/projects.js";
 export { createSettingsStore, DEFAULT_SETTINGS, type SettingsStore } from "./store/settings.js";
 export { createThreadStore, DEFAULT_THREAD_TITLE, summarize, type CreateThreadInput, type ThreadPatch, type ThreadStore } from "./store/threads.js";
+export {
+  acquireInstanceLock,
+  INSTANCE_LOCK_FILE,
+  INSTANCE_LOCKED_EXIT_CODE,
+  InstanceLockedError,
+} from "./instance-lock.js";
 export { DEFAULT_DATA_DIR, resolveDataDir } from "./paths.js";
 export {
   createWorktree,

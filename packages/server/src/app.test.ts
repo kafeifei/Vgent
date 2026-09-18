@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -10,7 +10,7 @@ import { createApp, type VgentApp } from "./app.js";
 import { createEngineRegistry, type EngineContext, type EngineFactory } from "./engines/registry.js";
 import { DEFAULT_VGENT_MODEL } from "./engines/vgent.js";
 import { EngineUnavailableError } from "./errors.js";
-import { createThreadStore } from "./store/threads.js";
+import { createThreadStore, type ThreadPreCompactSnapshot } from "./store/threads.js";
 import type { HarnessState, Project, ThreadMessageMetadata, ThreadRecord, ThreadSummary } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -140,21 +140,19 @@ async function setupThread(app: VgentApp, repoPath: string, engine = "claude-cod
 
 const userMessage = (id: string, text: string): UIMessage => ({ id, role: "user", parts: [{ type: "text", text }] });
 
-/** A model that answers one `generateText` call with `text` — what `/compact` needs and nothing else. */
+/** A model that answers every `generateText` call with `text` — what `/compact` needs, any number of times. */
 const summariser = (text: string): LanguageModel =>
   new MockLanguageModelV3({
-    doGenerate: [
-      {
-        content: [{ type: "text" as const, text }],
-        finishReason: { unified: "stop" as const },
-        usage: {
-          inputTokens: { total: undefined, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
-          outputTokens: { total: undefined, reasoning: undefined },
-          totalTokens: undefined,
-        },
-        warnings: [],
+    doGenerate: {
+      content: [{ type: "text" as const, text }],
+      finishReason: { unified: "stop" as const },
+      usage: {
+        inputTokens: { total: undefined, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+        outputTokens: { total: undefined, reasoning: undefined },
+        totalTokens: undefined,
       },
-    ],
+      warnings: [],
+    },
   }) as unknown as LanguageModel;
 
 /** Polls the resume endpoint until a run is actually live, so the test never races the run's start. */
@@ -816,7 +814,18 @@ describe("createApp", () => {
     expect((await app.app.request("http://evil.example.com/")).status).toBe(403);
   });
 
-  it("压缩上下文：把自研引擎任务的历史换成一条摘要，并记下原来的条数", async () => {
+  /** The pre-compact history the success test seeds every thread with. */
+  const historyBeforeCompact: UIMessage[] = [
+    userMessage("m1", "把登录页改成中文"),
+    { id: "m2", role: "assistant", parts: [{ type: "text", text: "改好了" }] },
+    userMessage("m3", "再加个按钮"),
+  ];
+
+  /** The `<id>.pre-compact.*.json` sidecars left in `<dataDir>/threads/` for one thread. */
+  const snapshotFilesFor = async (dataDir: string, threadId: string): Promise<string[]> =>
+    (await readdir(join(dataDir, "threads"))).filter((entry) => entry.startsWith(`${threadId}.pre-compact.`));
+
+  it("压缩上下文：把自研引擎任务的历史换成一条摘要，并记下原来的条数，同时在盘上留一份旧消息快照", async () => {
     const dataDir = await tempDir();
     const app = createApp({ dataDir, token: TOKEN, compactModel: summariser("摘要内容") });
     apps.push(app);
@@ -824,13 +833,7 @@ describe("createApp", () => {
 
     // The store is the shortest way to a thread with a history: no engine has
     // to run for the route's precondition to be interesting.
-    await createThreadStore(dataDir).update(thread.id, {
-      messages: [
-        userMessage("m1", "把登录页改成中文"),
-        { id: "m2", role: "assistant", parts: [{ type: "text", text: "改好了" }] },
-        userMessage("m3", "再加个按钮"),
-      ],
-    });
+    await createThreadStore(dataDir).update(thread.id, { messages: historyBeforeCompact });
 
     const response = await postJson(app, `/api/threads/${thread.id}/compact`, {});
     expect(response.status).toBe(200);
@@ -839,6 +842,50 @@ describe("createApp", () => {
     expect(JSON.stringify(record.messages[0]!.parts)).toContain("摘要内容");
     expect((record.messages[0]!.metadata as ThreadMessageMetadata).compacted).toMatchObject({ before: 3 });
     expect(record.messages[1]!.role).toBe("assistant");
+
+    const snapshots = await snapshotFilesFor(dataDir, thread.id);
+    expect(snapshots).toHaveLength(1);
+    const snapshot = JSON.parse(await readFile(join(dataDir, "threads", snapshots[0]!), "utf8")) as ThreadPreCompactSnapshot;
+    expect(snapshot).toMatchObject({ version: 1, threadId: thread.id, messages: historyBeforeCompact });
+  });
+
+  it("压缩上下文：同一线程连续压缩两次，两份快照都留下且互不覆盖", async () => {
+    const dataDir = await tempDir();
+    const app = createApp({ dataDir, token: TOKEN, compactModel: summariser("摘要内容") });
+    apps.push(app);
+    const { thread } = await setupThread(app, await tempDir(), "vgent");
+    await createThreadStore(dataDir).update(thread.id, { messages: historyBeforeCompact });
+
+    expect((await postJson(app, `/api/threads/${thread.id}/compact`, {})).status).toBe(200);
+    // The route's own minimum is "at least 2 messages", and a compact always
+    // leaves exactly 2 (the summary + the ack), so it can run right again.
+    expect((await postJson(app, `/api/threads/${thread.id}/compact`, {})).status).toBe(200);
+
+    const snapshots = await snapshotFilesFor(dataDir, thread.id);
+    expect(snapshots).toHaveLength(2);
+  });
+
+  // Root ignores directory write permissions, which would make the chmod below a no-op.
+  it.skipIf(process.getuid?.() === 0)("压缩上下文：快照写失败就整体失败，线程消息保持原样", async () => {
+    const dataDir = await tempDir();
+    const app = createApp({ dataDir, token: TOKEN, compactModel: summariser("摘要内容") });
+    apps.push(app);
+    const { thread } = await setupThread(app, await tempDir(), "vgent");
+    await createThreadStore(dataDir).update(thread.id, { messages: historyBeforeCompact });
+
+    const threadsDir = join(dataDir, "threads");
+    await chmod(threadsDir, 0o500); // read+traverse only: writing the new snapshot file fails.
+    try {
+      const response = await postJson(app, `/api/threads/${thread.id}/compact`, {});
+      expect(response.status).toBe(500);
+      expect(await response.json()).toMatchObject({ error: { code: "snapshot_failed" } });
+    } finally {
+      await chmod(threadsDir, 0o700); // restore before afterEach removes the temp dir.
+    }
+
+    expect((await snapshotFilesFor(dataDir, thread.id)).length).toBe(0);
+    const record = (await createThreadStore(dataDir).get(thread.id)) as ThreadRecord;
+    expect(record.messages).toEqual(historyBeforeCompact);
   });
 
   it("压缩上下文：其他引擎和空对话都被挡住", async () => {

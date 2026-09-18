@@ -133,6 +133,33 @@ describe("createThreadStore", () => {
     expect(await store.loadHarnessState(thread.id)).toEqual(state);
   });
 
+  it("keeps pre-compact snapshots out of the index, sweeps a thread's own on remove, and leaves other threads' alone", async () => {
+    const dir = await tempDir();
+    const store = seed(dir);
+    const doomed = await store.create({ projectId: "p1", title: "要压缩的", engine: "claude-code", permissionMode: "allow-reads" });
+    const other = await store.create({ projectId: "p1", title: "另一个", engine: "claude-code", permissionMode: "allow-reads" });
+
+    await store.snapshotBeforeCompact(doomed.id, [{ id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] }]);
+    await store.snapshotBeforeCompact(doomed.id, [{ id: "m2", role: "user", parts: [{ type: "text", text: "hi again" }] }]);
+    await store.snapshotBeforeCompact(other.id, [{ id: "m3", role: "user", parts: [{ type: "text", text: "unrelated" }] }]);
+
+    const threadsDir = join(dir, "threads");
+    const doomedSnapshots = () => readdir(threadsDir).then((entries) => entries.filter((entry) => entry.startsWith(`${doomed.id}.pre-compact.`)));
+    const otherSnapshots = () => readdir(threadsDir).then((entries) => entries.filter((entry) => entry.startsWith(`${other.id}.pre-compact.`)));
+    expect(await doomedSnapshots()).toHaveLength(2);
+    expect(await otherSnapshots()).toHaveLength(1);
+
+    // A rebuild must not pick the snapshot sidecars up as thread records.
+    await rm(join(threadsDir, "index.json"));
+    const reopened = seed(dir);
+    expect((await reopened.list()).map((entry) => entry.id).sort()).toEqual([doomed.id, other.id].sort());
+
+    await store.remove(doomed.id);
+    expect(await doomedSnapshots()).toHaveLength(0);
+    expect(await otherSnapshots()).toHaveLength(1);
+    expect((await store.list()).map((entry) => entry.id)).toEqual([other.id]);
+  });
+
   it("notifies subscribers on every commit and drops the files on remove", async () => {
     const dir = await tempDir();
     const store = seed(dir);

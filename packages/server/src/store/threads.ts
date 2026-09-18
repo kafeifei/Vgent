@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readdir, rm } from "node:fs/promises";
+import { access, mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { isToolUIPart, type UIMessage } from "ai";
 import { NotFoundError } from "../errors.js";
@@ -25,6 +25,17 @@ interface ThreadIndexFile {
   version: 1;
   threads: ThreadSummary[];
 }
+
+/** The `<id>.pre-compact.<ts>.json` sidecar `snapshotBeforeCompact` writes: the full message array `/compact` is about to replace. */
+export interface ThreadPreCompactSnapshot {
+  version: 1;
+  threadId: string;
+  createdAt: string;
+  messages: UIMessage[];
+}
+
+/** Marks a thread file's name as belonging to a pre-compact snapshot rather than the thread record itself. */
+const PRE_COMPACT_INFIX = ".pre-compact.";
 
 export interface CreateThreadInput {
   projectId: string;
@@ -67,6 +78,13 @@ export interface ThreadStore {
    * does both.
    */
   saveMessages(id: string, messages: UIMessage[]): Promise<void>;
+  /**
+   * Writes the messages `/compact` is about to replace to a sidecar snapshot
+   * file, before the thread record itself is overwritten. Throws if the
+   * snapshot cannot be written, so the caller can abort the compact instead
+   * of discarding history nothing kept a copy of.
+   */
+  snapshotBeforeCompact(id: string, messages: UIMessage[]): Promise<void>;
   remove(id: string): Promise<void>;
   saveHarnessState(id: string, state: HarnessState): Promise<void>;
   loadHarnessState(id: string): Promise<HarnessState | undefined>;
@@ -113,6 +131,29 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
   const indexPath = join(dir, "index.json");
   const recordPath = (id: string) => join(dir, `${id}.json`);
   const harnessPath = (id: string) => join(dir, `${id}.harness.json`);
+  const snapshotPath = (id: string, ts: string) => join(dir, `${id}${PRE_COMPACT_INFIX}${ts}.json`);
+
+  const exists = async (path: string): Promise<boolean> => {
+    try {
+      await access(path);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  /** A filename-safe timestamp, bumped with a suffix on the rare collision so no snapshot is ever overwritten. */
+  const uniqueSnapshotPath = async (id: string): Promise<{ path: string; createdAt: string }> => {
+    const createdAt = new Date().toISOString();
+    const base = createdAt.replaceAll(":", "-").replaceAll(".", "-");
+    let ts = base;
+    let path = snapshotPath(id, ts);
+    for (let attempt = 1; await exists(path); attempt++) {
+      ts = `${base}-${attempt}`;
+      path = snapshotPath(id, ts);
+    }
+    return { path, createdAt };
+  };
 
   const listeners = new Set<() => void>();
   const chains = new Map<string, Promise<unknown>>();
@@ -144,7 +185,7 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
     const entries = await readdir(dir).catch(() => [] as string[]);
     const summaries: ThreadSummary[] = [];
     for (const entry of entries) {
-      if (!entry.endsWith(".json") || entry === "index.json" || entry.endsWith(".harness.json")) continue;
+      if (!entry.endsWith(".json") || entry === "index.json" || entry.endsWith(".harness.json") || entry.includes(PRE_COMPACT_INFIX)) continue;
       const record = await readJsonOrQuarantine<ThreadRecord>(join(dir, entry), { validate: isRecord, log });
       if (record != null) summaries.push(summarize(record));
     }
@@ -277,11 +318,25 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
       });
     },
 
+    async snapshotBeforeCompact(id, messages) {
+      await ensureReady();
+      await serialize(id, async () => {
+        const { path, createdAt } = await uniqueSnapshotPath(id);
+        await writeJsonAtomic(path, { version: 1, threadId: id, createdAt, messages } satisfies ThreadPreCompactSnapshot);
+      });
+    },
+
     async remove(id) {
       await ensureReady();
       await serialize(id, async () => {
         await rm(recordPath(id), { force: true });
         await rm(harnessPath(id), { force: true });
+        const entries = await readdir(dir).catch(() => [] as string[]);
+        await Promise.all(
+          entries
+            .filter((entry) => entry.startsWith(`${id}${PRE_COMPACT_INFIX}`))
+            .map((entry) => rm(join(dir, entry), { force: true }).catch(() => {})),
+        );
       });
       index = (index ?? []).filter((entry) => entry.id !== id);
       await writeIndex();

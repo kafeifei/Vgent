@@ -8,15 +8,15 @@
  * never touched), `git apply --check` rules on it in the project, and the
  * project is written to only once that check has passed.
  */
-import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { snapshotTree } from "./checkpoints.js";
 import { BadRequestError, ConflictError, ExternalToolError, GitError } from "./errors.js";
+import { runCommand, type ToolExec } from "./exec.js";
 import type { ChangesSnapshot } from "./git.js";
 import type { ChangeStats, Project, ThreadOutcome, ThreadRecord } from "./types.js";
 
-const MAX_BUFFER = 64 * 1024 * 1024;
 /** Pushes and `gh` calls go over the network; give them room. */
 const TOOL_TIMEOUT_MS = 60_000;
 /** The availability probe must never make the panel wait. */
@@ -26,45 +26,6 @@ const GH_CACHE_MS = 60_000;
 const STDERR_TAIL = 500;
 
 const tail = (text: string): string => text.trim().slice(-STDERR_TAIL) || "（没有输出）";
-
-export interface ExecOutcome {
-  code: number;
-  stdout: string;
-  stderr: string;
-}
-
-/**
- * Every command this module runs. Injectable so tests can answer for `gh` and
- * `git push` without a network or a login; a non-zero exit is a result, not a
- * rejection, because every caller here branches on it.
- */
-export type ToolExec = (
-  file: string,
-  args: readonly string[],
-  options: { cwd: string; timeout: number; env?: NodeJS.ProcessEnv },
-) => Promise<ExecOutcome>;
-
-export const runCommand: ToolExec = (file, args, options) =>
-  new Promise((done) => {
-    execFile(
-      file,
-      [...args],
-      {
-        cwd: options.cwd,
-        timeout: options.timeout,
-        maxBuffer: MAX_BUFFER,
-        encoding: "utf8",
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C", GIT_TERMINAL_PROMPT: "0", ...options.env },
-      },
-      (error, stdout, stderr) => {
-        const failure = error as (Error & { code?: number | string; killed?: boolean }) | null;
-        if (failure == null) return done({ code: 0, stdout, stderr });
-        if (failure.code === "ENOENT") return done({ code: 127, stdout, stderr: `找不到可执行文件: ${file}` });
-        if (failure.killed === true) return done({ code: 124, stdout, stderr: `${file} 超时（${options.timeout}ms）` });
-        return done({ code: typeof failure.code === "number" ? failure.code : 1, stdout, stderr: stderr || failure.message });
-      },
-    );
-  });
 
 export type TaskMode = "project" | "worktree";
 
@@ -208,11 +169,10 @@ export function createIntegrator(options: CreateIntegratorOptions = {}): Integra
 
     const scratch = await mkdtemp(join(tmpdir(), "vgent-apply-"));
     try {
-      // A throwaway index: the worktree's own staging area must come out of this
-      // untouched, and an empty index makes `add -A` record the whole tree.
-      const indexEnv = { GIT_INDEX_FILE: join(scratch, "index") };
-      await gitOk(target.repoPath, ["add", "-A"], indexEnv);
-      const tree = (await gitOk(target.repoPath, ["write-tree"], indexEnv)).trim();
+      // The whole working directory as a tree, built through a throwaway index
+      // so the worktree's own staging area comes out of this untouched — the
+      // same helper 每回合快照 uses.
+      const tree = await snapshotTree(target.repoPath, exec);
       const patch = await gitOk(target.repoPath, ["diff", "--binary", base, tree]);
       if (patch.trim() === "") throw new BadRequestError("没有可带回的改动", "nothing_to_apply");
 

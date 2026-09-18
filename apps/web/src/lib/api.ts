@@ -1,5 +1,6 @@
 import type {
   ChangesSnapshot,
+  CheckpointRestore,
   EngineDescriptor,
   EngineId,
   FileContent,
@@ -223,6 +224,14 @@ export function createClient(token: string) {
       api<ThreadRecord>(`/threads/${id}/workspace/reclaim`, token, { method: "POST" }),
     restoreWorkspace: (id: string) =>
       api<ThreadRecord>(`/threads/${id}/workspace/restore`, token, { method: "POST" }),
+
+    /**
+     * 恢复到此处: put the working directory back to the snapshot taken before
+     * `messageId` ran — or, for 撤销, to the `commit` a previous restore returned.
+     * Only the files move; the conversation is never touched.
+     */
+    restoreCheckpoint: (threadId: string, target: { messageId: string } | { commit: string }) =>
+      api<CheckpointRestore>(`/threads/${threadId}/checkpoints/restore`, token, { method: "POST", json: target }),
 
     /** What the project's worktree setup script printed, for the 终端 tab. */
     getSetupLog: (id: string) => api<SetupLog>(`/threads/${id}/workspace/setup-log`, token),

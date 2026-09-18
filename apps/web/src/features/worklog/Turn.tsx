@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { getToolName } from "ai";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
-import type { AskUserQuestionsInput, AskUserQuestionsOutput } from "@/lib/types";
+import { LIVE_REASON, type AskUserQuestionsInput, type AskUserQuestionsOutput, type ThreadMessageMetadata } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
@@ -16,6 +16,8 @@ export interface TurnActions {
   alwaysAllow: (approvalId: string, entries: string[]) => void;
   answerQuestions: (toolCallId: string, output: AskUserQuestionsOutput) => void;
   openFile: (file: string) => void;
+  /** 恢复到此处: put the files back to the snapshot taken before this message ran. */
+  restoreCheckpoint: (messageId: string) => void;
 }
 
 /** Sticks the newest user box to the top of the log and shadows it once stuck. */
@@ -38,12 +40,15 @@ export function Turn({
   turn,
   isLast,
   live,
+  mainCheckout,
   actions,
   allowlist,
 }: {
   turn: TurnModel;
   isLast: boolean;
   live: boolean;
+  /** The task edits the project's own checkout, so a restore also undoes the user's edits. */
+  mainCheckout: boolean;
   actions: TurnActions;
   allowlist: readonly string[];
 }) {
@@ -52,6 +57,9 @@ export function Turn({
   const folded = !(isLast && live);
   // A `/compact` summary is an ordinary user message apart from this marker.
   const compacted = turn.user == null ? undefined : compactedOf(turn.user);
+  // Every turn a user message started has one, unless the task's directory is
+  // not a git repo — then there is nothing to offer and nothing to say about it.
+  const checkpoint = (turn.user?.metadata as ThreadMessageMetadata | undefined)?.checkpoint;
 
   return (
     <section className="flex flex-col gap-block-gap pb-xl">
@@ -59,7 +67,7 @@ export function Turn({
         <div
           ref={ref}
           className={cn(
-            "rounded-lg border border-border bg-bg-elevated px-md py-sm",
+            "group rounded-lg border border-border bg-bg-elevated px-md py-sm",
             isLast && "sticky top-0 z-2",
             pinned && "border-b-border-strong shadow-sm",
           )}
@@ -71,6 +79,13 @@ export function Turn({
                 {part.text}
               </p>
             ) : null,
+          )}
+          {checkpoint != null && (
+            <RestoreAction
+              live={live}
+              mainCheckout={mainCheckout}
+              onRestore={() => actions.restoreCheckpoint(turn.user!.id)}
+            />
           )}
         </div>
       )}
@@ -93,6 +108,63 @@ export function Turn({
         ),
       )}
     </section>
+  );
+}
+
+const QUIET_BUTTON =
+  "inline-flex h-xl flex-none items-center rounded-sm border border-border px-xs text-fg-muted text-xs hover:border-border-strong hover:bg-bg-hover hover:text-fg disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border disabled:hover:bg-transparent";
+
+/**
+ * 「恢复到此处」: two-step and inline, the same shape the 变更 panel's 「全部丢弃」
+ * uses. Quiet until the message is hovered or the button itself is focused, so
+ * the log reads as a log.
+ */
+function RestoreAction({ live, mainCheckout, onRestore }: { live: boolean; mainCheckout: boolean; onRestore: () => void }) {
+  const [armed, setArmed] = useState(false);
+
+  if (!armed) {
+    return (
+      <div className="mt-2xs flex justify-end">
+        <button
+          type="button"
+          disabled={live}
+          {...(live ? { title: LIVE_REASON } : {})}
+          onClick={() => setArmed(true)}
+          className={cn(
+            QUIET_BUTTON,
+            "opacity-0 transition-opacity duration-[var(--duration-fast)] group-hover:opacity-100 focus-visible:opacity-100",
+          )}
+        >
+          恢复到此处
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-xs flex flex-col gap-2xs border-border border-t pt-xs">
+      <p className="m-0 text-fg-muted text-xs">
+        把工作目录恢复到这条消息发出之前的状态？之后的文件改动会被撤掉，对话保留。
+        {mainCheckout && "包括你自己在这之后改的文件。"}
+      </p>
+      <div className="flex items-center gap-2xs">
+        <button
+          type="button"
+          disabled={live}
+          {...(live ? { title: LIVE_REASON } : {})}
+          onClick={() => {
+            setArmed(false);
+            onRestore();
+          }}
+          className={cn(QUIET_BUTTON, "border-border-strong text-fg")}
+        >
+          确认恢复
+        </button>
+        <button type="button" onClick={() => setArmed(false)} className={QUIET_BUTTON}>
+          取消
+        </button>
+      </div>
+    </div>
   );
 }
 

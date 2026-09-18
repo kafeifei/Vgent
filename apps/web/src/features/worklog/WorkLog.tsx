@@ -41,6 +41,9 @@ export function WorkLog({
             turn={turn}
             isLast={index === turns.length - 1}
             live={live}
+            // No worktree means the task edits the project's own checkout, which
+            // 恢复到此处 has to say out loud before it undoes the user's own edits.
+            mainCheckout={thread.workspace == null}
             actions={actions}
             allowlist={allowlist}
           />

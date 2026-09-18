@@ -4,6 +4,17 @@
 export { createApp, VGENT_SERVER_VERSION, type CreateAppOptions, type VgentApp } from "./app.js";
 export { createChunkHub, type ChunkHub } from "./chunk-hub.js";
 export {
+  CHECKPOINT_RETENTION,
+  checkpointRefPrefix,
+  createCheckpoint,
+  deleteCheckpoints,
+  listCheckpointCommits,
+  restoreCheckpoint,
+  snapshotTree,
+  type Checkpoint,
+  type RestoreResult,
+} from "./checkpoints.js";
+export {
   BadRequestError,
   ConflictError,
   EngineUnavailableError,
@@ -35,11 +46,11 @@ export {
   type FileDiff,
   type Git,
 } from "./git.js";
+export { runCommand, type ExecOutcome, type ToolExec } from "./exec.js";
 export {
   asIntegrateAction,
   changeStatsOf,
   createIntegrator,
-  runCommand,
   taskTarget,
   type CreateIntegratorOptions,
   type IntegrateAction,
@@ -47,7 +58,6 @@ export {
   type Integrator,
   type TaskMode,
   type TaskTarget,
-  type ToolExec,
 } from "./integrate.js";
 export {
   createEngineRegistry,
@@ -100,10 +110,12 @@ export { DEFAULT_WORKTREE_MAX_COUNT, enforceWorktreeLimit } from "./worktree-lim
 export { findSetupSpec, readSetupLog, runSetup, startSetup, whenSetupSettled, type SetupSpec } from "./worktree-setup.js";
 export type {
   ChangeStats,
+  CheckpointRestore,
   ConnectionInfo,
   EngineId,
   HarnessState,
   Logger,
+  MessageCheckpoint,
   PermissionMode,
   Project,
   Settings,

@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { createIntegrator, runCommand, type TaskTarget, type ToolExec } from "./integrate.js";
+import { runCommand, type ToolExec } from "./exec.js";
+import { createIntegrator, type TaskTarget } from "./integrate.js";
 
 const exec = promisify(execFile);
 const hasGit = spawnSync("git", ["--version"]).status === 0;

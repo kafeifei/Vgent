@@ -12,6 +12,7 @@ import {
   type UIMessage,
   type UIMessageChunk,
 } from "ai";
+import { createCheckpoint } from "./checkpoints.js";
 import type { ChunkHub } from "./chunk-hub.js";
 import { createChunkHub } from "./chunk-hub.js";
 import { BadRequestError, ConflictError, NotFoundError, TurnResumeFailedError, VgentServerError } from "./errors.js";
@@ -21,7 +22,7 @@ import { statelessEngines } from "./engines/registry.js";
 import type { ProjectStore } from "./store/projects.js";
 import type { SettingsStore } from "./store/settings.js";
 import { DEFAULT_THREAD_TITLE, type ThreadStore } from "./store/threads.js";
-import type { ChangeStats, Logger, ThreadMessageMetadata, ThreadRecord, ThreadStatus, UsageInfo } from "./types.js";
+import type { ChangeStats, Logger, MessageCheckpoint, ThreadMessageMetadata, ThreadRecord, ThreadStatus, UsageInfo } from "./types.js";
 import { silentLogger } from "./types.js";
 import { whenSetupSettled } from "./worktree-setup.js";
 
@@ -33,6 +34,9 @@ const DEFAULT_STOP_TIMEOUT_MS = 10_000;
 
 /** Cap on the raw error text persisted to a thread record. */
 const RAW_ERROR_TEXT_MAX_LEN = 2000;
+
+/** A 每回合快照 slower than this is worth a line in the log, but never skipped. */
+const SLOW_CHECKPOINT_MS = 5_000;
 
 /**
  * The unmasked error text for a thread record. `getHarnessErrorMessage`
@@ -208,6 +212,35 @@ export function createRunManager(options: {
       return next;
     }
     return [...stored, last];
+  };
+
+  /**
+   * 每回合开始前的工作目录快照, stamped onto the user message that starts the
+   * turn so 「恢复到此处」 knows where to go back to.
+   *
+   * Only a turn a *new user message* starts gets one: an approval answer or a
+   * question reply continues the turn whose checkpoint already describes the
+   * tree it began from. `undefined` — never a throw — for a continuation, a
+   * directory that is not a git repo, or a snapshot that failed.
+   */
+  const checkpointForTurn = async (thread: ThreadRecord, incoming: UIMessage[]): Promise<MessageCheckpoint | undefined> => {
+    if (incoming.at(-1)?.role !== "user") return undefined;
+    const project = await projects.get(thread.projectId).catch(() => undefined);
+    if (project == null) return undefined;
+    const repoPath = thread.workspace?.path ?? project.repoPath;
+    const startedAt = Date.now();
+    const taken = await createCheckpoint({ repoPath, threadId: thread.id, log });
+    const elapsed = Date.now() - startedAt;
+    if (elapsed >= SLOW_CHECKPOINT_MS) log.warn(`线程 ${thread.id} 的回合快照耗时 ${elapsed}ms`);
+    return taken == null ? undefined : { ...taken, at: new Date().toISOString() };
+  };
+
+  /** The incoming list with the checkpoint stamped onto its last (user) message. */
+  const withCheckpoint = (incoming: UIMessage[], checkpoint: MessageCheckpoint | undefined): UIMessage[] => {
+    const last = incoming.at(-1);
+    if (checkpoint == null || last == null) return incoming;
+    const metadata: ThreadMessageMetadata = { ...(last.metadata as ThreadMessageMetadata | undefined), checkpoint };
+    return [...incoming.slice(0, -1), { ...last, metadata }];
   };
 
   const deriveStatus = (assistant: UIMessage | undefined): ThreadStatus => {
@@ -549,7 +582,9 @@ export function createRunManager(options: {
       }
       if (validated.length === 0) throw new BadRequestError("消息为空", "invalid_messages");
 
-      const messages = mergeIncoming(thread.messages, validated);
+      // Setup has settled and the engine has not started: this is the moment
+      // the working directory still looks the way the user saw it.
+      const messages = mergeIncoming(thread.messages, withCheckpoint(validated, await checkpointForTurn(thread, validated)));
       // A thread is named by its first user message; an explicit title is kept.
       const title = thread.title === DEFAULT_THREAD_TITLE ? deriveThreadTitle(messages) : undefined;
       const updated = await threads.update(threadId, {

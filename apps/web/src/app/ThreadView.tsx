@@ -87,6 +87,31 @@ function ThreadChatView({
   useEffect(() => onQueue(queue), [onQueue, queue]);
   useEffect(() => onMessages(messages), [onMessages, messages]);
 
+  /**
+   * 恢复到此处, and the 撤销 its toast offers — the same call either way, which
+   * is why the undo goes back through this function by ref rather than
+   * duplicating the error handling and the 变更 refresh.
+   */
+  const restoreRef = useRef<(target: { messageId: string } | { commit: string }) => void>(() => {});
+  const restoreCheckpoint = useCallback(
+    (target: { messageId: string } | { commit: string }) => {
+      void (async () => {
+        try {
+          const result = await client.restoreCheckpoint(thread.id, target);
+          actions.toast("已恢复到此处", { label: "撤销", onClick: () => restoreRef.current({ commit: result.undo }) });
+        } catch (failure) {
+          actions.toast(failure instanceof Error ? failure.message : String(failure));
+        }
+        // The tree moved under the 变更 panel and the composer's 审查 pill.
+        changes.refresh();
+      })();
+    },
+    [actions, changes, client, thread.id],
+  );
+  useEffect(() => {
+    restoreRef.current = restoreCheckpoint;
+  }, [restoreCheckpoint]);
+
   const turnActions: TurnActions = useMemo(
     () => ({
       respondToApproval: (id, approved) => void addToolApprovalResponse({ id, approved }),
@@ -96,8 +121,9 @@ function ThreadChatView({
       },
       answerQuestions: (toolCallId, output) => void addToolOutput({ tool: "askUserQuestions", toolCallId, output }),
       openFile: (file) => actions.openChanges(file),
+      restoreCheckpoint: (messageId) => restoreCheckpoint({ messageId }),
     }),
-    [actions, addToolApprovalResponse, addToolOutput, thread.id],
+    [actions, addToolApprovalResponse, addToolOutput, restoreCheckpoint],
   );
 
   // Every approval the global allowlist already answers, answered once. The

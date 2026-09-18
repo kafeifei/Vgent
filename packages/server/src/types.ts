@@ -69,12 +69,25 @@ export interface UsageInfo {
 }
 
 /**
- * `UIMessage.metadata` on an assistant message this server persisted.
+ * The working directory as it was right before one turn started, kept as a git
+ * commit under `refs/vgent/checkpoints/<threadId>/`. 「恢复到此处」 puts the
+ * files back to it; the conversation is never touched.
+ */
+export interface MessageCheckpoint {
+  commit: string;
+  ref: string;
+  at: string;
+}
+
+/**
+ * `UIMessage.metadata` on a message this server persisted.
  *
- * Attached by the run manager's `toUIMessageStream({ messageMetadata })`, so
- * every engine whose stream reports usage gets it. Deliberately *not* mirrored
- * onto `ThreadSummary`: the client derives the context ring from `messages`,
- * and the thread list has no use for it.
+ * The usage fields are assistant-only, attached by the run manager's
+ * `toUIMessageStream({ messageMetadata })` so every engine whose stream reports
+ * usage gets them. `checkpoint` is the one user-message field: the snapshot the
+ * turn that message started was taken from. Deliberately *not* mirrored onto
+ * `ThreadSummary`: the client derives the context ring from `messages`, and the
+ * thread list has no use for any of it.
  */
 export interface ThreadMessageMetadata {
   /** The last step's usage — its `inputTokens` is the context size at turn end. */
@@ -86,6 +99,20 @@ export interface ThreadMessageMetadata {
    * replaced, and when. The work log renders a marker from it.
    */
   compacted?: { before: number; at: string };
+  /**
+   * On a user message: the snapshot taken right before the turn it started.
+   * Absent when the task's directory is not a git repo, or the snapshot failed.
+   */
+  checkpoint?: MessageCheckpoint;
+}
+
+/** What `POST /api/threads/:id/checkpoints/restore` answers with. */
+export interface CheckpointRestore {
+  /** The checkpoint commit the working directory now matches. */
+  restored: string;
+  /** The state that was just replaced, kept so 撤销 can put it back. */
+  undo: string;
+  changeStats?: ChangeStats;
 }
 
 /**

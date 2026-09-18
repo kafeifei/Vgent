@@ -3,6 +3,7 @@ import { resolveModel } from "@vgent/engine";
 import { UI_MESSAGE_STREAM_HEADERS, createUIMessageStreamResponse, type LanguageModel } from "ai";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
+import { createCheckpoint, deleteCheckpoints, listCheckpointCommits, restoreCheckpoint } from "./checkpoints.js";
 import { compactThread } from "./compact.js";
 import { BadRequestError, ConflictError, NotFoundError, UnauthorizedError, UpstreamModelError, VgentServerError } from "./errors.js";
 import type { EngineRegistry } from "./engines/registry.js";
@@ -17,11 +18,22 @@ import { asIntegrateAction, changeStatsOf, createIntegrator, taskTarget, type In
 import { createModelCatalog } from "./models.js";
 import { createRunManager, recoverInterruptedThreads } from "./runs.js";
 import { registerStatic } from "./static.js";
-import { createProjectStore, type ProjectStore } from "./store/projects.js";
 import { createPlanStore, MAX_PLAN_BYTES } from "./store/plans.js";
+import { createProjectStore, type ProjectStore } from "./store/projects.js";
 import { asMcpServers, createSettingsStore, type SettingsPatch } from "./store/settings.js";
 import { createThreadStore, type ThreadPatch } from "./store/threads.js";
-import type { ChangeStats, EngineId, Logger, PermissionMode, Project, ThreadMode, ThreadRecord, ThreadWorkspace } from "./types.js";
+import type {
+  ChangeStats,
+  CheckpointRestore,
+  EngineId,
+  Logger,
+  PermissionMode,
+  Project,
+  ThreadMessageMetadata,
+  ThreadMode,
+  ThreadRecord,
+  ThreadWorkspace,
+} from "./types.js";
 import { silentLogger } from "./types.js";
 import { createWorktree, reclaimWorktree, removeWorktree, restoreWorktree } from "./workspace.js";
 import { DEFAULT_WORKTREE_MAX_COUNT, enforceWorktreeLimit } from "./worktree-limit.js";
@@ -403,6 +415,60 @@ export function createApp(options: CreateAppOptions): VgentApp {
     return c.json((await threads.get(id)) ?? updated);
   });
 
+  // --- checkpoint -------------------------------------------------------
+
+  /**
+   * The commit a restore request names, checked against this thread's own
+   * checkpoint refs — an arbitrary sha is never checked out. `messageId` picks
+   * the snapshot taken before that message ran; `commit` is how 撤销 asks for
+   * the state a previous restore replaced.
+   */
+  const checkpointToRestore = async (thread: ThreadRecord, repoPath: string, body: unknown): Promise<string> => {
+    const { messageId, commit } = (body ?? {}) as { messageId?: unknown; commit?: unknown };
+    const byMessage = typeof messageId === "string" && messageId.length > 0;
+    const byCommit = typeof commit === "string" && commit.length > 0;
+    if (byMessage === byCommit) throw new BadRequestError("需要 messageId 或 commit，二选一", "invalid_checkpoint");
+
+    let wanted: string;
+    if (byMessage) {
+      const message = thread.messages.find((entry) => entry.id === messageId);
+      const stored = (message?.metadata as ThreadMessageMetadata | undefined)?.checkpoint;
+      if (stored == null) throw new NotFoundError("这条消息没有快照", "checkpoint_not_found");
+      wanted = stored.commit;
+    } else {
+      wanted = commit as string;
+    }
+
+    const known = await listCheckpointCommits({ repoPath, threadId: thread.id });
+    if (!known.includes(wanted)) throw new NotFoundError("快照已不存在", "checkpoint_not_found");
+    return wanted;
+  };
+
+  /**
+   * 恢复到此处: put the files back to a checkpoint, and keep what they were
+   * before as an undo point. Only the working directory moves — the index, HEAD
+   * and the conversation are all left exactly as they are.
+   */
+  app.post("/api/threads/:id/checkpoints/restore", async (c) => {
+    const id = c.req.param("id");
+    const thread = await threadOf(id);
+    assertNotLive(thread);
+    const target = await targetFor(thread);
+    const commit = await checkpointToRestore(thread, target.repoPath, await c.req.json().catch(() => undefined));
+
+    // Taken first, and required: a restore nobody can undo is not one we offer.
+    const undo = await createCheckpoint({ repoPath: target.repoPath, threadId: id, undo: true, log });
+    if (undo == null) {
+      throw new VgentServerError({ message: "没能保存当前状态，已放弃恢复", status: 500, code: "checkpoint_failed" });
+    }
+    const moved = await restoreCheckpoint({ repoPath: target.repoPath, commit, log });
+    log.info(`线程 ${id} 恢复到 ${commit.slice(0, 7)}：写回 ${moved.written} 个文件，删除 ${moved.deleted} 个`);
+    await restat(id);
+    const stats = (await threads.get(id))?.changeStats;
+    const body: CheckpointRestore = { restored: commit, undo: undo.commit, ...(stats != null ? { changeStats: stats } : {}) };
+    return c.json(body);
+  });
+
   // --- files ------------------------------------------------------------
 
   app.get("/api/threads/:id/files", async (c) => {
@@ -664,6 +730,10 @@ export function createApp(options: CreateAppOptions): VgentApp {
     // refused to touch.
     if (thread?.workspace != null) await removeWorktree({ dataDir, project: await projectOf(thread), thread });
     await plans.remove(id).catch((error: unknown) => log.warn(`删除线程 ${id} 的计划文档失败`, error));
+    // Checkpoint refs live in the project's own ref store, which every worktree
+    // shares — removing the directory above does not take them with it.
+    const project = thread == null ? undefined : await projects.get(thread.projectId);
+    if (project != null) await deleteCheckpoints({ repoPath: project.repoPath, threadId: id, log });
     await threads.remove(id);
     return c.body(null, 204);
   });

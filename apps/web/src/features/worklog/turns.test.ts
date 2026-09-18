@@ -24,6 +24,18 @@ describe("buildTurns", () => {
     expect(turns[1]?.blocks.map((block) => block.kind)).toEqual(["reasoning", "text"]);
   });
 
+  /** An engine that reasons without summarizing sends an empty part every turn. */
+  it("drops a reasoning part that has no text", () => {
+    const turns = buildTurns([
+      user("u1", "问"),
+      assistant("a1", [
+        { type: "reasoning", text: "", state: "done" } as UIMessage["parts"][number],
+        { type: "text", text: "答" },
+      ]),
+    ]);
+    expect(turns[0]?.blocks.map((block) => block.kind)).toEqual(["text"]);
+  });
+
   it("gives a history that starts with an assistant message a user-less turn", () => {
     const turns = buildTurns([assistant("a1", [{ type: "text", text: "续流" }])]);
     expect(turns).toHaveLength(1);

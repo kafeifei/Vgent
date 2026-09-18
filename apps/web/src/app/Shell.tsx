@@ -110,6 +110,7 @@ export function Shell({ token }: { token: string }) {
               client={client}
               changes={changes}
               rightOpen={right.open}
+              defaultModel={state.settings?.defaultModel}
               onQueue={onQueue}
               onMessages={onMessages}
             />

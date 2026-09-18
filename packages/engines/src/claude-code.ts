@@ -9,7 +9,7 @@ import {
   type HarnessAgentSession,
   type HarnessAgentSkill,
 } from "@ai-sdk/harness/agent";
-import { createClaudeCode } from "@ai-sdk/harness-claude-code";
+import { createClaudeCode, type ClaudeCodeThinkingConfig } from "@ai-sdk/harness-claude-code";
 import { createLocalSandboxProvider } from "@vgent/sandbox-local";
 import type { ToolSet } from "ai";
 import { ensureDirectory, resolvePnpmDir, resolveRepoPath, trackSandboxSessions, withRepoWorkDir } from "./shared.js";
@@ -28,6 +28,12 @@ export interface ClaudeCodeEngineOptions {
   permissionMode?: HarnessAgentPermissionMode;
   /** Harness-specific model identifier. Defaults to the runtime's own default. */
   model?: string;
+  /**
+   * Extended thinking, passed to the adapter as-is. Defaults to the harness's
+   * own `{ type: 'adaptive', display: 'summarized' }`. Build one from a thread's
+   * 「思考等级」with {@link claudeCodeThinking}.
+   */
+  thinking?: ClaudeCodeThinkingConfig;
   /** AI SDK tools executed in this host process when Claude calls them. */
   tools?: ToolSet;
   /** Instruction bundles surfaced to the runtime. */
@@ -84,6 +90,21 @@ export interface ClaudeCodeEngine {
 }
 
 export const DEFAULT_CLAUDE_CODE_DATA_DIR = join(homedir(), ".vgent", "harness", "claude-code");
+
+/**
+ * A thread's「思考等级」as the Claude Code harness spells it. The three levels
+ * the model catalog offers for this engine are the three `thinking.type` values
+ * (`ClaudeCodeHarnessSettings.thinking`); anything else — including no choice at
+ * all — falls back to the harness's own default, adaptive thinking.
+ *
+ * `display: 'summarized'` on both thinking modes is what makes the reasoning
+ * reach the client as text; `'omitted'` would keep it internal.
+ */
+export function claudeCodeThinking(level: string | undefined): ClaudeCodeThinkingConfig {
+  if (level === "disabled") return { type: "disabled" };
+  if (level === "enabled") return { type: "enabled", display: "summarized" };
+  return { type: "adaptive", display: "summarized" };
+}
 
 /**
  * Credential variables copied out of the caller's environment, when there are
@@ -195,6 +216,7 @@ export async function createClaudeCodeEngine(options: ClaudeCodeEngineOptions): 
   const harness = createClaudeCode({
     auth: options.auth ?? defaultClaudeCodeAuth(),
     port: 0,
+    ...(options.thinking != null ? { thinking: options.thinking } : {}),
     env: {
       DISABLE_AUTOUPDATER: "1",
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",

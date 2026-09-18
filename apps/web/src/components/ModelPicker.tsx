@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createClient, getToken } from "@/lib/api";
 import type { EngineId, ModelCatalog } from "@/lib/types";
 import { PopItem, PopTitle, Popover } from "./Popover";
@@ -21,10 +21,51 @@ function describeSource(source: string): string {
     .join(" + ");
 }
 
-type CatalogState =
+export type CatalogState =
   | { status: "loading" }
   | { status: "ready"; catalog: ModelCatalog }
   | { status: "error"; message: string };
+
+/**
+ * One load per engine, shared by the model picker and the 思考 picker beside
+ * it. The server caches each catalog for ten minutes, so remounting a picker
+ * costs nothing worth debouncing.
+ *
+ * `onCatalog` hands the loaded list up so a sibling can read a model's metadata
+ * (the composer's context ring wants `contextWindow`) off the list this hook
+ * has already fetched instead of fetching it again. It is held in a ref rather
+ * than depended on: it is an output, and refetching whenever the caller hands
+ * down a new closure is exactly what this effect must not do.
+ */
+export function useModelCatalog(engine: EngineId, onCatalog?: (catalog: ModelCatalog) => void): CatalogState {
+  const [state, setState] = useState<CatalogState>({ status: "loading" });
+  const notify = useRef(onCatalog);
+  notify.current = onCatalog;
+
+  useEffect(() => {
+    const token = getToken();
+    if (token == null) return;
+    let cancelled = false;
+    setState({ status: "loading" });
+    createClient(token)
+      .listModels(engine)
+      .then(
+        (catalog) => {
+          if (cancelled) return;
+          setState({ status: "ready", catalog });
+          notify.current?.(catalog);
+        },
+        (error: unknown) => {
+          if (!cancelled) setState({ status: "error", message: error instanceof Error ? error.message : String(error) });
+        },
+      );
+    return () => {
+      cancelled = true;
+    };
+  }, [engine]);
+
+  return state;
+}
 
 export function ModelPicker({
   engine,
@@ -38,43 +79,13 @@ export function ModelPicker({
   engine: EngineId;
   model: string | undefined;
   onPick: (model: string | null) => void;
-  /**
-   * The loaded catalog, handed up so a sibling can read a model's metadata
-   * (the composer's context ring wants `contextWindow`) off the list this
-   * picker has already fetched instead of fetching it again.
-   */
+  /** See `useModelCatalog`: the loaded list, handed up for a sibling to read. */
   onCatalog?: (catalog: ModelCatalog) => void;
   trigger: (props: Parameters<Parameters<typeof Popover>[0]["trigger"]>[0]) => ReactNode;
   align?: "start" | "end";
   side?: "bottom" | "top";
 }) {
-  const [state, setState] = useState<CatalogState>({ status: "loading" });
-
-  // One load per engine. The server caches each catalog for ten minutes, so
-  // remounting the picker costs nothing worth debouncing. `onCatalog` is
-  // deliberately not a dependency: it is an output, and refetching whenever the
-  // parent hands down a new closure is exactly what this effect must not do.
-  useEffect(() => {
-    const token = getToken();
-    if (token == null) return;
-    let cancelled = false;
-    setState({ status: "loading" });
-    createClient(token)
-      .listModels(engine)
-      .then(
-        (catalog) => {
-          if (cancelled) return;
-          setState({ status: "ready", catalog });
-          onCatalog?.(catalog);
-        },
-        (error: unknown) => {
-          if (!cancelled) setState({ status: "error", message: error instanceof Error ? error.message : String(error) });
-        },
-      );
-    return () => {
-      cancelled = true;
-    };
-  }, [engine]);
+  const state = useModelCatalog(engine, onCatalog);
 
   const entries = state.status === "ready" ? state.catalog.models : [];
   // A thread can carry a model the catalog no longer lists (another machine, an

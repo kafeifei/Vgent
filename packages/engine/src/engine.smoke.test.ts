@@ -38,6 +38,44 @@ describe("createVgentEngine (smoke)", () => {
     5 * 60_000,
   );
 
+  /**
+   * The user-visible bug this guards: the ChatGPT/Codex backend returns its
+   * reasoning *encrypted*, so without `reasoningSummary` every turn arrives
+   * with empty `reasoning` parts and the UI has nothing to show.
+   *
+   * The prompt is a hard puzzle on purpose. The backend only emits a summary
+   * when there was enough reasoning to be worth summarizing: measured against
+   * the real endpoint, an easy question comes back with an empty part even with
+   * the option correctly set, and a medium one is a coin flip. This one
+   * produces double-digit reasoning parts every run.
+   */
+  smoke(
+    "streams a non-empty reasoning part when an effort is set",
+    async () => {
+      const repoPath = await mkdtemp(join(tmpdir(), "vgent-engine-smoke-"));
+
+      const { agent, dispose } = createVgentEngine({
+        model: "codex-subscription:gpt-5.5",
+        repoPath,
+        permissionMode: "allow-reads",
+        reasoning: { effort: "medium" },
+      });
+      try {
+        const result = await agent.generate({
+          prompt:
+            "不要调用任何工具。请仔细推导：把 1 到 9 这九个数字各用一次，填进三位数 ABC、DEF、GHI，" +
+            "使得 ABC + DEF = GHI。列出所有解各自的 ABC、DEF、GHI，并说明你是怎么缩小搜索范围的。",
+        });
+        const reasoning = result.reasoning.map((part) => part.text).filter((text) => text.trim() !== "");
+        console.log(`[smoke] reasoning parts: ${reasoning.length}, first: ${JSON.stringify(reasoning[0]?.slice(0, 120))}`);
+        expect(reasoning.length).toBeGreaterThan(0);
+      } finally {
+        await dispose();
+      }
+    },
+    5 * 60_000,
+  );
+
   smoke(
     "delegates a search to the explore subagent",
     async () => {

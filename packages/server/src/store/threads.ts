@@ -20,6 +20,7 @@ export interface CreateThreadInput {
   title?: string;
   engine: EngineId;
   model?: string;
+  reasoningEffort?: string;
   permissionMode: PermissionMode;
 }
 
@@ -28,6 +29,7 @@ export type ThreadPatch = Partial<{
   /** Only ever changed on a thread with no messages; the route enforces that. */
   engine: EngineId;
   model: string | undefined;
+  reasoningEffort: string | undefined;
   permissionMode: PermissionMode;
   /** The per-thread tool allowlist. `undefined` clears it. */
   alwaysAllow: string[] | undefined;
@@ -180,6 +182,7 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
         title: input.title?.trim() || DEFAULT_THREAD_TITLE,
         engine: input.engine,
         ...(input.model != null ? { model: input.model } : {}),
+        ...(input.reasoningEffort != null ? { reasoningEffort: input.reasoningEffort } : {}),
         permissionMode: input.permissionMode,
         status: "idle",
         createdAt: now,
@@ -211,6 +214,10 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
         if ("model" in patch) {
           if (patch.model == null) delete next.model;
           else next.model = patch.model;
+        }
+        if ("reasoningEffort" in patch) {
+          if (patch.reasoningEffort == null) delete next.reasoningEffort;
+          else next.reasoningEffort = patch.reasoningEffort;
         }
         if ("error" in patch) {
           if (patch.error == null) delete next.error;

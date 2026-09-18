@@ -75,6 +75,29 @@ export interface VgentEngineOptions {
    * all and the prompt says nothing about memory.
    */
   memoryDir?: string;
+  /**
+   * How hard the model is asked to think, and whether it has to show its work.
+   * Only reaches models that take the OpenAI Responses reasoning options — see
+   * {@link reasoningProviderOptions}; anything else ignores it.
+   */
+  reasoning?: VgentReasoningOptions;
+}
+
+export interface VgentReasoningOptions {
+  /**
+   * `reasoningEffort` on the OpenAI Responses API: `low` / `medium` / `high` /
+   * `xhigh` / `max`. Which of those a given model accepts varies, so this stays
+   * a plain string and the model catalog is what offers the choices. Unset
+   * leaves the provider's own default.
+   */
+  effort?: string;
+  /**
+   * Whether to ask for a reasoning summary. Defaults to true, and that default
+   * is the point: the ChatGPT/Codex backend returns its reasoning *encrypted*,
+   * so without `reasoningSummary` every turn arrives with empty reasoning parts
+   * and the UI has nothing to show.
+   */
+  summary?: boolean;
 }
 
 /**
@@ -119,6 +142,38 @@ function memoryEntries(dir: string): string[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * True for the models that take the OpenAI Responses reasoning options: the
+ * machine's Codex subscription login, and OpenAI models routed through the
+ * gateway. A resolved model is matched too (`codex-subscription.responses`, or
+ * the gateway carrying an `openai/…` id), so a caller that builds the model
+ * itself is not silently left without reasoning.
+ */
+export function usesOpenAIReasoning(model: LanguageModel | string): boolean {
+  if (typeof model === "string") return model.startsWith(CODEX_SUBSCRIPTION_PREFIX) || model.startsWith("openai/");
+  return model.provider.startsWith("codex-subscription") || model.modelId.startsWith("openai/");
+}
+
+/**
+ * The `providerOptions` a reasoning-capable OpenAI model is driven with.
+ *
+ * `reasoningSummary` and `reasoningEffort` are the two documented reasoning
+ * options of `@ai-sdk/openai`'s Responses models. The summary is what turns the
+ * otherwise encrypted reasoning into text parts the UI can render, so `'auto'`
+ * is requested unless the caller explicitly opts out.
+ */
+export function reasoningProviderOptions(
+  model: LanguageModel | string,
+  reasoning: VgentReasoningOptions = {},
+): { openai: Record<string, string> } | undefined {
+  if (!usesOpenAIReasoning(model)) return undefined;
+  const openai = {
+    ...(reasoning.summary === false ? {} : { reasoningSummary: "auto" }),
+    ...(reasoning.effort != null && reasoning.effort !== "" ? { reasoningEffort: reasoning.effort } : {}),
+  };
+  return Object.keys(openai).length === 0 ? undefined : { openai };
 }
 
 /** Cheap prompt-size estimate: roughly four characters per token. */
@@ -172,8 +227,19 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
   // since each call re-sends the whole history.
   let persisted = 0;
 
+  // Keyed on the string the caller named when there is one, so a spec that was
+  // just resolved is still recognised for what it is.
+  const providerOptions = reasoningProviderOptions(
+    typeof options.model === "string" ? options.model : model,
+    options.reasoning ?? {},
+  );
+
   const agent = new ToolLoopAgent({
     model,
+    // Merged with, not replacing, the defaults `createCodexSubscriptionModel`
+    // pins on the model (`store: false`): `defaultSettingsMiddleware` merges
+    // provider options and lets the call's own win.
+    ...(providerOptions == null ? {} : { providerOptions }),
     instructions: buildInstructions({
       repoPath,
       ...(options.context == null ? {} : { context: options.context }),

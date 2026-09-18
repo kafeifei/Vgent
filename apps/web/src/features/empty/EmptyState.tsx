@@ -3,9 +3,9 @@ import { GitBranch } from "lucide-react";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ProjectPicker } from "@/components/ProjectPicker";
 import { Composer } from "@/features/composer/Composer";
-import { ENGINES } from "@/lib/engineOptions";
+import { ENGINES, PERMISSIONS } from "@/lib/engineOptions";
 import { useToast } from "@/lib/toast";
-import type { EngineId, Project, Settings, WorkspaceMode } from "@/lib/types";
+import type { EngineId, PermissionMode, Project, Settings, WorkspaceMode } from "@/lib/types";
 
 /**
  * 「配置 + 输入」, not 「欢迎语 + 建议」: pick the repo and the run location
@@ -26,7 +26,14 @@ export function EmptyState({
   onSelectProject: (projectId: string) => void;
   onAddProject: (repoPath: string) => Promise<void>;
   onPickFolder: () => Promise<string | null>;
-  onStart: (text: string, engine: EngineId, workspace: WorkspaceMode, model: string | null) => void;
+  onStart: (
+    text: string,
+    engine: EngineId,
+    workspace: WorkspaceMode,
+    model: string | null,
+    permissionMode: PermissionMode,
+    reasoningEffort: string | null,
+  ) => void;
 }) {
   const toast = useToast();
   const [draft, setDraft] = useState("");
@@ -36,8 +43,16 @@ export function EmptyState({
   // `null` means「用默认」: the server picks `settings.defaultModel`. Reset when
   // the engine changes, since a model id only means something to one engine.
   const [model, setModel] = useState<string | null>(null);
+  // Same story: a level belongs to a model, so switching either one clears it
+  // and the model's own default applies again.
+  const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(
+    () => settings?.defaultPermissionMode ?? "allow-reads",
+  );
   const [workspace, setWorkspace] = useState<WorkspaceMode>("project");
   const project = projects.find((entry) => entry.id === projectId);
+  // Codex has no built-in tool approval, so the server refuses any other mode.
+  const effectivePermission: PermissionMode = engine === "codex" ? "allow-all" : permissionMode;
 
   const submit = () => {
     if (draft.trim() === "") return;
@@ -45,7 +60,7 @@ export function EmptyState({
       toast("先选一个项目");
       return;
     }
-    onStart(draft.trim(), engine, workspace, model);
+    onStart(draft.trim(), engine, workspace, model, effectivePermission, reasoningEffort);
     setDraft("");
   };
 
@@ -103,12 +118,49 @@ export function EmptyState({
                     onClick={() => {
                       setEngine(entry.id);
                       setModel(null);
+                      setReasoningEffort(null);
                       close();
                     }}
                   >
                     {entry.label}
                   </PopItem>
                 ))}
+              </>
+            )}
+          </Popover>
+          {/* The same choice `TaskHeader` offers, made before the task exists. */}
+          <Popover
+            trigger={(props) => (
+              <button
+                type="button"
+                {...props}
+                className="inline-flex h-xl items-center gap-3xs rounded-sm px-xs text-fg-muted text-sm hover:bg-bg-hover hover:text-fg"
+              >
+                <span className="font-mono">{effectivePermission}</span>
+                <span className="opacity-60">▾</span>
+              </button>
+            )}
+          >
+            {(close) => (
+              <>
+                <PopTitle>权限模式</PopTitle>
+                {PERMISSIONS.map((mode) => {
+                  const codexLocked = engine === "codex" && mode !== "allow-all";
+                  return (
+                    <PopItem
+                      key={mode}
+                      selected={mode === effectivePermission}
+                      disabled={codexLocked}
+                      {...(codexLocked ? { hint: "Codex 只支持 allow-all" } : {})}
+                      onClick={() => {
+                        setPermissionMode(mode);
+                        close();
+                      }}
+                    >
+                      <span className="font-mono">{mode}</span>
+                    </PopItem>
+                  );
+                })}
               </>
             )}
           </Popover>
@@ -138,7 +190,13 @@ export function EmptyState({
           live={false}
           engine={engine}
           model={model ?? undefined}
-          onPickModel={setModel}
+          defaultModel={settings?.defaultModel}
+          onPickModel={(next) => {
+            setModel(next);
+            setReasoningEffort(null);
+          }}
+          reasoningEffort={reasoningEffort ?? undefined}
+          onPickReasoning={setReasoningEffort}
           autoFocus
           big
         />

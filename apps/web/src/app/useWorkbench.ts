@@ -151,7 +151,14 @@ export function useWorkbench(token: string) {
       pickFolder: () => client.pickFolder(),
 
       /** Empty state: create the thread, select it, send the first message. */
-      startThread: (text: string, engine: EngineId, workspace: WorkspaceMode, model: string | null) => {
+      startThread: (
+        text: string,
+        engine: EngineId,
+        workspace: WorkspaceMode,
+        model: string | null,
+        permissionMode: PermissionMode,
+        reasoningEffort: string | null,
+      ) => {
         if (activeProjectId == null) {
           toast("先添加一个项目");
           return;
@@ -163,7 +170,8 @@ export function useWorkbench(token: string) {
             workspace,
             // Omitted, not null: the server reads「没传」as「用 defaultModel」.
             ...(model == null ? {} : { model }),
-            ...(engine === "codex" ? { permissionMode: "allow-all" as const } : {}),
+            ...(reasoningEffort == null ? {} : { reasoningEffort }),
+            permissionMode,
           })
           .then(async (record) => {
             selectThread(record.id);
@@ -186,6 +194,10 @@ export function useWorkbench(token: string) {
 
       setModel: (threadId: string, model: string | null) => {
         void client.patchThread(threadId, { model }).catch((error: Error) => toast(error.message));
+      },
+
+      setReasoningEffort: (threadId: string, reasoningEffort: string | null) => {
+        void client.patchThread(threadId, { reasoningEffort }).catch((error: Error) => toast(error.message));
       },
 
       setEngine: (threadId: string, engine: EngineId) => {

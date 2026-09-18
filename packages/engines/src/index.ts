@@ -2,6 +2,7 @@
  * `@vgent/engines` — pluggable engines exposed uniformly as AI SDK `Agent`s.
  */
 export {
+  claudeCodeThinking,
   createClaudeCodeEngine,
   defaultClaudeCodeAuth,
   DEFAULT_CLAUDE_CODE_DATA_DIR,

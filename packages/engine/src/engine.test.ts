@@ -4,7 +4,13 @@ import { join } from "node:path";
 import type { LanguageModelV3CallOptions, LanguageModelV3Usage } from "@ai-sdk/provider";
 import { MockLanguageModelV3 } from "ai/test";
 import { beforeEach, describe, expect, it } from "vitest";
-import { createVgentEngine, resolveModel, type VgentEngineEvent } from "./engine.js";
+import {
+  createVgentEngine,
+  reasoningProviderOptions,
+  resolveModel,
+  usesOpenAIReasoning,
+  type VgentEngineEvent,
+} from "./engine.js";
 import { loadSession } from "./session-store.js";
 
 const NO_USAGE: LanguageModelV3Usage = {
@@ -169,6 +175,64 @@ describe("createVgentEngine", () => {
     const toolEvent = events.find((event) => event.type === "tool-end");
     expect(toolEvent).toMatchObject({ toolName: "read", ok: true });
     expect(JSON.stringify(events)).not.toMatch(/token/i);
+  });
+});
+
+/**
+ * A mock that answers in one step and records the call options it was handed.
+ * `provider`/`modelId` are the real ones a Codex subscription model reports —
+ * verified against `createOpenAI({ name: 'codex-subscription' }).responses(id)`
+ * — so `usesOpenAIReasoning` recognises it exactly as it does in production.
+ */
+function answeringMock(identity: { provider: string; modelId: string }) {
+  return new MockLanguageModelV3({
+    ...identity,
+    doGenerate: [
+      {
+        content: [{ type: "text" as const, text: "ok" }],
+        finishReason: { unified: "stop" as const },
+        usage: NO_USAGE,
+        warnings: [],
+      },
+    ],
+  });
+}
+
+describe("reasoning options", () => {
+  it("always asks a codex model for a reasoning summary, and carries the effort when there is one", () => {
+    expect(reasoningProviderOptions("codex-subscription:gpt-5.5")).toEqual({ openai: { reasoningSummary: "auto" } });
+    expect(reasoningProviderOptions("codex-subscription:gpt-5.5", { effort: "high" })).toEqual({
+      openai: { reasoningSummary: "auto", reasoningEffort: "high" },
+    });
+    expect(reasoningProviderOptions("openai/gpt-5.5", { effort: "low" })).toEqual({
+      openai: { reasoningSummary: "auto", reasoningEffort: "low" },
+    });
+    expect(reasoningProviderOptions("codex-subscription:gpt-5.5", { summary: false })).toBeUndefined();
+  });
+
+  it("leaves a non-OpenAI model alone", () => {
+    expect(reasoningProviderOptions("anthropic/claude-sonnet-5", { effort: "high" })).toBeUndefined();
+    expect(usesOpenAIReasoning(readThenAnswer("x"))).toBe(false);
+  });
+
+  it("reaches the model call: the agent sends reasoningSummary and the effort it was given", async () => {
+    const model = answeringMock({ provider: "codex-subscription.responses", modelId: "gpt-5.5" });
+    const { agent } = createVgentEngine({ model, repoPath, reasoning: { effort: "medium" } });
+
+    await agent.generate({ prompt: "hi" });
+
+    expect(model.doGenerateCalls[0]?.providerOptions).toEqual({
+      openai: { reasoningSummary: "auto", reasoningEffort: "medium" },
+    });
+  });
+
+  it("sends no provider options at all for a model that has no reasoning knob", async () => {
+    const model = answeringMock({ provider: "anthropic.messages", modelId: "claude-sonnet-5" });
+    const { agent } = createVgentEngine({ model, repoPath, reasoning: { effort: "medium" } });
+
+    await agent.generate({ prompt: "hi" });
+
+    expect(model.doGenerateCalls[0]?.providerOptions).toBeUndefined();
   });
 });
 

@@ -166,6 +166,8 @@ export function createClient(token: string) {
       engine?: EngineId;
       permissionMode?: PermissionMode;
       model?: string;
+      /** The model's「思考等级」; omitted leaves the engine's own default. */
+      reasoningEffort?: string;
       /** `worktree` gives the task its own checkout; the default edits the project. */
       workspace?: WorkspaceMode;
     }) => api<ThreadRecord>("/threads", token, { method: "POST", json: input }),
@@ -177,6 +179,8 @@ export function createClient(token: string) {
         engine?: EngineId;
         permissionMode?: PermissionMode;
         model?: string | null;
+        /** `null` clears it and hands the level back to the engine. */
+        reasoningEffort?: string | null;
         /** The task's 「本任务内一直允许」 tool list, whole. `[]` clears it. */
         alwaysAllow?: string[];
       },

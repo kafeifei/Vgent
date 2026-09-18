@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { UIMessage } from "ai";
 import { ArrowUp, File, Folder, Plus, Square } from "lucide-react";
 import { ModelPicker, modelLabel } from "@/components/ModelPicker";
+import { ReasoningPicker } from "@/components/ReasoningPicker";
 import { dirName } from "@/features/changes/paths";
 import { baseName } from "@/lib/format";
 import { useToast } from "@/lib/toast";
@@ -36,7 +37,10 @@ export function Composer({
   live,
   engine,
   model,
+  defaultModel,
   onPickModel,
+  reasoningEffort,
+  onPickReasoning,
   completeFiles,
   messages,
   changedFiles,
@@ -51,7 +55,11 @@ export function Composer({
   live: boolean;
   engine: EngineId;
   model: string | undefined;
+  /** What the server would use when no model is picked; only the 思考 chip reads it. */
+  defaultModel?: string | undefined;
   onPickModel: (model: string | null) => void;
+  reasoningEffort: string | undefined;
+  onPickReasoning: (level: string) => void;
   /** Absent (the empty state) leaves `@` inert. */
   completeFiles?: (q: string) => Promise<FileEntry[]>;
   /** This task's history, for the context ring. Absent = no ring. */
@@ -270,6 +278,25 @@ export function Composer({
                 className="inline-flex h-xl items-center gap-3xs rounded-sm px-xs text-fg-muted text-xs hover:bg-bg-hover hover:text-fg"
               >
                 <span className="font-mono">{modelLabel(model)}</span>
+                <span className="opacity-60">▾</span>
+              </button>
+            )}
+          />
+          <ReasoningPicker
+            engine={engine}
+            model={model}
+            fallbackModel={defaultModel}
+            level={reasoningEffort}
+            onPick={onPickReasoning}
+            side="top"
+            trigger={(props, current) => (
+              <button
+                type="button"
+                {...props}
+                title="思考等级"
+                className="inline-flex h-xl items-center gap-3xs rounded-sm px-xs text-fg-muted text-xs hover:bg-bg-hover hover:text-fg"
+              >
+                <span>思考 {current}</span>
                 <span className="opacity-60">▾</span>
               </button>
             )}

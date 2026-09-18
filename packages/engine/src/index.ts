@@ -5,8 +5,14 @@
  * context pruning; this package supplies the tools (`@vgent/tools`), the model
  * (`@vgent/providers`), the permission policy and the system prompt.
  */
-export { createVgentEngine, resolveModel, CODEX_SUBSCRIPTION_PREFIX } from "./engine.js";
-export type { VgentEngine, VgentEngineOptions, VgentEngineEvent } from "./engine.js";
+export {
+  createVgentEngine,
+  reasoningProviderOptions,
+  resolveModel,
+  usesOpenAIReasoning,
+  CODEX_SUBSCRIPTION_PREFIX,
+} from "./engine.js";
+export type { VgentEngine, VgentEngineOptions, VgentEngineEvent, VgentReasoningOptions } from "./engine.js";
 export {
   createToolApproval,
   decideApproval,

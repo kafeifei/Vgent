@@ -296,6 +296,43 @@ describe("createApp", () => {
     expect(defaulted.model).toBe("openai/gpt-5.5");
   });
 
+  it("round-trips the reasoning effort, clears it with null and rejects a bad one", async () => {
+    const dir = await tempDir();
+    const app = makeApp(dir, createFakeEngine().factory);
+    const project = (await (await postJson(app, "/api/projects", { repoPath: dir })).json()) as Project;
+
+    const created = (await (
+      await postJson(app, "/api/threads", { projectId: project.id, engine: "vgent", reasoningEffort: "high" })
+    ).json()) as ThreadRecord;
+    expect(created.reasoningEffort).toBe("high");
+
+    const raised = await request(app, `/api/threads/${created.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ reasoningEffort: "xhigh" }),
+    });
+    expect(((await raised.json()) as ThreadRecord).reasoningEffort).toBe("xhigh");
+
+    // `null` hands the level back to the engine; an absent key changes nothing.
+    const cleared = await request(app, `/api/threads/${created.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ reasoningEffort: null }),
+    });
+    expect(((await cleared.json()) as ThreadRecord).reasoningEffort).toBeUndefined();
+    const untouched = (await (
+      await request(app, `/api/threads/${created.id}`, { method: "PATCH", body: JSON.stringify({ title: "改名" }) })
+    ).json()) as ThreadRecord;
+    expect(untouched.title).toBe("改名");
+    expect(untouched.reasoningEffort).toBeUndefined();
+
+    for (const bad of [{ reasoningEffort: "  " }, { reasoningEffort: 3 }, { reasoningEffort: "x".repeat(33) }]) {
+      const rejected = await request(app, `/api/threads/${created.id}`, { method: "PATCH", body: JSON.stringify(bad) });
+      expect(rejected.status).toBe(400);
+      expect(await rejected.json()).toMatchObject({ error: { code: "invalid_reasoning_effort" } });
+    }
+    const rejectedOnCreate = await postJson(app, "/api/threads", { projectId: project.id, engine: "vgent", reasoningEffort: "" });
+    expect(rejectedOnCreate.status).toBe(400);
+  });
+
   it("refuses a codex thread in any permission mode but allow-all", async () => {
     const dir = await tempDir();
     const app = makeApp(dir, createFakeEngine().factory);

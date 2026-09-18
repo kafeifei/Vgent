@@ -1,5 +1,5 @@
 import { collectHarnessAgentToolApprovalContinuations, collectHarnessAgentToolResultContinuations } from "@ai-sdk/harness/agent";
-import { createClaudeCodeEngine } from "@vgent/engines";
+import { claudeCodeThinking, createClaudeCodeEngine } from "@vgent/engines";
 import type { TextStreamPart, ToolSet } from "ai";
 import { TurnResumeFailedError } from "../errors.js";
 import type { EngineContext, EngineFactory, EngineRunner } from "./registry.js";
@@ -39,6 +39,9 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
         repoPath: ctx.project.repoPath,
         permissionMode: ctx.thread.permissionMode,
         ...(ctx.thread.model != null ? { model: ctx.thread.model } : {}),
+        // 「思考等级」for this engine *is* the harness `thinking` setting, and
+        // `summarized` is what puts the reasoning in the stream.
+        thinking: claudeCodeThinking(ctx.thread.reasoningEffort),
         sessionId: ctx.thread.id,
         ...(continueFrom != null ? { continueFrom } : {}),
         ...(resumeFrom != null ? { resumeFrom } : {}),

@@ -73,6 +73,24 @@ function asPermissionMode(value: unknown): PermissionMode | undefined {
 }
 
 /**
+ * A thread's「思考等级」, as a request body spells it. Kept as an opaque string
+ * because each engine names its own levels — the model catalog is what tells
+ * the client which ones are on offer — so this only rejects what could never be
+ * one: a non-string, blank, or absurdly long value. `null` means「清掉」and is
+ * the caller's business, so it passes straight through.
+ */
+const MAX_REASONING_EFFORT_LEN = 32;
+
+function readReasoningEffort(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (trimmed === "" || trimmed.length > MAX_REASONING_EFFORT_LEN) {
+    throw new BadRequestError("reasoningEffort 必须是非空短字符串", "invalid_reasoning_effort");
+  }
+  return trimmed;
+}
+
+/**
  * The Codex harness has no built-in tool approval, so `HarnessAgent` refuses to
  * be constructed in any other mode. Rejecting the combination when the thread is
  * written keeps a thread that can never run from existing in the first place.
@@ -307,11 +325,13 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const engine = asEngine(body?.engine) ?? defaults.defaultEngine;
     const permissionMode = asPermissionMode(body?.permissionMode) ?? defaults.defaultPermissionMode;
     assertEngineSupportsMode(engine, permissionMode);
+    const reasoningEffort = readReasoningEffort(body?.reasoningEffort);
     const record = await threads.create({
       projectId,
       ...(typeof body?.title === "string" ? { title: body.title } : {}),
       engine,
       ...(typeof model === "string" ? { model } : {}),
+      ...(reasoningEffort != null ? { reasoningEffort } : {}),
       permissionMode,
     });
     if (body?.workspace !== "worktree") return c.json(record);
@@ -358,6 +378,8 @@ export function createApp(options: CreateAppOptions): VgentApp {
       ...(engine != null ? { engine } : {}),
       ...(permissionMode != null ? { permissionMode } : {}),
       ...("model" in (body ?? {}) ? { model: typeof body?.model === "string" ? body.model : undefined } : {}),
+      // `null` clears it; an absent key leaves it alone.
+      ...("reasoningEffort" in (body ?? {}) ? { reasoningEffort: readReasoningEffort(body?.reasoningEffort) } : {}),
       ...("alwaysAllow" in (body ?? {}) ? { alwaysAllow: readAlwaysAllow(body?.alwaysAllow) } : {}),
     });
     return c.json(record);

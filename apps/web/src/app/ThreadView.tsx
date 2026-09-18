@@ -20,6 +20,8 @@ export function ThreadView(props: {
   client: ApiClient;
   changes: ChangesView;
   rightOpen: boolean;
+  /** `settings.defaultModel`, so the 思考 chip still knows the model of a task that named none. */
+  defaultModel: string | undefined;
   onQueue: (queue: QueueItem[]) => void;
   onMessages: (messages: UIMessage[]) => void;
 }) {
@@ -47,6 +49,7 @@ function ThreadChatView({
   client,
   changes,
   rightOpen,
+  defaultModel,
   onQueue,
   onMessages,
   chat,
@@ -56,6 +59,7 @@ function ThreadChatView({
   client: ApiClient;
   changes: ChangesView;
   rightOpen: boolean;
+  defaultModel: string | undefined;
   onQueue: (queue: QueueItem[]) => void;
   onMessages: (messages: UIMessage[]) => void;
   chat: Chat<UIMessage>;
@@ -154,7 +158,14 @@ function ThreadChatView({
           live={live}
           engine={thread.engine}
           model={thread.model}
+          defaultModel={defaultModel}
           onPickModel={(model) => actions.setModel(thread.id, model)}
+          reasoningEffort={thread.reasoningEffort}
+          // Same rule as the header's pills: a running turn already carries the
+          // level it started with, so changing it mid-flight would be a lie.
+          onPickReasoning={(level) =>
+            live ? actions.toast("运行中不能改，先停止") : actions.setReasoningEffort(thread.id, level)
+          }
           completeFiles={completeFiles}
           messages={messages}
           {...(changes.snapshot != null ? { changedFiles: changes.snapshot.files } : {})}

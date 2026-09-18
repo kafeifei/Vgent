@@ -176,6 +176,91 @@ describe("createModelCatalog", () => {
     expect(result.models.map((entry) => entry.id)).toEqual(["sonnet", "opus", "haiku"]);
   });
 
+  /**
+   * The levels are never invented: Codex's own rows carry them, the
+   * `codex-subscription:` entries are the same models so they inherit them,
+   * Claude Code's three are its harness `thinking` setting, and on the gateway
+   * only `openai/*` has a documented reasoning effort.
+   */
+  it("surfaces the reasoning levels each catalog row declares", async () => {
+    const withLevels = [
+      {
+        slug: "gpt-6-astra",
+        display_name: "GPT-6-Astra",
+        visibility: "list",
+        priority: 1,
+        // The shape the real backend and `~/.codex/models_cache.json` use.
+        supported_reasoning_levels: [
+          { effort: "low", description: "Fast responses with lighter reasoning" },
+          { effort: "medium", description: "Balances speed and reasoning depth" },
+          { effort: "high", description: "Greater reasoning depth" },
+          { effort: "xhigh", description: "Extra high reasoning depth" },
+        ],
+        default_reasoning_level: "medium",
+      },
+      // No levels declared, so the entry gets none rather than a guess.
+      { slug: "gpt-5.5", display_name: "GPT-5.5", visibility: "list", priority: 2 },
+    ];
+    const gateway: GatewayModelSource = {
+      getAvailableModels: async () => ({
+        models: [
+          { id: "openai/gpt-5.5", name: "GPT-5.5" },
+          { id: "anthropic/claude-sonnet-5", name: "Claude Sonnet 5" },
+        ],
+      }),
+    };
+    const env = { CODEX_HOME: await loggedInCodexHome(withLevels), AI_GATEWAY_API_KEY: "k" };
+    const catalog = createModelCatalog({ env, fetchCodexRemote: rejectRemote, gateway });
+
+    const codex = await catalog.list("codex");
+    expect(codex.models[0]).toMatchObject({
+      id: "gpt-6-astra",
+      reasoningLevels: ["low", "medium", "high", "xhigh"],
+      defaultReasoningLevel: "medium",
+    });
+    expect(codex.models[1]?.reasoningLevels).toBeUndefined();
+
+    const vgent = await catalog.list("vgent");
+    expect(vgent.models.find((entry) => entry.id === "codex-subscription:gpt-6-astra")).toMatchObject({
+      reasoningLevels: ["low", "medium", "high", "xhigh"],
+      defaultReasoningLevel: "medium",
+    });
+    expect(vgent.models.find((entry) => entry.id === "openai/gpt-5.5")).toMatchObject({
+      reasoningLevels: ["low", "medium", "high"],
+      defaultReasoningLevel: "medium",
+    });
+    expect(vgent.models.find((entry) => entry.id === "anthropic/claude-sonnet-5")?.reasoningLevels).toBeUndefined();
+
+    const claudeCode = await createModelCatalog({ env: {}, fetchCodexRemote: rejectRemote }).list("claude-code");
+    for (const entry of claudeCode.models) {
+      expect(entry).toMatchObject({
+        reasoningLevels: ["disabled", "adaptive", "enabled"],
+        defaultReasoningLevel: "adaptive",
+      });
+    }
+  });
+
+  it("drops a default reasoning level the row does not itself support", async () => {
+    const catalog = createModelCatalog({
+      env: {
+        CODEX_HOME: await loggedInCodexHome([
+          {
+            slug: "gpt-6-astra",
+            visibility: "list",
+            supported_reasoning_levels: ["low", "high"],
+            default_reasoning_level: "medium",
+          },
+        ]),
+      },
+      fetchCodexRemote: rejectRemote,
+    });
+
+    const result = await catalog.list("codex");
+
+    expect(result.models[0]?.reasoningLevels).toEqual(["low", "high"]);
+    expect(result.models[0]?.defaultReasoningLevel).toBeUndefined();
+  });
+
   it("caches per engine for ten minutes, and `refresh` bypasses the cache", async () => {
     let clock = 1_000_000;
     let calls = 0;

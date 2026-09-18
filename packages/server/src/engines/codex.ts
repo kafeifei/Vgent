@@ -1,8 +1,26 @@
-import { createCodexEngine } from "@vgent/engines";
+import { createCodexEngine, type CodexEngineOptions } from "@vgent/engines";
 import { describeSubscriptionAuth } from "@vgent/providers";
 import type { TextStreamPart, ToolSet } from "ai";
 import { BadRequestError, EngineUnavailableError } from "../errors.js";
 import type { EngineContext, EngineFactory, EngineRunner } from "./registry.js";
+
+/**
+ * The Codex harness takes a `reasoningEffort` of its own
+ * (`CodexHarnessSettings.reasoningEffort`), but only these five values; the
+ * catalog can list others (a model row may offer `none`, say), so a level the
+ * CLI would reject is dropped rather than passed on.
+ */
+const CODEX_EFFORTS: ReadonlyArray<NonNullable<CodexEngineOptions["reasoningEffort"]>> = [
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+];
+
+function asCodexEffort(level: string | undefined): CodexEngineOptions["reasoningEffort"] | undefined {
+  return CODEX_EFFORTS.find((effort) => effort === level);
+}
 
 /**
  * The real Codex engine, one harness session per thread.
@@ -35,10 +53,12 @@ export function createCodexEngineFactory(): EngineFactory {
     },
 
     async create(ctx: EngineContext): Promise<EngineRunner> {
+      const reasoningEffort = asCodexEffort(ctx.thread.reasoningEffort);
       const engine = await createCodexEngine({
         repoPath: ctx.project.repoPath,
         permissionMode: ctx.thread.permissionMode,
         ...(ctx.thread.model != null ? { model: ctx.thread.model } : {}),
+        ...(reasoningEffort != null ? { reasoningEffort } : {}),
         sessionId: ctx.thread.id,
         // Codex turns never park, so a `continueFrom` can never be there to honour.
         ...(ctx.harnessState?.resumeFrom != null ? { resumeFrom: ctx.harnessState.resumeFrom } : {}),

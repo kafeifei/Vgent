@@ -76,6 +76,14 @@ export interface ThreadRecord {
   title: string;
   engine: EngineId;
   model?: string;
+  /**
+   * 「思考等级」: how hard the engine is asked to reason. Deliberately a plain
+   * string — each engine names its own levels (`low`/`medium`/`high`/`xhigh`
+   * for the OpenAI side, `disabled`/`adaptive`/`enabled` for Claude Code), and
+   * the model catalog is what tells the UI which ones a model offers. Absent
+   * means「用引擎自己的默认」.
+   */
+  reasoningEffort?: string;
   permissionMode: PermissionMode;
   /**
    * Tools the user said to always allow in this task (「本任务内一直允许」).

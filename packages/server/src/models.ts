@@ -13,6 +13,16 @@ export interface ModelEntry {
   label: string;
   description?: string;
   /**
+   * The「思考等级」this model offers, in the order the picker should show them.
+   * Absent means the model has none to choose from and the chip stays hidden —
+   * never guessed, only ever taken from the source that knows (Codex's own
+   * catalog, the Claude Code harness's `thinking` setting, OpenAI's documented
+   * reasoning efforts).
+   */
+  reasoningLevels?: string[];
+  /** Which of `reasoningLevels` applies when the thread names none. */
+  defaultReasoningLevel?: string;
+  /**
    * The model's usable context window in tokens — the denominator of the
    * composer's context ring. Only sources that report one fill it: Codex does
    * (`context_window`), while the Anthropic models API and the AI Gateway list
@@ -21,6 +31,9 @@ export interface ModelEntry {
    */
   contextWindow?: number;
 }
+
+/** The two reasoning fields of a `ModelEntry`, as the builders below merge them in. */
+type ReasoningLevels = Pick<ModelEntry, "reasoningLevels" | "defaultReasoningLevel">;
 
 /**
  * What `GET /api/engines/:engine/models` answers. `source` names where the list
@@ -46,6 +59,12 @@ export interface CodexCatalogModel {
   description?: string;
   visibility?: string;
   priority?: number;
+  /**
+   * Normalized to the bare level ids (`["low", "medium", "high", "xhigh",
+   * "max", "ultra"]`); the wire shape is a list of `{ effort, description }`.
+   */
+  supported_reasoning_levels?: string[];
+  default_reasoning_level?: string;
   /**
    * The window this model actually runs with. The payload also carries a larger
    * `max_context_window` (what the model could do on another tier); the ring
@@ -104,8 +123,60 @@ const CLAUDE_CODE_BUILTIN: ModelEntry[] = [
 
 const CODEX_LOGGED_OUT = "Codex 未登录：找不到可用的 ChatGPT / Codex 登录态（~/.codex/auth.json，或 CODEX_HOME）";
 
+/**
+ * Claude Code's「思考等级」is the harness `thinking` setting
+ * (`ClaudeCodeHarnessSettings.thinking`), not a per-model capability, so every
+ * entry in that catalog offers the same three.
+ */
+const CLAUDE_CODE_REASONING_LEVELS = ["disabled", "adaptive", "enabled"];
+const CLAUDE_CODE_DEFAULT_REASONING_LEVEL = "adaptive";
+
+/**
+ * What `@ai-sdk/openai` documents for a gateway-routed OpenAI model. Only
+ * `openai/*` gets these: no other provider on the gateway shares the option,
+ * and inventing levels for one would make the picker lie.
+ */
+const GATEWAY_OPENAI_REASONING_LEVELS = ["low", "medium", "high"];
+const GATEWAY_OPENAI_DEFAULT_REASONING_LEVEL = "medium";
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Stamps the harness's three thinking levels onto every Claude Code entry. */
+function withClaudeCodeReasoning(entries: readonly ModelEntry[]): ModelEntry[] {
+  return entries.map((entry) => ({
+    ...entry,
+    reasoningLevels: [...CLAUDE_CODE_REASONING_LEVELS],
+    defaultReasoningLevel: CLAUDE_CODE_DEFAULT_REASONING_LEVEL,
+  }));
+}
+
+/**
+ * The level ids out of a row's `supported_reasoning_levels`. The live Codex
+ * backend and the CLI's cache both spell each level as an object —
+ * `{ effort: "low", description: "…" }` — so only the `effort` is kept; a bare
+ * string is accepted too, since that is the cheaper shape to write in a test
+ * and costs nothing to support.
+ */
+function asReasoningLevels(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const levels = value
+    .map((item) => (typeof item === "string" ? item : isRecord(item) && typeof item.effort === "string" ? item.effort : ""))
+    .filter((level) => level !== "");
+  return levels.length > 0 ? levels : undefined;
+}
+
+/** The reasoning levels a Codex catalog row declares, in the order it lists them. */
+function codexReasoning(entry: CodexCatalogModel): ReasoningLevels {
+  const levels = entry.supported_reasoning_levels;
+  if (levels == null || levels.length === 0) return {};
+  return {
+    reasoningLevels: [...levels],
+    ...(entry.default_reasoning_level != null && levels.includes(entry.default_reasoning_level)
+      ? { defaultReasoningLevel: entry.default_reasoning_level }
+      : {}),
+  };
 }
 
 /** Mirrors `resolveCodexHome` in `@vgent/providers`, which does not export it. */
@@ -118,13 +189,20 @@ function normalizeCodexModels(raw: readonly unknown[]): CodexCatalogModel[] {
   return raw
     .filter((entry): entry is Record<string, unknown> => isRecord(entry) && typeof entry.slug === "string")
     .filter((entry) => entry.visibility === "list")
-    .map((entry) => ({
-      slug: entry.slug as string,
-      ...(typeof entry.display_name === "string" ? { display_name: entry.display_name } : {}),
-      ...(typeof entry.description === "string" ? { description: entry.description } : {}),
-      ...(typeof entry.priority === "number" ? { priority: entry.priority } : {}),
-      ...(typeof entry.context_window === "number" ? { context_window: entry.context_window } : {}),
-    }))
+    .map((entry) => {
+      const levels = asReasoningLevels(entry.supported_reasoning_levels);
+      return {
+        slug: entry.slug as string,
+        ...(typeof entry.display_name === "string" ? { display_name: entry.display_name } : {}),
+        ...(typeof entry.description === "string" ? { description: entry.description } : {}),
+        ...(typeof entry.priority === "number" ? { priority: entry.priority } : {}),
+        ...(typeof entry.context_window === "number" ? { context_window: entry.context_window } : {}),
+        ...(levels != null ? { supported_reasoning_levels: levels } : {}),
+        ...(typeof entry.default_reasoning_level === "string" && entry.default_reasoning_level !== ""
+          ? { default_reasoning_level: entry.default_reasoning_level }
+          : {}),
+      };
+    })
     .sort((a, b) => (a.priority ?? Number.MAX_SAFE_INTEGER) - (b.priority ?? Number.MAX_SAFE_INTEGER));
 }
 
@@ -240,6 +318,12 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
             id: entry.id,
             label: entry.name ?? entry.id,
             ...(typeof entry.description === "string" ? { description: entry.description } : {}),
+            ...(entry.id.startsWith("openai/")
+              ? {
+                  reasoningLevels: [...GATEWAY_OPENAI_REASONING_LEVELS],
+                  defaultReasoningLevel: GATEWAY_OPENAI_DEFAULT_REASONING_LEVEL,
+                }
+              : {}),
           })),
       };
     } catch (error) {
@@ -258,6 +342,7 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
         id: entry.slug,
         label: entry.display_name ?? entry.slug,
         ...(entry.description != null ? { description: entry.description } : {}),
+        ...codexReasoning(entry),
         ...(entry.context_window != null ? { contextWindow: entry.context_window } : {}),
       })),
       source: codex.source,
@@ -278,7 +363,9 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
           id: `${CODEX_SUBSCRIPTION_PREFIX}${entry.slug}`,
           label: `${CODEX_SUBSCRIPTION_PREFIX}${entry.slug}`,
           ...(entry.display_name != null ? { description: entry.display_name } : {}),
-          // Same model behind the subscription prefix, so the same window.
+          // Same model behind the subscription prefix, so the same levels and
+          // the same window apply.
+          ...codexReasoning(entry),
           ...(entry.context_window != null ? { contextWindow: entry.context_window } : {}),
         })),
       );
@@ -294,15 +381,16 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
   };
 
   const buildClaudeCode = async (): Promise<Omit<ModelCatalog, "engine" | "fetchedAt">> => {
+    const builtin = withClaudeCodeReasoning(CLAUDE_CODE_BUILTIN);
     const apiKey = env.ANTHROPIC_API_KEY ?? "";
-    if (apiKey === "") return { models: CLAUDE_CODE_BUILTIN, source: "builtin" };
+    if (apiKey === "") return { models: builtin, source: "builtin" };
     try {
       const listed = await fetchAnthropicModels(apiKey, AbortSignal.timeout(REMOTE_TIMEOUT_MS));
-      if (listed.length > 0) return { models: [...CLAUDE_CODE_BUILTIN, ...listed], source: "anthropic-api" };
-      return { models: CLAUDE_CODE_BUILTIN, source: "builtin" };
+      if (listed.length > 0) return { models: [...builtin, ...withClaudeCodeReasoning(listed)], source: "anthropic-api" };
+      return { models: builtin, source: "builtin" };
     } catch (error) {
       log.warn("拉取 Anthropic 模型列表失败", error);
-      return { models: CLAUDE_CODE_BUILTIN, source: "builtin", warning: "Anthropic 模型接口不可用，已改用内置别名" };
+      return { models: builtin, source: "builtin", warning: "Anthropic 模型接口不可用，已改用内置别名" };
     }
   };
 

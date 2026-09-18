@@ -112,6 +112,9 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
         extraTools: mcp.tools,
         skills,
         memoryDir: memoryDirOf(ctx),
+        // The summary is always asked for (that is the engine's default); the
+        // effort only when the task names one.
+        reasoning: { ...(ctx.thread.reasoningEffort != null ? { effort: ctx.thread.reasoningEffort } : {}) },
         // Everything the model cannot work out for itself: which model it is,
         // which front end it is answering through, and whether this directory
         // is the project or a worktree cut from it.

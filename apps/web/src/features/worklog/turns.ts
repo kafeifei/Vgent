@@ -40,7 +40,14 @@ function blocksOf(message: UIMessage): Block[] {
   message.parts.forEach((part, index) => {
     const key = `${message.id}:${index}`;
     if (part.type === "text") blocks.push({ kind: "text", key, part });
-    else if (part.type === "reasoning") blocks.push({ kind: "reasoning", key, part });
+    // A reasoning part with no text is what an engine sends when the model
+    // reasoned but did not summarize it — the ChatGPT/Codex backend encrypts
+    // its reasoning, so every turn carries one unless a summary was asked for.
+    // An empty「思考」box says nothing, so it is dropped; the part reappears on
+    // its own as soon as deltas start landing in it.
+    else if (part.type === "reasoning") {
+      if (part.text.trim() !== "") blocks.push({ kind: "reasoning", key, part });
+    }
     else if (isToolUIPart(part)) {
       // A call the engine re-issues after an approval pause arrives as a second
       // part with the same id — the SDK only reconciles `tool-input-start`

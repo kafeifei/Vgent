@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, realpath, stat } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { BadRequestError, NotFoundError } from "../errors.js";
 import type { Logger, Project } from "../types.js";
@@ -67,6 +67,51 @@ async function resolveWorktree(repoPath: string): Promise<{ repoPath: string; re
   return { repoPath: dirname(commonDir), redirected: true }; // the main checkout, already realpath'd via commonDir
 }
 
+/**
+ * Entries registered before `resolveWorktree` learned to redirect linked
+ * worktrees (or Vgent's own per-task worktrees under `<dataDir>/worktrees/`,
+ * which are never projects) can still be sitting in `projects.json`. Runs
+ * once after load: drop entries under `<dataDir>/worktrees/`, then for every
+ * remaining entry that `resolveWorktree` redirects, either drop it (another
+ * stored — or already-migrated — entry already has that repoPath) or
+ * retarget it to the main checkout, keeping its id. Returns `stored`
+ * unchanged when nothing needed fixing.
+ */
+async function migrateWorktreeEntries(stored: Project[], dataDir: string, log: Logger): Promise<Project[]> {
+  const ownWorktreesRoot = await realpath(join(dataDir, "worktrees")).catch(() => resolve(dataDir, "worktrees"));
+  const isOwnWorktree = (canonicalPath: string) =>
+    canonicalPath === ownWorktreesRoot || canonicalPath.startsWith(ownWorktreesRoot + sep);
+
+  const resolved = await Promise.all(
+    stored.map(async (project) => {
+      const canonicalPath = await realpath(project.repoPath).catch(() => project.repoPath);
+      if (isOwnWorktree(canonicalPath)) return { project, drop: true as const };
+      return { project, drop: false as const, ...(await resolveWorktree(project.repoPath)) };
+    }),
+  );
+
+  const kept: Project[] = [];
+  let migratedCount = 0;
+  for (const item of resolved) {
+    if (item.drop) {
+      migratedCount += 1;
+      continue;
+    }
+    if (!item.redirected) {
+      kept.push(item.project);
+      continue;
+    }
+    migratedCount += 1;
+    const alreadyRegistered =
+      kept.some((project) => project.repoPath === item.repoPath) ||
+      resolved.some((other) => !other.drop && !other.redirected && other.repoPath === item.repoPath);
+    if (!alreadyRegistered) kept.push({ ...item.project, repoPath: item.repoPath, name: basename(item.repoPath) });
+  }
+
+  if (migratedCount > 0) log.info(`项目列表里有 ${migratedCount} 条 worktree 条目，已并入主仓库`);
+  return migratedCount > 0 ? kept : stored;
+}
+
 export function createProjectStore(dataDir: string, log: Logger = silentLogger): ProjectStore {
   const path = join(dataDir, "projects.json");
   const listeners = new Set<() => void>();
@@ -77,7 +122,10 @@ export function createProjectStore(dataDir: string, log: Logger = silentLogger):
   const ensureReady = (): Promise<void> => {
     ready ??= (async () => {
       await mkdir(dataDir, { recursive: true, mode: 0o700 });
-      projects = (await readJsonOrQuarantine<ProjectsFile>(path, { validate: isProjectsFile, log }))?.projects ?? [];
+      const loaded = (await readJsonOrQuarantine<ProjectsFile>(path, { validate: isProjectsFile, log }))?.projects ?? [];
+      const migrated = await migrateWorktreeEntries(loaded, dataDir, log);
+      projects = migrated;
+      if (migrated !== loaded) await writeJsonAtomic(path, { version: 1, projects: migrated } satisfies ProjectsFile);
     })();
     return ready;
   };

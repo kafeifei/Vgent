@@ -193,6 +193,42 @@ describe("createProjectStore / createSettingsStore", () => {
     expect(await store.list()).toHaveLength(1);
   });
 
+  it("folds a pre-existing worktree entry into its already-registered main checkout on load", async () => {
+    const dataDir = await tempDir();
+    const repo = await gitRepo();
+    const worktreesParent = await tempDir();
+    const worktreePath = join(worktreesParent, "linked");
+    await execFileAsync("git", ["worktree", "add", "-b", "feature", worktreePath], { cwd: repo });
+
+    const mainProject = { id: "main-id", name: basename(repo), repoPath: await realpath(repo), createdAt: new Date().toISOString() };
+    const worktreeProject = { id: "worktree-id", name: "linked", repoPath: worktreePath, createdAt: new Date().toISOString() };
+    await writeJsonAtomic(join(dataDir, "projects.json"), { version: 1, projects: [mainProject, worktreeProject] });
+
+    const store = createProjectStore(dataDir);
+    expect((await store.list()).map((project) => project.id)).toEqual(["main-id"]);
+
+    const onDisk = await readJsonOrQuarantine<{ projects: { id: string }[] }>(join(dataDir, "projects.json"));
+    expect(onDisk?.projects.map((project) => project.id)).toEqual(["main-id"]);
+  });
+
+  it("retargets a lone pre-existing worktree entry to its main checkout on load", async () => {
+    const dataDir = await tempDir();
+    const repo = await gitRepo();
+    const worktreesParent = await tempDir();
+    const worktreePath = join(worktreesParent, "linked");
+    await execFileAsync("git", ["worktree", "add", "-b", "feature", worktreePath], { cwd: repo });
+
+    const worktreeProject = { id: "worktree-id", name: "linked", repoPath: worktreePath, createdAt: new Date().toISOString() };
+    await writeJsonAtomic(join(dataDir, "projects.json"), { version: 1, projects: [worktreeProject] });
+
+    const store = createProjectStore(dataDir);
+    const listed = await store.list();
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.id).toBe("worktree-id");
+    expect(listed[0]?.repoPath).toBe(await realpath(repo));
+    expect(listed[0]?.name).toBe(basename(await realpath(repo)));
+  });
+
   it("round-trips settings and clears an optional field", async () => {
     const dir = await tempDir();
     const store = createSettingsStore(dir);

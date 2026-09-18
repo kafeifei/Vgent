@@ -1,5 +1,5 @@
 import { execFile, spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -168,6 +168,29 @@ describe.skipIf(!hasGit)("带回主目录", () => {
     const result = await createIntegrator().integrate(target, { threadId: "t1", action: "apply" });
     expect(result.apply).toMatchObject({ applied: ["图片.bin"], conflicts: [] });
     expect(await readFile(join(project, "图片.bin"))).toEqual(Buffer.from([0, 4, 4, 4]));
+  });
+
+  it("符号链接：只有任务改过就跟着走，两边都改过算冲突", async () => {
+    const { project, work, target } = await fixture();
+    // The task re-points a link the user has not touched.
+    await symlink("任务改的.txt", join(work, "链接"));
+    expect(await createIntegrator().integrate(target, { threadId: "t1", action: "apply" })).toMatchObject({
+      apply: { applied: ["链接"], conflicts: [] },
+    });
+    expect(await readlink(join(project, "链接"))).toBe("任务改的.txt");
+
+    // Now both sides point it somewhere else: nothing to merge line by line.
+    await rm(join(work, "链接"));
+    await symlink("共享.txt", join(work, "链接"));
+    await rm(join(project, "链接"));
+    await symlink("任务删的.txt", join(project, "链接"));
+    const failure = await createIntegrator()
+      .integrate(target, { threadId: "t1", action: "apply" })
+      .catch((error: unknown) => error);
+    expect((failure as { details: { conflicts: ApplyConflict[] } }).details.conflicts).toEqual([
+      { path: "链接", resolution: "skipped", reason: "符号链接在两边都变了" },
+    ]);
+    expect(await readlink(join(project, "链接"))).toBe("任务删的.txt");
   });
 
   it("带冲突标记合并：文本写标记，二进制跳过，干净的照常落地", async () => {

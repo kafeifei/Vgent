@@ -1,5 +1,7 @@
 import type {
-  ChangesSnapshot,
+  ChangesResponse,
+  ChangesScope,
+  CheckpointPreview,
   CheckpointRestore,
   EngineDescriptor,
   EngineId,
@@ -178,10 +180,15 @@ export function createClient(token: string) {
     },
 
     // Changes are keyed by thread: a task in its own worktree diffs that
-    // directory, every other task diffs the project's working tree.
-    listChanges: (threadId: string) => api<ChangesSnapshot>(`/threads/${threadId}/changes`, token),
-    getFileDiff: (threadId: string, path: string) =>
-      api<FileDiff>(`/threads/${threadId}/changes/file?path=${encodeURIComponent(path)}`, token),
+    // directory, every other task diffs the project's working tree. `scope`
+    // picks 「上一轮」 instead — the last turn's two snapshots against each other.
+    listChanges: (threadId: string, scope: ChangesScope = "all") =>
+      api<ChangesResponse>(`/threads/${threadId}/changes${scope === "all" ? "" : `?scope=${scope}`}`, token),
+    getFileDiff: (threadId: string, path: string, scope: ChangesScope = "all") =>
+      api<FileDiff>(
+        `/threads/${threadId}/changes/file?path=${encodeURIComponent(path)}${scope === "all" ? "" : `&scope=${scope}`}`,
+        token,
+      ),
     revertFile: (threadId: string, path: string) =>
       api<{ path: string }>(`/threads/${threadId}/changes/revert`, token, { method: "POST", json: { path } }),
 
@@ -254,12 +261,18 @@ export function createClient(token: string) {
       api<ThreadRecord>(`/threads/${id}/workspace/restore`, token, { method: "POST" }),
 
     /**
-     * 恢复到此处: put the working directory back to the snapshot taken before
-     * `messageId` ran — or, for 撤销, to the `commit` a previous restore returned.
-     * Only the files move; the conversation is never touched.
+     * 恢复到此处: put the files the task touched back to the state before
+     * `messageId` ran — or, for 「回到最新」, all the way forward again. Only the
+     * files the turns in between touched move; the conversation is never touched.
      */
-    restoreCheckpoint: (threadId: string, target: { messageId: string } | { commit: string }) =>
+    restoreCheckpoint: (threadId: string, target: { messageId: string } | { latest: true }) =>
       api<CheckpointRestore>(`/threads/${threadId}/checkpoints/restore`, token, { method: "POST", json: target }),
+    /** What that restore would move, for the sentence the user confirms. */
+    previewRestore: (threadId: string, target: { messageId: string } | { latest: true }) =>
+      api<CheckpointPreview>(
+        `/threads/${threadId}/checkpoints/preview?${"latest" in target ? "latest=1" : `messageId=${encodeURIComponent(target.messageId)}`}`,
+        token,
+      ),
 
     /**
      * 排队: what Enter does while a turn is live. The item lives on the server,

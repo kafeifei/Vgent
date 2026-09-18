@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { Fragment, useMemo } from "react";
 import type { UIMessage } from "ai";
 import {
   Conversation,
@@ -6,6 +6,7 @@ import {
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
 import type { ThreadSummary } from "@/lib/types";
+import { RestoredBar } from "./RestoredBar";
 import { Turn, type TurnActions } from "./Turn";
 import { buildTurns } from "./turns";
 
@@ -31,22 +32,30 @@ export function WorkLog({
   allowlist: readonly string[];
 }) {
   const turns = useMemo(() => buildTurns(messages), [messages]);
+  /**
+   * 恢复后停在哪里: the first turn whose files are no longer on disk. It and
+   * everything under it is dimmed, with the bar drawn in at that exact point —
+   * the messages themselves are never deleted, here or on the server.
+   */
+  const restoredAt = thread.restoredTo?.messageId;
+  const restoredIndex = restoredAt == null ? -1 : turns.findIndex((turn) => turn.user?.id === restoredAt);
 
   return (
     <Conversation className="min-h-0 flex-1">
       <ConversationContent className="mx-auto flex w-full max-w-log-max flex-col gap-0 px-md pb-2xl">
         {turns.map((turn, index) => (
-          <Turn
-            key={turn.key}
-            turn={turn}
-            isLast={index === turns.length - 1}
-            live={live}
-            // No worktree means the task edits the project's own checkout, which
-            // 恢复到此处 has to say out loud before it undoes the user's own edits.
-            mainCheckout={thread.workspace == null}
-            actions={actions}
-            allowlist={allowlist}
-          />
+          <Fragment key={turn.key}>
+            {index === restoredIndex && <RestoredBar live={live} onLatest={actions.restoreLatest} />}
+            <Turn
+              turn={turn}
+              isLast={index === turns.length - 1}
+              live={live}
+              dimmed={restoredIndex >= 0 && index >= restoredIndex}
+              atRestorePoint={index === restoredIndex}
+              actions={actions}
+              allowlist={allowlist}
+            />
+          </Fragment>
         ))}
 
         {error != null && (

@@ -38,6 +38,11 @@ export interface ChangesSnapshot {
   files: ChangedFile[];
 }
 
+/** `GET /threads/:id/changes`: the snapshot, plus whether 「上一轮」 has anything to show. */
+export interface ChangesResponse extends ChangesSnapshot {
+  lastTurn?: boolean;
+}
+
 export interface FileDiff {
   path: string;
   status: ChangeStatus;
@@ -53,10 +58,11 @@ export interface FileDiff {
  *
  * A string is a commit-ish the working tree descends from. `{ tree }` is a
  * snapshot of a working directory — a main-checkout task's baseline, compared
- * tree to tree. `{ none: true }` is a task that has no baseline yet, so it
- * cannot have changed anything.
+ * tree to tree. `{ from, to }` is two snapshots against each other and never
+ * looks at the working directory at all — what 「上一轮」 shows. `{ none: true }`
+ * is a task that has no baseline yet, so it cannot have changed anything.
  */
-export type DiffBase = string | { tree: string } | { none: true };
+export type DiffBase = string | { tree: string } | { from: string; to: string } | { none: true };
 
 export interface Git {
   /** `base` defaults to HEAD, or the empty tree in a repo with no commit yet. */
@@ -173,6 +179,7 @@ export function createGit(options: CreateGitOptions = {}): Git {
     }
     if (typeof base === "string") return { base };
     if ("tree" in base) return { base: base.tree, tree: await snapshotTree(repoPath) };
+    if ("from" in base) return { base: base.from, tree: base.to };
     return { base: EMPTY_TREE, tree: EMPTY_TREE };
   }
 

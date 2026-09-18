@@ -13,7 +13,9 @@ export type {
   ChangedFile,
   ChangeStats,
   ChangeStatus,
+  ChangesResponse,
   ChangesSnapshot,
+  CheckpointPreview,
   CheckpointRestore,
   EngineCapabilities,
   EngineDescriptor,
@@ -40,6 +42,7 @@ export type {
   ThreadOutcome,
   ThreadPullRequest,
   ThreadRecord,
+  ThreadRestorePoint,
   ThreadStatus,
   ThreadSummary,
   ThreadWorkspace,
@@ -76,6 +79,12 @@ export type SetupLog = {
 
 /** What a new task asks for: the project's working tree, or its own worktree. */
 export type WorkspaceMode = "project" | "worktree";
+
+/**
+ * 改动的范围: the whole task against its 任务基线, or just the last turn — the
+ * diff between the snapshots taken before and after it, which is read-only.
+ */
+export type ChangesScope = "all" | "last-turn";
 
 /** Payload of the `state` event on `GET /api/state`. */
 export type StateEvent = {

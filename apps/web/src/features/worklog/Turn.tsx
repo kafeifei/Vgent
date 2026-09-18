@@ -2,7 +2,13 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { getToolName } from "ai";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
-import { LIVE_REASON, type AskUserQuestionsInput, type AskUserQuestionsOutput, type ThreadMessageMetadata } from "@/lib/types";
+import {
+  LIVE_REASON,
+  type AskUserQuestionsInput,
+  type AskUserQuestionsOutput,
+  type CheckpointPreview,
+  type ThreadMessageMetadata,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
@@ -16,8 +22,16 @@ export interface TurnActions {
   alwaysAllow: (approvalId: string, entries: string[]) => void;
   answerQuestions: (toolCallId: string, output: AskUserQuestionsOutput) => void;
   openFile: (file: string) => void;
-  /** 恢复到此处: put the files back to the snapshot taken before this message ran. */
+  /**
+   * 恢复到此处: put the files back to the state before this message ran. On a
+   * dimmed message it is the same call read forwards — the server works out the
+   * direction from where the thread stands.
+   */
   restoreCheckpoint: (messageId: string) => void;
+  /** 回到最新: undo the restore for good. */
+  restoreLatest: () => void;
+  /** What that restore would move, asked for only once the user opens the confirm. */
+  previewRestore: (messageId: string) => Promise<CheckpointPreview>;
 }
 
 /** Sticks the newest user box to the top of the log and shadows it once stuck. */
@@ -40,15 +54,18 @@ export function Turn({
   turn,
   isLast,
   live,
-  mainCheckout,
+  dimmed,
+  atRestorePoint,
   actions,
   allowlist,
 }: {
   turn: TurnModel;
   isLast: boolean;
   live: boolean;
-  /** The task edits the project's own checkout, so a restore also undoes the user's edits. */
-  mainCheckout: boolean;
+  /** This turn sits at or after the restore point: it happened, but its files are not on disk. */
+  dimmed: boolean;
+  /** This is the turn the working directory was put back to; the bar above it says so. */
+  atRestorePoint: boolean;
   actions: TurnActions;
   allowlist: readonly string[];
 }) {
@@ -62,7 +79,7 @@ export function Turn({
   const checkpoint = (turn.user?.metadata as ThreadMessageMetadata | undefined)?.checkpoint;
 
   return (
-    <section className="flex flex-col gap-block-gap pb-xl">
+    <section className={cn("flex flex-col gap-block-gap pb-xl", dimmed && "opacity-45")}>
       {turn.user != null && (
         <div
           ref={ref}
@@ -80,10 +97,13 @@ export function Turn({
               </p>
             ) : null,
           )}
-          {checkpoint != null && (
+          {/* The message the tree already stands at has nowhere to go; the bar
+              above it carries 「回到最新」 instead. */}
+          {checkpoint != null && !atRestorePoint && (
             <RestoreAction
               live={live}
-              mainCheckout={mainCheckout}
+              forward={dimmed}
+              onPreview={() => actions.previewRestore(turn.user!.id)}
               onRestore={() => actions.restoreCheckpoint(turn.user!.id)}
             />
           )}
@@ -118,9 +138,48 @@ const QUIET_BUTTON =
  * 「恢复到此处」: two-step and inline, the same shape the 变更 panel's 「全部丢弃」
  * uses. Quiet until the message is hovered or the button itself is focused, so
  * the log reads as a log.
+ *
+ * Arming it asks the server what the restore would actually move, because the
+ * whole point of the sentence is the number in it: 「任务动过的 N 个文件」. A span
+ * the server cannot reduce to a file list says so instead of quietly rolling the
+ * user's own work back with it.
  */
-function RestoreAction({ live, mainCheckout, onRestore }: { live: boolean; mainCheckout: boolean; onRestore: () => void }) {
+function RestoreAction({
+  live,
+  forward,
+  onPreview,
+  onRestore,
+}: {
+  live: boolean;
+  /** The message is already dimmed, so this moves the tree forward to it rather than back. */
+  forward: boolean;
+  onPreview: () => Promise<CheckpointPreview>;
+  onRestore: () => void;
+}) {
   const [armed, setArmed] = useState(false);
+  const [preview, setPreview] = useState<CheckpointPreview | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!armed) return;
+    let cancelled = false;
+    setPreview(null);
+    setPreviewError(null);
+    onPreview().then(
+      (next) => {
+        if (!cancelled) setPreview(next);
+      },
+      (failure: unknown) => {
+        if (!cancelled) setPreviewError(failure instanceof Error ? failure.message : String(failure));
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+    // Deliberately keyed on `armed` alone: `onPreview` is rebuilt on every
+    // render of the log, while the message it asks about is fixed for this
+    // component, so opening the confirm is the only thing worth re-asking on.
+  }, [armed]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!armed) {
     return (
@@ -144,13 +203,18 @@ function RestoreAction({ live, mainCheckout, onRestore }: { live: boolean; mainC
   return (
     <div className="mt-xs flex flex-col gap-2xs border-border border-t pt-xs">
       <p className="m-0 text-fg-muted text-xs">
-        把工作目录恢复到这条消息发出之前的状态？之后的文件改动会被撤掉，对话保留。
-        {mainCheckout && "包括你自己在这之后改的文件。"}
+        {previewError != null
+          ? previewError
+          : preview == null
+            ? "正在算要动哪些文件…"
+            : preview.whole
+              ? `把工作目录${forward ? "恢复到这条消息发出之前" : "退回到这条消息发出之前"}？这一段里有没记下结束状态的回合，只能整个目录一起回退：你自己改的文件也会被还原。`
+              : `会还原任务动过的 ${preview.files} 个文件；你自己改的其它文件不动。任务动过、你又手改过的文件会被覆盖。`}
       </p>
       <div className="flex items-center gap-2xs">
         <button
           type="button"
-          disabled={live}
+          disabled={live || (preview == null && previewError == null)}
           {...(live ? { title: LIVE_REASON } : {})}
           onClick={() => {
             setArmed(false);
@@ -158,7 +222,7 @@ function RestoreAction({ live, mainCheckout, onRestore }: { live: boolean; mainC
           }}
           className={cn(QUIET_BUTTON, "border-border-strong text-fg")}
         >
-          确认恢复
+          {forward ? "确认前进到这里" : "确认恢复"}
         </button>
         <button type="button" onClick={() => setArmed(false)} className={QUIET_BUTTON}>
           取消

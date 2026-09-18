@@ -5,6 +5,7 @@ import { baseName } from "@/lib/format";
 import { LIVE_REASON, type ChangeStatus, type ChangedFile, type ThreadOutcome, type ThreadPullRequest } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { DiffView } from "./DiffView";
+import { ScopeToggle } from "./ScopeToggle";
 import { parseUnifiedDiff } from "./diff";
 import { groupByDir } from "./paths";
 import type { ChangesView } from "./useChanges";
@@ -77,7 +78,7 @@ function RevertButton({ onRevert }: { onRevert: () => void }) {
 
 /** The selected file's diff, expanded right under its row. */
 function DiffBlock({ file, changes }: { file: ChangedFile; changes: ChangesView }) {
-  const { fileDiff, diffLoading, diffError, revert } = changes;
+  const { fileDiff, diffLoading, diffError, revert, scope } = changes;
   const lines = useMemo(() => (fileDiff == null ? [] : parseUnifiedDiff(fileDiff.diff)), [fileDiff]);
 
   return (
@@ -86,7 +87,9 @@ function DiffBlock({ file, changes }: { file: ChangedFile; changes: ChangesView 
         <span className="min-w-0 truncate font-mono text-code" title={file.path}>
           {file.oldPath != null ? `${file.oldPath} → ${file.path}` : file.path}
         </span>
-        <RevertButton onRevert={() => revert(file.path)} />
+        {/* 「上一轮」 is a diff between two past snapshots: there is nothing on
+            disk it could put back, so it offers nothing to press. */}
+        {scope === "all" && <RevertButton onRevert={() => revert(file.path)} />}
       </div>
 
       {diffError != null ? (
@@ -303,22 +306,26 @@ export function ChangesPanel({
   outcome: ThreadOutcome | undefined;
   pr: ThreadPullRequest | undefined;
 }) {
-  const { snapshot, loading, error, refresh, selected, select } = changes;
+  const { snapshot, loading, error, refresh, selected, select, scope, lastTurn } = changes;
   const files = useMemo(() => snapshot?.files ?? [], [snapshot]);
   const groups = useMemo(() => groupByDir(files), [files]);
   const added = files.reduce((sum, file) => sum + file.additions, 0);
   const removed = files.reduce((sum, file) => sum + file.deletions, 0);
   const selectedFile = files.find((file) => file.path === selected);
+  const lastTurnScope = scope === "last-turn";
 
   return (
     <>
+      {lastTurn && <ScopeToggle scope={scope} onScope={changes.setScope} />}
+
       <div className="mb-xs flex items-center gap-xs text-fg-muted text-xs">
         <span className="flex-none">
           {files.length} 个文件 · <span className="font-mono text-diff-add-fg">+{added}</span>{" "}
           <span className="font-mono text-diff-del-fg">−{removed}</span>
         </span>
         <span className="ml-auto flex min-w-0 items-center gap-2xs">
-          {(changes.integration?.commitsAhead ?? 0) > 0 && (
+          {lastTurnScope && <span className="flex-none text-fg-faint">只看不改</span>}
+          {!lastTurnScope && (changes.integration?.commitsAhead ?? 0) > 0 && (
             <span className="flex-none text-fg-faint">领先基线 {changes.integration?.commitsAhead} 个提交</span>
           )}
           {snapshot?.branch != null && (
@@ -340,7 +347,9 @@ export function ChangesPanel({
       {error != null ? (
         <p className="text-danger text-xs">{error}</p>
       ) : files.length === 0 ? (
-        <p className="text-fg-faint text-xs">{loading && snapshot == null ? "加载中…" : "没有未提交的改动"}</p>
+        <p className="text-fg-faint text-xs">
+          {loading && snapshot == null ? "加载中…" : lastTurnScope ? "上一轮没有改动文件" : "没有未提交的改动"}
+        </p>
       ) : (
         <>
           {/* A chip in the log can open a file the snapshot no longer lists. */}
@@ -378,7 +387,7 @@ export function ChangesPanel({
         </>
       )}
 
-      {error == null && <ActionBar changes={changes} title={title} live={live} outcome={outcome} pr={pr} />}
+      {error == null && !lastTurnScope && <ActionBar changes={changes} title={title} live={live} outcome={outcome} pr={pr} />}
     </>
   );
 }

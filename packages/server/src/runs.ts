@@ -8,11 +8,13 @@ import {
   validateUIMessages,
   type DynamicToolUIPart,
   type LanguageModelUsage,
+  type ModelMessage,
+  type ToolSet,
   type ToolUIPart,
   type UIMessage,
   type UIMessageChunk,
 } from "ai";
-import { createCheckpoint, pinBaseline } from "./checkpoints.js";
+import { createAfterCheckpoint, createCheckpoint, deleteCheckpoints, pinBaseline } from "./checkpoints.js";
 import type { ChunkHub } from "./chunk-hub.js";
 import { createChunkHub } from "./chunk-hub.js";
 import { BadRequestError, ConflictError, NotFoundError, TurnResumeFailedError, VgentServerError } from "./errors.js";
@@ -20,10 +22,20 @@ import { effectivePermission } from "./engines/capabilities.js";
 import type { EngineRegistry, EngineRunner } from "./engines/registry.js";
 import { statelessEngines } from "./engines/registry.js";
 import type { QueueStore } from "./queue.js";
+import { restoreNote } from "./restore.js";
 import type { ProjectStore } from "./store/projects.js";
 import type { SettingsStore } from "./store/settings.js";
 import { DEFAULT_THREAD_TITLE, type ThreadStore } from "./store/threads.js";
-import type { ChangeStats, Logger, MessageCheckpoint, QueuedMessage, ThreadMessageMetadata, ThreadRecord, ThreadStatus, UsageInfo } from "./types.js";
+import type {
+  ChangeStats,
+  Logger,
+  MessageCheckpoint,
+  QueuedMessage,
+  ThreadMessageMetadata,
+  ThreadRecord,
+  ThreadStatus,
+  UsageInfo,
+} from "./types.js";
 import { silentLogger } from "./types.js";
 import { whenSetupSettled } from "./worktree-setup.js";
 
@@ -294,6 +306,73 @@ export function createRunManager(options: {
     return [...incoming.slice(0, -1), { ...last, metadata }];
   };
 
+  /** The user message one turn hangs off: the last one carrying a 每回合快照. */
+  const turnMessageIndex = (messages: readonly UIMessage[], before = messages.length): number => {
+    for (let i = Math.min(before, messages.length) - 1; i >= 0; i -= 1) {
+      const message = messages[i];
+      if (message?.role === "user" && (message.metadata as ThreadMessageMetadata | undefined)?.checkpoint != null) return i;
+    }
+    return -1;
+  };
+
+  /** `messages` with `patch` merged into the metadata of message `index`. */
+  const stampMetadata = (messages: readonly UIMessage[], index: number, patch: ThreadMessageMetadata): UIMessage[] => {
+    const message = messages[index]!;
+    const next = [...messages];
+    next[index] = { ...message, metadata: { ...(message.metadata as ThreadMessageMetadata | undefined), ...patch } };
+    return next;
+  };
+
+  /**
+   * A previous turn that never got its own after-snapshot — the process died on
+   * it, or it was abandoned while parked on an approval — borrows this turn's
+   * before-snapshot as its end state. It is the tree the user is looking at as
+   * they send the next message, so it is the truest answer left; the edits they
+   * made in between ride along with that turn, the same imprecision a turn that
+   * ends normally already has.
+   */
+  const withAfterFallback = (messages: readonly UIMessage[], checkpoint: MessageCheckpoint | undefined): UIMessage[] => {
+    if (checkpoint == null) return [...messages];
+    const index = turnMessageIndex(messages, messages.length - 1);
+    if (index < 0) return [...messages];
+    const metadata = messages[index]!.metadata as ThreadMessageMetadata | undefined;
+    if (metadata?.checkpointAfter != null) return [...messages];
+    return stampMetadata(messages, index, { checkpointAfter: checkpoint });
+  };
+
+  /**
+   * 回合结束后的快照, taken once the turn is really over and the engine is put
+   * away. Deliberately *after* the status update the user is watching for — the
+   * task reads 空闲 the moment it is — and before `scheduleDispatch`, so the
+   * next queued turn starts from a tree this one has already been measured
+   * against. Never throws: a snapshot we could not take only costs that turn its
+   * file list.
+   */
+  const snapshotTurnEnd = async (threadId: string): Promise<void> => {
+    const record = await threads.get(threadId).catch(() => undefined);
+    if (record == null) return;
+    const index = turnMessageIndex(record.messages);
+    if (index < 0) return;
+    const before = (record.messages[index]!.metadata as ThreadMessageMetadata).checkpoint!;
+    const project = await projects.get(record.projectId).catch(() => undefined);
+    if (project == null) return;
+    const repoPath = record.workspace?.path ?? project.repoPath;
+    const startedAt = Date.now();
+    const taken = await createAfterCheckpoint({ repoPath, threadId, before, log });
+    const elapsed = Date.now() - startedAt;
+    if (elapsed >= SLOW_CHECKPOINT_MS) log.warn(`线程 ${threadId} 的回合结束快照耗时 ${elapsed}ms`);
+    if (taken == null) return;
+    const checkpointAfter: MessageCheckpoint = { ...taken, at: new Date().toISOString() };
+    await threads.update(threadId, { messages: stampMetadata(record.messages, index, { checkpointAfter }) }).catch(async (error: unknown) => {
+      log.warn(`线程 ${threadId} 的回合结束快照没能记下`, error);
+      // 删除任务 can land in the moment this snapshot was being taken, and the
+      // ref it just wrote would then outlive the task in the user's own repo.
+      if ((await threads.get(threadId).catch(() => undefined)) == null) {
+        await deleteCheckpoints({ repoPath, threadId, log });
+      }
+    });
+  };
+
   const deriveStatus = (assistant: UIMessage | undefined): ThreadStatus => {
     if (assistant == null) return "idle";
     for (const part of assistant.parts) {
@@ -341,7 +420,7 @@ export function createRunManager(options: {
       .catch((error) => log.warn(`标记线程 ${threadId} 中断失败`, error));
   };
 
-  const runTurn = async (thread: ThreadRecord, incoming: UIMessage[], run: LiveRun): Promise<void> => {
+  const runTurn = async (thread: ThreadRecord, incoming: UIMessage[], run: LiveRun, note?: string): Promise<void> => {
     const stored = await projects.get(thread.projectId);
     if (stored == null) throw new NotFoundError(`项目不存在: ${thread.projectId}`, "project_not_found");
     // A worktree task sees its own directory as the repo. Nothing below the
@@ -412,7 +491,11 @@ export function createRunManager(options: {
     })();
 
     try {
-      let modelMessages = await convertToModelMessages(messages);
+      // 恢复之后的第一轮: the note rides on the converted history rather than on
+      // the stored message, so the log still shows what the user typed.
+      const convert = async (tools?: ToolSet) =>
+        withRestoreNote(await convertToModelMessages(messages, ...(tools != null ? [{ tools }] : [])), note);
+      let modelMessages = await convert();
       // The harness itself decides "continue the open turn" vs "start a new
       // one" by whether the last model message is `role: 'tool'` (approval
       // responses / tool results), so the run manager reads it the same way.
@@ -437,7 +520,7 @@ export function createRunManager(options: {
           await parkedRunner.destroy().catch((error) => log.warn(`销毁挂起的引擎失败 (thread ${thread.id})`, error));
           await clearContinueFrom(thread.id);
           messages = closePendingToolParts(messages, ABANDONED_TURN_TEXT);
-          modelMessages = await convertToModelMessages(messages);
+          modelMessages = await convert();
         }
         // Read after the abandon path above, so a cleared `continueFrom` is
         // really gone by the time the runner could act on it.
@@ -467,7 +550,7 @@ export function createRunManager(options: {
       // into the summary the model actually saw, and it only runs here. The
       // first conversion above cannot do it — the runner does not exist yet,
       // and picking it needs `continuesTurn`, which needs the conversion.
-      if (runner.tools != null) modelMessages = await convertToModelMessages(messages, { tools: runner.tools });
+      if (runner.tools != null) modelMessages = await convert(runner.tools);
 
       const result = await runner.stream({ messages: modelMessages, abortSignal: run.abort.signal });
 
@@ -597,6 +680,10 @@ export function createRunManager(options: {
           if (finishing.get(thread.id) === cleanup) finishing.delete(thread.id);
         }
       }
+      // 回合结束后的快照, once the engine really is down and can write no more.
+      // A parked turn is not over — its own continuation takes the snapshot when
+      // it ends — so it is the one case with nothing to record yet.
+      if (!park) await snapshotTurnEnd(thread.id);
       // 排队: the slot is free and the engine is put away, so the thread can
       // take its next queued message. `dispatchQueue` re-reads the record and
       // only acts on a clean `idle`, so a parked, stopped or failed turn here
@@ -648,7 +735,12 @@ export function createRunManager(options: {
 
     // Setup has settled and the engine has not started: this is the moment
     // the working directory still looks the way the user saw it.
-    const messages = mergeIncoming(thread.messages, withCheckpoint(validated, await checkpointForTurn(thread, validated)));
+    const checkpoint = await checkpointForTurn(thread, validated);
+    const messages = withAfterFallback(mergeIncoming(thread.messages, withCheckpoint(validated, checkpoint)), checkpoint);
+    // 从恢复点继续: the marker goes away with this message — the task is moving
+    // forward from here — and the model is told once, in this turn's input, what
+    // happened to the files it may remember writing.
+    const note = thread.restoredTo != null && validated.at(-1)?.role === "user" ? restoreNote(thread.messages, thread.restoredTo.messageId) : undefined;
     // A thread is named by its first user message; an explicit title is kept.
     const title = thread.title === DEFAULT_THREAD_TITLE ? deriveThreadTitle(messages) : undefined;
     const updated = await threads.update(threadId, {
@@ -658,13 +750,14 @@ export function createRunManager(options: {
       // The task is working again, so whatever it was wound up as no longer
       // describes what is on disk.
       outcome: undefined,
+      restoredTo: undefined,
       ...(title != null ? { title } : {}),
     });
 
     const run: LiveRun = { hub: createChunkHub(), abort: new AbortController(), done: Promise.resolve(), stopped: false };
     runs.set(threadId, run);
     // Detached on purpose: an HTTP client disconnecting must not cancel the turn.
-    run.done = runTurn(updated, messages, run);
+    run.done = runTurn(updated, messages, run, note);
     run.done.catch((error) => log.error(`线程 ${threadId} 的运行崩溃`, error));
 
     return run.hub;
@@ -816,6 +909,28 @@ export function createRunManager(options: {
       );
     },
   };
+}
+
+/**
+ * 恢复之后的第一轮: the one sentence appended to the last user message of the
+ * *converted* history.
+ *
+ * That message is the one every engine is guaranteed to read — the harness
+ * sessions collapse the array down to exactly it — so this reaches Claude Code,
+ * Codex and the self-built engine alike without a per-engine hook. It is also
+ * why the note lives here rather than on the stored `UIMessage`: the work log
+ * goes on showing what the user actually typed.
+ */
+export function withRestoreNote(messages: ModelMessage[], note: string | undefined): ModelMessage[] {
+  if (note == null) return messages;
+  const index = messages.findLastIndex((message) => message.role === "user");
+  if (index < 0) return messages;
+  const message = messages[index]!;
+  const content =
+    typeof message.content === "string" ? `${message.content}\n\n${note}` : [...message.content, { type: "text" as const, text: note }];
+  const next = [...messages];
+  next[index] = { ...message, content } as ModelMessage;
+  return next;
 }
 
 const UNFINISHED_STATUSES: readonly ThreadStatus[] = ["running", "awaiting-approval", "awaiting-input"];

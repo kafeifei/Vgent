@@ -14,6 +14,7 @@ import type {
   ThreadOutcome,
   ThreadPullRequest,
   ThreadRecord,
+  ThreadRestorePoint,
   ThreadStatus,
   ThreadSummary,
   ThreadWorkspace,
@@ -72,6 +73,8 @@ export type ThreadPatch = Partial<{
   pr: ThreadPullRequest | undefined;
   /** 撤销带回 record. `undefined` drops it: 归档 does, and so does the undo itself. */
   applyUndo: ApplyUndoRecord | undefined;
+  /** 恢复后停在哪里. `undefined` means 最新 — what a new turn and 「回到最新」 both set. */
+  restoredTo: ThreadRestorePoint | undefined;
   changeStats: ChangeStats | undefined;
   /** 排队的消息. An empty array clears it — the field is never stored empty. */
   queue: QueuedMessage[] | undefined;
@@ -322,6 +325,10 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
         if ("applyUndo" in patch) {
           if (patch.applyUndo == null) delete next.applyUndo;
           else next.applyUndo = patch.applyUndo;
+        }
+        if ("restoredTo" in patch) {
+          if (patch.restoredTo == null) delete next.restoredTo;
+          else next.restoredTo = patch.restoredTo;
         }
         if ("changeStats" in patch) {
           if (patch.changeStats == null) delete next.changeStats;

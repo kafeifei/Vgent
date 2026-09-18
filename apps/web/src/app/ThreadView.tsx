@@ -95,17 +95,23 @@ function ThreadChatView({
   useEffect(() => onMessages(messages), [onMessages, messages]);
 
   /**
-   * 恢复到此处, and the 撤销 its toast offers — the same call either way, which
-   * is why the undo goes back through this function by ref rather than
-   * duplicating the error handling and the 变更 refresh.
+   * 恢复到此处 and 回到最新: one call either way — the server works out from
+   * where the thread stands whether this moves the files back or forward, and
+   * which files it may touch at all. There is no undo toast any more: the
+   * position is recorded on the thread, so the way back is always on screen.
    */
-  const restoreRef = useRef<(target: { messageId: string } | { commit: string }) => void>(() => {});
   const restoreCheckpoint = useCallback(
-    (target: { messageId: string } | { commit: string }) => {
+    (target: { messageId: string } | { latest: true }) => {
       void (async () => {
         try {
           const result = await client.restoreCheckpoint(thread.id, target);
-          actions.toast("已恢复到此处", { label: "撤销", onClick: () => restoreRef.current({ commit: result.undo }) });
+          actions.toast(
+            result.whole
+              ? "已整个目录恢复"
+              : "latest" in target
+                ? `已回到最新，放回 ${result.files} 个文件`
+                : `已恢复 ${result.files} 个文件`,
+          );
         } catch (failure) {
           actions.toast(failure instanceof Error ? failure.message : String(failure));
         }
@@ -115,9 +121,6 @@ function ThreadChatView({
     },
     [actions, changes, client, thread.id],
   );
-  useEffect(() => {
-    restoreRef.current = restoreCheckpoint;
-  }, [restoreCheckpoint]);
 
   const turnActions: TurnActions = useMemo(
     () => ({
@@ -129,8 +132,10 @@ function ThreadChatView({
       answerQuestions: (toolCallId, output) => void addToolOutput({ tool: "askUserQuestions", toolCallId, output }),
       openFile: (file) => actions.openChanges(file),
       restoreCheckpoint: (messageId) => restoreCheckpoint({ messageId }),
+      restoreLatest: () => restoreCheckpoint({ latest: true }),
+      previewRestore: (messageId) => client.previewRestore(thread.id, { messageId }),
     }),
-    [actions, addToolApprovalResponse, addToolOutput, restoreCheckpoint],
+    [actions, addToolApprovalResponse, addToolOutput, client, restoreCheckpoint, thread.id],
   );
 
   // Every approval the global allowlist already answers, answered once. The

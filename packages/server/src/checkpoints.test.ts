@@ -3,19 +3,23 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { isToolUIPart, type TextStreamPart, type ToolSet, type UIMessage } from "ai";
+import { isToolUIPart, type ModelMessage, type TextStreamPart, type ToolSet, type UIMessage } from "ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp, type VgentApp } from "./app.js";
 import {
+  changedPaths,
   CHECKPOINT_RETENTION,
   checkpointRefPrefix,
+  createAfterCheckpoint,
   createCheckpoint,
   deleteCheckpoints,
   pinBaseline,
   restoreCheckpoint,
   snapshotTree,
 } from "./checkpoints.js";
+import { lastTurnPair, planRestore, restoreNote, turnSnapshots } from "./restore.js";
 import { createEngineRegistry, type EngineFactoryOverride, type EngineRunner } from "./engines/registry.js";
+import type { ChangesResponse } from "./git.js";
 import type { Project, ThreadMessageMetadata, ThreadRecord } from "./types.js";
 
 const exec = promisify(execFile);
@@ -167,6 +171,43 @@ describe.skipIf(!hasGit)("checkpoints", () => {
     expect(await createCheckpoint({ repoPath: plain, threadId: "t1" })).toBeUndefined();
   });
 
+  it("回合结束后的快照挂在同一个计数上，两个快照之间就是这一轮动过的文件", async () => {
+    const repo = await repoWithHistory();
+    await writeFile(join(repo, "改过的.txt"), "回合前\n");
+    const before = await createCheckpoint({ repoPath: repo, threadId: "t1" });
+    expect(before).toBeDefined();
+
+    // What the engine did during the turn.
+    await writeFile(join(repo, "改过的.txt"), "回合后\n");
+    await writeFile(join(repo, "新建的.txt"), "新的\n");
+    await rm(join(repo, "tracked.txt"));
+    // An ignored file is in neither tree, so it never counts as touched.
+    await writeFile(join(repo, "ignored.txt"), "跑的时候也动了\n");
+
+    const after = await createAfterCheckpoint({ repoPath: repo, threadId: "t1", before: before! });
+    expect(after?.ref).toBe(`${checkpointRefPrefix("t1")}/after-000001`);
+    // Committed on top of the before-snapshot, which is what makes the pair a diff.
+    expect((await git(repo, "rev-parse", `${after!.commit}^`)).stdout.trim()).toBe(before!.commit);
+
+    expect((await changedPaths({ repoPath: repo, from: before!.commit, to: after!.commit })).sort()).toEqual([
+      "tracked.txt",
+      "改过的.txt",
+      "新建的.txt",
+    ]);
+  });
+
+  it("回合前的快照不是本线程的编号引用时，结束快照直接放弃，不报错", async () => {
+    const repo = await repoWithHistory();
+    const baseline = await pinBaseline({ repoPath: repo, threadId: "t1" });
+    // The 基线 ref carries no counter, so there is no `after-<n>` to pair with it.
+    const taken = await createAfterCheckpoint({
+      repoPath: repo,
+      threadId: "t1",
+      before: { commit: baseline!, ref: `${checkpointRefPrefix("t1")}/base` },
+    });
+    expect(taken).toBeUndefined();
+  });
+
   it(`只保留最新的 ${CHECKPOINT_RETENTION} 条引用，任务基线不算在内，删除任务时全部清掉`, async () => {
     const repo = await repoWithHistory();
     // The 任务基线 is pinned before the first turn and has to outlive every cap.
@@ -188,7 +229,117 @@ describe.skipIf(!hasGit)("checkpoints", () => {
     expect(await deleteCheckpoints({ repoPath: repo, threadId: "t1" })).toBe(CHECKPOINT_RETENTION + 1);
     expect(await refNames(repo, "t1")).toEqual([]);
   }, 60_000);
+
+  it(`保留的是最新的 ${CHECKPOINT_RETENTION} 个回合，回合结束的快照跟着自己那一轮一起留、一起删`, async () => {
+    const repo = await repoWithHistory();
+    for (let i = 0; i < CHECKPOINT_RETENTION + 3; i += 1) {
+      await writeFile(join(repo, "tracked.txt"), `第 ${i} 轮开跑\n`);
+      const before = await createCheckpoint({ repoPath: repo, threadId: "t1" });
+      await writeFile(join(repo, "tracked.txt"), `第 ${i} 轮跑完\n`);
+      expect(await createAfterCheckpoint({ repoPath: repo, threadId: "t1", before: before! })).toBeDefined();
+    }
+    const kept = await refNames(repo, "t1");
+    // Two refs per turn, and still exactly 50 turns: the pair shares a counter.
+    expect(kept).toHaveLength(CHECKPOINT_RETENTION * 2);
+    expect(kept).toContain(`${checkpointRefPrefix("t1")}/000004`);
+    expect(kept).toContain(`${checkpointRefPrefix("t1")}/after-000004`);
+    // Turn 3 fell off the end and its after-snapshot went with it, rather than
+    // leaving a half-kept turn that could only degrade to a whole-tree restore.
+    expect(kept).not.toContain(`${checkpointRefPrefix("t1")}/000003`);
+    expect(kept).not.toContain(`${checkpointRefPrefix("t1")}/after-000003`);
+  }, 60_000);
 }, 30_000);
+
+// --- 恢复的范围, without any git at all ------------------------------------
+
+const turnMessage = (id: string, text: string, before: string, after?: string): UIMessage => ({
+  id,
+  role: "user",
+  parts: [{ type: "text", text }],
+  metadata: {
+    checkpoint: { commit: before, ref: `r/${before}`, at: "2026-09-19T00:00:00.000Z" },
+    ...(after != null ? { checkpointAfter: { commit: after, ref: `r/${after}`, at: "2026-09-19T00:01:00.000Z" } } : {}),
+  } satisfies ThreadMessageMetadata,
+});
+
+describe("恢复的范围", () => {
+  const threadOf = (messages: UIMessage[], restoredTo?: { messageId: string; undoCommit: string }) =>
+    ({ messages, ...(restoredTo != null ? { restoredTo: { ...restoredTo, at: "2026-09-19T00:02:00.000Z" } } : {}) }) as Pick<
+      ThreadRecord,
+      "messages" | "restoredTo"
+    >;
+
+  it("每条带快照的用户消息就是一轮；没有结束快照的那一轮也在，只是缺一半", () => {
+    const messages = [turnMessage("u1", "一", "b1", "a1"), turnMessage("u2", "二", "b2")];
+    expect(turnSnapshots(messages)).toEqual([
+      { messageId: "u1", before: "b1", after: "a1" },
+      { messageId: "u2", before: "b2" },
+    ]);
+    // A message with no checkpoint at all never was a turn.
+    expect(turnSnapshots([{ id: "u0", role: "user", parts: [] }])).toEqual([]);
+  });
+
+  it("有回合没记下结束状态，就整目录回退，而且明说", async () => {
+    const messages = [turnMessage("u1", "一", "b1", "a1"), turnMessage("u2", "二", "b2")];
+    const plan = await planRestore({
+      repoPath: "/nonexistent",
+      thread: threadOf(messages),
+      target: { messageId: "u1" },
+      known: new Set(["b1", "a1", "b2"]),
+    });
+    // No `changedPaths` call was even attempted — there is nothing to diff u2 against.
+    expect(plan).toEqual({ commit: "b1", files: 0, whole: true, at: "u1" });
+  });
+
+  it("保留期把某一轮的快照清掉了，也退回整目录而不是报错", async () => {
+    const messages = [turnMessage("u1", "一", "b1", "a1"), turnMessage("u2", "二", "b2", "a2")];
+    const plan = await planRestore({
+      repoPath: "/nonexistent",
+      thread: threadOf(messages),
+      target: { messageId: "u1" },
+      // `a2` is gone.
+      known: new Set(["b1", "a1", "b2"]),
+    });
+    expect(plan.whole).toBe(true);
+  });
+
+  it("没恢复过就没有「回到最新」，快照不在本线程里也不给", async () => {
+    const messages = [turnMessage("u1", "一", "b1", "a1")];
+    await expect(
+      planRestore({ repoPath: "/nonexistent", thread: threadOf(messages), target: { latest: true }, known: new Set(["b1"]) }),
+    ).rejects.toThrow(/没有可回到的状态/);
+    await expect(
+      planRestore({ repoPath: "/nonexistent", thread: threadOf(messages), target: { messageId: "u1" }, known: new Set() }),
+    ).rejects.toThrow(/快照已不存在/);
+    await expect(
+      planRestore({ repoPath: "/nonexistent", thread: threadOf(messages), target: { messageId: "nope" }, known: new Set(["b1"]) }),
+    ).rejects.toThrow(/这条消息没有快照/);
+  });
+
+  it("恢复点的消息被压缩掉了，就按整目录处理", async () => {
+    const messages = [turnMessage("u1", "一", "b1", "a1")];
+    const plan = await planRestore({
+      repoPath: "/nonexistent",
+      thread: threadOf(messages, { messageId: "没了", undoCommit: "u" }),
+      target: { messageId: "u1" },
+      known: new Set(["b1", "a1"]),
+    });
+    expect(plan.whole).toBe(true);
+  });
+
+  it("「上一轮」要有两轮，而且最后一轮跑完了", () => {
+    expect(lastTurnPair([turnMessage("u1", "一", "b1", "a1")])).toBeUndefined();
+    expect(lastTurnPair([turnMessage("u1", "一", "b1", "a1"), turnMessage("u2", "二", "b2")])).toBeUndefined();
+    expect(lastTurnPair([turnMessage("u1", "一", "b1", "a1"), turnMessage("u2", "二", "b2", "a2")])).toEqual({ from: "b2", to: "a2" });
+  });
+
+  it("给模型的那句话里带着被恢复的那条消息", () => {
+    const note = restoreNote([turnMessage("u1", "把登录页重写一遍\n再说", "b1", "a1")], "u1");
+    expect(note).toContain("把登录页重写一遍");
+    expect(note).not.toContain("再说");
+    expect(restoreNote([], "u1")).toContain("更早的一条消息");
+  });
+});
 
 // --- the routes -----------------------------------------------------------
 
@@ -276,8 +427,44 @@ function approvalEngine(): EngineFactoryOverride {
   };
 }
 
-function makeApp(dataDir: string): VgentApp {
-  const instance = createApp({ dataDir, token: TOKEN, registry: createEngineRegistry({ "claude-code": approvalEngine() }) });
+/**
+ * An engine that really writes to the working directory while its turn runs,
+ * which is the only way to exercise 「这一轮动过哪些文件」 without a real one.
+ * The prompt is the script: `写 <路径>=<内容>` and `删 <路径>`, one per line.
+ *
+ * `seen` collects every converted history it was handed, so a test can check
+ * what actually reached the model.
+ */
+function editingEngine(seen?: ModelMessage[][]): EngineFactoryOverride {
+  return {
+    async create(ctx) {
+      const runner: EngineRunner = {
+        hasUnfinishedTurn: () => false,
+        async stream({ messages }) {
+          seen?.push(messages);
+          const last = messages.at(-1);
+          const text =
+            typeof last?.content === "string"
+              ? last.content
+              : (last?.content ?? []).map((part) => ("text" in part && typeof part.text === "string" ? part.text : "")).join("");
+          for (const line of text.split("\n")) {
+            const write = /^写 (\S+)=(.*)$/.exec(line.trim());
+            if (write?.[1] != null) await writeFile(join(ctx.project.repoPath, write[1]), `${write[2] ?? ""}\n`);
+            const remove = /^删 (\S+)$/.exec(line.trim());
+            if (remove?.[1] != null) await rm(join(ctx.project.repoPath, remove[1]), { force: true });
+          }
+          return { stream: toStream(textParts("好了")) };
+        },
+        async finish() {},
+        async destroy() {},
+      };
+      return runner;
+    },
+  };
+}
+
+function makeApp(dataDir: string, engine: EngineFactoryOverride = approvalEngine()): VgentApp {
+  const instance = createApp({ dataDir, token: TOKEN, registry: createEngineRegistry({ "claude-code": engine }) });
   apps.push(instance);
   return instance;
 }
@@ -315,8 +502,42 @@ async function waitForSlotReleased(app: VgentApp, threadId: string): Promise<voi
   throw new Error(`线程 ${threadId} 的运行槽位没有释放`);
 }
 
+/**
+ * Waits until the turn's after-snapshot has been stamped. The run slot opens
+ * first on purpose — the status the user watches must not wait on a snapshot —
+ * so 「回合真的结束了」 is this, not a free slot.
+ */
+async function waitForTurnEnd(app: VgentApp, threadId: string): Promise<ThreadRecord> {
+  await waitForSlotReleased(app, threadId);
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const record = await getThread(app, threadId);
+    const last = [...record.messages].reverse().find((message) => message.role === "user");
+    if ((last?.metadata as ThreadMessageMetadata | undefined)?.checkpointAfter != null) return record;
+    await sleep(10);
+  }
+  throw new Error(`线程 ${threadId} 的回合结束快照没有出现`);
+}
+
 const restore = (app: VgentApp, threadId: string, body: unknown) =>
   postJson(app, `/api/threads/${threadId}/checkpoints/restore`, body);
+
+const preview = (app: VgentApp, threadId: string, query: string) =>
+  request(app, `/api/threads/${threadId}/checkpoints/preview?${query}`);
+
+interface RestoreBody {
+  restored: string;
+  undo: string;
+  files: number;
+  whole: boolean;
+  restoredTo?: { messageId: string };
+}
+
+/** Sends one turn and waits for it to really be over. */
+async function runTurn(app: VgentApp, thread: ThreadRecord, message: UIMessage): Promise<ThreadRecord> {
+  const history = (await getThread(app, thread.id)).messages;
+  await drain(await postJson(app, `/api/chat/${thread.id}`, { messages: [...history, message] }));
+  return waitForTurnEnd(app, thread.id);
+}
 
 describe.skipIf(!hasGit)("checkpoint 路由", () => {
   it("用户消息起的回合才打快照，审批续跑不打", async () => {
@@ -344,10 +565,15 @@ describe.skipIf(!hasGit)("checkpoint 路由", () => {
       ),
     } as UIMessage;
     await drain(await postJson(app, `/api/chat/${thread.id}`, { messages: [...parked.messages.slice(0, -1), approved] }));
-    await waitForSlotReleased(app, thread.id);
+    await waitForTurnEnd(app, thread.id);
 
-    // The continuation belongs to the turn the first message already snapshotted.
-    expect(await refNames(repo, thread.id)).toHaveLength(2);
+    // The continuation belongs to the turn the first message already snapshotted:
+    // it opened no new counter, and the turn's end snapshot rode on the old one.
+    expect(await refNames(repo, thread.id)).toEqual([
+      `${checkpointRefPrefix(thread.id)}/000001`,
+      `${checkpointRefPrefix(thread.id)}/after-000001`,
+      `${checkpointRefPrefix(thread.id)}/base`,
+    ]);
   });
 
   it("项目不是 git 仓库：回合照跑，只是没有快照", async () => {
@@ -363,53 +589,162 @@ describe.skipIf(!hasGit)("checkpoint 路由", () => {
     expect((await restore(app, thread.id, { messageId: "u1" })).status).toBe(404);
   });
 
-  it("恢复到某条消息之前，再撤销回去；消息一条都不少", async () => {
+  it("只回退任务动过的文件；你自己改的别的文件原地不动，消息一条都不少", async () => {
     const repo = await repoWithHistory();
-    // Something staged by hand, so「不碰真实索引」has a witness.
+    // A dirty checkout, the way a real one is: an unstaged edit of the user's
+    // own, a file they staged by hand, and an untracked file.
+    await writeFile(join(repo, "tracked.txt"), "我自己改的\n");
     await writeFile(join(repo, "手工暂存.txt"), "用户自己 add 的\n");
     await git(repo, "add", "手工暂存.txt");
-    const cachedBefore = (await git(repo, "diff", "--cached", "--name-only")).stdout;
+    await writeFile(join(repo, "未跟踪.txt"), "我自己建的\n");
+    const cachedBefore = (await git(repo, "diff", "--cached")).stdout;
     expect(cachedBefore).not.toBe("");
-    const app = makeApp(await tempDir());
+
+    const app = makeApp(await tempDir(), editingEngine());
     const thread = await setupThread(app, repo);
 
-    await drain(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "第一轮")] }));
-    await waitForSlotReleased(app, thread.id);
-    // The engine's work for turn one.
-    await writeFile(join(repo, "a.txt"), "one\n");
+    await runTurn(app, thread, userMessage("u1", "第一轮\n写 a.txt=one"));
+    await runTurn(app, thread, userMessage("u2", "第二轮\n写 a.txt=two\n写 b.txt=第二轮建的"));
 
-    const first = await getThread(app, thread.id);
-    await drain(await postJson(app, `/api/chat/${thread.id}`, { messages: [...first.messages, userMessage("u2", "第二轮")] }));
-    await waitForSlotReleased(app, thread.id);
-    // The engine's work for turn two.
-    await writeFile(join(repo, "a.txt"), "two\n");
-    await writeFile(join(repo, "b.txt"), "第二轮建的\n");
+    // After both turns the user goes on working on their own files — one the
+    // task never touched, and one it did.
+    await writeFile(join(repo, "未跟踪.txt"), "两轮之后我又改的\n");
+    await writeFile(join(repo, "a.txt"), "我手改了任务的文件\n");
 
-    const restored = (await restore(app, thread.id, { messageId: "u2" })) as Response;
+    const restored = await restore(app, thread.id, { messageId: "u1" });
     expect(restored.status).toBe(200);
-    const body = (await restored.json()) as { restored: string; undo: string; changeStats?: { files: number } };
-    expect(body.restored).toBe(checkpointOf((await getThread(app, thread.id)).messages.find((m) => m.id === "u2"))?.commit);
-    expect(await read(repo, "a.txt")).toBe("one\n");
-    expect(await missing(repo, "b.txt")).toBe(true);
-    expect(await read(repo, "ignored.txt")).toBe("别动我\n");
+    const body = (await restored.json()) as RestoreBody;
+    expect(body.whole).toBe(false);
+    expect(body.restoredTo?.messageId).toBe("u1");
+    expect(body.restored).toBe(checkpointOf((await getThread(app, thread.id)).messages.find((m) => m.id === "u1"))?.commit);
 
-    // 撤销 puts back exactly what the restore replaced.
-    const undone = await restore(app, thread.id, { commit: body.undo });
-    expect(undone.status).toBe(200);
-    expect(await read(repo, "a.txt")).toBe("two\n");
+    // The two files the task created are gone …
+    expect(await missing(repo, "a.txt")).toBe(true);
+    expect(await missing(repo, "b.txt")).toBe(true);
+    // … and everything that was the user's own is exactly as they left it.
+    expect(await read(repo, "未跟踪.txt")).toBe("两轮之后我又改的\n");
+    expect(await read(repo, "tracked.txt")).toBe("我自己改的\n");
+    expect(await read(repo, "ignored.txt")).toBe("别动我\n");
+    expect((await git(repo, "diff", "--cached")).stdout).toBe(cachedBefore);
+    expect(await read(repo, "手工暂存.txt")).toBe("用户自己 add 的\n");
+
+    // 回到最新 puts both turns' files back and ends the stretch.
+    const latest = await restore(app, thread.id, { latest: true });
+    expect(latest.status).toBe(200);
+    expect(((await latest.json()) as RestoreBody).restoredTo).toBeUndefined();
+    expect(await read(repo, "a.txt")).toBe("我手改了任务的文件\n");
     expect(await read(repo, "b.txt")).toBe("第二轮建的\n");
+    expect(await read(repo, "未跟踪.txt")).toBe("两轮之后我又改的\n");
+    expect((await getThread(app, thread.id)).restoredTo).toBeUndefined();
+
+    // Nothing was deleted from the log on the way: both turns are still there.
+    const after = await getThread(app, thread.id);
+    expect(after.messages.filter((message) => message.role === "user").map((message) => message.id)).toEqual(["u1", "u2"]);
+    expect((await git(repo, "diff", "--cached")).stdout).toBe(cachedBefore);
+  });
+
+  it("往回退一轮，再往前走一轮；「恢复到此处」两个方向是同一条路", async () => {
+    const repo = await repoWithHistory();
+    const app = makeApp(await tempDir(), editingEngine());
+    const thread = await setupThread(app, repo);
+
+    await runTurn(app, thread, userMessage("u1", "第一轮\n写 a.txt=one"));
+    await runTurn(app, thread, userMessage("u2", "第二轮\n写 b.txt=two"));
+    await runTurn(app, thread, userMessage("u3", "第三轮\n写 c.txt=three"));
 
     // All the way back to before the first turn.
     expect((await restore(app, thread.id, { messageId: "u1" })).status).toBe(200);
     expect(await missing(repo, "a.txt")).toBe(true);
     expect(await missing(repo, "b.txt")).toBe(true);
+    expect(await missing(repo, "c.txt")).toBe(true);
+    expect((await getThread(app, thread.id)).restoredTo?.messageId).toBe("u1");
 
-    // Nothing was deleted from the log on the way: both turns are still there.
-    const after = await getThread(app, thread.id);
-    expect(after.messages.filter((message) => message.role === "user").map((message) => message.id)).toEqual(["u1", "u2"]);
-    // Only the working tree moved: the user's own index is exactly as they left it.
-    expect((await git(repo, "diff", "--cached", "--name-only")).stdout).toBe(cachedBefore);
-    expect(await read(repo, "手工暂存.txt")).toBe("用户自己 add 的\n");
+    // Forward to before the third: turns one and two are back, three is not.
+    const forward = await restore(app, thread.id, { messageId: "u3" });
+    expect(forward.status).toBe(200);
+    expect((await forward.json()) as RestoreBody).toMatchObject({ whole: false, restoredTo: { messageId: "u3" } });
+    expect(await read(repo, "a.txt")).toBe("one\n");
+    expect(await read(repo, "b.txt")).toBe("two\n");
+    expect(await missing(repo, "c.txt")).toBe(true);
+
+    // 回到最新 still means the state from before the *first* restore.
+    expect((await restore(app, thread.id, { latest: true })).status).toBe(200);
+    expect(await read(repo, "c.txt")).toBe("three\n");
+    // And with the marker gone there is nothing left to go back to.
+    const again = await restore(app, thread.id, { latest: true });
+    expect(again.status).toBe(400);
+    expect(((await again.json()) as { error: { code: string } }).error.code).toBe("not_restored");
+  });
+
+  it("恢复前先问会动几个文件，答案和真的动的一致", async () => {
+    const repo = await repoWithHistory();
+    const app = makeApp(await tempDir(), editingEngine());
+    const thread = await setupThread(app, repo);
+
+    await runTurn(app, thread, userMessage("u1", "第一轮\n写 a.txt=one"));
+    await runTurn(app, thread, userMessage("u2", "第二轮\n写 b.txt=two\n写 a.txt=改了"));
+
+    const asked = (await (await preview(app, thread.id, "messageId=u2")).json()) as { files: number; whole: boolean };
+    // Turn two touched two files, and nothing else moves.
+    expect(asked).toEqual({ files: 2, whole: false });
+    const body = (await (await restore(app, thread.id, { messageId: "u2" })).json()) as RestoreBody;
+    expect(body.files).toBe(2);
+    expect(await read(repo, "a.txt")).toBe("one\n");
+    expect(await missing(repo, "b.txt")).toBe(true);
+  });
+
+  it("恢复之后再发消息：恢复标记清掉，模型只被告知一次", async () => {
+    const repo = await repoWithHistory();
+    const seen: ModelMessage[][] = [];
+    const app = makeApp(await tempDir(), editingEngine(seen));
+    const thread = await setupThread(app, repo);
+
+    await runTurn(app, thread, userMessage("u1", "第一轮\n写 a.txt=one"));
+    await runTurn(app, thread, userMessage("u2", "第二轮\n写 b.txt=two"));
+    expect((await restore(app, thread.id, { messageId: "u2" })).status).toBe(200);
+
+    await runTurn(app, thread, userMessage("u3", "第三轮\n写 c.txt=three"));
+    await runTurn(app, thread, userMessage("u4", "第四轮\n写 d.txt=four"));
+
+    const prompts = seen.map((messages) => JSON.stringify(messages.at(-1)));
+    expect(prompts).toHaveLength(4);
+    expect(prompts.filter((text) => text.includes("已把工作目录恢复到"))).toHaveLength(1);
+    expect(prompts[2]).toContain("已把工作目录恢复到");
+    expect(prompts[2]).toContain("第二轮");
+    // The stored conversation keeps the user's own words, note or no note.
+    const record = await getThread(app, thread.id);
+    expect(JSON.stringify(record.messages)).not.toContain("已把工作目录恢复到");
+    expect(record.restoredTo).toBeUndefined();
+  });
+
+  it("「上一轮」看的是最后一轮两个快照之间的差别，不看工作目录", async () => {
+    const repo = await repoWithHistory();
+    const app = makeApp(await tempDir(), editingEngine());
+    const thread = await setupThread(app, repo);
+
+    // One turn is not enough for the scope to say anything new.
+    await runTurn(app, thread, userMessage("u1", "第一轮\n写 a.txt=one"));
+    expect(((await (await request(app, `/api/threads/${thread.id}/changes`)).json()) as ChangesResponse).lastTurn).toBe(false);
+    expect((await request(app, `/api/threads/${thread.id}/changes?scope=last-turn`)).status).toBe(404);
+
+    await runTurn(app, thread, userMessage("u2", "第二轮\n写 b.txt=two\n删 a.txt"));
+    // Something the user changed *after* the turn ended, which the scope must not see.
+    await writeFile(join(repo, "我自己的.txt"), "跟上一轮无关\n");
+
+    const all = (await (await request(app, `/api/threads/${thread.id}/changes`)).json()) as ChangesResponse;
+    expect(all.lastTurn).toBe(true);
+    expect(all.files.map((file) => file.path).sort()).toEqual(["b.txt", "我自己的.txt"]);
+
+    const lastTurn = (await (await request(app, `/api/threads/${thread.id}/changes?scope=last-turn`)).json()) as ChangesResponse;
+    expect(lastTurn.files.map((file) => ({ path: file.path, status: file.status })).sort((a, b) => (a.path < b.path ? -1 : 1))).toEqual([
+      { path: "a.txt", status: "deleted" },
+      { path: "b.txt", status: "added" },
+    ]);
+    // The per-file diff follows the same scope.
+    const diff = (await (await request(app, `/api/threads/${thread.id}/changes/file?path=b.txt&scope=last-turn`)).json()) as {
+      diff: string;
+    };
+    expect(diff.diff).toContain("+two");
   });
 
   it("运行中不给恢复，不属于本线程的 commit 也不给", async () => {
@@ -424,7 +759,7 @@ describe.skipIf(!hasGit)("checkpoint 路由", () => {
     expect(((await blocked.json()) as { error: { code: string } }).error.code).toBe("thread_running");
   });
 
-  it("只接受 messageId 或 commit 其一，且 commit 必须在本线程的快照里", async () => {
+  it("只接受 messageId 或 latest 其一，别的消息一律 404", async () => {
     const repo = await repoWithHistory();
     const app = makeApp(await tempDir());
     const thread = await setupThread(app, repo);
@@ -433,12 +768,10 @@ describe.skipIf(!hasGit)("checkpoint 路由", () => {
     await waitForSlotReleased(app, thread.id);
 
     expect((await restore(app, thread.id, {})).status).toBe(400);
-    expect((await restore(app, thread.id, { messageId: "u1", commit: "deadbeef" })).status).toBe(400);
-    // A real commit of this very repo, but not one of our checkpoints.
-    const head = (await git(repo, "rev-parse", "HEAD")).stdout.trim();
-    const foreign = await restore(app, thread.id, { commit: head });
-    expect(foreign.status).toBe(404);
-    expect(((await foreign.json()) as { error: { code: string } }).error.code).toBe("checkpoint_not_found");
+    expect((await restore(app, thread.id, { messageId: "u1", latest: true })).status).toBe(400);
+    const unknown = await restore(app, thread.id, { messageId: "没这条" });
+    expect(unknown.status).toBe(404);
+    expect(((await unknown.json()) as { error: { code: string } }).error.code).toBe("checkpoint_not_found");
   });
 
   it("删除任务时连它的快照引用一起清掉", async () => {
@@ -447,9 +780,9 @@ describe.skipIf(!hasGit)("checkpoint 路由", () => {
     const thread = await setupThread(app, repo);
 
     await drain(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "第一轮")] }));
-    await waitForSlotReleased(app, thread.id);
-    // The turn's checkpoint and the 任务基线 ref.
-    expect(await refNames(repo, thread.id)).toHaveLength(2);
+    await waitForTurnEnd(app, thread.id);
+    // The turn's two checkpoints and the 任务基线 ref.
+    expect(await refNames(repo, thread.id)).toHaveLength(3);
 
     expect((await request(app, `/api/threads/${thread.id}`, { method: "DELETE" })).status).toBe(204);
     expect(await refNames(repo, thread.id)).toEqual([]);

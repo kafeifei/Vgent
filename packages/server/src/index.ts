@@ -16,8 +16,10 @@ export {
 } from "./apply.js";
 export {
   applyUndoScope,
+  changedPaths,
   CHECKPOINT_RETENTION,
   checkpointRefPrefix,
+  createAfterCheckpoint,
   createCheckpoint,
   deleteCheckpoints,
   listCheckpointCommits,
@@ -26,6 +28,16 @@ export {
   type Checkpoint,
   type RestoreResult,
 } from "./checkpoints.js";
+export {
+  asRestoreTarget,
+  lastTurnPair,
+  planRestore,
+  restoreNote,
+  turnSnapshots,
+  type RestorePlan,
+  type RestoreTarget,
+  type TurnSnapshots,
+} from "./restore.js";
 export {
   BadRequestError,
   ConflictError,
@@ -53,8 +65,10 @@ export {
   createGit,
   type ChangeStatus,
   type ChangedFile,
+  type ChangesResponse,
   type ChangesSnapshot,
   type CreateGitOptions,
+  type DiffBase,
   type FileDiff,
   type Git,
 } from "./git.js";
@@ -129,6 +143,7 @@ export { findSetupSpec, readSetupLog, runSetup, startSetup, whenSetupSettled, ty
 export type {
   ApplyUndoRecord,
   ChangeStats,
+  CheckpointPreview,
   CheckpointRestore,
   ConnectionInfo,
   EngineId,
@@ -144,6 +159,7 @@ export type {
   ThreadOutcome,
   ThreadPullRequest,
   ThreadRecord,
+  ThreadRestorePoint,
   ThreadStatus,
   ThreadSummary,
   ThreadWorkspace,

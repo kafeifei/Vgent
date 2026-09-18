@@ -69,13 +69,29 @@ export interface UsageInfo {
 }
 
 /**
- * The working directory as it was right before one turn started, kept as a git
- * commit under `refs/vgent/checkpoints/<threadId>/`. 「恢复到此处」 puts the
- * files back to it; the conversation is never touched.
+ * The working directory as it was right before — or right after — one turn,
+ * kept as a git commit under `refs/vgent/checkpoints/<threadId>/`. 「恢复到此处」
+ * puts the files back to it; the conversation is never touched.
  */
 export interface MessageCheckpoint {
   commit: string;
   ref: string;
+  at: string;
+}
+
+/**
+ * 恢复后停在哪里: the task's working directory currently holds the state from
+ * before `messageId` ran, and every turn from there on has had its file changes
+ * undone. The messages themselves are all still there, rendered dimmed.
+ *
+ * `undoCommit` is the whole-tree snapshot taken before the *first* restore of
+ * this stretch, which is what 「回到最新」 goes back to. Restoring again while
+ * this is set keeps it: a snapshot of an already-restored tree is not 最新.
+ * Cleared when the user sends the next message, or by 「回到最新」 itself.
+ */
+export interface ThreadRestorePoint {
+  messageId: string;
+  undoCommit: string;
   at: string;
 }
 
@@ -104,15 +120,36 @@ export interface ThreadMessageMetadata {
    * Absent when the task's directory is not a git repo, or the snapshot failed.
    */
   checkpoint?: MessageCheckpoint;
+  /**
+   * On the same user message: the snapshot taken once that turn really ended.
+   * The two together name the files the turn touched. Absent for a turn that
+   * never ended (a crash, a turn abandoned mid-approval) and for every turn of
+   * a task that ran before after-snapshots existed — such a span falls back to
+   * restoring the whole tree.
+   */
+  checkpointAfter?: MessageCheckpoint;
 }
 
 /** What `POST /api/threads/:id/checkpoints/restore` answers with. */
 export interface CheckpointRestore {
   /** The checkpoint commit the working directory now matches. */
   restored: string;
-  /** The state that was just replaced, kept so 撤销 can put it back. */
+  /** The state that was just replaced, kept as this thread's safety copy. */
   undo: string;
+  /** Where the thread now stands; absent means it is back at 最新. */
+  restoredTo?: ThreadRestorePoint;
+  /** How many files were written or removed. */
+  files: number;
+  /** True when the span had a turn with no after-snapshot, so the whole tree moved. */
+  whole: boolean;
   changeStats?: ChangeStats;
+}
+
+/** What `GET /api/threads/:id/checkpoints/preview` answers with: what a restore would do, before it does it. */
+export interface CheckpointPreview {
+  /** Files the restore would touch. Meaningless when `whole`. */
+  files: number;
+  whole: boolean;
 }
 
 /**
@@ -228,6 +265,12 @@ export interface ThreadRecord {
   pr?: ThreadPullRequest;
   /** What the last 带回主目录 can be undone from. Replaced by the next apply, dropped on 归档 and 删除. */
   applyUndo?: ApplyUndoRecord;
+  /**
+   * 恢复后停在哪里. Present only while the working directory sits at an earlier
+   * checkpoint; the next message the user sends clears it. On the summary too,
+   * because the work log dims from this point down.
+   */
+  restoredTo?: ThreadRestorePoint;
   /** Recomputed at the end of every turn and after every 收口 action. */
   changeStats?: ChangeStats;
   /** 排队的消息, oldest first. Never stored empty — an absent field is an empty queue. */

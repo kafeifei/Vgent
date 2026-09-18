@@ -22,12 +22,13 @@ import { createEngineRegistry, engineDescriptors, engineIds } from "./engines/re
 import { DEFAULT_VGENT_MODEL } from "./engines/vgent.js";
 import type { Files } from "./files.js";
 import { createFiles } from "./files.js";
-import type { Git } from "./git.js";
+import type { ChangesResponse, DiffBase, Git } from "./git.js";
 import { createGit } from "./git.js";
 import { pickFile, pickFolder } from "./folder-picker.js";
 import { asIntegrateAction, changeStatsOf, createIntegrator, taskTarget, type Integrator, type TaskTarget } from "./integrate.js";
 import { createModelCatalog, type ModelEntry } from "./models.js";
 import { createQueueStore, readQueueText } from "./queue.js";
+import { asRestoreTarget, lastTurnPair, planRestore, type RestoreTarget } from "./restore.js";
 import { createRunManager, recoverInterruptedThreads } from "./runs.js";
 import { registerStatic } from "./static.js";
 import { createDraftStore, isDraftKey, MAX_DRAFT_BYTES } from "./store/drafts.js";
@@ -38,14 +39,15 @@ import { asMcpServers, createSettingsStore, type SettingsPatch } from "./store/s
 import { createThreadStore, type ThreadPatch } from "./store/threads.js";
 import type {
   ChangeStats,
+  CheckpointPreview,
   CheckpointRestore,
   EngineId,
   Logger,
   PermissionMode,
   Project,
-  ThreadMessageMetadata,
   ThreadMode,
   ThreadRecord,
+  ThreadRestorePoint,
   ThreadWorkspace,
   UiDensity,
   UiTheme,
@@ -431,28 +433,45 @@ export function createApp(options: CreateAppOptions): VgentApp {
     if (stats != null) await threads.update(threadId, { changeStats: stats });
   };
 
+  /**
+   * 改动的范围: 「全部改动」 is the task against its 任务基线 — the working
+   * directory as it stands. 「上一轮」 is the last turn's two snapshots against
+   * each other, tree to tree, so it never looks at the working directory at all
+   * and has nothing to revert against.
+   */
+  const scopedBase = (thread: ThreadRecord, target: TaskTarget, scope: string | undefined): DiffBase | undefined => {
+    if (scope !== "last-turn") return target.baseline;
+    const pair = lastTurnPair(thread.messages);
+    if (pair == null) throw new NotFoundError("这个任务还没有可以单独看的上一轮", "last_turn_unavailable");
+    return pair;
+  };
+
   app.get("/api/threads/:id/changes", async (c) => {
     const thread = await threadOf(c.req.param("id"));
     const target = await targetFor(thread);
-    const snapshot = await git.changes(target.repoPath, target.baseline);
+    const scope = c.req.query("scope");
+    const snapshot = await git.changes(target.repoPath, scopedBase(thread, target, scope));
     // The user can commit, edit or `git checkout` outside Vgent, which leaves
     // the record's 「+N −M」 — and with it the 待验收 bucket — describing a tree
     // that no longer exists. This panel just counted the real one, for free.
-    if (!isLive(thread)) {
+    // Only in the default scope: 「上一轮」 counts something else entirely.
+    if (scope !== "last-turn" && !isLive(thread)) {
       const stats = changeStatsOf(snapshot);
       const stored = thread.changeStats;
       if (stored?.files !== stats.files || stored.additions !== stats.additions || stored.deletions !== stats.deletions) {
         await threads.update(thread.id, { changeStats: stats });
       }
     }
-    return c.json(snapshot);
+    const body: ChangesResponse = { ...snapshot, lastTurn: lastTurnPair(thread.messages) != null };
+    return c.json(body);
   });
 
   app.get("/api/threads/:id/changes/file", async (c) => {
-    const target = await targetOf(c.req.param("id"));
+    const thread = await threadOf(c.req.param("id"));
+    const target = await targetFor(thread);
     const path = c.req.query("path");
     if (path == null || path.length === 0) throw new BadRequestError("缺少 path", "invalid_path");
-    return c.json(await git.fileDiff(target.repoPath, path, target.baseline));
+    return c.json(await git.fileDiff(target.repoPath, path, scopedBase(thread, target, c.req.query("scope"))));
   });
 
   app.post("/api/threads/:id/changes/revert", async (c) => {
@@ -518,54 +537,77 @@ export function createApp(options: CreateAppOptions): VgentApp {
   // --- checkpoint -------------------------------------------------------
 
   /**
-   * The commit a restore request names, checked against this thread's own
-   * checkpoint refs — an arbitrary sha is never checked out. `messageId` picks
-   * the snapshot taken before that message ran; `commit` is how 撤销 asks for
-   * the state a previous restore replaced.
+   * What a restore would move: the target checkpoint, and the files the turns
+   * between here and there touched. Both routes below go through it, so the
+   * sentence the user confirms and the restore that follows can never disagree.
    */
-  const checkpointToRestore = async (thread: ThreadRecord, repoPath: string, body: unknown): Promise<string> => {
-    const { messageId, commit } = (body ?? {}) as { messageId?: unknown; commit?: unknown };
-    const byMessage = typeof messageId === "string" && messageId.length > 0;
-    const byCommit = typeof commit === "string" && commit.length > 0;
-    if (byMessage === byCommit) throw new BadRequestError("需要 messageId 或 commit，二选一", "invalid_checkpoint");
+  const planFor = async (thread: ThreadRecord, repoPath: string, target: RestoreTarget) =>
+    planRestore({
+      repoPath,
+      thread,
+      target,
+      // An arbitrary sha is never checked out: every commit this can name comes
+      // from one of the thread's own checkpoint refs.
+      known: new Set(await listCheckpointCommits({ repoPath, threadId: thread.id })),
+    });
 
-    let wanted: string;
-    if (byMessage) {
-      const message = thread.messages.find((entry) => entry.id === messageId);
-      const stored = (message?.metadata as ThreadMessageMetadata | undefined)?.checkpoint;
-      if (stored == null) throw new NotFoundError("这条消息没有快照", "checkpoint_not_found");
-      wanted = stored.commit;
-    } else {
-      wanted = commit as string;
-    }
-
-    const known = await listCheckpointCommits({ repoPath, threadId: thread.id });
-    if (!known.includes(wanted)) throw new NotFoundError("快照已不存在", "checkpoint_not_found");
-    return wanted;
-  };
+  /** 确认前先说清楚会动几个文件 — read-only, and the same numbers the restore itself will use. */
+  app.get("/api/threads/:id/checkpoints/preview", async (c) => {
+    const thread = await threadOf(c.req.param("id"));
+    const target = await targetFor(thread);
+    const messageId = c.req.query("messageId");
+    const plan = await planFor(thread, target.repoPath, c.req.query("latest") === "1" ? { latest: true } : asRestoreTarget({ messageId }));
+    const body: CheckpointPreview = { files: plan.files, whole: plan.whole };
+    return c.json(body);
+  });
 
   /**
-   * 恢复到此处: put the files back to a checkpoint, and keep what they were
-   * before as an undo point. Only the working directory moves — the index, HEAD
-   * and the conversation are all left exactly as they are.
+   * 恢复到此处: put the files the task touched back to a checkpoint, and keep
+   * what they were before as an undo point. Only the working directory moves —
+   * the index, HEAD and the conversation are all left exactly as they are, and
+   * every file outside the span is left alone too.
+   *
+   * The same route moves *forward* again: `messageId` names where the thread
+   * should stand, and `latest: true` undoes the restore for good.
    */
   app.post("/api/threads/:id/checkpoints/restore", async (c) => {
     const id = c.req.param("id");
     const thread = await threadOf(id);
     assertNotLive(thread);
     const target = await targetFor(thread);
-    const commit = await checkpointToRestore(thread, target.repoPath, await c.req.json().catch(() => undefined));
+    const plan = await planFor(thread, target.repoPath, asRestoreTarget(await c.req.json().catch(() => undefined)));
 
     // Taken first, and required: a restore nobody can undo is not one we offer.
     const undo = await createCheckpoint({ repoPath: target.repoPath, threadId: id, undo: true, log });
     if (undo == null) {
       throw new VgentServerError({ message: "没能保存当前状态，已放弃恢复", status: 500, code: "checkpoint_failed" });
     }
-    const moved = await restoreCheckpoint({ repoPath: target.repoPath, commit, log });
-    log.info(`线程 ${id} 恢复到 ${commit.slice(0, 7)}：写回 ${moved.written} 个文件，删除 ${moved.deleted} 个`);
+    const moved = await restoreCheckpoint({
+      repoPath: target.repoPath,
+      commit: plan.commit,
+      ...(plan.paths != null ? { paths: plan.paths } : {}),
+      log,
+    });
+    log.info(
+      `线程 ${id} 恢复到 ${plan.commit.slice(0, 7)}${plan.whole ? "（整目录）" : `（${plan.files} 个文件）`}：写回 ${moved.written} 个，删除 ${moved.deleted} 个`,
+    );
+    // 「回到最新」 ends the stretch; anything else records where the thread now
+    // stands — keeping the *first* undo snapshot, which is the only 最新 there is.
+    const restoredTo: ThreadRestorePoint | undefined =
+      plan.at == null
+        ? undefined
+        : { messageId: plan.at, undoCommit: thread.restoredTo?.undoCommit ?? undo.commit, at: new Date().toISOString() };
+    await threads.update(id, { restoredTo });
     await restat(id);
     const stats = (await threads.get(id))?.changeStats;
-    const body: CheckpointRestore = { restored: commit, undo: undo.commit, ...(stats != null ? { changeStats: stats } : {}) };
+    const body: CheckpointRestore = {
+      restored: plan.commit,
+      undo: undo.commit,
+      files: moved.written + moved.deleted,
+      whole: plan.whole,
+      ...(restoredTo != null ? { restoredTo } : {}),
+      ...(stats != null ? { changeStats: stats } : {}),
+    };
     return c.json(body);
   });
 

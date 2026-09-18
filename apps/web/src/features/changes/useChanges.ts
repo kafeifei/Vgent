@@ -1,13 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, type ApiClient } from "@/lib/api";
-import type { ApplyConflict, ChangesSnapshot, FileDiff, IntegrateAction, IntegrateResponse, IntegrationStatus } from "@/lib/types";
+import type {
+  ApplyConflict,
+  ChangesResponse,
+  ChangesScope,
+  FileDiff,
+  IntegrateAction,
+  IntegrateResponse,
+  IntegrationStatus,
+} from "@/lib/types";
 
 export interface ChangesView {
-  snapshot: ChangesSnapshot | null;
+  snapshot: ChangesResponse | null;
   loading: boolean;
   /** The snapshot call's message — "not a git repo" and friends land here. */
   error: string | null;
   refresh: () => void;
+  /** 改动的范围: the whole task, or just its last turn. */
+  scope: ChangesScope;
+  setScope: (scope: ChangesScope) => void;
+  /** Whether the task has a last turn worth its own scope; the toggle hides otherwise. */
+  lastTurn: boolean;
   selected: string | null;
   select: (path: string | null) => void;
   fileDiff: FileDiff | null;
@@ -67,16 +80,27 @@ export function useChanges(options: {
 }): ChangesView {
   const { client, threadId, refreshKey, selected, onSelect, toast } = options;
 
-  const [snapshot, setSnapshot] = useState<ChangesSnapshot | null>(null);
+  const [snapshot, setSnapshot] = useState<ChangesResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** Bumped per snapshot load; a stale response never writes state. */
   const generation = useRef(0);
+  const [scope, setScope] = useState<ChangesScope>("all");
+  /**
+   * Kept out of `snapshot`: 「上一轮」 is still available while its own fetch is
+   * in flight, and dropping the toggle mid-switch would take the way back with it.
+   */
+  const [lastTurn, setLastTurn] = useState(false);
+  // Another task answers for itself, and starts on 全部改动 like every task does.
+  useEffect(() => {
+    setScope("all");
+    setLastTurn(false);
+  }, [threadId]);
 
   /** Fetched alongside the snapshot: the action bar is part of the same view. */
   const [integration, setIntegration] = useState<IntegrationStatus | null>(null);
 
-  const load = useCallback(async (): Promise<ChangesSnapshot | null> => {
+  const load = useCallback(async (): Promise<ChangesResponse | null> => {
     const mine = ++generation.current;
     if (threadId == null) {
       setSnapshot(null);
@@ -97,9 +121,10 @@ export function useChanges(options: {
         if (mine === generation.current) setIntegration(null);
       });
     try {
-      const next = await client.listChanges(threadId);
+      const next = await client.listChanges(threadId, scope);
       if (mine !== generation.current) return null;
       setSnapshot(next);
+      if (next.lastTurn != null) setLastTurn(next.lastTurn);
       setError(null);
       return next;
     } catch (failure) {
@@ -110,7 +135,7 @@ export function useChanges(options: {
     } finally {
       if (mine === generation.current) setLoading(false);
     }
-  }, [client, threadId]);
+  }, [client, scope, threadId]);
 
   useEffect(() => {
     void load();
@@ -135,7 +160,7 @@ export function useChanges(options: {
     }
     setDiffLoading(true);
     client
-      .getFileDiff(threadId, selected)
+      .getFileDiff(threadId, selected, scope)
       .then((next) => {
         if (mine !== diffGeneration.current) return;
         setFileDiff(next);
@@ -151,7 +176,7 @@ export function useChanges(options: {
       });
     // `snapshot`: a refreshed snapshot means the engine wrote again, so the
     // open diff is stale too.
-  }, [changed, client, threadId, selected, snapshot]);
+  }, [changed, client, scope, threadId, selected, snapshot]);
 
   const refresh = useCallback(() => void load(), [load]);
 
@@ -213,6 +238,9 @@ export function useChanges(options: {
     loading,
     error,
     refresh,
+    scope,
+    setScope,
+    lastTurn,
     selected,
     select: onSelect,
     fileDiff,

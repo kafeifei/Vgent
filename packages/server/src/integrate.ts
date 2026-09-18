@@ -338,6 +338,8 @@ export function createIntegrator(options: CreateIntegratorOptions = {}): Integra
     const baseline = target.baseline;
     if (baseline == null || typeof baseline === "string") return undefined;
     if ("none" in baseline) return [];
+    // A tree-to-tree pair belongs to 「上一轮」 and never to a task's baseline.
+    if (!("tree" in baseline)) return undefined;
     const current = await snapshotTree(target.repoPath, exec);
     // `--no-renames` so a rename comes out as both of its paths, which is what
     // has to be staged for the commit to carry it.
@@ -359,7 +361,7 @@ export function createIntegrator(options: CreateIntegratorOptions = {}): Integra
    */
   const ownEditCount = async (target: TaskTarget, paths: string[]): Promise<number> => {
     const baseline = target.baseline;
-    if (paths.length === 0 || baseline == null || typeof baseline === "string" || "none" in baseline) return 0;
+    if (paths.length === 0 || baseline == null || typeof baseline === "string" || "none" in baseline || !("tree" in baseline)) return 0;
     const head = await git(target.repoPath, ["rev-parse", "--verify", "--quiet", "HEAD"]);
     const committed = head.code === 0 && head.stdout.trim() !== "" ? "HEAD" : EMPTY_TREE;
     const out = await gitOk(target.repoPath, ["diff", "--name-only", "-z", "--no-renames", committed, baseline.tree]);

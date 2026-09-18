@@ -1,11 +1,16 @@
 /**
- * Checkpoint: 每个回合开始前给工作目录打快照，「恢复到此处」把文件放回去.
+ * Checkpoint: 每个回合前后各给工作目录打一次快照，「恢复到此处」把文件放回去.
  *
  * A checkpoint is an ordinary git commit of the whole working directory —
  * tracked and untracked alike, ignored files never — kept alive by a ref under
  * `refs/vgent/checkpoints/<threadId>/`. Nothing here touches the user's own
  * index, HEAD or branches: every tree is built through a throwaway
  * `GIT_INDEX_FILE`, and a restore writes files straight out of the target tree.
+ *
+ * One turn owns one counter and up to two refs: `<n>` is the tree it started
+ * from and `after-<n>` the tree it ended with, so the files that turn touched
+ * are the difference between them — which is all 「只回退任务动过的文件」 needs.
+ * `undo-<n>` is a counter of its own: the safety copy a restore takes.
  *
  * Projects that are not git repositories are allowed in Vgent, so every entry
  * point here answers `undefined` for one instead of failing the turn.
@@ -20,7 +25,11 @@ import { silentLogger } from "./types.js";
 /** Snapshots run inside a turn's critical path; a minute is already generous. */
 const GIT_TIMEOUT_MS = 60_000;
 
-/** How many checkpoint refs one thread keeps before the oldest are dropped. */
+/**
+ * How many *turns* one thread keeps checkpoints for before the oldest are
+ * dropped. Counted in counters, not refs: a turn's before- and after-snapshot
+ * share one, so adding the second snapshot did not halve the history.
+ */
 export const CHECKPOINT_RETENTION = 50;
 
 /** How many paths one `checkout-index` call takes; keeps the argv well short of its limit. */
@@ -136,18 +145,30 @@ export async function snapshotTree(repoPath: string, exec: ToolExec = runCommand
   }
 }
 
-/** `<prefix>/<n>` and `<prefix>/undo-<n>` → n. Anything else is not ours. */
-function refCounter(ref: string, prefix: string): number | undefined {
+/** What a numbered ref of one turn is: the tree before it, the tree after it, or a restore's safety copy. */
+type RefKind = "before" | "after" | "undo";
+
+/** `<prefix>/<n>`, `<prefix>/after-<n>` and `<prefix>/undo-<n>`. Anything else is not ours. */
+function parseRef(ref: string, prefix: string): { counter: number; kind: RefKind } | undefined {
   if (!ref.startsWith(`${prefix}/`)) return undefined;
-  const match = /^(?:undo-)?(\d+)$/.exec(ref.slice(prefix.length + 1));
-  if (match?.[1] == null) return undefined;
-  return Number.parseInt(match[1], 10);
+  const match = /^(after-|undo-)?(\d+)$/.exec(ref.slice(prefix.length + 1));
+  if (match?.[2] == null) return undefined;
+  const kind: RefKind = match[1] === "after-" ? "after" : match[1] === "undo-" ? "undo" : "before";
+  return { counter: Number.parseInt(match[2], 10), kind };
+}
+
+/** The `after-` ref paired with a before-checkpoint's own, or undefined when that ref is not a numbered one. */
+function afterRefFor(beforeRef: string, prefix: string): string | undefined {
+  const parsed = parseRef(beforeRef, prefix);
+  if (parsed == null || parsed.kind !== "before") return undefined;
+  return `${prefix}/after-${String(parsed.counter).padStart(6, "0")}`;
 }
 
 interface RefEntry {
   ref: string;
   commit: string;
   counter: number;
+  kind: RefKind;
 }
 
 /** Everything one thread keeps under its prefix, the 基线 ref included. Empty for a non-git directory. */
@@ -174,14 +195,19 @@ async function listRefs(repoPath: string, threadId: string, exec: ToolExec): Pro
   const prefix = checkpointRefPrefix(threadId);
   const entries: RefEntry[] = [];
   for (const { ref, commit } of await listAllRefs(repoPath, threadId, exec)) {
-    const counter = refCounter(ref, prefix);
-    if (counter == null) continue;
-    entries.push({ ref, commit, counter });
+    const parsed = parseRef(ref, prefix);
+    if (parsed == null) continue;
+    entries.push({ ref, commit, ...parsed });
   }
   return entries.sort((a, b) => a.counter - b.counter);
 }
 
-/** The commits one thread may be restored to — nothing else is ever checked out. */
+/**
+ * Every snapshot one thread still has: what a restore may be pointed at, and
+ * what a span may be diffed against. Retention is the only thing that takes a
+ * commit off this list, and a request naming anything not on it is refused
+ * rather than checked out — an arbitrary sha never reaches the working tree.
+ */
 export async function listCheckpointCommits(options: { repoPath: string; threadId: string; exec?: ToolExec }): Promise<string[]> {
   const entries = await listRefs(options.repoPath, options.threadId, options.exec ?? runCommand);
   return entries.map((entry) => entry.commit);
@@ -220,16 +246,62 @@ export async function createCheckpoint(options: GitOptions & {
     const ref = `${checkpointRefPrefix(threadId)}/${name}`;
     await git.ok(["update-ref", ref, commit]);
 
-    // Retention counts both kinds together: they share one counter, so "newest
-    // 50" is a single ordering.
-    const stale = [...existing, { ref, commit, counter: next }].slice(0, -CHECKPOINT_RETENTION);
-    for (const entry of stale) await git.run(["update-ref", "-d", entry.ref, entry.commit]);
+    // Retention is 50 *counters*, not 50 refs: a turn's `after-` snapshot rides
+    // along on the counter its before-snapshot opened, so it is dropped with it
+    // and never on its own — a half-kept turn would degrade to a whole-tree
+    // restore for no reason.
+    const entries: RefEntry[] = [...existing, { ref, commit, counter: next, kind: options.undo === true ? "undo" : "before" }];
+    const stale = new Set([...new Set(entries.map((entry) => entry.counter))].sort((a, b) => a - b).slice(0, -CHECKPOINT_RETENTION));
+    for (const entry of entries) {
+      if (stale.has(entry.counter)) await git.run(["update-ref", "-d", entry.ref, entry.commit]);
+    }
 
     return { commit, ref };
   } catch (error) {
     log.warn(`线程 ${threadId} 的工作目录快照失败`, error);
     return undefined;
   }
+}
+
+/**
+ * 回合结束后的快照, taken once a turn is really over — finished, failed or
+ * stopped. Paired with the turn's own before-snapshot by counter (`after-<n>`
+ * next to `<n>`), and committed *on top of* it, so `git diff <before> <after>`
+ * names exactly the files that turn touched.
+ *
+ * `undefined` — never a throw — when the before-checkpoint is not one of this
+ * thread's numbered refs, when the directory is not a git repo, or when a git
+ * call failed. The span that turn belongs to then falls back to a whole-tree
+ * restore, which is what Vgent did before there were after-snapshots at all.
+ */
+export async function createAfterCheckpoint(options: GitOptions & { threadId: string; before: Checkpoint }): Promise<Checkpoint | undefined> {
+  const { repoPath, threadId } = options;
+  const exec = options.exec ?? runCommand;
+  const log = options.log ?? silentLogger;
+  try {
+    const ref = afterRefFor(options.before.ref, checkpointRefPrefix(threadId));
+    if (ref == null) return undefined;
+    if (!(await isRepo(repoPath, exec))) return undefined;
+    const git = gitIn(repoPath, exec);
+    const tree = await snapshotTree(repoPath, exec);
+    const commit = (await git.ok(["commit-tree", tree, "-p", options.before.commit, "-m", COMMIT_MESSAGE], IDENTITY)).trim();
+    await git.ok(["update-ref", ref, commit]);
+    return { commit, ref };
+  } catch (error) {
+    log.warn(`线程 ${threadId} 的回合结束快照失败`, error);
+    return undefined;
+  }
+}
+
+/**
+ * 一个回合动过的文件: the paths that differ between two checkpoint trees.
+ *
+ * `--no-renames` on purpose — a restore has to be able to put both halves of a
+ * rename back, so it needs the old path listed as well as the new one.
+ */
+export async function changedPaths(options: GitOptions & { from: string; to: string }): Promise<string[]> {
+  const git = gitIn(options.repoPath, options.exec ?? runCommand);
+  return splitNul(await git.ok(["diff", "--name-only", "-z", "--no-renames", options.from, options.to])).filter((path) => path.length > 0);
 }
 
 /**

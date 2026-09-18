@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { GitBranch, PanelRight, Square } from "lucide-react";
-import { ModelPicker, modelLabel } from "@/components/ModelPicker";
+import { ModelPicker } from "@/components/ModelPicker";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ENGINES, PERMISSIONS } from "@/lib/engineOptions";
 import type { EngineId, PermissionMode, ThreadSummary, ThreadWorkspace } from "@/lib/types";
@@ -194,7 +194,9 @@ export function TaskHeader({
           engine={thread.engine}
           model={thread.model}
           onPick={(model) => guard(() => onSetModel(model))}
-          trigger={(props) => <Pill label="模型" value={modelLabel(thread.model)} {...props} />}
+          trigger={(props, chip) => (
+            <Pill label="模型" value={chip.label} {...(chip.title != null ? { title: chip.title } : {})} {...props} />
+          )}
         />
 
         <Popover trigger={(props) => <Pill label="权限" value={thread.permissionMode} {...props} />}>

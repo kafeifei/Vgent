@@ -51,7 +51,8 @@ function agreedLevels(entries: readonly ModelEntry[]): ModelEntry | undefined {
  *
  * `model` is what the task picked; `fallbackModel` is the setting the server
  * would fall back to when it picked nothing, so the empty state still knows
- * which levels are on offer before a task exists.
+ * which levels are on offer before a task exists. With neither, the catalog's
+ * own `defaultModel` — the model the engine really runs — answers instead.
  */
 export function ReasoningPicker({
   engine,
@@ -75,7 +76,7 @@ export function ReasoningPicker({
 }) {
   const state = useModelCatalog(engine);
   const entries = state.status === "ready" ? state.catalog.models : [];
-  const named = model ?? fallbackModel;
+  const named = model ?? fallbackModel ?? (state.status === "ready" ? state.catalog.defaultModel : undefined);
   const entry = named == null ? agreedLevels(entries) : entries.find((candidate) => candidate.id === named);
   const levels = entry?.reasoningLevels ?? [];
   const current = level ?? entry?.defaultReasoningLevel;

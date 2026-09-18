@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { UIMessage } from "ai";
 import { ArrowUp, File, Folder, Plus, Square } from "lucide-react";
-import { ModelPicker, modelLabel } from "@/components/ModelPicker";
+import { ModelPicker, effectiveModel } from "@/components/ModelPicker";
 import { ReasoningPicker } from "@/components/ReasoningPicker";
 import { dirName } from "@/features/changes/paths";
 import { baseName } from "@/lib/format";
@@ -84,11 +84,13 @@ export function Composer({
 
   /**
    * The ring's denominator, taken off the very list `ModelPicker` below loads —
-   * `contextWindow` is undefined for sources that do not report one, and the
-   * ring then says so itself.
+   * measured against the model that will actually run, so「默认」gets a real
+   * window too. `contextWindow` is undefined for sources that do not report one,
+   * and the ring then says so itself.
    */
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
-  const contextWindow = catalog?.models.find((entry) => entry.id === model)?.contextWindow;
+  const running = effectiveModel(model, catalog);
+  const contextWindow = catalog?.models.find((entry) => entry.id === running)?.contextWindow;
   const sums = useMemo(() => (changedFiles == null ? null : sumChanges(changedFiles)), [changedFiles]);
 
   // Auto-grow: reset, then take the content height.
@@ -271,13 +273,14 @@ export function Composer({
             onPick={onPickModel}
             onCatalog={setCatalog}
             side="top"
-            trigger={(props) => (
+            trigger={(props, chip) => (
               <button
                 type="button"
+                {...(chip.title != null ? { title: chip.title } : {})}
                 {...props}
                 className="inline-flex h-xl items-center gap-3xs rounded-sm px-xs text-fg-muted text-xs hover:bg-bg-hover hover:text-fg"
               >
-                <span className="font-mono">{modelLabel(model)}</span>
+                <span className="font-mono">{chip.label}</span>
                 <span className="opacity-60">▾</span>
               </button>
             )}

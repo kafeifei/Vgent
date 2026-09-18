@@ -8,6 +8,7 @@ import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp, type VgentApp } from "./app.js";
 import { createEngineRegistry, type EngineContext, type EngineFactory } from "./engines/registry.js";
+import { DEFAULT_VGENT_MODEL } from "./engines/vgent.js";
 import { EngineUnavailableError } from "./errors.js";
 import { createThreadStore } from "./store/threads.js";
 import type { HarnessState, Project, ThreadMessageMetadata, ThreadRecord, ThreadSummary } from "./types.js";
@@ -766,5 +767,25 @@ describe("createApp", () => {
     expect(catalog.engine).toBe("claude-code");
     expect(Array.isArray(catalog.models)).toBe(true);
     expect(catalog.models.map((entry) => entry.id)).toContain("sonnet");
+  });
+
+  it("names the model each engine falls back to when a task picks none", async () => {
+    // A codex home with no login and no gateway key keeps both lists builtin,
+    // so the route answers without touching the network.
+    vi.stubEnv("ANTHROPIC_API_KEY", "");
+    vi.stubEnv("CODEX_HOME", await tempDir());
+    vi.stubEnv("AI_GATEWAY_API_KEY", "");
+    vi.stubEnv("VERCEL_OIDC_TOKEN", "");
+    const app = makeApp(await tempDir());
+    const defaultModelOf = async (engine: string): Promise<string | undefined> =>
+      ((await (await request(app, `/api/engines/${engine}/models`)).json()) as { defaultModel?: string }).defaultModel;
+
+    expect(await defaultModelOf("vgent")).toBe(DEFAULT_VGENT_MODEL);
+    // Claude Code's harness picks its own; the server must not invent one.
+    expect(await defaultModelOf("claude-code")).toBeUndefined();
+
+    await request(app, "/api/settings", { method: "PUT", body: JSON.stringify({ defaultModel: "sonnet" }) });
+    expect(await defaultModelOf("vgent")).toBe("sonnet");
+    expect(await defaultModelOf("claude-code")).toBe("sonnet");
   });
 });

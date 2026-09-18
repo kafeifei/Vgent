@@ -447,7 +447,12 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const raw = c.req.param("engine");
     const engine = asEngine(raw);
     if (engine == null) throw new BadRequestError(`未知引擎: ${JSON.stringify(raw)}`, "unknown_engine");
-    return c.json(await modelCatalog.list(engine, { refresh: c.req.query("refresh") === "1" }));
+    const catalog = await modelCatalog.list(engine, { refresh: c.req.query("refresh") === "1" });
+    // The list is cached per engine; the effective default is a setting, so it
+    // is merged in per request instead of baked into the cached catalog. Only
+    // `vgent` has a fallback of our own — see `DEFAULT_VGENT_MODEL`.
+    const defaultModel = (await settings.get()).defaultModel ?? (engine === "vgent" ? DEFAULT_VGENT_MODEL : undefined);
+    return c.json({ ...catalog, ...(defaultModel != null ? { defaultModel } : {}) });
   });
 
   // --- chat -------------------------------------------------------------

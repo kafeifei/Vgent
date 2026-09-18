@@ -46,6 +46,14 @@ export interface ModelCatalog {
   source: string;
   fetchedAt: string;
   warning?: string;
+  /**
+   * The model id the server actually uses for this engine when a task names
+   * none, so「默认」in the picker still resolves to a real model — the client
+   * needs it for the model chip, the 思考 levels and the ring's denominator.
+   * Undefined when only the harness knows (Claude Code and Codex pick their
+   * own default, and inventing one here would make the chip lie).
+   */
+  defaultModel?: string;
 }
 
 export interface ModelCatalogService {

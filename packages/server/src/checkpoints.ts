@@ -35,6 +35,19 @@ export const checkpointRefPrefix = (threadId: string): string => `${REF_ROOT}/${
 export const baselineRef = (threadId: string): string => `${checkpointRefPrefix(threadId)}/base`;
 
 /**
+ * The scope 带回主目录 takes its undo snapshot under.
+ *
+ * It is a checkpoint like any other, but of the *project* checkout rather than
+ * the task's worktree — and a linked worktree shares one ref store with its
+ * project, so the two would otherwise land in the same numbered series and
+ * 「恢复到此处」 would happily offer the user the wrong directory's state. A
+ * sub-scope keeps them apart: `listRefs` only counts `<prefix>/<n>`, so nothing
+ * here is ever restorable as a turn checkpoint, while `deleteCheckpoints` on the
+ * thread still sweeps it up.
+ */
+export const applyUndoScope = (threadId: string): string => `${threadId}/apply`;
+
+/**
  * A fixed identity, forced through the environment: a repo without a
  * `user.name` must still be able to take a checkpoint.
  */
@@ -297,11 +310,15 @@ async function pruneEmptyDirs(repoPath: string, path: string): Promise<void> {
  * and a fresh snapshot of the tree as it is now names the files, and each one is
  * either written out of the target (through a scratch index) or removed from
  * disk. Ignored files are in neither tree, so they are never touched.
+ *
+ * `paths` narrows it to those files and leaves every other difference alone —
+ * what 撤销带回 needs, since it may only put back the files its own apply wrote.
  */
-export async function restoreCheckpoint(options: GitOptions & { commit: string }): Promise<RestoreResult> {
+export async function restoreCheckpoint(options: GitOptions & { commit: string; paths?: readonly string[] }): Promise<RestoreResult> {
   const { repoPath, commit } = options;
   const exec = options.exec ?? runCommand;
   const git = gitIn(repoPath, exec);
+  const only = options.paths == null ? undefined : new Set(options.paths);
 
   const current = await snapshotTree(repoPath, exec);
   const diff = await git.ok(["diff", "--name-status", "-z", "--no-renames", commit, current]);
@@ -315,6 +332,7 @@ export async function restoreCheckpoint(options: GitOptions & { commit: string }
     const letter = tokens[i]?.[0];
     const path = tokens[++i];
     if (letter == null || path == null || path.length === 0) continue;
+    if (only != null && !only.has(path)) continue;
     if (letter === "A") deletions.push(path);
     else writes.push(path);
   }

@@ -747,7 +747,7 @@ describe("createApp", () => {
       pr: { available: boolean; reason?: string };
     };
     expect(status).toMatchObject({ mode: "worktree", dirty: true, canCommit: true });
-    expect(status.pr).toEqual({ available: false, reason: "仓库没有 origin 远端" });
+    expect(status.pr).toEqual({ available: false, reason: "仓库没有远端，开不了 PR" });
 
     const committed = (await (
       await postJson(app, `/api/threads/${thread.id}/integrate`, { action: "commit", message: "收个口" })
@@ -758,6 +758,77 @@ describe("createApp", () => {
     const bad = await postJson(app, `/api/threads/${thread.id}/integrate`, { action: "nope" });
     expect(bad.status).toBe(400);
     expect(await bad.json()).toMatchObject({ error: { code: "invalid_action" } });
+  });
+
+  it("带回主目录：409 带着冲突清单，标记模式落地，撤销还能回去", async () => {
+    const repo = await gitRepo();
+    const dir = await tempDir();
+    const app = makeApp(dir);
+    const project = (await (await postJson(app, "/api/projects", { repoPath: repo })).json()) as Project;
+    const thread = (await (
+      await postJson(app, "/api/threads", { projectId: project.id, workspace: "worktree" })
+    ).json()) as ThreadRecord;
+    const work = thread.workspace?.path ?? "";
+
+    // Both sides rewrote the same line, and the task added a file of its own.
+    await writeFile(join(work, "tracked.txt"), "任务写的\nline2\n");
+    await writeFile(join(repo, "tracked.txt"), "用户写的\nline2\n");
+    await writeFile(join(work, "只有任务动的.txt"), "任务建的\n");
+
+    const refused = await postJson(app, `/api/threads/${thread.id}/integrate`, { action: "apply" });
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({
+      error: { code: "apply_conflict", details: { conflicts: [{ path: "tracked.txt", resolution: "markers" }] } },
+    });
+    expect(await readFile(join(repo, "tracked.txt"), "utf8")).toBe("用户写的\nline2\n");
+
+    const applied = (await (
+      await postJson(app, `/api/threads/${thread.id}/integrate`, { action: "apply", conflicts: "markers" })
+    ).json()) as ThreadRecord & { apply: { applied: string[]; conflicts: { path: string }[] } };
+    expect(applied.outcome).toMatchObject({ kind: "applied" });
+    expect(applied.apply).toMatchObject({ applied: ["只有任务动的.txt"], conflicts: [{ path: "tracked.txt" }] });
+    expect(await readFile(join(repo, "tracked.txt"), "utf8")).toContain("<<<<<<< 你的改动");
+    expect(applied.applyUndo?.files).toHaveLength(2);
+
+    // 撤销带回 is offered only while that record is there.
+    const status = (await (await request(app, `/api/threads/${thread.id}/integration`)).json()) as { canUndoApply: boolean };
+    expect(status.canUndoApply).toBe(true);
+
+    const undone = (await (
+      await postJson(app, `/api/threads/${thread.id}/integrate`, { action: "undo-apply" })
+    ).json()) as ThreadRecord & { undo: { restored: string[]; kept: string[] } };
+    expect(undone.outcome).toBeUndefined();
+    expect(undone.applyUndo).toBeUndefined();
+    expect(undone.undo.restored.sort()).toEqual(["tracked.txt", "只有任务动的.txt"].sort());
+    expect(await readFile(join(repo, "tracked.txt"), "utf8")).toBe("用户写的\nline2\n");
+    expect(await stat(join(repo, "只有任务动的.txt")).catch(() => null)).toBeNull();
+  });
+
+  it("PR 链接不随新一轮消失，归档会丢掉带回的撤销点", async () => {
+    const repo = await gitRepo();
+    const dir = await tempDir();
+    const app = makeApp(dir);
+    const store = createThreadStore(dir);
+    const project = (await (await postJson(app, "/api/projects", { repoPath: repo })).json()) as Project;
+    const thread = (await (
+      await postJson(app, "/api/threads", { projectId: project.id, workspace: "worktree" })
+    ).json()) as ThreadRecord;
+
+    await writeFile(join(thread.workspace?.path ?? "", "tracked.txt"), "line1\nline2\n任务加的\n");
+    await postJson(app, `/api/threads/${thread.id}/integrate`, { action: "apply", conflicts: "markers" });
+    const pr = { url: "https://github.com/acme/repo/pull/9", kind: "pr" as const, number: 9, at: new Date().toISOString() };
+    await store.update(thread.id, { pr });
+
+    // What the start of a turn does: the 收口态 goes, the PR does not.
+    const afterTurn = await store.update(thread.id, { outcome: undefined });
+    expect(afterTurn.pr).toEqual(pr);
+    expect(afterTurn.applyUndo).toBeDefined();
+
+    const archived = (await (
+      await request(app, `/api/threads/${thread.id}`, { method: "PATCH", body: JSON.stringify({ archived: true }) })
+    ).json()) as ThreadRecord;
+    expect(archived.pr).toEqual(pr);
+    expect(archived.applyUndo).toBeUndefined();
   });
 
   it("主目录任务：改动、统计和提交都只算任务自己的", async () => {

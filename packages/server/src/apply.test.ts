@@ -1,0 +1,254 @@
+import { execFile, spawnSync } from "node:child_process";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { afterEach, describe, expect, it } from "vitest";
+import { listCheckpointCommits } from "./checkpoints.js";
+import { createIntegrator, type TaskTarget } from "./integrate.js";
+import type { ApplyConflict, ApplyUndoRecord } from "./index.js";
+
+const exec = promisify(execFile);
+const hasGit = spawnSync("git", ["--version"]).status === 0;
+
+const dirs: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 5 })));
+});
+
+async function tempDir(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "vgent-apply-test-"));
+  dirs.push(dir);
+  return dir;
+}
+
+const run = (cwd: string, ...args: string[]) => exec("git", args, { cwd });
+const porcelain = async (cwd: string) => (await run(cwd, "-c", "core.quotepath=false", "status", "--porcelain")).stdout;
+const staged = async (cwd: string) => (await run(cwd, "-c", "core.quotepath=false", "diff", "--cached")).stdout;
+const read = (root: string, path: string) => readFile(join(root, path), "utf8");
+const missing = async (root: string, path: string) => (await stat(join(root, path)).catch(() => null)) == null;
+
+/**
+ * The user's own checkout, dirty the way a real one is — an edit of their own,
+ * an untracked file and a staged one — plus a worktree task branched off the
+ * same commit. Everything a 带回主目录 test needs is already in place.
+ */
+async function fixture(): Promise<{ project: string; work: string; target: TaskTarget }> {
+  const project = await tempDir();
+  await run(project, "init", "-q", "-b", "main");
+  await run(project, "config", "user.email", "test@vgent.local");
+  await run(project, "config", "user.name", "Vgent Test");
+  await run(project, "config", "commit.gpgsign", "false");
+
+  await writeFile(join(project, "共享.txt"), ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十"].join("\n") + "\n");
+  await writeFile(join(project, "任务改的.txt"), "原样\n");
+  await writeFile(join(project, "任务删的.txt"), "要被删掉\n");
+  await writeFile(join(project, "任务改模式的.sh"), "#!/bin/sh\necho hi\n");
+  await writeFile(join(project, "改名前.txt"), "搬家\n");
+  await writeFile(join(project, "图片.bin"), Buffer.from([0, 1, 2, 3, 0, 255]));
+  await mkdir(join(project, "深/一层"), { recursive: true });
+  await writeFile(join(project, "深/一层/深的.txt"), "深处\n");
+  await writeFile(join(project, "用户暂存的.txt"), "原样\n");
+  await run(project, "add", "-A");
+  await run(project, "commit", "-q", "-m", "初始");
+
+  const base = (await run(project, "rev-parse", "HEAD")).stdout.trim();
+  const work = join(await tempDir(), "wt");
+  await run(project, "worktree", "add", "-q", "-b", "vgent/test", work, base);
+
+  // The user's own uncommitted work, all three kinds.
+  await writeFile(join(project, "用户自己的.txt"), "只有用户动过\n");
+  await writeFile(join(project, "用户暂存的.txt"), "原样\n用户暂存的\n");
+  await run(project, "add", "用户暂存的.txt");
+
+  return {
+    project,
+    work,
+    target: { mode: "worktree", repoPath: work, projectPath: project, branch: "vgent/test", baseCommit: base, baseline: base },
+  };
+}
+
+const reasons = (conflicts: readonly ApplyConflict[]): Record<string, string> =>
+  Object.fromEntries(conflicts.map((entry) => [entry.path, entry.resolution]));
+
+describe.skipIf(!hasGit)("带回主目录", () => {
+  it("逐文件三方合并：新增、删除、改动、模式、重命名、子目录", async () => {
+    const { project, work, target } = await fixture();
+    const stagedBefore = await staged(project);
+    const porcelainBefore = await porcelain(project);
+
+    // Added, twice: one the project has never seen, one it already has byte for byte.
+    await writeFile(join(work, "任务新建的.txt"), "任务建的\n");
+    await writeFile(join(project, "两边都建了.txt"), "一模一样\n");
+    await writeFile(join(work, "两边都建了.txt"), "一模一样\n");
+    // Deleted by the task, untouched by the user.
+    await rm(join(work, "任务删的.txt"));
+    // Modified by the task, untouched by the user.
+    await writeFile(join(work, "任务改的.txt"), "任务改过了\n");
+    // Both changed the same file, in different places: a real three-way merge.
+    await writeFile(join(work, "共享.txt"), ["任务加的开头", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十"].join("\n") + "\n");
+    await writeFile(join(project, "共享.txt"), ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "用户加的结尾"].join("\n") + "\n");
+    // Mode only.
+    await chmod(join(work, "任务改模式的.sh"), 0o755);
+    // A rename, which `--no-renames` turns into a delete and an add.
+    await run(work, "mv", "改名前.txt", "改名后.txt");
+    // A file in a subdirectory the project does not have yet.
+    await mkdir(join(work, "新目录"), { recursive: true });
+    await writeFile(join(work, "新目录/新的.txt"), "新目录里的\n");
+
+    const result = await createIntegrator().integrate(target, { threadId: "t1", action: "apply" });
+    expect(result.outcome).toMatchObject({ kind: "applied" });
+    expect(result.apply?.conflicts).toEqual([]);
+
+    expect(await read(project, "任务新建的.txt")).toBe("任务建的\n");
+    expect(await missing(project, "任务删的.txt")).toBe(true);
+    expect(await read(project, "任务改的.txt")).toBe("任务改过了\n");
+    expect(await read(project, "共享.txt")).toBe(
+      ["任务加的开头", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "用户加的结尾"].join("\n") + "\n",
+    );
+    expect(((await stat(join(project, "任务改模式的.sh"))).mode & 0o111) !== 0).toBe(true);
+    expect(await missing(project, "改名前.txt")).toBe(true);
+    expect(await read(project, "改名后.txt")).toBe("搬家\n");
+    expect(await read(project, "新目录/新的.txt")).toBe("新目录里的\n");
+    // Nothing was written for the file both sides created identically.
+    expect(result.apply?.applied).not.toContain("两边都建了.txt");
+
+    // The user's own work is untouched, and so is their index: 带回 writes
+    // files, it never stages.
+    expect(await read(project, "用户自己的.txt")).toBe("只有用户动过\n");
+    expect(await staged(project)).toBe(stagedBefore);
+    expect(porcelainBefore).toContain("M  用户暂存的.txt");
+    expect(await porcelain(project)).toContain("M  用户暂存的.txt");
+    // And the worktree's own index never moved either.
+    expect(await porcelain(work)).toContain("?? 任务新建的.txt");
+  });
+
+  it("冲突：默认整体不动，409 里带着每个文件和原因", async () => {
+    const { project, work, target } = await fixture();
+
+    // 1. Both edited the same lines of a text file.
+    await writeFile(join(work, "共享.txt"), "任务全写了\n");
+    await writeFile(join(project, "共享.txt"), "用户全写了\n");
+    // 2. Both changed a binary file.
+    await writeFile(join(work, "图片.bin"), Buffer.from([0, 9, 9, 9]));
+    await writeFile(join(project, "图片.bin"), Buffer.from([0, 7, 7, 7]));
+    // 3. The task deleted a file the user had been editing.
+    await rm(join(work, "任务删的.txt"));
+    await writeFile(join(project, "任务删的.txt"), "用户还在改它\n");
+    // 4. The user deleted a file the task changed.
+    await writeFile(join(work, "深/一层/深的.txt"), "任务改深处\n");
+    await rm(join(project, "深/一层/深的.txt"));
+    const before = await porcelain(project);
+
+    const failure = await createIntegrator()
+      .integrate(target, { threadId: "t1", action: "apply" })
+      .catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: "apply_conflict", status: 409 });
+    const conflicts = (failure as { details: { conflicts: ApplyConflict[] } }).details.conflicts;
+    expect(reasons(conflicts)).toEqual({
+      "共享.txt": "markers",
+      "图片.bin": "skipped",
+      "任务删的.txt": "skipped",
+      "深/一层/深的.txt": "skipped",
+    });
+
+    // Not one byte moved in the project.
+    expect(await read(project, "共享.txt")).toBe("用户全写了\n");
+    expect(await readFile(join(project, "图片.bin"))).toEqual(Buffer.from([0, 7, 7, 7]));
+    expect(await read(project, "任务删的.txt")).toBe("用户还在改它\n");
+    expect(await missing(project, "深/一层/深的.txt")).toBe(true);
+    expect(await porcelain(project)).toBe(before);
+  });
+
+  it("二进制：只有任务动过就照样带回，两边都动过才算冲突", async () => {
+    const { project, work, target } = await fixture();
+    await writeFile(join(work, "图片.bin"), Buffer.from([0, 4, 4, 4]));
+
+    const result = await createIntegrator().integrate(target, { threadId: "t1", action: "apply" });
+    expect(result.apply).toMatchObject({ applied: ["图片.bin"], conflicts: [] });
+    expect(await readFile(join(project, "图片.bin"))).toEqual(Buffer.from([0, 4, 4, 4]));
+  });
+
+  it("带冲突标记合并：文本写标记，二进制跳过，干净的照常落地", async () => {
+    const { project, work, target } = await fixture();
+    await writeFile(join(work, "共享.txt"), ["任务写的", "二", "三", "四", "五", "六", "七", "八", "九", "十"].join("\n") + "\n");
+    await writeFile(join(project, "共享.txt"), ["用户写的", "二", "三", "四", "五", "六", "七", "八", "九", "十"].join("\n") + "\n");
+    await writeFile(join(work, "图片.bin"), Buffer.from([0, 9, 9, 9]));
+    await writeFile(join(project, "图片.bin"), Buffer.from([0, 7, 7, 7]));
+    await writeFile(join(work, "任务改的.txt"), "任务改过了\n");
+
+    const result = await createIntegrator().integrate(target, { threadId: "t1", action: "apply", conflicts: "markers" });
+    expect(result.outcome).toMatchObject({ kind: "applied" });
+    expect(result.apply?.applied).toEqual(["任务改的.txt"]);
+    expect(reasons(result.apply?.conflicts ?? [])).toEqual({ "共享.txt": "markers", "图片.bin": "skipped" });
+
+    const merged = await read(project, "共享.txt");
+    expect(merged).toContain("<<<<<<< 你的改动");
+    expect(merged).toContain("用户写的");
+    expect(merged).toContain(">>>>>>> 任务的改动");
+    expect(merged).toContain("任务写的");
+    // The binary is left exactly as the user had it, and the clean file landed.
+    expect(await readFile(join(project, "图片.bin"))).toEqual(Buffer.from([0, 7, 7, 7]));
+    expect(await read(project, "任务改的.txt")).toBe("任务改过了\n");
+  });
+
+  it("撤销带回：没动过的放回去，你之后改过的留着", async () => {
+    const { project, work, target } = await fixture();
+    const integrator = createIntegrator();
+    await writeFile(join(work, "任务新建的.txt"), "任务建的\n");
+    await writeFile(join(work, "任务改的.txt"), "任务改过了\n");
+    await rm(join(work, "任务删的.txt"));
+    const stagedBefore = await staged(project);
+
+    const applied = await integrator.integrate(target, { threadId: "t1", action: "apply" });
+    const record = applied.applyUndo as ApplyUndoRecord;
+    expect([...record.files.map((file) => file.path)].sort()).toEqual(["任务删的.txt", "任务改的.txt", "任务新建的.txt"].sort());
+
+    // The user gets to work on one of the applied files before changing their mind.
+    await writeFile(join(project, "任务改的.txt"), "用户又改了一遍\n");
+
+    const undone = await integrator.integrate(target, { threadId: "t1", action: "undo-apply", applyUndo: record });
+    expect(undone.outcome).toBeNull();
+    expect(undone.applyUndo).toBeNull();
+    expect([...(undone.undo?.restored ?? [])].sort()).toEqual(["任务删的.txt", "任务新建的.txt"].sort());
+    expect(undone.undo?.kept).toEqual(["任务改的.txt"]);
+
+    // Put back: the created file is gone again and the deleted one is back.
+    expect(await missing(project, "任务新建的.txt")).toBe(true);
+    expect(await read(project, "任务删的.txt")).toBe("要被删掉\n");
+    // Left alone: the one the user has since edited.
+    expect(await read(project, "任务改的.txt")).toBe("用户又改了一遍\n");
+    // And the undo did not stage anything either.
+    expect(await staged(project)).toBe(stagedBefore);
+  });
+
+  it("撤销带回：没有记录就说没有，快照没了就说撤不了", async () => {
+    const { target } = await fixture();
+    const integrator = createIntegrator();
+    await expect(integrator.integrate(target, { threadId: "t1", action: "undo-apply" })).rejects.toMatchObject({
+      code: "nothing_to_undo",
+    });
+
+    const ghost: ApplyUndoRecord = { snapshot: "0".repeat(40), files: [], at: new Date().toISOString() };
+    await expect(integrator.integrate(target, { threadId: "t1", action: "undo-apply", applyUndo: ghost })).rejects.toMatchObject({
+      code: "undo_unavailable",
+      status: 409,
+    });
+  });
+
+  it("带回的撤销点存在任务自己的 ref 里，不会混进「恢复到此处」", async () => {
+    const { project, work, target } = await fixture();
+    await writeFile(join(work, "任务改的.txt"), "任务改过了\n");
+    await createIntegrator().integrate(target, { threadId: "t1", action: "apply" });
+
+    const refs = (await run(project, "for-each-ref", "--format=%(refname)", "--", "refs/vgent/checkpoints/t1/")).stdout
+      .split("\n")
+      .filter((line) => line.trim() !== "");
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatch(/^refs\/vgent\/checkpoints\/t1\/apply\/\d+$/);
+    // 「恢复到此处」 only ever offers numbered checkpoints, so this one — a
+    // snapshot of the *project*, not of the task's worktree — is not among them.
+    expect(await listCheckpointCommits({ repoPath: work, threadId: "t1" })).toEqual([]);
+  });
+});

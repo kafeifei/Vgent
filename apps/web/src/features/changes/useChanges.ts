@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ApiClient } from "@/lib/api";
-import type { ChangesSnapshot, FileDiff, IntegrateAction, IntegrationStatus } from "@/lib/types";
+import { ApiError, type ApiClient } from "@/lib/api";
+import type { ApplyConflict, ChangesSnapshot, FileDiff, IntegrateAction, IntegrateResponse, IntegrationStatus } from "@/lib/types";
 
 export interface ChangesView {
   snapshot: ChangesSnapshot | null;
@@ -23,10 +23,24 @@ export interface ChangesView {
    * toast: 带回主目录's conflict list is several lines long.
    */
   actionError: string | null;
-  integrate: (action: IntegrateAction, message?: string) => void;
+  /**
+   * What a refused 带回主目录 clashed on. Present only while that refusal is the
+   * last thing that happened, which is exactly when 「带冲突标记合并」 is on
+   * offer.
+   */
+  applyConflicts: ApplyConflict[] | null;
+  dismissApplyConflicts: () => void;
+  integrate: (action: IntegrateAction, input?: { message?: string; conflicts?: "markers" }) => void;
 }
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/** The 409's payload, when the failure really is 带回主目录 telling us what clashed. */
+function conflictsOf(error: unknown): ApplyConflict[] | null {
+  if (!(error instanceof ApiError) || error.code !== "apply_conflict") return null;
+  const list = (error.details as { conflicts?: unknown } | undefined)?.conflicts;
+  return Array.isArray(list) && list.length > 0 ? (list as ApplyConflict[]) : null;
+}
 
 /**
  * The 变更 tab's data: one working-tree snapshot for the selected task plus
@@ -160,20 +174,29 @@ export function useChanges(options: {
 
   const [integrating, setIntegrating] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  // It describes the last action on *this* task; another task starts clean.
-  useEffect(() => setActionError(null), [threadId]);
+  const [applyConflicts, setApplyConflicts] = useState<ApplyConflict[] | null>(null);
+  // They describe the last action on *this* task; another task starts clean.
+  useEffect(() => {
+    setActionError(null);
+    setApplyConflicts(null);
+  }, [threadId]);
 
   const integrate = useCallback(
-    (action: IntegrateAction, text?: string) => {
+    (action: IntegrateAction, input?: { message?: string; conflicts?: "markers" }) => {
       if (threadId == null) return;
       setIntegrating(true);
       setActionError(null);
+      setApplyConflicts(null);
       void (async () => {
         try {
-          const record = await client.integrate(threadId, action, text);
-          toast(DONE[action](record.outcome?.ref));
+          const record = await client.integrate(threadId, action, input);
+          toast(record.note ?? describe(action, record));
+          // The compare page (and a freshly created PR) is only useful if it
+          // opens; the badge in the bar is the fallback when the browser says no.
+          if (action === "pr" && record.pr != null) window.open(record.pr.url, "_blank", "noreferrer");
         } catch (failure) {
           setActionError(message(failure));
+          setApplyConflicts(conflictsOf(failure));
         } finally {
           setIntegrating(false);
         }
@@ -199,13 +222,27 @@ export function useChanges(options: {
     integration,
     integrating,
     actionError,
+    applyConflicts,
+    dismissApplyConflicts: useCallback(() => setApplyConflicts(null), []),
     integrate,
   };
 }
 
-const DONE: Record<IntegrateAction, (ref?: string) => string> = {
-  commit: (ref) => `已提交${ref != null ? ` ${ref.slice(0, 7)}` : ""}`,
-  pr: () => "已开 PR",
-  apply: () => "已带回主目录",
-  discard: () => "已全部丢弃",
-};
+/** The one line the toast says. Everything in it comes from what the server did, not from what we asked for. */
+function describe(action: IntegrateAction, record: IntegrateResponse): string {
+  if (action === "commit") {
+    const ref = record.outcome?.ref;
+    return `已提交${ref != null ? ` ${ref.slice(0, 7)}` : ""}`;
+  }
+  if (action === "pr") return record.pr?.kind === "compare" ? "已推送分支，去 GitHub 开 PR" : "已开 PR";
+  if (action === "discard") return "已全部丢弃";
+  if (action === "apply") {
+    const marked = record.apply?.conflicts.filter((entry) => entry.resolution === "markers").length ?? 0;
+    const skipped = record.apply?.conflicts.filter((entry) => entry.resolution === "skipped").length ?? 0;
+    if (marked === 0 && skipped === 0) return "已带回主目录";
+    const parts = [marked > 0 ? `${marked} 个带冲突标记` : "", skipped > 0 ? `${skipped} 个跳过` : ""].filter((part) => part !== "");
+    return `已带回主目录，${parts.join("，")}`;
+  }
+  const kept = record.undo?.kept.length ?? 0;
+  return kept > 0 ? `已撤销带回，${kept} 个你改过的文件保持原样` : "已撤销带回";
+}

@@ -7,6 +7,7 @@ import type {
   FileDiff,
   FileListing,
   IntegrateAction,
+  IntegrateResponse,
   IntegrationStatus,
   ModelCatalog,
   PlanDocument,
@@ -73,12 +74,14 @@ export function reportUnauthorized(): void {
 
 export const UNAUTHORIZED_MESSAGE = "token 无效或已过期";
 
-/** Carries the server's typed `{ code, status }` so callers can branch on it. */
+/** Carries the server's typed `{ code, status, details }` so callers can branch on it. */
 export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
     readonly code?: string,
+    /** The structured half of a failure — 带回主目录's conflict list, and nothing else so far. */
+    readonly details?: unknown,
   ) {
     super(message);
     this.name = "ApiError";
@@ -126,12 +129,13 @@ export async function api<T>(
   }
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as
-      | { error?: { code?: string; message?: string } }
+      | { error?: { code?: string; message?: string; details?: unknown } }
       | null;
     throw new ApiError(
       body?.error?.message ?? `${response.status} ${response.statusText}`,
       response.status,
       body?.error?.code,
+      body?.error?.details,
     );
   }
   if (response.status === 204) return undefined as T;
@@ -183,11 +187,19 @@ export function createClient(token: string) {
 
     /** 收口: what this task can do with its changes right now. */
     getIntegration: (threadId: string) => api<IntegrationStatus>(`/threads/${threadId}/integration`, token),
-    /** 提交 / 开 PR / 带回主目录 / 全部丢弃. `message` is required for 提交 and for a dirty PR. */
-    integrate: (threadId: string, action: IntegrateAction, message?: string) =>
-      api<ThreadRecord>(`/threads/${threadId}/integrate`, token, {
+    /**
+     * 提交 / 开 PR / 带回主目录 / 全部丢弃 / 撤销带回. `message` is required for
+     * 提交 and for a dirty PR; `conflicts: "markers"` is the explicit
+     * 「带冲突标记合并」, which the bar only offers after a refused 带回.
+     */
+    integrate: (threadId: string, action: IntegrateAction, input?: { message?: string; conflicts?: "markers" }) =>
+      api<IntegrateResponse>(`/threads/${threadId}/integrate`, token, {
         method: "POST",
-        json: { action, ...(message != null ? { message } : {}) },
+        json: {
+          action,
+          ...(input?.message != null ? { message: input.message } : {}),
+          ...(input?.conflicts != null ? { conflicts: input.conflicts } : {}),
+        },
       }),
 
     // Same directory as the changes routes: the whole working tree this time,

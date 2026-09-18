@@ -189,7 +189,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
   const registry = options.registry ?? createEngineRegistry();
   const git = options.git ?? createGit();
   const files = options.files ?? createFiles();
-  const integrator = options.integrator ?? createIntegrator();
+  const integrator = options.integrator ?? createIntegrator({ log });
 
   // The registry is the one list of engines: what exists, what it is called,
   // and what it can do. Nothing below spells an engine id out.
@@ -289,7 +289,10 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   app.onError((error, c) => {
     if (error instanceof VgentServerError) {
-      return c.json({ error: { code: error.code, message: error.message } }, error.status as 400);
+      return c.json(
+        { error: { code: error.code, message: error.message, ...(error.details !== undefined ? { details: error.details } : {}) } },
+        error.status as 400,
+      );
     }
     log.error("未处理的服务端错误", error);
     return c.json({ error: { code: "internal_error", message: "服务器内部错误" } }, 500);
@@ -430,18 +433,27 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   // --- 收口 -------------------------------------------------------------
 
-  app.get("/api/threads/:id/integration", async (c) => c.json(await integrator.status(await targetOf(c.req.param("id")))));
+  app.get("/api/threads/:id/integration", async (c) => {
+    const thread = await threadOf(c.req.param("id"));
+    return c.json(await integrator.status(await targetFor(thread), thread.applyUndo != null ? { applyUndo: thread.applyUndo } : {}));
+  });
 
   app.post("/api/threads/:id/integrate", async (c) => {
     const id = c.req.param("id");
     const thread = await threadOf(id);
     assertNotLive(thread);
     const target = await targetFor(thread);
-    const body = (await c.req.json().catch(() => undefined)) as { action?: unknown; message?: unknown } | undefined;
+    const body = (await c.req.json().catch(() => undefined)) as
+      | { action?: unknown; message?: unknown; conflicts?: unknown }
+      | undefined;
     const action = asIntegrateAction(body?.action);
-    const outcome = await integrator.integrate(target, {
+    const result = await integrator.integrate(target, {
       action,
+      threadId: id,
       ...(typeof body?.message === "string" ? { message: body.message } : {}),
+      // Anything but the explicit 「带冲突标记合并」 keeps today's behaviour.
+      ...(body?.conflicts === "markers" ? { conflicts: "markers" as const } : {}),
+      ...(thread.applyUndo != null ? { applyUndo: thread.applyUndo } : {}),
     });
     // 提交 in the user's own checkout leaves their other uncommitted work right
     // where it was, so the 任务基线 moves to the state just after the commit:
@@ -451,9 +463,22 @@ export function createApp(options: CreateAppOptions): VgentApp {
       action === "commit" && target.mode === "project" && thread.baselineCommit != null
         ? await pinBaseline({ repoPath: target.repoPath, threadId: id, log })
         : undefined;
-    const updated = await threads.update(id, { outcome, ...(moved != null ? { baselineCommit: moved } : {}) });
+    const updated = await threads.update(id, {
+      outcome: result.outcome ?? undefined,
+      ...(result.pr != null ? { pr: result.pr } : {}),
+      ...(result.applyUndo !== undefined ? { applyUndo: result.applyUndo ?? undefined } : {}),
+      ...(moved != null ? { baselineCommit: moved } : {}),
+    });
     await restat(id);
-    return c.json((await threads.get(id)) ?? updated);
+    const record = (await threads.get(id)) ?? updated;
+    // The record plus what this one action did — a 带回 has a file list to show,
+    // and a push to a non-GitHub remote has a sentence to read.
+    return c.json({
+      ...record,
+      ...(result.apply != null ? { apply: result.apply } : {}),
+      ...(result.undo != null ? { undo: result.undo } : {}),
+      ...(result.note != null ? { note: result.note } : {}),
+    });
   });
 
   // --- checkpoint -------------------------------------------------------
@@ -700,6 +725,9 @@ export function createApp(options: CreateAppOptions): VgentApp {
           const workspace = await reclaimFor(current);
           if (workspace != null) lifecycle.workspace = workspace;
           lifecycle.archivedAt = new Date().toISOString();
+          // 撤销带回 is an offer about a task the user is still looking at.
+          // Archiving says they are done with it, so the offer goes away.
+          lifecycle.applyUndo = undefined;
         }
       } else {
         const workspace = await restoreFor(current);

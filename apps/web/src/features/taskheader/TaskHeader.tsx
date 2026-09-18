@@ -165,7 +165,7 @@ export function TaskHeader({
           </Popover>
         )}
 
-        {thread.outcome != null && <OutcomeBadge outcome={thread.outcome} className="max-w-[24ch]" />}
+        <OutcomeBadge outcome={thread.outcome} pr={thread.pr} className="max-w-[24ch]" />
       </div>
 
       <div className="ml-auto flex flex-none items-center gap-xs">

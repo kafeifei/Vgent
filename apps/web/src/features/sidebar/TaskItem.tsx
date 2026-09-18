@@ -167,7 +167,7 @@ export function TaskItem({
           <span className="min-w-0 flex-1 truncate">
             {thread.status === "running" && chat != null ? <LiveAction chat={chat} /> : meta}
           </span>
-          {thread.outcome != null && <OutcomeBadge outcome={thread.outcome} />}
+          <OutcomeBadge outcome={thread.outcome} pr={thread.pr} />
           {stats != null && stats.files > 0 && (
             <span className="flex flex-none gap-2xs font-mono text-2xs">
               <span className="text-diff-add-fg">+{stats.additions}</span>

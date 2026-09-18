@@ -8,6 +8,8 @@ import type { UIMessage } from "ai";
  * into the bundle. Nothing below may be imported without `import type`.
  */
 export type {
+  ApplyConflict,
+  ApplyReport,
   ChangedFile,
   ChangeStats,
   ChangeStatus,
@@ -36,10 +38,12 @@ export type {
   ThreadMessageMetadata,
   ThreadMode,
   ThreadOutcome,
+  ThreadPullRequest,
   ThreadRecord,
   ThreadStatus,
   ThreadSummary,
   ThreadWorkspace,
+  UndoApplyResult,
   ProviderAgent,
   ProviderAgentConfig,
   ProviderModel,
@@ -49,6 +53,17 @@ export type {
   UsageInfo,
   WorkspaceSetup,
 } from "@vgent/server";
+
+/**
+ * `POST /api/threads/:id/integrate`: the task as it now stands, plus what this
+ * one action did — 带回主目录 has a file list to show, 撤销带回 says what it left
+ * alone, and a push to a non-GitHub remote has a sentence to read.
+ */
+export type IntegrateResponse = import("@vgent/server").ThreadRecord & {
+  apply?: import("@vgent/server").ApplyReport;
+  undo?: import("@vgent/server").UndoApplyResult;
+  note?: string;
+};
 
 /** `GET /api/threads/:id/workspace/setup-log`. `none` = the project has no setup config. */
 export type SetupLog = {

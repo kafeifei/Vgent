@@ -144,6 +144,7 @@ export function RightPane({
             title={thread?.title ?? ""}
             live={live}
             {...(thread?.outcome != null ? { outcome: thread.outcome } : { outcome: undefined })}
+            {...(thread?.pr != null ? { pr: thread.pr } : { pr: undefined })}
           />
         ) : tab === "files" ? (
           <FilesPanel client={client} threadId={threadId} active={open} refreshKey={refreshKey} />

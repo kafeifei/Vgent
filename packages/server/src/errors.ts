@@ -5,12 +5,19 @@
 export class VgentServerError extends Error {
   readonly status: number;
   readonly code: string;
+  /**
+   * Structured payload for a client that has to do more than print the message
+   * — 带回主目录's conflict list, which the action bar turns into a choice.
+   * Serialised as `error.details`; plain JSON only.
+   */
+  readonly details?: unknown;
 
-  constructor(options: { message: string; status: number; code: string }) {
+  constructor(options: { message: string; status: number; code: string; details?: unknown }) {
     super(options.message);
     this.name = new.target.name;
     this.status = options.status;
     this.code = options.code;
+    if (options.details !== undefined) this.details = options.details;
   }
 }
 
@@ -33,8 +40,8 @@ export class NotFoundError extends VgentServerError {
 }
 
 export class ConflictError extends VgentServerError {
-  constructor(message: string, code = "conflict") {
-    super({ message, status: 409, code });
+  constructor(message: string, code = "conflict", details?: unknown) {
+    super({ message, status: 409, code, ...(details !== undefined ? { details } : {}) });
   }
 }
 

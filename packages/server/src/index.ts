@@ -4,6 +4,18 @@
 export { createApp, VGENT_SERVER_VERSION, type CreateAppOptions, type VgentApp } from "./app.js";
 export { createChunkHub, type ChunkHub } from "./chunk-hub.js";
 export {
+  partitionUndo,
+  planThreeWayApply,
+  runApplyPlan,
+  type ApplyConflict,
+  type ApplyConflictMode,
+  type ApplyPlan,
+  type ApplyReport,
+  type ThreeWayApplyOptions,
+  type UndoApplyResult,
+} from "./apply.js";
+export {
+  applyUndoScope,
   CHECKPOINT_RETENTION,
   checkpointRefPrefix,
   createCheckpoint,
@@ -51,11 +63,15 @@ export {
   asIntegrateAction,
   changeStatsOf,
   createIntegrator,
+  githubRepoFromRemote,
   taskTarget,
   type CreateIntegratorOptions,
   type IntegrateAction,
+  type IntegrateInput,
+  type IntegrateResult,
   type IntegrationStatus,
   type Integrator,
+  type PrAvailability,
   type TaskMode,
   type TaskTarget,
 } from "./integrate.js";
@@ -110,6 +126,7 @@ export {
 export { DEFAULT_WORKTREE_MAX_COUNT, enforceWorktreeLimit } from "./worktree-limit.js";
 export { findSetupSpec, readSetupLog, runSetup, startSetup, whenSetupSettled, type SetupSpec } from "./worktree-setup.js";
 export type {
+  ApplyUndoRecord,
   ChangeStats,
   CheckpointRestore,
   ConnectionInfo,
@@ -124,6 +141,7 @@ export type {
   ThreadMessageMetadata,
   ThreadMode,
   ThreadOutcome,
+  ThreadPullRequest,
   ThreadRecord,
   ThreadStatus,
   ThreadSummary,

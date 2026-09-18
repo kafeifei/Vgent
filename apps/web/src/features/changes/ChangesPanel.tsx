@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { OutcomeBadge } from "@/components/OutcomeBadge";
 import { baseName } from "@/lib/format";
-import { LIVE_REASON, type ChangeStatus, type ChangedFile, type ThreadOutcome } from "@/lib/types";
+import { LIVE_REASON, type ChangeStatus, type ChangedFile, type ThreadOutcome, type ThreadPullRequest } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { DiffView } from "./DiffView";
 import { parseUnifiedDiff } from "./diff";
@@ -118,14 +118,16 @@ function ActionBar({
   title,
   live,
   outcome,
+  pr,
 }: {
   changes: ChangesView;
   /** The default commit message. */
   title: string;
   live: boolean;
   outcome: ThreadOutcome | undefined;
+  pr: ThreadPullRequest | undefined;
 }) {
-  const { integration, integrating, actionError, integrate } = changes;
+  const { integration, integrating, actionError, applyConflicts, dismissApplyConflicts, integrate } = changes;
   const [message, setMessage] = useState(title);
   const [composing, setComposing] = useState(false);
   const [armed, setArmed] = useState(false);
@@ -138,12 +140,14 @@ function ActionBar({
   // still owns the working tree, which is exactly what these buttons move.
   const hint = live ? { title: LIVE_REASON } : {};
   const worktree = integration.mode === "worktree";
+  const marked = applyConflicts?.filter((entry) => entry.resolution === "markers") ?? [];
+  const skipped = applyConflicts?.filter((entry) => entry.resolution === "skipped") ?? [];
 
   const commit = () => {
     const text = message.trim();
     if (text === "") return;
     setComposing(false);
-    integrate("commit", text);
+    integrate("commit", { message: text });
   };
 
   return (
@@ -153,13 +157,30 @@ function ActionBar({
           提交
         </button>
         {integration.pr.available && (
-          <button type="button" disabled={blocked} {...hint} onClick={() => integrate("pr", message.trim())} className={BAR_BUTTON}>
+          <button
+            type="button"
+            disabled={blocked}
+            title={live ? LIVE_REASON : integration.pr.hint}
+            onClick={() => integrate("pr", { message: message.trim() })}
+            className={BAR_BUTTON}
+          >
             开 PR
           </button>
         )}
         {worktree && (
           <button type="button" disabled={blocked || !integration.canApply} {...hint} onClick={() => integrate("apply")} className={BAR_BUTTON}>
             带回主目录
+          </button>
+        )}
+        {worktree && integration.canUndoApply && (
+          <button
+            type="button"
+            disabled={blocked}
+            title={live ? LIVE_REASON : "把主检出里这次带回写下的文件放回去；你之后改过的不动"}
+            onClick={() => integrate("undo-apply")}
+            className={BAR_BUTTON}
+          >
+            撤销带回
           </button>
         )}
         {worktree && integration.canDiscardAll && !armed && (
@@ -191,7 +212,7 @@ function ActionBar({
             </button>
           </>
         )}
-        {outcome != null && <OutcomeBadge outcome={outcome} className="ml-auto" />}
+        <OutcomeBadge outcome={outcome} pr={pr} className="ml-auto" />
       </div>
 
       {composing && (
@@ -226,7 +247,44 @@ function ActionBar({
       {worktree && !integration.pr.available && integration.pr.reason != null && (
         <p className="text-2xs text-fg-faint">开 PR 不可用：{integration.pr.reason}</p>
       )}
-      {actionError != null && <p className="whitespace-pre-wrap text-danger text-xs">{actionError}</p>}
+
+      {/*
+        A refused 带回: the list, then the only two things left to do. The
+        confirm names the files that would get markers, because that is the
+        choice — the rest is skipped either way.
+      */}
+      {applyConflicts != null ? (
+        <div className="flex flex-col gap-2xs rounded-sm border border-border bg-bg-inset p-xs">
+          <p className="text-warning text-xs">带回主目录停下了，主检出一个字节都没动。</p>
+          <ul className="flex flex-col gap-3xs">
+            {applyConflicts.map((entry) => (
+              <li key={entry.path} className="truncate font-mono text-2xs text-fg-muted" title={`${entry.path}（${entry.reason}）`}>
+                {entry.path} <span className="font-sans text-fg-faint">{entry.reason}</span>
+              </li>
+            ))}
+          </ul>
+          <div className="flex flex-wrap items-center gap-2xs">
+            <button
+              type="button"
+              disabled={blocked || marked.length === 0}
+              title={
+                marked.length === 0
+                  ? "这些文件都带不了冲突标记"
+                  : `${marked.map((entry) => entry.path).join("、")} 会写入冲突标记${skipped.length > 0 ? `；另外 ${skipped.length} 个跳过` : ""}`
+              }
+              onClick={() => integrate("apply", { conflicts: "markers" })}
+              className={BAR_BUTTON}
+            >
+              带冲突标记合并
+            </button>
+            <button type="button" onClick={dismissApplyConflicts} className={BAR_BUTTON}>
+              取消
+            </button>
+          </div>
+        </div>
+      ) : (
+        actionError != null && <p className="whitespace-pre-wrap text-danger text-xs">{actionError}</p>
+      )}
     </div>
   );
 }
@@ -237,11 +295,13 @@ export function ChangesPanel({
   title,
   live,
   outcome,
+  pr,
 }: {
   changes: ChangesView;
   title: string;
   live: boolean;
   outcome: ThreadOutcome | undefined;
+  pr: ThreadPullRequest | undefined;
 }) {
   const { snapshot, loading, error, refresh, selected, select } = changes;
   const files = useMemo(() => snapshot?.files ?? [], [snapshot]);
@@ -318,7 +378,7 @@ export function ChangesPanel({
         </>
       )}
 
-      {error == null && <ActionBar changes={changes} title={title} live={live} outcome={outcome} />}
+      {error == null && <ActionBar changes={changes} title={title} live={live} outcome={outcome} pr={pr} />}
     </>
   );
 }

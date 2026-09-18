@@ -7,7 +7,7 @@ import type { UIMessage } from "ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { snapshotTree } from "./checkpoints.js";
 import { runCommand, type ToolExec } from "./exec.js";
-import { createIntegrator, taskTarget, type TaskTarget } from "./integrate.js";
+import { createIntegrator, githubRepoFromRemote, taskTarget, type TaskTarget } from "./integrate.js";
 import type { Project } from "./types.js";
 
 const exec = promisify(execFile);
@@ -95,7 +95,7 @@ describe.skipIf(!hasGit)("createIntegrator", () => {
 
     // Nothing done yet: the repo is dirty, but not by this task.
     expect(await integrator.status(target)).toMatchObject({ mode: "project", dirty: true, canCommit: false, commitFiles: 0 });
-    await expect(integrator.integrate(target, { action: "commit", message: "空的" })).rejects.toMatchObject({
+    await expect(integrator.integrate(target, { threadId: "t1", action: "commit", message: "空的" })).rejects.toMatchObject({
       code: "nothing_to_commit",
     });
 
@@ -103,7 +103,7 @@ describe.skipIf(!hasGit)("createIntegrator", () => {
     await writeFile(join(project, "任务的.txt"), "任务建的\n");
 
     expect(await integrator.status(target)).toMatchObject({ canCommit: true, commitFiles: 2 });
-    expect(await integrator.integrate(target, { action: "commit", message: "任务收个口" })).toMatchObject({ kind: "committed" });
+    expect(await integrator.integrate(target, { threadId: "t1", action: "commit", message: "任务收个口" })).toMatchObject({ outcome: { kind: "committed" } });
 
     expect(await committedPaths(project)).toEqual(["tracked.txt", "任务的.txt"]);
     // Modified, untracked and staged: all three are still exactly as the user left them.
@@ -113,7 +113,7 @@ describe.skipIf(!hasGit)("createIntegrator", () => {
     // does it — so the task has nothing left to commit, twice over.
     const moved: TaskTarget = { ...target, baseline: { tree: await snapshotTree(project) } };
     expect(await integrator.status(moved)).toMatchObject({ canCommit: false, commitFiles: 0 });
-    await expect(integrator.integrate(moved, { action: "commit", message: "再来一次" })).rejects.toMatchObject({
+    await expect(integrator.integrate(moved, { threadId: "t1", action: "commit", message: "再来一次" })).rejects.toMatchObject({
       code: "nothing_to_commit",
     });
   });
@@ -130,7 +130,7 @@ describe.skipIf(!hasGit)("createIntegrator", () => {
 
     // Committed whole, so the user's earlier line is in there too — which is
     // exactly what the count above is warning about.
-    await integrator.integrate(target, { action: "commit", message: "任务收个口" });
+    await integrator.integrate(target, { threadId: "t1", action: "commit", message: "任务收个口" });
     expect(await committedPaths(project)).toEqual(["tracked.txt", "用户的.txt"]);
     expect((await run(project, "show", "HEAD:用户的.txt")).stdout).toBe("原样\n用户改的\n任务也加了一行\n");
   });
@@ -154,7 +154,7 @@ describe.skipIf(!hasGit)("createIntegrator", () => {
     expect(status).toMatchObject({ canCommit: true, note: expect.stringContaining("全部改动") });
     expect(status.commitFiles).toBeUndefined();
 
-    expect(await integrator.integrate(legacy, { action: "commit", message: "老任务" })).toMatchObject({ kind: "committed" });
+    expect(await integrator.integrate(legacy, { threadId: "t1", action: "commit", message: "老任务" })).toMatchObject({ outcome: { kind: "committed" } });
     expect(await committedPaths(project)).toEqual(["暂存的.txt", "用户没跟踪的.txt", "用户的.txt"]);
   });
 
@@ -166,7 +166,7 @@ describe.skipIf(!hasGit)("createIntegrator", () => {
     const status = await integrator.status(fresh);
     expect(status).toMatchObject({ dirty: true, canCommit: false, commitFiles: 0 });
     expect(status.note).toBeUndefined();
-    await expect(integrator.integrate(fresh, { action: "commit", message: "什么都没干" })).rejects.toMatchObject({
+    await expect(integrator.integrate(fresh, { threadId: "t1", action: "commit", message: "什么都没干" })).rejects.toMatchObject({
       code: "nothing_to_commit",
     });
   });
@@ -175,19 +175,19 @@ describe.skipIf(!hasGit)("createIntegrator", () => {
     const { work, target } = await worktreeTask();
     const integrator = createIntegrator();
 
-    await expect(integrator.integrate(target, { action: "commit", message: "做了点事" })).rejects.toMatchObject({
+    await expect(integrator.integrate(target, { threadId: "t1", action: "commit", message: "做了点事" })).rejects.toMatchObject({
       code: "nothing_to_commit",
     });
 
     await writeFile(join(work, "tracked.txt"), "line1\n改了\n");
     await writeFile(join(work, "新文件.txt"), "新的\n");
 
-    await expect(integrator.integrate(target, { action: "commit", message: "  " })).rejects.toMatchObject({
+    await expect(integrator.integrate(target, { threadId: "t1", action: "commit", message: "  " })).rejects.toMatchObject({
       code: "invalid_message",
     });
 
-    const outcome = await integrator.integrate(target, { action: "commit", message: "做了点事" });
-    expect(outcome).toMatchObject({ kind: "committed", ref: await head(work) });
+    const outcome = await integrator.integrate(target, { threadId: "t1", action: "commit", message: "做了点事" });
+    expect(outcome).toMatchObject({ outcome: { kind: "committed", ref: await head(work) } });
     expect((await run(work, "log", "-1", "--pretty=%s")).stdout.trim()).toBe("做了点事");
     expect(await porcelain(work)).toBe("");
 
@@ -208,8 +208,8 @@ describe.skipIf(!hasGit)("createIntegrator", () => {
     await run(work, "add", "tracked.txt");
     const indexBefore = await porcelain(work);
 
-    const outcome = await createIntegrator().integrate(target, { action: "apply" });
-    expect(outcome).toMatchObject({ kind: "applied" });
+    const outcome = await createIntegrator().integrate(target, { threadId: "t1", action: "apply" });
+    expect(outcome).toMatchObject({ outcome: { kind: "applied" } });
 
     expect(await readFile(join(project, "tracked.txt"), "utf8")).toBe("line1\n任务改的\n再改一次\n");
     expect(await readFile(join(project, "新文件.txt"), "utf8")).toBe("新的\n");
@@ -226,7 +226,7 @@ describe.skipIf(!hasGit)("createIntegrator", () => {
     await writeFile(join(project, "tracked.txt"), "line1\n主目录自己改的\n");
     await writeFile(join(work, "tracked.txt"), "line1\n任务改的\n");
 
-    await expect(createIntegrator().integrate(target, { action: "apply" })).rejects.toMatchObject({
+    await expect(createIntegrator().integrate(target, { threadId: "t1", action: "apply" })).rejects.toMatchObject({
       code: "apply_conflict",
       status: 409,
       message: expect.stringContaining("tracked.txt"),
@@ -236,7 +236,7 @@ describe.skipIf(!hasGit)("createIntegrator", () => {
 
   it("带回主目录：没有改动就说没有", async () => {
     const { target } = await worktreeTask();
-    await expect(createIntegrator().integrate(target, { action: "apply" })).rejects.toMatchObject({ code: "nothing_to_apply" });
+    await expect(createIntegrator().integrate(target, { threadId: "t1", action: "apply" })).rejects.toMatchObject({ code: "nothing_to_apply" });
   });
 
   it("全部丢弃：提交过的、改过的、没跟踪的一起回到基线", async () => {
@@ -246,7 +246,7 @@ describe.skipIf(!hasGit)("createIntegrator", () => {
     await run(work, "commit", "-q", "-m", "任务自己的提交");
     await writeFile(join(work, "未跟踪.txt"), "垃圾\n");
 
-    expect(await createIntegrator().integrate(target, { action: "discard" })).toMatchObject({ kind: "discarded" });
+    expect(await createIntegrator().integrate(target, { threadId: "t1", action: "discard" })).toMatchObject({ outcome: { kind: "discarded" } });
     expect(await head(work)).toBe(base);
     expect(await porcelain(work)).toBe("");
     expect(await readFile(join(work, "tracked.txt"), "utf8")).toBe("line1\nline2\n");
@@ -261,10 +261,10 @@ describe.skipIf(!hasGit)("createIntegrator", () => {
     expect(status).toMatchObject({ mode: "project", commitsAhead: 0, canApply: false, canDiscardAll: false });
     expect(status.pr.available).toBe(false);
 
-    await expect(integrator.integrate(target, { action: "discard" })).rejects.toMatchObject({ code: "action_unsupported" });
+    await expect(integrator.integrate(target, { threadId: "t1", action: "discard" })).rejects.toMatchObject({ code: "action_unsupported" });
 
     await writeFile(join(project, "tracked.txt"), "line1\n主目录改的\n");
-    expect(await integrator.integrate(target, { action: "commit", message: "在主目录提交" })).toMatchObject({ kind: "committed" });
+    expect(await integrator.integrate(target, { threadId: "t1", action: "commit", message: "在主目录提交" })).toMatchObject({ outcome: { kind: "committed" } });
     expect(await porcelain(project)).toBe("");
   });
 
@@ -289,15 +289,15 @@ describe.skipIf(!hasGit)("createIntegrator", () => {
     });
   });
 
-  it("开 PR：没有 origin 远端就说明原因，不显示按钮", async () => {
+  it("开 PR：没有远端才说明原因，不显示按钮", async () => {
     const { target } = await worktreeTask();
     const status = await createIntegrator().status(target);
-    expect(status.pr).toEqual({ available: false, reason: "仓库没有 origin 远端" });
+    expect(status.pr).toEqual({ available: false, reason: "仓库没有远端，开不了 PR" });
   });
 
-  it("开 PR：有 origin 但 gh 没登录也说明原因，并且一分钟只问一次", async () => {
+  it("开 PR：gh 没登录照样能开，走 compare 页，并且一分钟只问一次 gh", async () => {
     const { target, project } = await worktreeTask();
-    await run(project, "remote", "add", "origin", "https://example.invalid/acme/repo.git");
+    await run(project, "remote", "add", "origin", "git@github.com:acme/repo.git");
 
     let probes = 0;
     const exec: ToolExec = async (file, args, options) => {
@@ -309,9 +309,35 @@ describe.skipIf(!hasGit)("createIntegrator", () => {
     };
     const integrator = createIntegrator({ exec });
 
-    expect((await integrator.status(target)).pr).toEqual({ available: false, reason: "没找到已登录的 gh 命令行" });
-    expect((await integrator.status(target)).pr).toEqual({ available: false, reason: "没找到已登录的 gh 命令行" });
+    const expected = { available: true, path: "compare", hint: "会推送分支，并打开 GitHub 的 compare 页" };
+    expect((await integrator.status(target)).pr).toEqual(expected);
+    expect((await integrator.status(target)).pr).toEqual(expected);
     expect(probes).toBe(1);
+  });
+
+  it("开 PR：远端不是 GitHub 就只推分支，说清楚 PR 要到它自己的站点上开", async () => {
+    const { target, project, work } = await worktreeTask();
+    await run(project, "remote", "add", "origin", "https://git.example.invalid/acme/repo.git");
+    await writeFile(join(work, "tracked.txt"), "line1\n改了\n");
+
+    const calls: string[][] = [];
+    const exec: ToolExec = async (file, args, options) => {
+      if (file === "gh") return { code: 1, stdout: "", stderr: "not logged in" };
+      if (args[0] === "push") {
+        calls.push([file, ...args]);
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return runCommand(file, args, options);
+    };
+    const integrator = createIntegrator({ exec });
+
+    expect((await integrator.status(target)).pr).toMatchObject({ available: true, path: "push" });
+
+    const result = await integrator.integrate(target, { threadId: "t1", action: "pr", message: "推一下" });
+    expect(result.outcome).toMatchObject({ kind: "pushed", ref: "vgent/test" });
+    expect(result.pr).toBeUndefined();
+    expect(result.note).toContain("不是 GitHub");
+    expect(calls).toContainEqual(["git", "push", "-u", "origin", "vgent/test"]);
   });
 
   it("开 PR：脏就先提交，再推送并新建 PR", async () => {
@@ -334,35 +360,108 @@ describe.skipIf(!hasGit)("createIntegrator", () => {
     };
     const integrator = createIntegrator({ exec });
 
-    expect((await integrator.status(target)).pr).toEqual({ available: true });
+    expect((await integrator.status(target)).pr).toMatchObject({ available: true, path: "gh" });
 
-    const outcome = await integrator.integrate(target, { action: "pr", message: "开个 PR" });
-    expect(outcome).toMatchObject({ kind: "pr", url: "https://github.com/acme/repo/pull/7" });
+    const outcome = await integrator.integrate(target, { threadId: "t1", action: "pr", message: "开个 PR" });
+    expect(outcome).toMatchObject({ outcome: { kind: "pr", url: "https://github.com/acme/repo/pull/7" }, pr: { kind: "pr", number: 7 } });
     expect(calls).toContainEqual(["git", "push", "-u", "origin", "vgent/test"]);
     // The dirty tree was committed first, so the push had something to carry.
     expect(await porcelain(work)).toBe("");
     expect((await run(work, "log", "-1", "--pretty=%s")).stdout.trim()).toBe("开个 PR");
   });
 
+  it("GitHub 远端地址：ssh、https、带不带 .git 都认得，别家一律不认", () => {
+    const acme = { owner: "acme", repo: "repo" };
+    expect(githubRepoFromRemote("git@github.com:acme/repo.git")).toEqual(acme);
+    expect(githubRepoFromRemote("git@github.com:acme/repo")).toEqual(acme);
+    expect(githubRepoFromRemote("ssh://git@github.com/acme/repo.git")).toEqual(acme);
+    expect(githubRepoFromRemote("ssh://git@ssh.github.com:443/acme/repo.git")).toEqual(acme);
+    expect(githubRepoFromRemote("https://github.com/acme/repo.git")).toEqual(acme);
+    expect(githubRepoFromRemote("https://github.com/acme/repo")).toEqual(acme);
+    expect(githubRepoFromRemote("https://github.com/acme/repo/")).toEqual(acme);
+    expect(githubRepoFromRemote("https://token@github.com/acme/repo.git")).toEqual(acme);
+    expect(githubRepoFromRemote("  https://www.github.com/acme/repo  ")).toEqual(acme);
+    // A repo whose name really does end in `.git`.
+    expect(githubRepoFromRemote("https://github.com/acme/repo.git.git")).toEqual({ owner: "acme", repo: "repo.git" });
+
+    expect(githubRepoFromRemote("https://gitlab.com/acme/repo.git")).toBeUndefined();
+    expect(githubRepoFromRemote("git@github.enterprise.com:acme/repo.git")).toBeUndefined();
+    expect(githubRepoFromRemote("/srv/git/repo.git")).toBeUndefined();
+    expect(githubRepoFromRemote("https://github.com/acme")).toBeUndefined();
+    expect(githubRepoFromRemote("https://github.com/acme/repo/extra")).toBeUndefined();
+    expect(githubRepoFromRemote("")).toBeUndefined();
+  });
+
+  it("开 PR：没有 gh 时真的推分支，再给出 compare 页的地址", async () => {
+    const { target, project, work } = await worktreeTask();
+    // A real bare repo to push into, behind a GitHub fetch URL: the push is
+    // genuine, and the URL we parse is the one a GitHub clone would have.
+    const remote = join(await tempDir(), "origin.git");
+    await exec("git", ["init", "-q", "--bare", "-b", "main", remote]);
+    await run(project, "remote", "add", "origin", "https://github.com/acme/repo.git");
+    await run(project, "remote", "set-url", "--push", "origin", remote);
+    // What a clone knows about the remote's own default branch.
+    await run(project, "update-ref", "refs/remotes/origin/main", await head(project));
+    await run(project, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+
+    await writeFile(join(work, "tracked.txt"), "line1\n改了\n");
+    const noGh: ToolExec = async (file, args, options) =>
+      file === "gh" ? { code: 127, stdout: "", stderr: "找不到可执行文件: gh" } : runCommand(file, args, options);
+
+    const result = await createIntegrator({ exec: noGh }).integrate(target, { threadId: "t1", action: "pr", message: "推上去" });
+    expect(result.outcome).toMatchObject({
+      kind: "pr",
+      url: "https://github.com/acme/repo/compare/main...vgent/test?expand=1",
+    });
+    expect(result.pr).toMatchObject({ kind: "compare", branch: "vgent/test" });
+    expect(result.pr?.number).toBeUndefined();
+    // The dirty tree was committed first and the branch really landed.
+    expect(await porcelain(work)).toBe("");
+    expect((await exec("git", ["rev-parse", "vgent/test"], { cwd: remote })).stdout.trim()).toBe(await head(work));
+  });
+
+  it("开 PR：远端没说默认分支就退回 main / master，再退回主检出当前分支", async () => {
+    const { target, project, work } = await worktreeTask();
+    const remote = join(await tempDir(), "origin.git");
+    await exec("git", ["init", "-q", "--bare", "-b", "main", remote]);
+    await run(project, "remote", "add", "origin", "https://github.com/acme/repo.git");
+    await run(project, "remote", "set-url", "--push", "origin", remote);
+    await writeFile(join(work, "tracked.txt"), "line1\n改了\n");
+    const noGh: ToolExec = async (file, args, options) =>
+      file === "gh" ? { code: 127, stdout: "", stderr: "" } : runCommand(file, args, options);
+
+    // No `refs/remotes/origin/*` at all: the project's own branch is the last word.
+    await run(project, "branch", "-m", "main", "开发");
+    const fallback = await createIntegrator({ exec: noGh }).integrate(target, { threadId: "t1", action: "pr", message: "推上去" });
+    expect(fallback.pr?.url).toBe(`https://github.com/acme/repo/compare/${encodeURIComponent("开发")}...vgent/test?expand=1`);
+
+    // Now the clone knows about `origin/master`, which wins over the local branch.
+    await run(project, "update-ref", "refs/remotes/origin/master", await head(project));
+    const known = await createIntegrator({ exec: noGh }).integrate(target, { threadId: "t1", action: "pr" });
+    expect(known.pr?.url).toBe("https://github.com/acme/repo/compare/master...vgent/test?expand=1");
+  });
+
   it("开 PR：已有的 PR 直接返回链接，推送失败是 502", async () => {
-    const { work, target } = await worktreeTask();
+    const { work, target, project } = await worktreeTask();
+    await run(project, "remote", "add", "origin", "https://github.com/acme/repo.git");
     await writeFile(join(work, "tracked.txt"), "line1\n改了\n");
     await run(work, "add", "-A");
     await run(work, "commit", "-q", "-m", "任务自己的提交");
 
     const existing: ToolExec = async (file, args, options) => {
+      if (file === "gh" && args[0] === "auth") return { code: 0, stdout: "", stderr: "" };
       if (file === "gh" && args[1] === "view") return { code: 0, stdout: '{"url":"https://github.com/acme/repo/pull/3"}', stderr: "" };
       if (args[0] === "push") return { code: 0, stdout: "", stderr: "" };
       return runCommand(file, args, options);
     };
-    expect(await createIntegrator({ exec: existing }).integrate(target, { action: "pr" })).toMatchObject({
-      kind: "pr",
-      url: "https://github.com/acme/repo/pull/3",
+    expect(await createIntegrator({ exec: existing }).integrate(target, { threadId: "t1", action: "pr" })).toMatchObject({
+      outcome: { kind: "pr", url: "https://github.com/acme/repo/pull/3" },
+      pr: { kind: "pr", number: 3 },
     });
 
     const broken: ToolExec = async (file, args, options) =>
-      args[0] === "push" ? { code: 1, stdout: "", stderr: "fatal: 远端拒绝了" } : runCommand(file, args, options);
-    await expect(createIntegrator({ exec: broken }).integrate(target, { action: "pr" })).rejects.toMatchObject({
+      args[0] === "push" ? { code: 1, stdout: "", stderr: "fatal: 远端拒绝了" } : existing(file, args, options);
+    await expect(createIntegrator({ exec: broken }).integrate(target, { threadId: "t1", action: "pr" })).rejects.toMatchObject({
       status: 502,
       message: expect.stringContaining("远端拒绝了"),
     });

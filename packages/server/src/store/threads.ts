@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { isToolUIPart, type UIMessage } from "ai";
 import { NotFoundError } from "../errors.js";
 import type {
+  ApplyUndoRecord,
   ChangeStats,
   EngineId,
   HarnessState,
@@ -11,6 +12,7 @@ import type {
   QueuedMessage,
   ThreadMode,
   ThreadOutcome,
+  ThreadPullRequest,
   ThreadRecord,
   ThreadStatus,
   ThreadSummary,
@@ -64,6 +66,10 @@ export type ThreadPatch = Partial<{
   baselineCommit: string | undefined;
   /** 收口 result. `undefined` clears it, which a new turn does. */
   outcome: ThreadOutcome | undefined;
+  /** The PR link. Deliberately *not* cleared by a new turn — an opened PR stays open. */
+  pr: ThreadPullRequest | undefined;
+  /** 撤销带回 record. `undefined` drops it: 归档 does, and so does the undo itself. */
+  applyUndo: ApplyUndoRecord | undefined;
   changeStats: ChangeStats | undefined;
   /** 排队的消息. An empty array clears it — the field is never stored empty. */
   queue: QueuedMessage[] | undefined;
@@ -122,7 +128,8 @@ export function countPendingApprovals(messages: readonly UIMessage[]): number {
 }
 
 export function summarize(record: ThreadRecord): ThreadSummary {
-  const { messages, ...rest } = record;
+  // `applyUndo` is destructured only to keep it out of `rest`.
+  const { messages, applyUndo: _applyUndo, ...rest } = record;
   return { ...rest, messageCount: messages.length, pendingApprovals: countPendingApprovals(messages) };
 }
 
@@ -300,6 +307,14 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
         if ("outcome" in patch) {
           if (patch.outcome == null) delete next.outcome;
           else next.outcome = patch.outcome;
+        }
+        if ("pr" in patch) {
+          if (patch.pr == null) delete next.pr;
+          else next.pr = patch.pr;
+        }
+        if ("applyUndo" in patch) {
+          if (patch.applyUndo == null) delete next.applyUndo;
+          else next.applyUndo = patch.applyUndo;
         }
         if ("changeStats" in patch) {
           if (patch.changeStats == null) delete next.changeStats;

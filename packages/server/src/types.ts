@@ -121,12 +121,48 @@ export interface CheckpointRestore {
  * again and whatever it did before is no longer the whole story.
  */
 export interface ThreadOutcome {
-  kind: "committed" | "pr" | "applied" | "discarded";
+  /** `pushed`: the branch went up but the PR has to be opened on the host's own site. */
+  kind: "committed" | "pr" | "applied" | "discarded" | "pushed";
   at: string;
-  /** The commit sha, for `committed`. */
+  /** The commit sha for `committed`; the pushed branch for `pushed`. */
   ref?: string;
   /** The pull request, for `pr`. */
   url?: string;
+}
+
+/**
+ * 开 PR 留下的链接, kept apart from `outcome` on purpose: a new turn clears the
+ * 收口态, but an opened PR goes on existing, so its link must survive.
+ *
+ * `kind` says what the link is. `pr` is a real pull request — `gh` created it,
+ * or it was already there. `compare` is GitHub's compare page, which is as far
+ * as we can get without `gh`: the branch is pushed and the user presses Create
+ * on GitHub's own form.
+ */
+export interface ThreadPullRequest {
+  url: string;
+  /** Only a real pull request has one. */
+  number?: number;
+  kind: "pr" | "compare";
+  /** The branch that was pushed. */
+  branch?: string;
+  at: string;
+}
+
+/**
+ * 撤销带回 的依据: the project checkout as it was right before 带回主目录 wrote
+ * to it, plus a fingerprint of everything that apply left behind.
+ *
+ * The fingerprints are what make the undo safe to offer later: a file whose
+ * content is still exactly what apply wrote can be put back, and one the user
+ * has since edited is left alone rather than silently reverted.
+ */
+export interface ApplyUndoRecord {
+  /** Checkpoint commit holding the whole project checkout from before the apply. */
+  snapshot: string;
+  /** Every path apply wrote or deleted, with the content hash it left (`null` = deleted). */
+  files: { path: string; hash: string | null }[];
+  at: string;
 }
 
 /**
@@ -180,6 +216,10 @@ export interface ThreadRecord {
   baselineCommit?: string;
   /** How the task was wound up — 提交 / PR / 带回主目录 / 丢弃. */
   outcome?: ThreadOutcome;
+  /** The PR (or compare page) 开 PR opened. Outlives `outcome`, which a new turn clears. */
+  pr?: ThreadPullRequest;
+  /** What the last 带回主目录 can be undone from. Replaced by the next apply, dropped on 归档 and 删除. */
+  applyUndo?: ApplyUndoRecord;
   /** Recomputed at the end of every turn and after every 收口 action. */
   changeStats?: ChangeStats;
   /** 排队的消息, oldest first. Never stored empty — an absent field is an empty queue. */
@@ -191,8 +231,13 @@ export interface ThreadRecord {
   messages: UIMessage[];
 }
 
-/** What the thread list and the `/api/state` SSE carry: the record minus its messages. */
-export interface ThreadSummary extends Omit<ThreadRecord, "messages"> {
+/**
+ * What the thread list and the `/api/state` SSE carry: the record minus its
+ * messages, and minus the 撤销带回 record — a per-file bookkeeping list nothing
+ * outside the task's own 收口 has any use for, and one that would ride along in
+ * every state push.
+ */
+export interface ThreadSummary extends Omit<ThreadRecord, "messages" | "applyUndo"> {
   messageCount: number;
   pendingApprovals: number;
 }

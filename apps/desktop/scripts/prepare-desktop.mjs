@@ -110,6 +110,12 @@ export async function prepareDesktop() {
   await mkdir(binariesDir, { recursive: true });
 
   console.log("构建工作区…");
+  // The main checkout is not necessarily installed: a new workspace dependency
+  // lands in the lockfile with the commit, and `tsc -b` then fails on a package
+  // that has no `node_modules`. `--frozen-lockfile` keeps this a no-op when the
+  // tree is already current, and fails loudly when the lockfile is out of date
+  // rather than quietly rewriting it during a release build.
+  run("pnpm", ["install", "--frozen-lockfile"]);
   run("pnpm", ["-w", "build"]);
   run("pnpm", ["--filter", "@vgent/web", "build"]);
 

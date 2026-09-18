@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeTool, diffStatOf, exitCodeOf, outputText, type ToolPart } from "./toolMeta";
+import { describeTool, diffStatOf, exitCodeOf, outputText, toolTitle, type ToolPart } from "./toolMeta";
 
 const part = (type: string, input: unknown): ToolPart =>
   ({ type, toolCallId: "c1", state: "output-available", input, output: {} }) as unknown as ToolPart;
@@ -36,5 +36,18 @@ describe("output readers", () => {
     expect(outputText({ stdout: "     137" })).toBe("     137");
     expect(outputText("plain")).toBe("plain");
     expect(outputText({ totalLines: 3 })).toBeUndefined();
+  });
+});
+
+describe("toolTitle", () => {
+  it("names the known tools in Chinese, whatever the engine's casing", () => {
+    expect(toolTitle("bash")).toBe("命令");
+    expect(toolTitle("Write")).toBe("写入");
+    expect(toolTitle("MultiEdit")).toBe("编辑");
+  });
+
+  it("falls back to the raw name for anything else", () => {
+    expect(toolTitle("TodoWrite")).toBe("TodoWrite");
+    expect(toolTitle("mcp__docs__search")).toBe("mcp__docs__search");
   });
 });

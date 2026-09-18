@@ -97,6 +97,7 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
         model,
         repoPath: ctx.project.repoPath,
         permissionMode: ctx.thread.permissionMode,
+        ...(ctx.thread.alwaysAllow != null ? { alwaysAllow: ctx.thread.alwaysAllow } : {}),
         extraTools: mcp.tools,
         skills,
         // Everything the model cannot work out for itself: which model it is,

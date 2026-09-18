@@ -71,6 +71,27 @@ export function describeTool(part: ToolPart): ToolDisplay {
   }
 }
 
+/**
+ * Tool name → its Chinese name, for UI that names the *tool* rather than one
+ * call (the per-thread allowlist). Deliberately not derived from
+ * `describeTool`, whose verbs describe a call and read wrong on their own.
+ */
+const TOOL_NAMES: Record<string, string> = {
+  read: "读取",
+  grep: "搜索",
+  glob: "搜索",
+  bash: "命令",
+  shell: "命令",
+  write: "写入",
+  edit: "编辑",
+  multiedit: "编辑",
+  explore: "探索子代理",
+  coder: "编码子代理",
+};
+
+/** How to name a tool in a sentence. Falls back to the raw name. */
+export const toolTitle = (name: string): string => TOOL_NAMES[name.toLowerCase()] ?? name;
+
 /** `exit N` for a bash-shaped output, when the engine reports one. */
 export function exitCodeOf(output: unknown): number | undefined {
   if (typeof output !== "object" || output === null) return undefined;

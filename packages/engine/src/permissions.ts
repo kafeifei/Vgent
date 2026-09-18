@@ -114,17 +114,23 @@ export function isReadOnlyCommand(command: string): boolean {
  *
  * Unknown tool names fall through to `user-approval` in every mode but
  * `allow-all`: a tool the policy has not heard of is assumed to have effects.
+ *
+ * `alwaysAllow` is the task's own 「本任务内一直允许」 list: the user has already
+ * approved these tools for this thread, so they short-circuit the mode.
  */
 export function decideApproval({
   mode,
   toolName,
   input,
+  alwaysAllow,
 }: {
   mode: PermissionMode;
   toolName: string;
   input: unknown;
+  alwaysAllow?: readonly string[];
 }): ApprovalDecision {
   if (mode === "allow-all") return "not-applicable";
+  if (alwaysAllow?.includes(toolName) === true) return "not-applicable";
   if (READ_ONLY_TOOLS.has(toolName) || HUMAN_INPUT_TOOLS.has(toolName)) return "not-applicable";
 
   if (EDIT_TOOLS.has(toolName)) {
@@ -144,8 +150,15 @@ export function decideApproval({
  * Builds the generic `toolApproval` function for a permission mode, shaped for
  * `ToolLoopAgent`'s `toolApproval` option.
  */
-export function createToolApproval(mode: PermissionMode): (options: {
-  toolCall: { toolName: string; input: unknown };
-}) => ApprovalDecision {
-  return ({ toolCall }) => decideApproval({ mode, toolName: toolCall.toolName, input: toolCall.input });
+export function createToolApproval(
+  mode: PermissionMode,
+  alwaysAllow?: readonly string[],
+): (options: { toolCall: { toolName: string; input: unknown } }) => ApprovalDecision {
+  return ({ toolCall }) =>
+    decideApproval({
+      mode,
+      toolName: toolCall.toolName,
+      input: toolCall.input,
+      ...(alwaysAllow != null ? { alwaysAllow } : {}),
+    });
 }

@@ -84,6 +84,19 @@ function asPickKind(value: unknown): PickKind {
   throw new BadRequestError('kind 只能是 "folder" 或 "file"', "invalid_pick_kind");
 }
 
+/**
+ * The per-thread tool allowlist from a PATCH body: deduped, and `undefined`
+ * once it is empty, since the store spells "nothing pre-allowed" as an absent
+ * field rather than an empty array.
+ */
+function readAlwaysAllow(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || value.some((name) => typeof name !== "string" || name.trim() === "")) {
+    throw new BadRequestError("alwaysAllow 只能是非空字符串的数组", "invalid_always_allow");
+  }
+  const names = [...new Set((value as string[]).map((name) => name.trim()))];
+  return names.length === 0 ? undefined : names;
+}
+
 /** `mcpServers` from a request body, as a 400 instead of an exception. */
 function readMcpServers(value: unknown) {
   try {
@@ -290,8 +303,12 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   app.patch("/api/threads/:id", async (c) => {
     const id = c.req.param("id");
-    if (runs.isRunning(id)) throw new ConflictError(`线程正在运行，无法修改: ${id}`, "thread_running");
     const body = (await c.req.json().catch(() => undefined)) as Record<string, unknown> | undefined;
+    // The allowlist only steers *future* approval decisions, so it is the one
+    // field a running thread may change — that is the whole point of the
+    // 「本任务内一直允许」 button, which is clicked mid-turn.
+    const allowlistOnly = body != null && Object.keys(body).length > 0 && Object.keys(body).every((key) => key === "alwaysAllow");
+    if (runs.isRunning(id) && !allowlistOnly) throw new ConflictError(`线程正在运行，无法修改: ${id}`, "thread_running");
     const current = await threads.get(id);
     if (current == null) throw new NotFoundError(`线程不存在: ${id}`, "thread_not_found");
 
@@ -310,6 +327,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
       ...(engine != null ? { engine } : {}),
       ...(permissionMode != null ? { permissionMode } : {}),
       ...("model" in (body ?? {}) ? { model: typeof body?.model === "string" ? body.model : undefined } : {}),
+      ...("alwaysAllow" in (body ?? {}) ? { alwaysAllow: readAlwaysAllow(body?.alwaysAllow) } : {}),
     });
     return c.json(record);
   });

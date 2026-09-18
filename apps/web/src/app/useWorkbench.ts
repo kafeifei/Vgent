@@ -182,11 +182,38 @@ export function useWorkbench(token: string) {
         void client.patchThread(threadId, { permissionMode }).catch((error: Error) => toast(error.message));
       },
 
+      /** 「本任务内一直允许」: one more tool on the thread's own allowlist. */
+      allowTool: (threadId: string, toolName: string) => {
+        const current = state.threads.find((entry) => entry.id === threadId)?.alwaysAllow ?? [];
+        if (current.includes(toolName)) return;
+        void client
+          .patchThread(threadId, { alwaysAllow: [...current, toolName] })
+          .catch((error: Error) => toast(error.message));
+      },
+
+      clearAllowedTools: (threadId: string) => {
+        void client.patchThread(threadId, { alwaysAllow: [] }).catch((error: Error) => toast(error.message));
+      },
+
+      // Reclaim snapshots the worktree before removing it, so both directions
+      // are recoverable and neither asks for a confirmation.
+      reclaimWorkspace: (threadId: string): Promise<void> =>
+        client.reclaimWorkspace(threadId).then(
+          () => toast("已回收，快照已保存"),
+          (error: Error) => toast(error.message),
+        ),
+
+      restoreWorkspace: (threadId: string): Promise<void> =>
+        client.restoreWorkspace(threadId).then(
+          () => toast("已恢复"),
+          (error: Error) => toast(error.message),
+        ),
+
       getChat: (threadId: string) => chats.get(threadId),
       whenReady: (threadId: string) => chats.whenReady(threadId),
       toast,
     }),
-    [activeProjectId, chats, client, selectThread, state.projects, thread, toast],
+    [activeProjectId, chats, client, selectThread, state.projects, state.threads, thread, toast],
   );
 
   // ⌘K / ⌘N / ⌘J / ⌘B

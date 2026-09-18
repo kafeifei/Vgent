@@ -3,7 +3,7 @@ import { GitBranch, PanelRight, Square } from "lucide-react";
 import { ModelPicker, modelLabel } from "@/components/ModelPicker";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ENGINES, PERMISSIONS } from "@/lib/engineOptions";
-import type { EngineId, PermissionMode, ThreadSummary } from "@/lib/types";
+import type { EngineId, PermissionMode, ThreadSummary, ThreadWorkspace } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const PILL_CLASS =
@@ -23,14 +23,68 @@ function Pill({
   );
 }
 
-/** The same pill with nothing to open: a worktree is fixed for the task's life. */
-function StaticPill({ value, title, muted }: { value: string; title?: string; muted?: string }) {
+/** The worktree pill: its branch, plus 已回收 once the directory is gone. */
+function BranchPill({
+  value,
+  muted,
+  ...props
+}: { value: string; muted?: string } & React.ComponentProps<"button">) {
   return (
-    <span className={PILL_CLASS} {...(title != null ? { title } : {})}>
+    <button type="button" {...props} className={cn(PILL_CLASS, "hover:border-border-strong hover:text-fg")}>
       <GitBranch className="size-md flex-none text-fg-faint" />
       <span className="min-w-0 truncate font-mono text-fg">{value}</span>
       {muted != null && <span className="flex-none text-fg-faint">{muted}</span>}
-    </span>
+      <span className="flex-none opacity-60">▾</span>
+    </button>
+  );
+}
+
+/** That pill's popover: where the task's files are, and reclaim / restore. */
+function WorkspaceMenu({
+  workspace,
+  running,
+  onReclaim,
+  onRestore,
+  close,
+}: {
+  workspace: ThreadWorkspace;
+  running: boolean;
+  onReclaim: () => Promise<void>;
+  onRestore: () => Promise<void>;
+  close: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const reclaimed = workspace.reclaimed === true;
+  // Only a live run holds the directory open, which is the very condition the
+  // server refuses a reclaim on (`runs.isRunning`).
+  const blocked = busy || (!reclaimed && running);
+
+  return (
+    <>
+      <PopTitle>工作目录</PopTitle>
+      <div className="px-xs pb-2xs text-xs">
+        <p className="m-0 select-text break-all font-mono text-fg-muted">{workspace.path}</p>
+        <p className="m-0 mt-2xs text-fg-faint">
+          分支 <span className="font-mono text-fg-muted">{workspace.branch}</span>
+        </p>
+        <p className="m-0 text-fg-faint">
+          基线 <span className="font-mono text-fg-muted">{workspace.baseCommit.slice(0, 7)}</span>
+        </p>
+      </div>
+      <PopItem
+        disabled={blocked}
+        {...(!reclaimed && running ? { hint: "任务运行中" } : {})}
+        onClick={() => {
+          setBusy(true);
+          void (reclaimed ? onRestore() : onReclaim()).finally(() => {
+            setBusy(false);
+            close();
+          });
+        }}
+      >
+        {reclaimed ? "恢复工作目录" : "回收工作目录"}
+      </PopItem>
+    </>
   );
 }
 
@@ -44,6 +98,9 @@ export function TaskHeader({
   onSetEngine,
   onSetModel,
   onSetPermission,
+  onClearAlwaysAllow,
+  onReclaimWorkspace,
+  onRestoreWorkspace,
   onStop,
   onToggleRight,
   onBlocked,
@@ -56,6 +113,10 @@ export function TaskHeader({
   onSetEngine: (engine: EngineId) => void;
   onSetModel: (model: string | null) => void;
   onSetPermission: (mode: PermissionMode) => void;
+  /** Empties the task's 「本任务内一直允许」 list. */
+  onClearAlwaysAllow: () => void;
+  onReclaimWorkspace: () => Promise<void>;
+  onRestoreWorkspace: () => Promise<void>;
   onStop: () => void;
   onToggleRight: () => void;
   /** Called instead of a PATCH while the thread is running. */
@@ -73,6 +134,7 @@ export function TaskHeader({
   };
 
   const guard = (run: () => void) => (live ? onBlocked() : run());
+  const workspace = thread.workspace;
 
   return (
     <div className="flex min-w-0 items-center gap-xs border-border border-b bg-bg px-md py-xs">
@@ -155,16 +217,45 @@ export function TaskHeader({
                 </PopItem>
               );
             })}
+            {(thread.alwaysAllow?.length ?? 0) > 0 && (
+              <div className="flex items-center gap-xs px-xs py-2xs text-fg-faint text-xs">
+                <span className="min-w-0 flex-1 truncate">一直允许：{thread.alwaysAllow?.join(", ")}</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClearAlwaysAllow();
+                    close();
+                  }}
+                  className="flex-none text-fg-muted hover:text-fg"
+                >
+                  清除
+                </button>
+              </div>
+            )}
           </>
         )}
       </Popover>
 
-      {thread.workspace != null && (
-        <StaticPill
-          value={thread.workspace.branch}
-          title={thread.workspace.path}
-          {...(thread.workspace.reclaimed === true ? { muted: "已回收" } : {})}
-        />
+      {workspace != null && (
+        <Popover
+          trigger={(props) => (
+            <BranchPill
+              value={workspace.branch}
+              {...(workspace.reclaimed === true ? { muted: "已回收" } : {})}
+              {...props}
+            />
+          )}
+        >
+          {(close) => (
+            <WorkspaceMenu
+              workspace={workspace}
+              running={thread.status === "running"}
+              onReclaim={onReclaimWorkspace}
+              onRestore={onRestoreWorkspace}
+              close={close}
+            />
+          )}
+        </Popover>
       )}
 
       <span className="flex-1" />

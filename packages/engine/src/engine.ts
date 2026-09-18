@@ -38,6 +38,12 @@ export interface VgentEngineOptions {
   context?: VgentContext;
   /** What may run without asking. Defaults to `allow-edits`. */
   permissionMode?: PermissionMode;
+  /**
+   * Tools the user already approved for this task, whatever the mode says. The
+   * caller re-reads them per turn, so a list grown mid-turn only takes effect
+   * on the next one; the web UI answers the rest of that turn client-side.
+   */
+  alwaysAllow?: readonly string[];
   /** Extra guidance appended to the engine's own system prompt. */
   instructions?: string;
   /** JSONL file the turn's messages are appended to. Omit for no persistence. */
@@ -153,7 +159,7 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
       ...(options.instructions == null ? {} : { extra: options.instructions }),
     }),
     tools,
-    toolApproval: createToolApproval(permissionMode),
+    toolApproval: createToolApproval(permissionMode, options.alwaysAllow),
     stopWhen: [isStepCount(maxSteps)],
     prepareStep: ({ messages }) => {
       if (estimateTokens(messages) <= contextTokenBudget) return {};

@@ -12,6 +12,8 @@ import { approvalAnchor, isOpenApproval, isOpenQuestion, questionAnchor, runsOf 
 
 export interface TurnActions {
   respondToApproval: (approvalId: string, approved: boolean) => void;
+  /** Approve this call and add its tool to the task's allowlist. */
+  alwaysAllow: (approvalId: string, toolName: string) => void;
   answerQuestions: (toolCallId: string, output: AskUserQuestionsOutput) => void;
   openFile: (file: string) => void;
 }
@@ -143,6 +145,7 @@ function BlockView({ block, actions, running }: { block: Block; actions: TurnAct
         part={part}
         id={approvalAnchor(part.toolCallId)}
         onRespond={(approved) => actions.respondToApproval(part.approval.id, approved)}
+        onAlwaysAllow={(toolName) => actions.alwaysAllow(part.approval.id, toolName)}
       />
     );
   }

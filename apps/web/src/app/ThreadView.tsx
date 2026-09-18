@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import type { Chat } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
@@ -7,6 +7,7 @@ import { TaskHeader } from "@/features/taskheader/TaskHeader";
 import { WorkLog } from "@/features/worklog/WorkLog";
 import { pendingQueue, type QueueItem } from "@/features/worklog/queue";
 import type { TurnActions } from "@/features/worklog/Turn";
+import { pendingAutoApprovals } from "@/lib/autoApprove";
 import type { ThreadSummary } from "@/lib/types";
 import { isLiveThread, type WorkbenchActions } from "./useWorkbench";
 
@@ -64,11 +65,27 @@ function ThreadChatView({
   const turnActions: TurnActions = useMemo(
     () => ({
       respondToApproval: (id, approved) => void addToolApprovalResponse({ id, approved }),
+      alwaysAllow: (id, toolName) => {
+        actions.allowTool(thread.id, toolName);
+        void addToolApprovalResponse({ id, approved: true });
+      },
       answerQuestions: (toolCallId, output) => void addToolOutput({ tool: "askUserQuestions", toolCallId, output }),
       openFile: (file) => actions.openChanges(file),
     }),
-    [actions, addToolApprovalResponse, addToolOutput],
+    [actions, addToolApprovalResponse, addToolOutput, thread.id],
   );
+
+  // Every approval the task's allowlist already answers, answered once. The
+  // `Chat`'s own `sendAutomaticallyWhen` then continues the turn, exactly as it
+  // does for a click on 允许.
+  const autoApproved = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const id of pendingAutoApprovals(messages, thread.alwaysAllow)) {
+      if (autoApproved.current.has(id)) continue;
+      autoApproved.current.add(id);
+      void addToolApprovalResponse({ id, approved: true });
+    }
+  }, [addToolApprovalResponse, messages, thread.alwaysAllow]);
 
   const submit = () => {
     if (draft.trim() === "") return;
@@ -87,6 +104,9 @@ function ThreadChatView({
         onSetEngine={(engine) => actions.setEngine(thread.id, engine)}
         onSetModel={(model) => actions.setModel(thread.id, model)}
         onSetPermission={(mode) => actions.setPermission(thread.id, mode)}
+        onClearAlwaysAllow={() => actions.clearAllowedTools(thread.id)}
+        onReclaimWorkspace={() => actions.reclaimWorkspace(thread.id)}
+        onRestoreWorkspace={() => actions.restoreWorkspace(thread.id)}
         onStop={() => actions.stop(thread.id)}
         onToggleRight={actions.toggleRight}
         onBlocked={() => actions.toast("运行中不能改，先停止")}

@@ -1,5 +1,5 @@
-import { useToast } from "@/lib/toast";
-import { describeTool, type ToolPart } from "./toolMeta";
+import { getToolName } from "ai";
+import { describeTool, toolTitle, type ToolPart } from "./toolMeta";
 
 /**
  * An `approval-requested` tool call, inline in the log — Vgent's own thing,
@@ -9,13 +9,16 @@ export function ApprovalCard({
   part,
   id,
   onRespond,
+  onAlwaysAllow,
 }: {
   part: ToolPart;
   id: string;
   onRespond: (approved: boolean) => void;
+  /** Approves this call *and* adds the tool to the task's allowlist. */
+  onAlwaysAllow: (toolName: string) => void;
 }) {
-  const toast = useToast();
   const display = describeTool(part);
+  const toolName = getToolName(part);
 
   return (
     <article id={id} className="rounded-md border border-warning bg-warning-bg">
@@ -45,11 +48,11 @@ export function ApprovalCard({
           </button>
           <button
             type="button"
-            disabled
-            onClick={() => toast("下一步")}
-            className="inline-flex h-xl cursor-not-allowed items-center rounded-md border border-border bg-bg-elevated px-sm text-fg text-xs opacity-50"
+            onClick={() => onAlwaysAllow(toolName)}
+            title={`本任务之后的 ${toolName} 调用不再询问`}
+            className="inline-flex h-xl items-center rounded-md border border-border bg-bg-elevated px-sm text-fg text-xs hover:border-border-strong hover:bg-bg-hover"
           >
-            本任务内一直允许
+            本任务内一直允许 {toolTitle(toolName)}
           </button>
         </div>
       </div>

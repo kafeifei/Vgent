@@ -158,9 +158,22 @@ export function createClient(token: string) {
     getThread: (id: string) => api<ThreadRecord>(`/threads/${id}`, token),
     patchThread: (
       id: string,
-      patch: { title?: string; engine?: EngineId; permissionMode?: PermissionMode; model?: string | null },
+      patch: {
+        title?: string;
+        engine?: EngineId;
+        permissionMode?: PermissionMode;
+        model?: string | null;
+        /** The task's 「本任务内一直允许」 tool list, whole. `[]` clears it. */
+        alwaysAllow?: string[];
+      },
     ) => api<ThreadRecord>(`/threads/${id}`, token, { method: "PATCH", json: patch }),
     deleteThread: (id: string) => api<void>(`/threads/${id}`, token, { method: "DELETE" }),
+
+    /** Snapshots a task's worktree and removes the directory; reversible. */
+    reclaimWorkspace: (id: string) =>
+      api<ThreadRecord>(`/threads/${id}/workspace/reclaim`, token, { method: "POST" }),
+    restoreWorkspace: (id: string) =>
+      api<ThreadRecord>(`/threads/${id}/workspace/restore`, token, { method: "POST" }),
 
     /** The engine's model list. `refresh` skips the server's 10-minute cache. */
     listModels: (engine: EngineId, refresh = false) =>

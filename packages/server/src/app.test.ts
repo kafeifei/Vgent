@@ -326,6 +326,41 @@ describe("createApp", () => {
     expect((await unchanged.json()) as ThreadRecord).toMatchObject({ engine: "claude-code", title: "改个标题" });
   });
 
+  it("keeps a per-thread tool allowlist, editable even mid-run", async () => {
+    const dir = await tempDir();
+    const fake = createFakeEngine({ deltaDelayMs: 25 });
+    const app = makeApp(dir, fake.factory);
+    const { thread } = await setupThread(app, dir);
+    const patch = (body: unknown) =>
+      request(app, `/api/threads/${thread.id}`, { method: "PATCH", body: JSON.stringify(body) });
+
+    // Deduped on the way in, and it reaches the summary the SSE snapshot carries.
+    const set = await patch({ alwaysAllow: ["bash", "write", "bash"] });
+    expect(set.status).toBe(200);
+    expect((await set.json()) as ThreadRecord).toMatchObject({ alwaysAllow: ["bash", "write"] });
+    const summaries = (await (await request(app, "/api/threads")).json()) as { threads: ThreadSummary[] };
+    expect(summaries.threads[0]).toMatchObject({ alwaysAllow: ["bash", "write"] });
+
+    for (const bad of [{ alwaysAllow: "bash" }, { alwaysAllow: ["bash", ""] }, { alwaysAllow: [1] }]) {
+      const rejected = await patch(bad);
+      expect(rejected.status).toBe(400);
+      expect(await rejected.json()).toMatchObject({ error: { code: "invalid_always_allow" } });
+    }
+
+    // An allowlist edit only steers future decisions, so unlike every other
+    // field it is accepted while the thread is running.
+    const run = postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "你好")] });
+    await (await waitForLiveStream(app, thread.id)).body?.cancel();
+    expect((await patch({ alwaysAllow: ["bash"] })).status).toBe(200);
+    expect((await patch({ alwaysAllow: ["bash"], title: "顺手改名" })).status).toBe(409);
+    await readSse(await run);
+    await waitForStatus(app, thread.id, "idle");
+
+    // An empty list is how the UI clears it, and the field goes away with it.
+    const cleared = (await (await patch({ alwaysAllow: [] })).json()) as ThreadRecord;
+    expect(cleared.alwaysAllow).toBeUndefined();
+  });
+
   it("turns an unavailable engine into a 503 before the run starts", async () => {
     const dir = await tempDir();
     const factory: EngineFactory = {

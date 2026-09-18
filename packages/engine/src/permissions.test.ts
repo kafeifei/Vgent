@@ -141,3 +141,27 @@ describe("createToolApproval", () => {
     expect(approval({ toolCall: { toolName: "write", input: { file_path: "a" } } })).toBe("not-applicable");
   });
 });
+
+describe("alwaysAllow", () => {
+  it("lets a listed tool through whatever the mode would have said", () => {
+    expect(decideApproval({ mode: "allow-reads", toolName: "write", input: {}, alwaysAllow: ["write"] })).toBe("not-applicable");
+    expect(bash("allow-reads", "rm -rf /")).toBe("user-approval");
+    expect(decideApproval({ mode: "allow-reads", toolName: "bash", input: { command: "rm -rf /" }, alwaysAllow: ["bash"] })).toBe(
+      "not-applicable",
+    );
+    expect(decideApproval({ mode: "allow-reads", toolName: "somethingNew", input: {}, alwaysAllow: ["somethingNew"] })).toBe(
+      "not-applicable",
+    );
+  });
+
+  it("leaves every other tool alone", () => {
+    expect(decideApproval({ mode: "allow-reads", toolName: "write", input: {}, alwaysAllow: ["bash"] })).toBe("user-approval");
+    expect(decideApproval({ mode: "allow-reads", toolName: "write", input: {}, alwaysAllow: [] })).toBe("user-approval");
+  });
+
+  it("reaches the agent through createToolApproval's second argument", () => {
+    const approval = createToolApproval("allow-reads", ["bash"]);
+    expect(approval({ toolCall: { toolName: "bash", input: { command: "rm -rf /" } } })).toBe("not-applicable");
+    expect(approval({ toolCall: { toolName: "write", input: {} } })).toBe("user-approval");
+  });
+});

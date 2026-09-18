@@ -39,6 +39,11 @@ export interface ThreadRecord {
   engine: EngineId;
   model?: string;
   permissionMode: PermissionMode;
+  /**
+   * Tools the user said to always allow in this task (「本任务内一直允许」).
+   * Deduped, non-empty names; absent means nothing is pre-allowed.
+   */
+  alwaysAllow?: string[];
   status: ThreadStatus;
   error?: string;
   /** Present only for a task running in its own git worktree. */

@@ -29,6 +29,8 @@ export type ThreadPatch = Partial<{
   engine: EngineId;
   model: string | undefined;
   permissionMode: PermissionMode;
+  /** The per-thread tool allowlist. `undefined` clears it. */
+  alwaysAllow: string[] | undefined;
   status: ThreadStatus;
   error: string | undefined;
   /** Attached right after the worktree is created, cleared when it is removed. */
@@ -213,6 +215,10 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
         if ("error" in patch) {
           if (patch.error == null) delete next.error;
           else next.error = patch.error;
+        }
+        if ("alwaysAllow" in patch) {
+          if (patch.alwaysAllow == null) delete next.alwaysAllow;
+          else next.alwaysAllow = patch.alwaysAllow;
         }
         if ("workspace" in patch) {
           if (patch.workspace == null) delete next.workspace;

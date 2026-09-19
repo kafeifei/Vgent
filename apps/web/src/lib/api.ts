@@ -248,6 +248,8 @@ export function createClient(token: string) {
       model?: string;
       /** The model's「思考等级」; omitted leaves the engine's own default. */
       reasoningEffort?: string;
+      /** Fast and the like: a service tier id the model's catalog entry offers. */
+      serviceTier?: string;
       /** `worktree` gives the task its own checkout; the default edits the project. */
       workspace?: WorkspaceMode;
       /** 模式 of the first turn; `plan` needs an engine with `capabilities.planMode`. */
@@ -263,6 +265,8 @@ export function createClient(token: string) {
         model?: string | null;
         /** `null` clears it and hands the level back to the engine. */
         reasoningEffort?: string | null;
+        /** `null` puts the task back on the standard tier. */
+        serviceTier?: string | null;
         /** Agent / Plan for the next turn. Refused while the task is live. */
         mode?: ThreadMode;
         /** 归档 also reclaims the task's worktree; un-archiving restores it. */

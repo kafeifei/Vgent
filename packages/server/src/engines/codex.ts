@@ -5,6 +5,7 @@ import { BadRequestError, EngineUnavailableError } from "../errors.js";
 import { createProviderStore } from "../store/providers.js";
 import type { EngineDescriptor } from "./capabilities.js";
 import { stripDeniedApprovalResults } from "./harness-messages.js";
+import { effectiveReasoningLevel } from "../reasoning.js";
 import type { EngineContext, EngineFactory, EngineRunner } from "./registry.js";
 
 /**
@@ -100,15 +101,23 @@ export function createCodexEngineFactory(): EngineFactory {
     },
 
     async create(ctx: EngineContext): Promise<EngineRunner> {
-      const reasoningEffort = asCodexEffort(ctx.thread.reasoningEffort);
+      const reasoningEffort = asCodexEffort(effectiveReasoningLevel(ctx.thread.reasoningEffort));
       const route = codexProviderRoute(ctx.thread.model, await createProviderStore(ctx.dataDir, ctx.log).list());
       const model = route?.model ?? ctx.thread.model;
+      // Fast is Codex's own `service_tier` config key, set to the id its catalog
+      // advertises for the model (`priority`). A tier the model does not
+      // advertise is dropped by the CLI itself, with a warning, not an error.
+      const tier = ctx.thread.serviceTier;
+      const codexConfig =
+        route?.codexConfig != null || tier != null
+          ? { ...route?.codexConfig, ...(tier != null ? { service_tier: tier } : {}) }
+          : undefined;
       const engine = await createCodexEngine({
         repoPath: ctx.project.repoPath,
         permissionMode: ctx.permissionMode,
         ...(model != null ? { model } : {}),
         ...(route != null ? { auth: route.auth } : {}),
-        ...(route?.codexConfig != null ? { codexConfig: route.codexConfig } : {}),
+        ...(codexConfig != null ? { codexConfig } : {}),
         ...(reasoningEffort != null ? { reasoningEffort } : {}),
         sessionId: ctx.thread.id,
         // Codex turns never park, so a `continueFrom` can never be there to honour.

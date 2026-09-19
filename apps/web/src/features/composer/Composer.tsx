@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { UIMessage } from "ai";
-import { ArrowUp, AtSign, ChevronDown, File, Folder, ListPlus, Plus, Square, X } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, File, FileText, Folder, ListPlus, Plus, Square, X, Zap } from "lucide-react";
 import { ModelPicker, effectiveModel } from "@/components/ModelPicker";
-import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ReasoningPicker } from "@/components/ReasoningPicker";
 import { dirName } from "@/features/changes/paths";
 import { baseName } from "@/lib/format";
@@ -11,7 +10,9 @@ import type { ChangedFile, EngineDescriptor, EngineId, FileEntry, ModelCatalog, 
 import { cn } from "@/lib/utils";
 import { ComposerStatusBar } from "./ComposerStatusBar";
 import { QueueStrip } from "./QueueStrip";
+import { MAX_ATTACHMENT_BYTES, formatBytes, isImage, readAttachments, type Attachment } from "./attachments";
 import { acceptMention, findMention, mentionSegments, type Mention } from "./mention";
+import { findSlash, matchSlash, removeSlash, type Slash, type SlashCommand } from "./slash";
 import { isImeKeyEvent } from "@/lib/ime";
 
 export const COMPOSER_PLACEHOLDER = "规划、构建，/ 输入命令，@ 引用上下文";
@@ -30,8 +31,10 @@ const MAX_ROWS = 12;
 /**
  * The composer, shared by the thread view and the empty state.
  *
- * Inside the box: 「+」, the 模式 chip (only when the mode is not the default
- * Agent), 模型, 思考, and 发送 / 停止. Under the box, `ComposerStatusBar` carries
+ * Inside the box: 「+」 (pick files to attach — pasting and dropping them works
+ * too), the 模式 chip (only when the mode is not the default Agent), 模型, 推理
+ * 强度, and 发送 / 停止. 模式 itself is switched from the `/` menu or with ⇧Tab,
+ * the way Cursor does it; `/` is also where the caller's own commands show up. Under the box, `ComposerStatusBar` carries
  * the task's ground — 分支, 运行位置, 审查 pill, and the context ring — because
  * 「在哪跑」 has to be readable in every task, not only while creating one. Above
  * the box there is nothing left but the queue and the 能力缺失 notice.
@@ -53,6 +56,8 @@ export function Composer({
   onPickModel,
   reasoningEffort,
   onPickReasoning,
+  serviceTier,
+  onPickServiceTier,
   mode,
   onPickMode,
   queue,
@@ -65,6 +70,9 @@ export function Composer({
   branchTitle,
   location,
   completeFiles,
+  attachments,
+  onAttachments,
+  commands,
   messages,
   changedFiles,
   onOpenChanges,
@@ -87,6 +95,10 @@ export function Composer({
   onPickModel: (engine: EngineId, model: string | undefined) => void;
   reasoningEffort: string | undefined;
   onPickReasoning: (level: string) => void;
+  /** The task's service tier (`priority` = Fast); unset is the standard one. */
+  serviceTier: string | undefined;
+  /** `null` goes back to standard. */
+  onPickServiceTier: (tier: string | null) => void;
   /** 模式 of the next message. The chip and ⇧Tab both write it. */
   mode: ThreadMode;
   onPickMode: (mode: ThreadMode) => void;
@@ -105,8 +117,13 @@ export function Composer({
   branchTitle?: string | undefined;
   /** 运行位置 for that same row: the picker in the empty state, a label in a task. */
   location: ReactNode;
-  /** Absent (the empty state) leaves `@` inert, and hides the 「+」 button. */
+  /** Absent (the empty state) leaves `@` inert. */
   completeFiles?: (q: string) => Promise<FileEntry[]>;
+  /** 附件 waiting to go out with the next message; the caller owns them, as it owns the text. */
+  attachments: readonly Attachment[];
+  onAttachments: (next: Attachment[]) => void;
+  /** The caller's rows for the `/` menu (压缩上下文, 新任务 …), listed after 模式. */
+  commands?: readonly SlashCommand[];
   /** This task's history, for the context ring. Absent = no ring. */
   messages?: readonly UIMessage[];
   /** This task's working-tree changes, for the 审查 pill. Absent or empty = no pill. */
@@ -126,6 +143,9 @@ export function Composer({
   /** Bumped per query; a stale response never writes state. */
   const generation = useRef(0);
   const open = mention != null && rows.length > 0;
+  const [slash, setSlash] = useState<Slash | null>(null);
+  const fileInput = useRef<HTMLInputElement | null>(null);
+  const [dragging, setDragging] = useState(false);
 
   /**
    * The ring's denominator, taken off the very list `ModelPicker` below loads —
@@ -135,7 +155,16 @@ export function Composer({
    */
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const running = effectiveModel(model, catalog);
-  const contextWindow = catalog?.models.find((entry) => entry.id === running)?.contextWindow;
+  const runningEntry = catalog?.models.find((entry) => entry.id === running);
+  const contextWindow = runningEntry?.contextWindow;
+  // Fast and its kin: only what the running model's own catalog entry declares.
+  const tiers = runningEntry?.serviceTiers ?? [];
+  // A tier picked for another model does not follow the task onto one that
+  // does not offer it: it would be sent, and the toggle to undo it is gone.
+  const staleTier = !live && runningEntry != null && serviceTier != null && !tiers.some((tier) => tier.id === serviceTier);
+  useEffect(() => {
+    if (staleTier) onPickServiceTier(null);
+  }, [onPickServiceTier, staleTier]);
 
   // 能力缺失就明说，不装：an engine that cannot ask gets a sentence, not a
   // control the user would only find out is dead by clicking it.
@@ -206,17 +235,47 @@ export function Composer({
     onChange(next.text);
   };
 
-  /** 「+」: type the `@` for the user, at the caret, and open the completion. */
-  const insertMention = (): void => {
-    const element = textarea.current;
-    const caret = element?.selectionStart ?? value.length;
-    const head = value.slice(0, caret);
-    const token = `${head === "" || /\s$/.test(head) ? "" : " "}@`;
-    const next = head + token + value.slice(caret);
-    const position = caret + token.length;
-    pendingCaret.current = position;
-    onChange(next);
-    setMention(findMention(next, position));
+  /**
+   * The `/` menu: 模式 first, then whatever the caller offers. A mode that
+   * cannot be entered is listed with its reason rather than left out.
+   */
+  const slashRows = useMemo<SlashCommand[]>(() => {
+    if (slash == null) return [];
+    const modes: SlashCommand[] = MODES.map((entry) => {
+      const blocked = entry.id === "plan" && !planSupported ? planReason : !canLeaveMode && entry.id !== mode ? "运行中不能切换" : undefined;
+      return {
+        id: entry.id,
+        label: entry.label,
+        hint: entry.hint,
+        section: "模式",
+        selected: entry.id === mode,
+        disabledReason: blocked,
+        run: () => onPickMode(entry.id),
+      };
+    });
+    return matchSlash([...modes, ...(commands ?? [])], slash.query);
+  }, [canLeaveMode, commands, mode, onPickMode, planReason, planSupported, slash]);
+  const slashOpen = slash != null && slashRows.length > 0;
+
+  const runSlash = (command: SlashCommand): void => {
+    if (slash == null || command.disabledReason != null) return;
+    const next = removeSlash(value, slash);
+    setSlash(null);
+    pendingCaret.current = next.caret;
+    onChange(next.text);
+    command.run();
+  };
+
+  /** Picked, pasted or dropped: all three land here. */
+  const addFiles = (files: readonly File[]): void => {
+    if (files.length === 0) return;
+    void readAttachments(files).then(
+      ({ attachments: added, rejected }) => {
+        if (added.length > 0) onAttachments([...attachments, ...added]);
+        if (rejected.length > 0) toast(`${rejected.join("、")} 超过 ${formatBytes(MAX_ATTACHMENT_BYTES)}，没有添加`);
+      },
+      (error: unknown) => toast(error instanceof Error ? error.message : "读取文件失败"),
+    );
   };
 
   return (
@@ -229,7 +288,68 @@ export function Composer({
         </div>
       )}
 
-      <div className="relative rounded-2xl border border-border bg-bg-elevated shadow-xs focus-within:border-border-strong">
+      <div
+        onDragOver={(event) => {
+          if (!event.dataTransfer.types.includes("Files")) return;
+          event.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(event) => {
+          if (event.dataTransfer.files.length === 0) return;
+          event.preventDefault();
+          setDragging(false);
+          addFiles([...event.dataTransfer.files]);
+        }}
+        className={cn(
+          "relative rounded-2xl border border-border bg-bg-elevated shadow-xs focus-within:border-border-strong",
+          dragging && "border-border-strong bg-bg-inset",
+        )}
+      >
+        <input
+          ref={fileInput}
+          type="file"
+          multiple
+          hidden
+          onChange={(event) => {
+            addFiles([...(event.target.files ?? [])]);
+            // The same file picked twice in a row must still fire `change`.
+            event.target.value = "";
+          }}
+        />
+
+        {slashOpen && (
+          <div className="absolute bottom-full left-0 z-10 mb-2xs max-h-[calc(var(--spacing-xl)*10)] w-full overflow-y-auto rounded-xl border border-border bg-bg-elevated p-2xs shadow-lg">
+            {slashRows.map((command, index) => (
+              <div key={command.id}>
+                {command.section !== slashRows[index - 1]?.section && (
+                  <div className="px-xs pt-2xs pb-3xs text-fg-faint text-xs">{command.section}</div>
+                )}
+                <button
+                  type="button"
+                  disabled={command.disabledReason != null}
+                  title={command.disabledReason}
+                  // `mousedown`, so the textarea never loses focus to the click.
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    runSlash(command);
+                  }}
+                  onMouseEnter={() => setActive(index)}
+                  className={cn(
+                    "flex min-h-row w-full items-center gap-xs rounded-md px-xs text-left text-body disabled:cursor-not-allowed disabled:opacity-50",
+                    index === active ? "bg-bg-active" : "hover:bg-bg-hover",
+                  )}
+                >
+                  <span className="flex-none text-fg">{command.label}</span>
+                  <span className="min-w-0 flex-1 truncate text-fg-faint text-sm">{command.disabledReason ?? command.hint}</span>
+                  {command.selected === true && <Check className="size-md flex-none text-fg-muted" />}
+                  <span className="flex-none font-mono text-fg-faint text-xs">/{command.id}</span>
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         {open && (
           <div className="absolute bottom-full left-0 z-10 mb-2xs max-h-[calc(var(--spacing-xl)*8)] w-full overflow-y-auto rounded-xl border border-border bg-bg-elevated p-2xs shadow-lg">
             {rows.map((entry, index) => (
@@ -271,66 +391,47 @@ export function Composer({
           />
         )}
 
-        <div className={cn("flex items-end gap-2xs p-1.25", big && "flex-wrap px-xs pt-xs")}>
-          {/* 「+」: one small menu — 引用文件 and 模式. The mode chip is gone from
-              the default mode, so this is where Plan is reached by mouse. */}
-          <Popover
-            className="max-w-[calc(var(--spacing-3xl)*8)]"
-            side="top"
-            trigger={(props) => (
-              <button
-                type="button"
-                {...props}
-                aria-label="添加上下文和模式"
-                title="引用文件、切换模式"
-                className="grid size-7 flex-none place-items-center rounded-full bg-bg-active text-fg-muted hover:bg-bg-strong hover:text-fg"
+        {attachments.length > 0 && (
+          <div className="flex flex-wrap gap-xs px-sm pt-sm">
+            {attachments.map((entry) => (
+              <div
+                key={entry.id}
+                title={`${entry.name} · ${formatBytes(entry.size)}`}
+                className="group/tile relative flex h-12 max-w-[24ch] flex-none items-center overflow-hidden rounded-lg border border-border bg-bg-inset"
               >
-                <Plus className="size-lg" />
-              </button>
-            )}
-          >
-            {(close) => (
-              <>
-                {completeFiles != null && (
-                  <PopItem
-                    hint="@"
-                    onClick={() => {
-                      close();
-                      insertMention();
-                    }}
-                  >
-                    <span className="inline-flex items-center gap-2xs">
-                      <AtSign className="size-sm flex-none text-fg-faint" />
-                      引用文件
-                    </span>
-                  </PopItem>
+                {isImage(entry.mediaType) ? (
+                  <img src={entry.url} alt={entry.name} className="size-12 object-cover" />
+                ) : (
+                  <span className="flex min-w-0 items-center gap-xs px-sm text-fg-secondary text-sm">
+                    <FileText className="size-lg flex-none text-fg-muted" />
+                    <span className="min-w-0 truncate">{entry.name}</span>
+                  </span>
                 )}
-                <PopTitle>模式</PopTitle>
-                {MODES.map((entry) => {
-                  const blocked = entry.id === "plan" && !planSupported;
-                  return (
-                    <PopItem
-                      key={entry.id}
-                      selected={entry.id === mode}
-                      // A live turn already runs in its mode; changing it now
-                      // would only be a lie about what is happening.
-                      disabled={blocked || (!canLeaveMode && entry.id !== mode)}
-                      {...(blocked && planReason != null ? { hint: "不支持", title: planReason } : {})}
-                      onClick={() => {
-                        onPickMode(entry.id);
-                        close();
-                      }}
-                    >
-                      <span className="flex flex-col gap-3xs whitespace-normal">
-                        <span className="text-fg">{entry.label}</span>
-                        <span className="text-fg-faint text-xs leading-snug">{entry.hint}</span>
-                      </span>
-                    </PopItem>
-                  );
-                })}
-              </>
-            )}
-          </Popover>
+                <button
+                  type="button"
+                  aria-label={`移除 ${entry.name}`}
+                  onClick={() => onAttachments(attachments.filter((other) => other.id !== entry.id))}
+                  className="absolute top-3xs right-3xs grid size-lg place-items-center rounded-full bg-fg text-bg opacity-0 focus-visible:opacity-100 group-hover/tile:opacity-100"
+                >
+                  <X className="size-sm" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className={cn("flex items-end gap-2xs p-1.25", big && "flex-wrap px-xs pt-xs")}>
+          {/* 「+」 picks files, nothing else. Pasting or dropping them onto the
+              box does the same; 模式 lives in the `/` menu. */}
+          <button
+            type="button"
+            aria-label="添加文件"
+            title="添加文件或图片（也可以直接粘贴、拖进来）"
+            onClick={() => fileInput.current?.click()}
+            className="grid size-7 flex-none place-items-center rounded-full bg-bg-active text-fg-muted hover:bg-bg-strong hover:text-fg"
+          >
+            <Plus className="size-lg" />
+          </button>
           <div className={cn("relative min-w-0 flex-1", big && "order-first basis-full")}>
             {/* The pill layer: the textarea's own text is transparent above it. */}
             <div
@@ -356,13 +457,49 @@ export function Composer({
               placeholder={big ? COMPOSER_PLACEHOLDER : FOLLOW_UP_PLACEHOLDER}
               onChange={(event) => {
                 onChange(event.target.value);
-                setMention(completeFiles == null ? null : findMention(event.target.value, event.target.selectionStart));
+                const caret = event.target.selectionStart;
+                const nextSlash = findSlash(event.target.value, caret);
+                // A fresh query starts from the top of whichever list it opens.
+                if (nextSlash?.query !== slash?.query) setActive(0);
+                setSlash(nextSlash);
+                setMention(completeFiles == null ? null : findMention(event.target.value, caret));
               }}
-              onBlur={() => setMention(null)}
+              onBlur={() => {
+                setMention(null);
+                setSlash(null);
+              }}
+              onPaste={(event) => {
+                // Text pastes as text. Only a clipboard that carries files —
+                // a screenshot, something copied in Finder — becomes 附件.
+                const files = [...event.clipboardData.files];
+                if (files.length === 0) return;
+                event.preventDefault();
+                addFiles(files);
+              }}
               onKeyDown={(event) => {
                 // A key the input method is still using is not ours: confirming a
                 // candidate with Enter must not send, arrows must not move our list.
                 if (isImeKeyEvent(event)) return;
+                if (slashOpen) {
+                  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                    event.preventDefault();
+                    const step = event.key === "ArrowDown" ? 1 : -1;
+                    setActive((index) => (index + step + slashRows.length) % slashRows.length);
+                    return;
+                  }
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    setSlash(null);
+                    return;
+                  }
+                  // Enter runs the row; it must not also send the turn.
+                  if (event.key === "Enter" || event.key === "Tab") {
+                    event.preventDefault();
+                    const command = slashRows[Math.min(active, slashRows.length - 1)];
+                    if (command != null) runSlash(command);
+                    return;
+                  }
+                }
                 if (open) {
                   if (event.key === "ArrowDown") {
                     event.preventDefault();
@@ -449,6 +586,25 @@ export function Composer({
               </button>
             )}
           />
+          {tiers.map((tier) => {
+            const on = serviceTier === tier.id;
+            return (
+              <button
+                key={tier.id}
+                type="button"
+                aria-pressed={on}
+                title={tier.description ?? tier.name}
+                onClick={() => onPickServiceTier(on ? null : tier.id)}
+                className={cn(
+                  "inline-flex h-7 flex-none items-center gap-3xs rounded-full px-xs text-sm hover:bg-bg-hover hover:text-fg",
+                  on ? "bg-bg-active text-fg" : "text-fg-muted",
+                )}
+              >
+                <Zap className={cn("size-sm flex-none", on && "fill-current")} />
+                <span>{tier.name}</span>
+              </button>
+            );
+          })}
           <ReasoningPicker
             engine={engine}
             model={model}
@@ -459,10 +615,10 @@ export function Composer({
               <button
                 type="button"
                 {...props}
-                title="思考等级"
+                title="推理强度"
                 className="inline-flex h-7 flex-none items-center gap-3xs rounded-full px-xs text-fg-muted text-sm hover:bg-bg-hover hover:text-fg"
               >
-                <span>思考 {current}</span>
+                <span>{current}</span>
                 <ChevronDown className="size-sm flex-none text-fg-faint" />
               </button>
             )}

@@ -34,6 +34,12 @@ export interface ClaudeCodeEngineOptions {
    * 「思考等级」with {@link claudeCodeThinking}.
    */
   thinking?: ClaudeCodeThinkingConfig;
+  /**
+   * How hard Claude works while adaptive thinking is on
+   * (`ClaudeCodeHarnessSettings.effort`). Build one from a thread's level with
+   * {@link claudeCodeEffort}. Unset leaves the Agent SDK's own default.
+   */
+  effort?: ClaudeCodeEffort;
   /** AI SDK tools executed in this host process when Claude calls them. */
   tools?: ToolSet;
   /**
@@ -173,6 +179,19 @@ export function claudeCodeThinking(level: string | undefined): ClaudeCodeThinkin
   return { type: "adaptive", display: "summarized" };
 }
 
+/** The five effort levels the harness takes, weakest first. */
+export const CLAUDE_CODE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type ClaudeCodeEffort = (typeof CLAUDE_CODE_EFFORTS)[number];
+
+/**
+ * A thread's level as the harness's `effort`. Anything that is not one of the
+ * five — no choice at all, or a `disabled` / `adaptive` / `enabled` stored by a
+ * build that still offered the thinking types here — is `fallback`.
+ */
+export function claudeCodeEffort(level: string | undefined, fallback: ClaudeCodeEffort = "high"): ClaudeCodeEffort {
+  return (CLAUDE_CODE_EFFORTS as readonly string[]).includes(level ?? "") ? (level as ClaudeCodeEffort) : fallback;
+}
+
 /**
  * Credential variables copied out of the caller's environment, when there are
  * any. `ANTHROPIC_*` is what an API-key or custom-endpoint user sets;
@@ -284,6 +303,7 @@ export async function createClaudeCodeEngine(options: ClaudeCodeEngineOptions): 
     auth: options.auth ?? defaultClaudeCodeAuth(),
     port: 0,
     ...(options.thinking != null ? { thinking: options.thinking } : {}),
+    ...(options.effort != null ? { effort: options.effort } : {}),
     env: {
       DISABLE_AUTOUPDATER: "1",
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",

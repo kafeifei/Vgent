@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { getToolName } from "ai";
-import { Check, ChevronDown, Copy } from "lucide-react";
+import { Check, ChevronDown, Copy, FileText } from "lucide-react";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
 import {
@@ -91,6 +91,31 @@ export function Turn({
           )}
         >
           {compacted != null && <p className="m-0 mb-2xs text-fg-muted text-xs">上下文已压缩（原 {compacted.before} 条消息）</p>}
+          {/* 附件 first, the way they sat above the text in the composer. */}
+          {turn.user.parts.some((part) => part.type === "file") && (
+            <div className="mb-xs flex flex-wrap gap-xs">
+              {turn.user.parts.map((part, index) =>
+                part.type !== "file" ? null : part.mediaType.startsWith("image/") ? (
+                  <a key={index} href={part.url} target="_blank" rel="noreferrer" title={part.filename}>
+                    <img
+                      src={part.url}
+                      alt={part.filename ?? "图片"}
+                      className="max-h-[calc(var(--spacing-3xl)*3)] max-w-full rounded-lg border border-border object-contain"
+                    />
+                  </a>
+                ) : (
+                  <span
+                    key={index}
+                    title={part.filename}
+                    className="inline-flex h-xl max-w-[32ch] items-center gap-xs rounded-md border border-border bg-bg-inset px-sm text-fg-secondary text-sm"
+                  >
+                    <FileText className="size-md flex-none text-fg-muted" />
+                    <span className="min-w-0 truncate">{part.filename ?? part.mediaType}</span>
+                  </span>
+                ),
+              )}
+            </div>
+          )}
           {turn.user.parts.map((part, index) =>
             part.type === "text" ? (
               <p key={index} className="m-0 whitespace-pre-wrap">

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultClaudeCodeAuth } from "./claude-code.js";
+import { claudeCodeEffort, claudeCodeThinking, defaultClaudeCodeAuth } from "./claude-code.js";
 
 describe("defaultClaudeCodeAuth", () => {
   /**
@@ -46,5 +46,21 @@ describe("defaultClaudeCodeAuth", () => {
     expect(defaultClaudeCodeAuth({ ANTHROPIC_API_KEY: "", ANTHROPIC_BASE_URL: "https://proxy.example" })).toEqual({
       ANTHROPIC_BASE_URL: "https://proxy.example",
     });
+  });
+});
+
+describe("claudeCodeEffort", () => {
+  it("passes the five harness levels through and falls back to 高 for anything else", () => {
+    expect(claudeCodeEffort("low")).toBe("low");
+    expect(claudeCodeEffort("max")).toBe("max");
+    expect(claudeCodeEffort(undefined)).toBe("high");
+    // What an older build stored for this engine.
+    expect(claudeCodeEffort("adaptive")).toBe("high");
+    expect(claudeCodeEffort("nonsense", "medium")).toBe("medium");
+  });
+
+  it("leaves thinking adaptive unless an old thread turned it off", () => {
+    expect(claudeCodeThinking("high")).toEqual({ type: "adaptive", display: "summarized" });
+    expect(claudeCodeThinking("disabled")).toEqual({ type: "disabled" });
   });
 });

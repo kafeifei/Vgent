@@ -271,6 +271,11 @@ describe("reasoning options", () => {
       openai: { reasoningSummary: "auto", reasoningEffort: "low" },
     });
     expect(reasoningProviderOptions("codex-subscription:gpt-5.5", { summary: false })).toBeUndefined();
+    // Fast rides in the same options, and only for a model that takes them.
+    expect(reasoningProviderOptions("codex-subscription:gpt-5.5", { effort: "high" }, "priority")).toEqual({
+      openai: { reasoningSummary: "auto", reasoningEffort: "high", serviceTier: "priority" },
+    });
+    expect(reasoningProviderOptions("anthropic/claude-sonnet-5", {}, "priority")).toBeUndefined();
   });
 
   it("leaves a non-OpenAI model alone", () => {

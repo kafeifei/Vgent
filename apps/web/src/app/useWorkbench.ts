@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { FileUIPart } from "ai";
 import { createClient } from "@/lib/api";
 import { pruneDrafts } from "@/lib/drafts";
 import { ThreadChats } from "@/lib/threadChats";
@@ -253,6 +254,8 @@ export function useWorkbench(token: string) {
         model: string | null,
         reasoningEffort: string | null,
         mode: ThreadMode,
+        files: FileUIPart[] = [],
+        serviceTier: string | null = null,
       ): Promise<boolean> => {
         if (activeProjectId == null) {
           toast("先添加一个项目");
@@ -266,6 +269,7 @@ export function useWorkbench(token: string) {
             // Omitted, not null: the server reads「没传」as「用 defaultModel」.
             ...(model == null ? {} : { model }),
             ...(reasoningEffort == null ? {} : { reasoningEffort }),
+            ...(serviceTier == null ? {} : { serviceTier }),
             mode,
           })
           .catch((error: Error) => {
@@ -273,7 +277,7 @@ export function useWorkbench(token: string) {
             return null;
           });
         if (record == null) return false;
-        const accepted = await chats.send(record.id, text).then(
+        const accepted = await chats.send(record.id, text, files).then(
           () => true,
           () => false,
         );
@@ -288,8 +292,8 @@ export function useWorkbench(token: string) {
        * keeps the text until then, so a refused send never eats it; the error
        * itself is already toasted by the chat registry.
        */
-      send: (threadId: string, text: string): Promise<boolean> =>
-        chats.send(threadId, text).then(
+      send: (threadId: string, text: string, files: FileUIPart[] = []): Promise<boolean> =>
+        chats.send(threadId, text, files).then(
           () => true,
           () => false,
         ),
@@ -340,6 +344,9 @@ export function useWorkbench(token: string) {
         void client.patchThread(threadId, { engine, model: model ?? null }).catch((error: Error) => toast(error.message));
       },
 
+      setServiceTier: (threadId: string, serviceTier: string | null) => {
+        void client.patchThread(threadId, { serviceTier }).catch((error: Error) => toast(error.message));
+      },
       setReasoningEffort: (threadId: string, reasoningEffort: string | null) => {
         void client.patchThread(threadId, { reasoningEffort }).catch((error: Error) => toast(error.message));
       },

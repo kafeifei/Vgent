@@ -198,6 +198,7 @@ describe("createModelCatalog", () => {
           { effort: "xhigh", description: "Extra high reasoning depth" },
         ],
         default_reasoning_level: "medium",
+        service_tiers: [{ id: "priority", name: "Fast", description: "2x speed, increased usage" }, { id: "" }],
       },
       // No levels declared, so the entry gets none rather than a guess.
       { slug: "gpt-5.5", display_name: "GPT-5.5", visibility: "list", priority: 2 },
@@ -214,31 +215,50 @@ describe("createModelCatalog", () => {
     const catalog = createModelCatalog({ env, fetchCodexRemote: rejectRemote, gateway });
 
     const codex = await catalog.list("codex");
+    // The row says medium; a task that names no level runs on 高, so that is
+    // what the catalog reports wherever the model offers it.
     expect(codex.models[0]).toMatchObject({
       id: "gpt-6-astra",
       reasoningLevels: ["low", "medium", "high", "xhigh"],
-      defaultReasoningLevel: "medium",
+      defaultReasoningLevel: "high",
+      // Fast, as the row declares it; the malformed second tier is dropped.
+      serviceTiers: [{ id: "priority", name: "Fast", description: "2x speed, increased usage" }],
     });
     expect(codex.models[1]?.reasoningLevels).toBeUndefined();
+    expect(codex.models[1]?.serviceTiers).toBeUndefined();
 
     const vgent = await catalog.list("vgent");
     expect(vgent.models.find((entry) => entry.id === "codex-subscription:gpt-6-astra")).toMatchObject({
       reasoningLevels: ["low", "medium", "high", "xhigh"],
-      defaultReasoningLevel: "medium",
+      defaultReasoningLevel: "high",
+      serviceTiers: [{ id: "priority", name: "Fast", description: "2x speed, increased usage" }],
     });
     expect(vgent.models.find((entry) => entry.id === "openai/gpt-5.5")).toMatchObject({
       reasoningLevels: ["low", "medium", "high"],
-      defaultReasoningLevel: "medium",
+      defaultReasoningLevel: "high",
     });
     expect(vgent.models.find((entry) => entry.id === "anthropic/claude-sonnet-5")?.reasoningLevels).toBeUndefined();
 
     const claudeCode = await createModelCatalog({ env: {}, fetchCodexRemote: rejectRemote }).list("claude-code");
     for (const entry of claudeCode.models) {
       expect(entry).toMatchObject({
-        reasoningLevels: ["disabled", "adaptive", "enabled"],
-        defaultReasoningLevel: "adaptive",
+        reasoningLevels: ["low", "medium", "high", "xhigh", "max"],
+        defaultReasoningLevel: "high",
       });
     }
+  });
+
+  it("keeps the row's own default when the model has no 高 to default to", async () => {
+    const catalog = createModelCatalog({
+      env: {
+        CODEX_HOME: await loggedInCodexHome([
+          { slug: "gpt-mini", visibility: "list", supported_reasoning_levels: ["none", "low", "medium"], default_reasoning_level: "low" },
+        ]),
+      },
+      fetchCodexRemote: rejectRemote,
+    });
+
+    expect((await catalog.list("codex")).models[0]?.defaultReasoningLevel).toBe("low");
   });
 
   it("drops a default reasoning level the row does not itself support", async () => {
@@ -248,7 +268,7 @@ describe("createModelCatalog", () => {
           {
             slug: "gpt-6-astra",
             visibility: "list",
-            supported_reasoning_levels: ["low", "high"],
+            supported_reasoning_levels: ["low", "xhigh"],
             default_reasoning_level: "medium",
           },
         ]),
@@ -258,7 +278,7 @@ describe("createModelCatalog", () => {
 
     const result = await catalog.list("codex");
 
-    expect(result.models[0]?.reasoningLevels).toEqual(["low", "high"]);
+    expect(result.models[0]?.reasoningLevels).toEqual(["low", "xhigh"]);
     expect(result.models[0]?.defaultReasoningLevel).toBeUndefined();
   });
 
@@ -308,7 +328,7 @@ describe("Claude Code's full model ids", () => {
     ]);
     // What the API can do is not what Claude Code runs with; the ring must not measure against it.
     expect(result.models.every((entry) => entry.contextWindow === undefined)).toBe(true);
-    expect(result.models.every((entry) => entry.reasoningLevels?.length === 3)).toBe(true);
+    expect(result.models.every((entry) => entry.reasoningLevels?.length === 5)).toBe(true);
   });
 
   it("falls back to the aliases alone when the catalog cannot be read", async () => {

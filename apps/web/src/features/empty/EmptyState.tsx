@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import type { FileUIPart } from "ai";
 import { ChevronDown } from "lucide-react";
+import { toFileParts, type Attachment } from "@/features/composer/attachments";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ProjectPicker } from "@/components/ProjectPicker";
 import { Composer } from "@/features/composer/Composer";
@@ -61,6 +63,8 @@ export function EmptyState({
     model: string | null,
     reasoningEffort: string | null,
     mode: ThreadMode,
+    files: FileUIPart[],
+    serviceTier: string | null,
   ) => Promise<boolean>;
 }) {
   const toast = useToast();
@@ -76,6 +80,7 @@ export function EmptyState({
   // A level belongs to a model, so switching the model clears it and the
   // model's own default applies again.
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
+  const [serviceTier, setServiceTier] = useState<string | null>(null);
   const [workspace, setWorkspace] = useState<WorkspaceMode>("project");
   /** 模式 rides on the creation request; there is no task to PATCH yet. */
   const [mode, setMode] = useState<ThreadMode>("agent");
@@ -109,18 +114,23 @@ export function EmptyState({
 
   /** One in-flight start at a time: the text stays until the task really exists. */
   const starting = useRef(false);
+  // 附件 are not part of the saved draft: they are large, and a file picked for
+  // a task that was never started is not worth keeping on the server.
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const submit = () => {
     if (engine == null || starting.current) return;
     const text = draft.value.trim();
-    if (text === "") return;
+    if (text === "" && attachments.length === 0) return;
     if (project == null) {
       toast("先选一个项目");
       return;
     }
     starting.current = true;
-    void onStart(text, engine, workspace, model, reasoningEffort, mode).then((started) => {
+    void onStart(text, engine, workspace, model, reasoningEffort, mode, toFileParts(attachments), serviceTier).then((started) => {
       starting.current = false;
-      if (started) draft.clear();
+      if (!started) return;
+      draft.clear();
+      setAttachments([]);
     });
   };
 
@@ -164,6 +174,8 @@ export function EmptyState({
         <Composer
           value={draft.value}
           onChange={draft.edit}
+          attachments={attachments}
+          onAttachments={setAttachments}
           onSubmit={submit}
           live={false}
           engines={engines}
@@ -175,6 +187,8 @@ export function EmptyState({
             setReasoningEffort(null);
           }}
           reasoningEffort={reasoningEffort ?? undefined}
+          serviceTier={serviceTier ?? undefined}
+          onPickServiceTier={setServiceTier}
           onPickReasoning={setReasoningEffort}
           mode={mode}
           onPickMode={setMode}

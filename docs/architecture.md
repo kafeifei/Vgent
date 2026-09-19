@@ -365,6 +365,13 @@ docs/
 - **桌面壳**。macOS 用 `TitleBarStyle::Overlay` + `hidden_title`，红绿灯压在左栏顶条上（左栏收起时压在中栏顶条，留 76px）；`capabilities/main.json` 多开一条 `core:window:allow-start-dragging`，顶条带 `data-tauri-drag-region`。
 - 没对的：Cursor 的 Automations / Customize 两个入口、前进后退箭头、麦克风、回复下的赞踩和 fork、`IDE ↗`——Vgent 没有对应功能，不摆空壳。思考等级 Cursor 没有独立控件，Vgent 留在模型旁边。空状态没拿到 Cursor 的真图，只换了字号和控件样式。
 
+### composer 四项（2026-09-19 晚，用户在 build 68 上的反馈）
+
+- **推理强度**。chip 不再写「思考」，只显示选中的档位（`高 ⌄`），浮层标题「推理强度」。Claude Code 原来给的是 harness 的 `thinking` 三态（关 / 自适应 / 开），换成它的 `effort` 五档 `low … max`（`claudeCodeEffort`），thinking 固定 adaptive + summarized；老线程里存的 `adaptive / enabled` 当作没选，`disabled` 仍然关思考。三个引擎没选档位时一律按「高」跑（`packages/server/src/reasoning.ts`）：目录里 `defaultReasoningLevel` 在模型有 `high` 时报 `high`，没有才用来源自己声明的；引擎侧 `effectiveReasoningLevel` 真的把 high 传下去，不是只改显示。
+- **Fast**。不写死：Codex 自己的模型目录每行带 `service_tiers: [{ id: "priority", name: "Fast", description }]`，`ModelEntry.serviceTiers` 原样带出来（Codex 引擎和自研引擎的 `codex-subscription:*` 都有，网关 / 自定义提供商没声明就没有开关）。线程多一个 `serviceTier` 字段，链路同 `reasoningEffort`。Codex 引擎写进 `codexConfig.service_tier`（CLI 按模型声明的 id 校验，不支持的自己丢掉并告警）；自研引擎走 `providerOptions.openai.serviceTier`，只给 `usesOpenAIReasoning` 认得的模型。composer 里是模型右边一个 ⚡ 开关，换到不支持的模型时自动清掉。Cursor 没有独立的 fast 控件，它的每模型参数全由服务端声明——这里同理，只是声明来自 Codex 目录。
+- **模式走 `/`**。「+」菜单里的 Agent / Plan 拿掉。输入 `/`（行首、空白或 `(` 之后，规则同 Cursor 的 `recognizeSlash`）出菜单：模式两行在前（当前的打勾，进不去的灰掉并写原因），后面是调用方给的命令——任务里是 `/compact`（别名 `summarize`）和 `/new`。选中后把 `/xxx` 从草稿里删掉再执行。⇧Tab 和 Plan chip 的 × 不变。`features/composer/slash.ts`。
+- **「+」= 选文件，支持粘贴和拖入**。附件作为普通 `file` part（data URL）跟着用户消息走，所以日志里能画缩略图。单个 10MB 上限；不进草稿；运行中带附件不能排队（队列只存文字）。引擎拿到的不一样，在 `packages/server/src/attachments.ts`：Claude Code / Codex 两个 harness 适配器遇到非文本的用户 part 直接抛 `HarnessCapabilityUnsupportedError`，所以落盘到 `<dataDir>/attachments/<threadId>/` 并把 part 换成一句带绝对路径的话，CLI 用自己的读文件工具看（两个都能看图）；自研引擎直连模型，图片和 PDF 保留为 file part，文本类文件解码后内联（20 万字符截断），其它二进制给一句「读不了」——它的工具出不了工作目录，给路径没用。删线程时清掉那个目录。没验：真发一条带图消息给三个引擎（会花订阅额度），转换逻辑有单测。
+
 ### 明确未做
 
 - `askUserQuestions` 在 TUI 里不可用（需要 Web `useChat`）。

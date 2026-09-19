@@ -1,3 +1,5 @@
+import { rm } from "node:fs/promises";
+import { join } from "node:path";
 import { timingSafeEqual } from "node:crypto";
 import { resolveModel } from "@vgent/engine";
 import {
@@ -120,6 +122,16 @@ function asPermissionMode(value: unknown): PermissionMode | undefined {
  * the caller's business, so it passes straight through.
  */
 const MAX_REASONING_EFFORT_LEN = 32;
+
+/** Same shape and same reasoning as `readReasoningEffort`: the catalog names the ids, this only refuses nonsense. */
+function readServiceTier(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (trimmed === "" || trimmed.length > MAX_REASONING_EFFORT_LEN) {
+    throw new BadRequestError("serviceTier 必须是非空短字符串", "invalid_service_tier");
+  }
+  return trimmed;
+}
 
 function readReasoningEffort(value: unknown): string | undefined {
   if (value == null) return undefined;
@@ -738,6 +750,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     // that id, so it starts on its own default instead.
     const model = body?.model ?? (engine === defaults.defaultEngine ? defaults.defaultModel : undefined);
     const reasoningEffort = readReasoningEffort(body?.reasoningEffort);
+    const serviceTier = readServiceTier(body?.serviceTier);
     const mode = body?.mode === undefined ? "agent" : readThreadMode(body.mode);
     assertModeSupported(mode, engine);
     // `permissionMode` is no longer a thread field — 运行模式 is global — but an
@@ -748,6 +761,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
       engine,
       ...(typeof model === "string" ? { model } : {}),
       ...(reasoningEffort != null ? { reasoningEffort } : {}),
+      ...(serviceTier != null ? { serviceTier } : {}),
       mode,
     });
     if (body?.workspace !== "worktree") return c.json(record);
@@ -848,6 +862,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
       ...("model" in (body ?? {}) ? { model: typeof body?.model === "string" ? body.model : undefined } : {}),
       // `null` clears it; an absent key leaves it alone.
       ...("reasoningEffort" in (body ?? {}) ? { reasoningEffort: readReasoningEffort(body?.reasoningEffort) } : {}),
+      ...("serviceTier" in (body ?? {}) ? { serviceTier: readServiceTier(body?.serviceTier) } : {}),
     });
     return c.json(record);
   });
@@ -979,6 +994,10 @@ export function createApp(options: CreateAppOptions): VgentApp {
     // refused to touch.
     if (thread?.workspace != null) await removeWorktree({ dataDir, project: await projectOf(thread), thread });
     await plans.remove(id).catch((error: unknown) => log.warn(`删除线程 ${id} 的计划文档失败`, error));
+    // 附件 written out for a harness engine live under the data dir, keyed by thread.
+    await rm(join(dataDir, "attachments", id), { recursive: true, force: true }).catch((error: unknown) =>
+      log.warn(`删除线程 ${id} 的附件失败`, error),
+    );
     await drafts.remove(id).catch((error: unknown) => log.warn(`删除线程 ${id} 的草稿失败`, error));
     // Checkpoint refs live in the project's own ref store, which every worktree
     // shares — removing the directory above does not take them with it.

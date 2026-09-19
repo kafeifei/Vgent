@@ -1,5 +1,5 @@
 import { Chat } from "@ai-sdk/react";
-import { DefaultChatTransport, type ChatRequestOptions, type UIMessage, type UIMessageChunk } from "ai";
+import { DefaultChatTransport, type ChatRequestOptions, type FileUIPart, type UIMessage, type UIMessageChunk } from "ai";
 import { api, authHeaders, reportUnauthorized } from "./api";
 import { shouldSendAutomatically } from "./autoSend";
 import { withResumePrelude } from "./resumeChunks";
@@ -297,7 +297,7 @@ export class ThreadChats {
    * its failures through `onError` rather than by throwing, so acceptance is
    * taken from the POST's own response — see the transport's `fetch` above.
    */
-  async send(threadId: string, text: string): Promise<void> {
+  async send(threadId: string, text: string, files: FileUIPart[] = []): Promise<void> {
     const chat = this.get(threadId);
     await this.whenReady(threadId);
     const before = chat.messages;
@@ -306,7 +306,8 @@ export class ThreadChats {
     });
     // Not awaited: it runs for as long as the turn does. Its outcome is only a
     // backstop for a request that never reached `fetch` at all.
-    void chat.sendMessage({ text }).then(
+    // 附件 ride along as `file` parts; a message may be nothing but them.
+    void chat.sendMessage(files.length === 0 ? { text } : text === "" ? { files } : { text, files }).then(
       () => this.settleAccept(threadId),
       (error: unknown) => this.settleAccept(threadId, error instanceof Error ? error : new Error(String(error))),
     );

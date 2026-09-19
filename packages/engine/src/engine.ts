@@ -98,6 +98,12 @@ export interface VgentEngineOptions {
    * {@link reasoningProviderOptions}; anything else ignores it.
    */
   reasoning?: VgentReasoningOptions;
+  /**
+   * `serviceTier` on the OpenAI Responses API (`priority` is what ChatGPT /
+   * Codex sells as Fast). Like `reasoning`, it is only sent to a model
+   * {@link usesOpenAIReasoning} recognises; anything else ignores it.
+   */
+  serviceTier?: string;
 }
 
 export interface VgentReasoningOptions {
@@ -181,11 +187,13 @@ export function usesOpenAIReasoning(model: LanguageModel | string): boolean {
 export function reasoningProviderOptions(
   model: LanguageModel | string,
   reasoning: VgentReasoningOptions = {},
+  serviceTier?: string,
 ): { openai: Record<string, string> } | undefined {
   if (!usesOpenAIReasoning(model)) return undefined;
   const openai = {
     ...(reasoning.summary === false ? {} : { reasoningSummary: "auto" }),
     ...(reasoning.effort != null && reasoning.effort !== "" ? { reasoningEffort: reasoning.effort } : {}),
+    ...(serviceTier != null && serviceTier !== "" ? { serviceTier } : {}),
   };
   return Object.keys(openai).length === 0 ? undefined : { openai };
 }
@@ -253,6 +261,7 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
   const providerOptions = reasoningProviderOptions(
     typeof options.model === "string" ? options.model : model,
     options.reasoning ?? {},
+    options.serviceTier,
   );
 
   const agent = new ToolLoopAgent({

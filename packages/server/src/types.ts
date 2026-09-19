@@ -236,6 +236,13 @@ export interface ThreadRecord {
    * means「用引擎自己的默认」.
    */
   reasoningEffort?: string;
+  /**
+   * The service tier the task's turns are run on — `priority` is what Codex's
+   * catalog calls Fast. A plain string for the same reason `reasoningEffort`
+   * is: the model catalog says which ids a model offers. Absent means the
+   * standard tier.
+   */
+  serviceTier?: string;
   /** 模式 for the next turn. Absent means `agent`; only a Plan-capable engine may carry `plan`. */
   mode?: ThreadMode;
   status: ThreadStatus;

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import type { Chat } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
+import { toFileParts, type Attachment } from "@/features/composer/attachments";
+import type { SlashCommand } from "@/features/composer/slash";
 import type { ChangesView } from "@/features/changes/useChanges";
 import { Composer } from "@/features/composer/Composer";
 import { taskBranch, taskLocation } from "@/features/composer/location";
@@ -160,14 +162,45 @@ function ThreadChatView({
     [client, thread.id],
   );
 
+  // The `/` menu's own rows, after 模式: what this task can be told to do
+  // without going through the model.
+  const canCompact = engines.find((entry) => entry.id === thread.engine)?.capabilities.compact === true;
+  const commands = useMemo<SlashCommand[]>(
+    () => [
+      ...(canCompact
+        ? [
+            {
+              id: "compact",
+              aliases: ["summarize"],
+              label: "压缩上下文",
+              hint: "把这段对话压成摘要，腾出上下文",
+              section: "操作",
+              disabledReason: live ? "运行中不能压缩" : undefined,
+              run: () => void actions.compactThread(thread.id),
+            },
+          ]
+        : []),
+      { id: "new", label: "新任务", hint: "回到空白页开一个新任务", section: "操作", run: actions.newTask },
+    ],
+    [actions, canCompact, live, thread.id],
+  );
+
   /** One in-flight submit at a time: the text now stays until the server answers. */
   const sending = useRef(false);
+  // 附件 belong to the message being written, like the text; unlike the text
+  // they are not saved as a draft — they are large and cheap to pick again.
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const submit = () => {
     const text = draft.value.trim();
-    if (text === "" || sending.current) return;
+    if ((text === "" && attachments.length === 0) || sending.current) return;
     // 运行中按 Enter = 排队。The server holds it and starts it itself once this
     // turn settles idle, so the draft may only be dropped once it took it.
     if (live) {
+      // The queue holds text only; a message with files waits for the turn to end.
+      if (attachments.length > 0) {
+        actions.toast("带附件的消息不能排队，等这一轮结束再发");
+        return;
+      }
       sending.current = true;
       void actions.queueMessage(thread.id, text).then((queued) => {
         sending.current = false;
@@ -184,9 +217,11 @@ function ThreadChatView({
     // 发送失败不吞草稿: the text only leaves the composer once the server took
     // it; the error itself is already toasted by the chat registry.
     sending.current = true;
-    void actions.send(thread.id, text).then((accepted) => {
+    void actions.send(thread.id, text, toFileParts(attachments)).then((accepted) => {
       sending.current = false;
-      if (accepted) draft.clear();
+      if (!accepted) return;
+      draft.clear();
+      setAttachments([]);
     });
   };
 
@@ -247,6 +282,9 @@ function ThreadChatView({
         <Composer
           value={draft.value}
           onChange={draft.edit}
+          attachments={attachments}
+          onAttachments={setAttachments}
+          commands={commands}
           onSubmit={submit}
           onStop={() => actions.stop(thread.id)}
           live={live}
@@ -266,6 +304,10 @@ function ThreadChatView({
           // Same rule as the header's pills.
           onPickReasoning={(level) =>
             live ? actions.toast("运行中不能改，先停止") : actions.setReasoningEffort(thread.id, level)
+          }
+          serviceTier={thread.serviceTier}
+          onPickServiceTier={(tier) =>
+            live ? actions.toast("运行中不能改，先停止") : actions.setServiceTier(thread.id, tier)
           }
           mode={thread.mode ?? "agent"}
           onPickMode={(mode) => (live ? actions.toast("运行中不能改，先停止") : actions.setMode(thread.id, mode))}

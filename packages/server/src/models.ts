@@ -2,10 +2,12 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { CODEX_SUBSCRIPTION_PREFIX } from "@vgent/engine";
+import { CLAUDE_CODE_EFFORTS } from "@vgent/engines";
 import { CHATGPT_CODEX_BASE_URL, CodexTokenProvider, createCodexFetch, describeSubscriptionAuth } from "@vgent/providers";
 import { gateway as defaultGateway } from "ai";
 import type { EngineId, Logger } from "./types.js";
 import { silentLogger } from "./types.js";
+import { DEFAULT_REASONING_LEVEL, defaultLevelFor } from "./reasoning.js";
 
 /** One selectable model. `id` is what a thread's `model` field is set to. */
 export interface ModelEntry {
@@ -35,6 +37,12 @@ export interface ModelEntry {
   /** Which of `reasoningLevels` applies when the thread names none. */
   defaultReasoningLevel?: string;
   /**
+   * Faster-for-more service tiers this model can be run on, as its own source
+   * declares them (Codex's catalog: `{ id: "priority", name: "Fast", … }`).
+   * Absent means there is nothing to switch, and the composer shows no toggle.
+   */
+  serviceTiers?: ServiceTier[];
+  /**
    * The model's usable context window in tokens — the denominator of the
    * composer's context ring. Only sources that report one fill it: Codex does
    * (`context_window`), while the Anthropic models API and the AI Gateway list
@@ -45,6 +53,13 @@ export interface ModelEntry {
 }
 
 /** The two reasoning fields of a `ModelEntry`, as the builders below merge them in. */
+export interface ServiceTier {
+  /** What goes on the wire: Codex's `service_tier`, the Responses API's `service_tier`. */
+  id: string;
+  name: string;
+  description?: string;
+}
+
 type ReasoningLevels = Pick<ModelEntry, "reasoningLevels" | "defaultReasoningLevel">;
 
 /**
@@ -85,6 +100,8 @@ export interface CodexCatalogModel {
    */
   supported_reasoning_levels?: string[];
   default_reasoning_level?: string;
+  /** The extra speed tiers the row offers, e.g. `[{ id: "priority", name: "Fast" }]`. */
+  service_tiers?: ServiceTier[];
   /**
    * The window this model actually runs with. The payload also carries a larger
    * `max_context_window` (what the model could do on another tier); the ring
@@ -149,12 +166,11 @@ const CLAUDE_CODE_BUILTIN: ModelEntry[] = [
 const CODEX_LOGGED_OUT = "Codex 未登录：找不到可用的 ChatGPT / Codex 登录态（~/.codex/auth.json，或 CODEX_HOME）";
 
 /**
- * Claude Code's「思考等级」is the harness `thinking` setting
- * (`ClaudeCodeHarnessSettings.thinking`), not a per-model capability, so every
- * entry in that catalog offers the same three.
+ * Claude Code's 推理强度 is the harness `effort` setting
+ * (`ClaudeCodeHarnessSettings.effort`), not a per-model capability, so every
+ * entry in that catalog offers the same five.
  */
-const CLAUDE_CODE_REASONING_LEVELS = ["disabled", "adaptive", "enabled"];
-const CLAUDE_CODE_DEFAULT_REASONING_LEVEL = "adaptive";
+const CLAUDE_CODE_REASONING_LEVELS: readonly string[] = CLAUDE_CODE_EFFORTS;
 
 /**
  * What `@ai-sdk/openai` documents for a gateway-routed OpenAI model. Only
@@ -162,18 +178,17 @@ const CLAUDE_CODE_DEFAULT_REASONING_LEVEL = "adaptive";
  * and inventing levels for one would make the picker lie.
  */
 const GATEWAY_OPENAI_REASONING_LEVELS = ["low", "medium", "high"];
-const GATEWAY_OPENAI_DEFAULT_REASONING_LEVEL = "medium";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Stamps the harness's three thinking levels onto every Claude Code entry. */
+/** Stamps the harness's five effort levels onto every Claude Code entry. */
 function withClaudeCodeReasoning(entries: readonly ModelEntry[]): ModelEntry[] {
   return entries.map((entry) => ({
     ...entry,
     reasoningLevels: [...CLAUDE_CODE_REASONING_LEVELS],
-    defaultReasoningLevel: CLAUDE_CODE_DEFAULT_REASONING_LEVEL,
+    defaultReasoningLevel: DEFAULT_REASONING_LEVEL,
   }));
 }
 
@@ -192,14 +207,29 @@ function asReasoningLevels(value: unknown): string[] | undefined {
   return levels.length > 0 ? levels : undefined;
 }
 
+/** A row's `service_tiers`, keeping only entries that carry both an id and a name. */
+function asServiceTiers(value: unknown): ServiceTier[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const tiers = value.flatMap((item): ServiceTier[] =>
+    isRecord(item) && typeof item.id === "string" && item.id !== "" && typeof item.name === "string" && item.name !== ""
+      ? [{ id: item.id, name: item.name, ...(typeof item.description === "string" ? { description: item.description } : {}) }]
+      : [],
+  );
+  return tiers.length > 0 ? tiers : undefined;
+}
+
+/** The service tiers a Codex catalog row declares, as the model entry carries them. */
+const codexTiers = (entry: CodexCatalogModel): Pick<ModelEntry, "serviceTiers"> =>
+  entry.service_tiers != null && entry.service_tiers.length > 0 ? { serviceTiers: entry.service_tiers } : {};
+
 /** The reasoning levels a Codex catalog row declares, in the order it lists them. */
 function codexReasoning(entry: CodexCatalogModel): ReasoningLevels {
   const levels = entry.supported_reasoning_levels;
   if (levels == null || levels.length === 0) return {};
   return {
     reasoningLevels: [...levels],
-    ...(entry.default_reasoning_level != null && levels.includes(entry.default_reasoning_level)
-      ? { defaultReasoningLevel: entry.default_reasoning_level }
+    ...(defaultLevelFor(levels, entry.default_reasoning_level) != null
+      ? { defaultReasoningLevel: defaultLevelFor(levels, entry.default_reasoning_level) as string }
       : {}),
   };
 }
@@ -216,6 +246,7 @@ function normalizeCodexModels(raw: readonly unknown[]): CodexCatalogModel[] {
     .filter((entry) => entry.visibility === "list")
     .map((entry) => {
       const levels = asReasoningLevels(entry.supported_reasoning_levels);
+      const tiers = asServiceTiers(entry.service_tiers);
       return {
         slug: entry.slug as string,
         ...(typeof entry.display_name === "string" ? { display_name: entry.display_name } : {}),
@@ -223,6 +254,7 @@ function normalizeCodexModels(raw: readonly unknown[]): CodexCatalogModel[] {
         ...(typeof entry.priority === "number" ? { priority: entry.priority } : {}),
         ...(typeof entry.context_window === "number" ? { context_window: entry.context_window } : {}),
         ...(levels != null ? { supported_reasoning_levels: levels } : {}),
+        ...(tiers != null ? { service_tiers: tiers } : {}),
         ...(typeof entry.default_reasoning_level === "string" && entry.default_reasoning_level !== ""
           ? { default_reasoning_level: entry.default_reasoning_level }
           : {}),
@@ -346,7 +378,7 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
             ...(entry.id.startsWith("openai/")
               ? {
                   reasoningLevels: [...GATEWAY_OPENAI_REASONING_LEVELS],
-                  defaultReasoningLevel: GATEWAY_OPENAI_DEFAULT_REASONING_LEVEL,
+                  defaultReasoningLevel: DEFAULT_REASONING_LEVEL,
                 }
               : {}),
           })),
@@ -368,6 +400,7 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
         label: entry.display_name ?? entry.slug,
         ...(entry.description != null ? { description: entry.description } : {}),
         ...codexReasoning(entry),
+        ...codexTiers(entry),
         ...(entry.context_window != null ? { contextWindow: entry.context_window } : {}),
       })),
       source: codex.source,
@@ -394,6 +427,7 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
           // Same model behind the subscription prefix, so the same levels and
           // the same window apply.
           ...codexReasoning(entry),
+          ...codexTiers(entry),
           ...(entry.context_window != null ? { contextWindow: entry.context_window } : {}),
         })),
       );

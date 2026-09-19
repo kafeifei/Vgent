@@ -1,6 +1,6 @@
 import { collectHarnessAgentToolApprovalContinuations, collectHarnessAgentToolResultContinuations } from "@ai-sdk/harness/agent";
 import { planModeInstructions } from "@vgent/engine";
-import { claudeCodeProviderEnv, claudeCodeThinking, createClaudeCodeEngine } from "@vgent/engines";
+import { claudeCodeEffort, claudeCodeProviderEnv, claudeCodeThinking, createClaudeCodeEngine } from "@vgent/engines";
 import { splitProviderModelSpec, type ProviderConfig } from "@vgent/providers";
 import type { TextStreamPart, ToolSet } from "ai";
 import { BadRequestError, TurnResumeFailedError } from "../errors.js";
@@ -107,9 +107,11 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
         repoPath: ctx.project.repoPath,
         permissionMode: ctx.permissionMode,
         ...(route != null ? route : ctx.thread.model != null ? { model: ctx.thread.model } : {}),
-        // 「思考等级」for this engine *is* the harness `thinking` setting, and
-        // `summarized` is what puts the reasoning in the stream.
+        // 推理强度 is the harness's `effort`; thinking itself stays adaptive and
+        // `summarized`, which is what puts the reasoning in the stream. A task
+        // that names no level runs on 高.
         thinking: claudeCodeThinking(ctx.thread.reasoningEffort),
+        effort: claudeCodeEffort(ctx.thread.reasoningEffort),
         // 计划回合只读：enforced at the SDK level, not asked for in prose.
         ...(ctx.planMode ? { activeTools: PLAN_ACTIVE_TOOLS, instructions: PLAN_INSTRUCTIONS } : {}),
         sessionId: ctx.thread.id,

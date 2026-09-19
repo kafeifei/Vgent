@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { getHarnessErrorMessage } from "@ai-sdk/harness/agent";
 import {
   convertToModelMessages,
@@ -14,6 +15,7 @@ import {
   type UIMessage,
   type UIMessageChunk,
 } from "ai";
+import { prepareAttachments } from "./attachments.js";
 import { createAfterCheckpoint, createCheckpoint, deleteCheckpoints, pinBaseline } from "./checkpoints.js";
 import type { ChunkHub } from "./chunk-hub.js";
 import { createChunkHub } from "./chunk-hub.js";
@@ -493,8 +495,14 @@ export function createRunManager(options: {
     try {
       // 恢复之后的第一轮: the note rides on the converted history rather than on
       // the stored message, so the log still shows what the user typed.
+      // 附件: the stored messages keep their `file` parts for the log; the
+      // engine gets them as paths, or as parts it can really read.
+      const readable = await prepareAttachments(messages, {
+        engine: thread.engine,
+        dir: join(dataDir, "attachments", thread.id),
+      });
       const convert = async (tools?: ToolSet) =>
-        withRestoreNote(await convertToModelMessages(messages, ...(tools != null ? [{ tools }] : [])), note);
+        withRestoreNote(await convertToModelMessages(readable, ...(tools != null ? [{ tools }] : [])), note);
       let modelMessages = await convert();
       // The harness itself decides "continue the open turn" vs "start a new
       // one" by whether the last model message is `role: 'tool'` (approval

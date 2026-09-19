@@ -13,7 +13,7 @@ import { useNotifications } from "@/features/notify/useNotifications";
 import type { Grouping } from "@/features/sidebar/grouping";
 import type { RightTab } from "@/features/rightpane/RightPane";
 
-export type LeftMode = "on" | "rail";
+export type LeftMode = "on" | "off";
 export type View = "thread" | "empty";
 
 /** The right column: which tab, and which changed file that tab has open. */
@@ -23,7 +23,8 @@ export interface RightState {
   file: string | null;
 }
 
-const RIGHT_CLOSED: RightState = { open: false, tab: "queue", file: null };
+/** The pane starts as Cursor's does: open, as the short list of what it can show. */
+const RIGHT_INITIAL: RightState = { open: true, tab: "home", file: null };
 
 const readThreadFromUrl = (): string | null => new URLSearchParams(window.location.search).get("thread");
 
@@ -61,7 +62,7 @@ export function useWorkbench(token: string) {
   const [projectId, setProjectId] = useState<string | null>(null);
   const [view, setView] = useState<View>(() => (readThreadFromUrl() == null ? "empty" : "thread"));
   const [left, setLeft] = useState<LeftMode>("on");
-  const [right, setRight] = useState<RightState>(RIGHT_CLOSED);
+  const [right, setRight] = useState<RightState>(RIGHT_INITIAL);
   const [palette, setPalette] = useState(false);
   const [grouping, setGrouping] = useState<Grouping>("project");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -205,7 +206,7 @@ export function useWorkbench(token: string) {
       setGrouping,
       openSettings: () => setSettingsOpen(true),
       closeSettings: () => setSettingsOpen(false),
-      toggleLeft: () => setLeft((mode) => (mode === "on" ? "rail" : "on")),
+      toggleLeft: () => setLeft((mode) => (mode === "on" ? "off" : "on")),
       toggleRight: () => setRight((state) => ({ ...state, open: !state.open })),
       openRight: () => setRight((state) => ({ ...state, open: true })),
       setRightTab: (tab: RightTab) => setRight((state) => ({ ...state, tab })),
@@ -447,7 +448,7 @@ export function useWorkbench(token: string) {
         setRight((state) => ({ ...state, open: !state.open }));
       } else if (key === "b") {
         event.preventDefault();
-        setLeft((mode) => (mode === "on" ? "rail" : "on"));
+        setLeft((mode) => (mode === "on" ? "off" : "on"));
       } else if (key === ",") {
         // The macOS convention for 设置; pressing it again goes back to the task.
         event.preventDefault();

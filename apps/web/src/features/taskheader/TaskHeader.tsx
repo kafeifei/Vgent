@@ -1,31 +1,13 @@
 import { useEffect, useState } from "react";
-import { GitBranch, PanelRight, Square } from "lucide-react";
+import { GitFork, PanelRight } from "lucide-react";
+import { STRIP_ICON_BUTTON, TopStrip } from "@/components/TopStrip";
 import { OutcomeBadge } from "@/components/OutcomeBadge";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import type { ThreadSummary, ThreadWorkspace } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { isImeKeyEvent } from "@/lib/ime";
 
-const PILL_CLASS =
-  "inline-flex h-xl min-w-0 flex-none items-center gap-2xs overflow-hidden rounded-full border border-border bg-bg-elevated px-xs text-fg-muted text-xs";
-
-/** The worktree pill: its branch, plus 已回收 once the directory is gone. */
-function BranchPill({
-  value,
-  muted,
-  ...props
-}: { value: string; muted?: string } & React.ComponentProps<"button">) {
-  return (
-    <button type="button" {...props} className={cn(PILL_CLASS, "hover:border-border-strong hover:text-fg")}>
-      <GitBranch className="size-md flex-none text-fg-faint" />
-      <span className="min-w-0 truncate font-mono text-fg">{value}</span>
-      {muted != null && <span className="flex-none text-fg-faint">{muted}</span>}
-      <span className="flex-none opacity-60">▾</span>
-    </button>
-  );
-}
-
-/** That pill's popover: where the task's files are, and reclaim / restore. */
+/** The worktree glyph's popover: where the task's files are, and reclaim / restore. */
 function WorkspaceMenu({
   workspace,
   running,
@@ -75,29 +57,31 @@ function WorkspaceMenu({
 }
 
 /**
- * Sticky task header: the title, where the task runs, how it was wound up, and
- * the right pane. 模型 and 思考等级 live in the composer — one place to change
- * them — and 运行模式 is a global setting, so neither has a pill here.
+ * The task's top strip, on the same line as the sidebar's: the title, the
+ * worktree glyph that opens 工作目录, how the task was wound up, and the right
+ * pane's toggle. It doubles as the window's title bar, so it drags the window.
+ * 分支 and 运行位置 are under the composer, 停止 is the composer's send button,
+ * 模型 and 思考 are in the composer — none of them has a second copy here.
  */
 export function TaskHeader({
   thread,
-  live,
   pending,
+  leftOpen,
   rightOpen,
   onRename,
   onReclaimWorkspace,
   onRestoreWorkspace,
-  onStop,
+  onToggleLeft,
   onToggleRight,
 }: {
   thread: ThreadSummary;
-  live: boolean;
   pending: number;
+  leftOpen: boolean;
   rightOpen: boolean;
   onRename: (title: string) => void;
   onReclaimWorkspace: () => Promise<void>;
   onRestoreWorkspace: () => Promise<void>;
-  onStop: () => void;
+  onToggleLeft: () => void;
   onToggleRight: () => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -114,81 +98,17 @@ export function TaskHeader({
   const workspace = thread.workspace;
 
   return (
-    <div className="flex items-start gap-xs border-border border-b bg-bg px-md py-xs">
-      <div className="flex min-w-0 flex-wrap items-center gap-xs">
-        {editing ? (
-          <input
-            autoFocus
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onBlur={commit}
-            onKeyDown={(event) => {
-              if (isImeKeyEvent(event)) return;
-              if (event.key === "Enter") commit();
-              if (event.key === "Escape") {
-                setDraft(thread.title);
-                setEditing(false);
-              }
-            }}
-            className="min-w-0 max-w-[34ch] flex-none rounded-sm border border-border bg-bg-elevated px-2xs py-3xs font-semibold text-md outline-none"
-          />
-        ) : (
-          <button
-            type="button"
-            onClick={() => setEditing(true)}
-            title={thread.title}
-            className="min-w-0 max-w-[34ch] flex-none truncate rounded-sm border border-transparent px-2xs py-3xs text-left font-semibold text-md hover:border-border hover:bg-bg-elevated"
-          >
-            {thread.title}
-          </button>
-        )}
-
-        {workspace != null && (
-          <Popover
-            trigger={(props) => (
-              <BranchPill
-                value={workspace.branch}
-                {...(workspace.reclaimed === true ? { muted: "已回收" } : {})}
-                {...props}
-              />
-            )}
-          >
-            {(close) => (
-              <WorkspaceMenu
-                workspace={workspace}
-                running={thread.status === "running"}
-                onReclaim={onReclaimWorkspace}
-                onRestore={onRestoreWorkspace}
-                close={close}
-              />
-            )}
-          </Popover>
-        )}
-
-        <OutcomeBadge outcome={thread.outcome} pr={thread.pr} className="max-w-[24ch]" />
-      </div>
-
-      <div className="ml-auto flex flex-none items-center gap-xs">
-        {live && (
-          <button
-            type="button"
-            onClick={onStop}
-            className="inline-flex h-xl flex-none items-center gap-2xs whitespace-nowrap rounded-full border border-danger bg-danger-bg px-sm text-danger text-xs"
-          >
-            <Square className="size-md fill-current" />
-            停止
-          </button>
-        )}
-
+    <TopStrip
+      leftOpen={leftOpen}
+      onToggleLeft={onToggleLeft}
+      end={
         <button
           type="button"
           aria-pressed={rightOpen}
+          aria-label="右栏"
           title="右栏 ⌘J"
           onClick={onToggleRight}
-          className={cn(
-            "relative grid size-xl flex-none place-items-center rounded-md text-fg-muted hover:bg-bg-hover hover:text-fg",
-            rightOpen && "bg-bg-active text-fg",
-          )}
+          className={cn(STRIP_ICON_BUTTON, "relative")}
         >
           <PanelRight className="size-lg" />
           {pending > 0 && (
@@ -197,7 +117,62 @@ export function TaskHeader({
             </span>
           )}
         </button>
-      </div>
-    </div>
+      }
+    >
+      {editing ? (
+        <input
+          autoFocus
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={commit}
+          onKeyDown={(event) => {
+            if (isImeKeyEvent(event)) return;
+            if (event.key === "Enter") commit();
+            if (event.key === "Escape") {
+              setDraft(thread.title);
+              setEditing(false);
+            }
+          }}
+          className="min-w-0 max-w-[48ch] flex-none rounded-sm border border-border bg-bg-elevated px-2xs text-body outline-none"
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          title={thread.title}
+          className="min-w-0 max-w-[48ch] flex-none truncate rounded-sm px-2xs text-left text-body text-fg hover:bg-bg-hover"
+        >
+          {thread.title}
+        </button>
+      )}
+
+      {workspace != null && (
+        <Popover
+          trigger={(props) => (
+            <button
+              type="button"
+              {...props}
+              aria-label="工作目录"
+              title={workspace.reclaimed === true ? `${workspace.branch} · 已回收` : workspace.branch}
+              className={cn(STRIP_ICON_BUTTON, workspace.reclaimed === true && "opacity-50")}
+            >
+              <GitFork className="size-md" />
+            </button>
+          )}
+        >
+          {(close) => (
+            <WorkspaceMenu
+              workspace={workspace}
+              running={thread.status === "running"}
+              onReclaim={onReclaimWorkspace}
+              onRestore={onRestoreWorkspace}
+              close={close}
+            />
+          )}
+        </Popover>
+      )}
+
+      <OutcomeBadge outcome={thread.outcome} pr={thread.pr} className="max-w-[24ch]" />
+    </TopStrip>
   );
 }

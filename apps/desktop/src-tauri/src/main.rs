@@ -118,12 +118,21 @@ fn create_window(app: &tauri::AppHandle, ready: BackendReady) -> tauri::Result<(
     // injected script is needed — the shell is just a browser pointed at the server.
     let mut location = ready.url;
     location.set_fragment(Some(&format!("token={}", ready.token)));
-    WebviewWindowBuilder::new(app, "main", WebviewUrl::External(location))
+    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(location))
         .title("Vgent")
         .inner_size(1280.0, 860.0)
         .min_inner_size(900.0, 600.0)
         .decorations(true)
-        .devtools(true)
+        .devtools(true);
+    // The page has no window bar of its own: its columns run to the top edge and
+    // their 35px strips are the title bar (`data-tauri-drag-region`). On macOS the
+    // native bar is laid over the page, with the traffic lights centred on that strip.
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true)
+        .traffic_light_position(tauri::LogicalPosition::new(14.0, 18.0));
+    builder
         .on_navigation(move |url| {
             if is_internal_navigation(url, &origin) {
                 true

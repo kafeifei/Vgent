@@ -1,5 +1,6 @@
 import type { UIMessage } from "ai";
 import { useState } from "react";
+import { ChevronDown } from "lucide-react";
 import { CodeBlock } from "@/components/ai-elements/code-block";
 import { baseName } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -57,9 +58,9 @@ function ChildTranscript({ parts, preliminary }: { parts: UIMessage["parts"]; pr
         if (tool != null) {
           const display = describeTool(tool);
           return (
-            <div key={index} className="flex h-row-tool items-center gap-xs text-fg-faint text-sm">
+            <div key={index} className="flex min-h-row-tool items-center gap-xs text-fg-muted text-sm">
               <span className={cn("flex-none", display.kind === "bash" && "font-mono text-code")}>{display.verb}</span>
-              <span className="min-w-0 truncate font-mono text-code">{display.target}</span>
+              <span className={cn("min-w-0 truncate text-fg-faint", display.kind === "bash" && "font-mono text-code")}>{display.target}</span>
             </div>
           );
         }
@@ -95,19 +96,20 @@ export function ToolRow({ part, onOpenFile }: { part: ToolPart; onOpenFile: (fil
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="flex h-row-tool w-full items-center gap-xs rounded-sm px-2xs text-left text-fg-muted text-sm hover:text-fg"
+        className="group/tool flex min-h-row-tool w-full items-center gap-xs text-left text-fg-muted text-md leading-chat hover:text-fg"
       >
-        <span
-          className={cn(
-            "flex-none text-2xs text-fg-faint transition-transform duration-[var(--duration-fast)]",
-            open && "rotate-90",
-          )}
-        >
-          ▸
-        </span>
         {streaming && <Spinner />}
         <span className={cn("flex-none", display.kind === "bash" && "font-mono text-code")}>{display.verb}</span>
-        <span className="min-w-0 truncate font-mono text-code">{display.target}</span>
+        <span className={cn("min-w-0 truncate text-fg-faint group-hover/tool:text-fg-muted", display.kind === "bash" && "font-mono text-code")}>
+          {display.target}
+        </span>
+        {/* The chevron trails the line and only shows up when it is of use. */}
+        <ChevronDown
+          className={cn(
+            "size-md flex-none text-fg-faint opacity-0 transition-transform duration-[var(--duration-fast)] group-hover/tool:opacity-100",
+            open ? "opacity-100" : "-rotate-90",
+          )}
+        />
         <span className="ml-auto flex-none text-fg-faint text-xs">
           {part.state === "output-error" ? (
             <span className="text-danger">失败</span>
@@ -124,13 +126,13 @@ export function ToolRow({ part, onOpenFile }: { part: ToolPart; onOpenFile: (fil
       )}
 
       {display.file != null && part.state === "output-available" && (
-        <div className="flex flex-wrap gap-2xs px-2xs py-3xs">
+        <div className="flex flex-wrap gap-2xs py-3xs">
           <FileChip file={display.file} {...(stat != null ? { stat } : {})} onClick={() => onOpenFile(display.file as string)} />
         </div>
       )}
 
       {open && (
-        <div className="mt-2xs mb-2xs ml-lg overflow-hidden rounded-sm bg-bg-inset px-sm py-xs text-fg-muted text-sm">
+        <div className="mt-2xs mb-2xs overflow-hidden rounded-lg bg-bg-inset px-sm py-xs text-fg-muted text-sm">
           <div className="mb-2xs text-2xs text-fg-faint tracking-widest">输入</div>
           <CodeBlock code={JSON.stringify(part.input ?? {}, null, 2)} language="json" />
           {part.state === "output-error" && (

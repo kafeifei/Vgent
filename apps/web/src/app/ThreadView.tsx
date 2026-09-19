@@ -23,6 +23,7 @@ export function ThreadView(props: {
   client: ApiClient;
   changes: ChangesView;
   rightOpen: boolean;
+  leftOpen: boolean;
   /** 引擎能力表, for the composer's model picker and its 「不支持审批」 notice. */
   engines: EngineDescriptor[];
   /** The global 运行模式; the composer's notice reads it. */
@@ -56,6 +57,7 @@ function ThreadChatView({
   client,
   changes,
   rightOpen,
+  leftOpen,
   engines,
   runMode,
   allowlist,
@@ -68,6 +70,7 @@ function ThreadChatView({
   client: ApiClient;
   changes: ChangesView;
   rightOpen: boolean;
+  leftOpen: boolean;
   engines: EngineDescriptor[];
   runMode: PermissionMode | undefined;
   allowlist: readonly string[] | undefined;
@@ -213,13 +216,13 @@ function ThreadChatView({
       <div>
         <TaskHeader
           thread={thread}
-          live={live}
           pending={thread.pendingApprovals + queue.filter((item) => item.kind === "question").length}
+          leftOpen={leftOpen}
           rightOpen={rightOpen}
           onRename={(title) => actions.rename(thread.id, title)}
           onReclaimWorkspace={() => actions.reclaimWorkspace(thread.id)}
           onRestoreWorkspace={() => actions.restoreWorkspace(thread.id)}
-          onStop={() => actions.stop(thread.id)}
+          onToggleLeft={actions.toggleLeft}
           onToggleRight={actions.toggleRight}
         />
         <SetupNotice
@@ -240,7 +243,7 @@ function ThreadChatView({
         allowlist={allowlist ?? []}
       />
 
-      <div className="border-border border-t bg-bg px-md pt-sm pb-md">
+      <div className="bg-bg px-md pb-xs">
         <Composer
           value={draft.value}
           onChange={draft.edit}
@@ -285,7 +288,7 @@ function ThreadChatView({
           location={
             <span
               title={location.path ?? "位置未知"}
-              className="inline-flex min-w-0 items-center px-2xs text-fg-muted text-xs"
+              className="inline-flex min-w-0 items-center"
             >
               <span className="min-w-0 truncate">{location.label}</span>
             </span>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { baseName, oneLine, relativeTime, titleFromText } from "./format";
+import { baseName, oneLine, relativeTime, shortTime, titleFromText } from "./format";
 
 const NOW = Date.parse("2026-09-17T12:00:00.000Z");
 const ago = (ms: number) => new Date(NOW - ms).toISOString();
@@ -33,5 +33,16 @@ describe("text helpers", () => {
   it("titles from the first line only, capped", () => {
     expect(titleFromText("  第一行  \n第二行")).toBe("第一行");
     expect(titleFromText("x".repeat(80))).toHaveLength(60);
+  });
+});
+
+describe("shortTime", () => {
+  it("walks from now to weeks", () => {
+    expect(shortTime(ago(10_000), NOW)).toBe("now");
+    expect(shortTime(ago(12 * 60_000), NOW)).toBe("12m");
+    expect(shortTime(ago(5 * 3600_000), NOW)).toBe("5h");
+    expect(shortTime(ago(30 * 3600_000), NOW)).toBe("1d");
+    expect(shortTime(ago(15 * 86_400_000), NOW)).toBe("2w");
+    expect(shortTime("not-a-date", NOW)).toBe("");
   });
 });

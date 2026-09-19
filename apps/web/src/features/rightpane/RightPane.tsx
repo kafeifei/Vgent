@@ -1,5 +1,5 @@
 import type { UIMessage } from "ai";
-import { FileDiff, FolderTree, ListChecks, ListTodo, Terminal, X } from "lucide-react";
+import { ChevronLeft, FileDiff, FolderTree, ListChecks, ListTodo, Terminal, X } from "lucide-react";
 import { ChangesPanel } from "@/features/changes/ChangesPanel";
 import type { ChangesView } from "@/features/changes/useChanges";
 import { FilesPanel } from "@/features/files/FilesPanel";
@@ -11,9 +11,10 @@ import type { ApiClient } from "@/lib/api";
 import type { ThreadSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-export type RightTab = "changes" | "files" | "term" | "plan" | "queue";
+/** 「home」 is the pane before anything is opened in it: a plain list of what it can show. */
+export type RightTab = "home" | "changes" | "files" | "term" | "plan" | "queue";
 
-const TABS: ReadonlyArray<{ id: RightTab; label: string; Icon: typeof FileDiff }> = [
+const TABS: ReadonlyArray<{ id: Exclude<RightTab, "home">; label: string; Icon: typeof FileDiff }> = [
   { id: "changes", label: "变更", Icon: FileDiff },
   { id: "files", label: "文件", Icon: FolderTree },
   { id: "term", label: "终端", Icon: Terminal },
@@ -51,6 +52,7 @@ export function RightPane({
   refreshKey,
   messages,
   thread,
+  place,
   live,
   onBuild,
 }: {
@@ -67,6 +69,8 @@ export function RightPane({
   refreshKey: string;
   /** The active thread's messages, for 终端 and 计划. Empty without a live thread. */
   messages: UIMessage[];
+  /** The project the task runs on, named at the top of the list. */
+  place: string | undefined;
   /** The selected task, for the 变更 tab's 收口 bar. */
   thread: ThreadSummary | undefined;
   /** Whether that task's turn is still alive; every 收口 action is off while it is. */
@@ -75,12 +79,47 @@ export function RightPane({
   onBuild: (threadId: string, content: string) => Promise<void>;
 }) {
   const changeCount = changes.snapshot?.files.length ?? 0;
+  const countOf = (id: RightTab): number => (id === "queue" ? queue.length : id === "changes" ? changeCount : 0);
+
+  // Nothing opened yet: the pane is a quiet list on the window's own ground —
+  // no border, no surface — naming where the task runs and what can be opened.
+  if (tab === "home") {
+    return (
+      <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-bg">
+        <div data-tauri-drag-region className="h-topbar flex-none" />
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-1.25 pt-2xs">
+          {place != null && <div className="truncate px-row-pad pb-2xs text-fg-muted text-sm">在 {place}</div>}
+          {TABS.map(({ id, label, Icon }) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => onTab(id)}
+              className="flex h-7 w-full flex-none items-center gap-xs rounded-md px-row-pad text-left text-body text-fg-secondary hover:bg-bg-hover hover:text-fg"
+            >
+              <Icon className="size-lg flex-none text-fg-muted" />
+              <span className="min-w-0 truncate">{label}</span>
+              {countOf(id) > 0 && <span className="ml-auto text-fg-faint text-sm">{countOf(id)}</span>}
+            </button>
+          ))}
+        </div>
+      </aside>
+    );
+  }
 
   return (
-    <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-border border-l bg-bg-elevated">
-      <div role="tablist" className="flex flex-none items-center gap-3xs border-border border-b px-xs py-2xs">
+    <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-border border-l bg-bg">
+      <div role="tablist" data-tauri-drag-region className="flex h-topbar flex-none items-center gap-3xs border-border border-b px-xs">
+        <button
+          type="button"
+          aria-label="回到列表"
+          title="回到列表"
+          onClick={() => onTab("home")}
+          className="grid size-xl flex-none place-items-center rounded-md text-fg-muted hover:bg-bg-hover hover:text-fg"
+        >
+          <ChevronLeft className="size-lg" />
+        </button>
         {TABS.map(({ id, label, Icon }) => {
-          const count = id === "queue" ? queue.length : id === "changes" ? changeCount : 0;
+          const count = countOf(id);
           return (
             <button
               key={id}
@@ -90,8 +129,8 @@ export function RightPane({
               aria-selected={tab === id}
               onClick={() => onTab(id)}
               className={cn(
-                "relative inline-flex h-xl items-center gap-3xs rounded-sm px-xs text-fg-faint hover:bg-bg-hover hover:text-fg-muted",
-                tab === id && "text-fg after:absolute after:right-2xs after:bottom-[calc(-1*var(--spacing-2xs)-1px)] after:left-2xs after:h-3xs after:rounded-full after:bg-fg after:content-['']",
+                "relative inline-flex h-xl items-center gap-3xs rounded-md px-xs text-fg-muted hover:bg-bg-hover hover:text-fg",
+                tab === id && "bg-bg-active text-fg",
               )}
             >
               <Icon className="size-lg" />

@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import type { UIMessage } from "ai";
+import { TopStrip } from "@/components/TopStrip";
 import { CommandPalette, type Command } from "@/features/cmdk/CommandPalette";
 import { EmptyState } from "@/features/empty/EmptyState";
 import { RightPane } from "@/features/rightpane/RightPane";
@@ -10,7 +11,6 @@ import type { QueueItem } from "@/features/worklog/queue";
 import { oneLine } from "@/lib/format";
 import { usePrefs, usePrefsSync } from "@/lib/prefs";
 import { ThreadView } from "./ThreadView";
-import { TitleBar } from "./TitleBar";
 import { isLiveThread, useWorkbench } from "./useWorkbench";
 
 /** The three-column grid. Widths come straight from the spacing tokens. */
@@ -73,36 +73,37 @@ export function Shell({ token }: { token: string }) {
     [actions, engines, left, right.open, state.threads, thread, toggleDensity, toggleTheme],
   );
 
-  return (
-    <div className="grid h-full grid-rows-[var(--spacing-topbar)_minmax(0,1fr)] overflow-hidden">
-      <TitleBar
-        projects={state.projects}
-        projectId={activeProjectId}
-        onSelectProject={actions.selectProject}
-        onAddProject={actions.addProject}
-        onPickFolder={actions.pickFolder}
-        connected={state.connected}
-      />
+  // The right pane belongs to a task: without one open there is nothing for it to list.
+  const showRight = right.open && !settingsOpen && view === "thread" && thread != null;
 
+  return (
+    // No window bar of its own: like Cursor's Agents Window the three columns
+    // run the full height, and each column's top strip is the title bar.
+    <div className="h-full overflow-hidden">
       <div
-        className="grid min-h-0 transition-[grid-template-columns] duration-[var(--duration-base)]"
+        className="grid h-full min-h-0 transition-[grid-template-columns] duration-[var(--duration-base)]"
         style={{
-          gridTemplateColumns: `${left === "rail" ? "var(--spacing-sidebar-rail)" : "var(--spacing-sidebar)"} minmax(0,1fr) ${
-            right.open && !settingsOpen ? "var(--spacing-rightpane)" : "0px"
+          gridTemplateColumns: `${left === "off" ? "0px" : "var(--spacing-sidebar)"} minmax(0,1fr) ${
+            !showRight ? "0px" : right.tab === "home" ? "var(--spacing-rightlist)" : "var(--spacing-rightpane)"
           }`,
         }}
       >
         <Sidebar
           projects={state.projects}
+          projectId={activeProjectId}
           threads={state.threads}
           grouping={grouping}
           onGrouping={actions.setGrouping}
           selectedThreadId={selectedThreadId}
-          rail={left === "rail"}
+          connected={state.connected}
           onSelect={actions.selectThread}
           onNewTask={actions.newTask}
           onOpenPalette={actions.openPalette}
           onOpenSettings={actions.openSettings}
+          onToggle={actions.toggleLeft}
+          onSelectProject={actions.selectProject}
+          onAddProject={actions.addProject}
+          onPickFolder={actions.pickFolder}
           settingsOpen={settingsOpen}
           getChat={actions.getChat}
           onArchive={actions.archiveThread}
@@ -112,8 +113,11 @@ export function Shell({ token }: { token: string }) {
 
         <main className="grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto]">
           {settingsOpen ? (
-            <div className="row-span-3 min-h-0 overflow-y-auto">
-              <SettingsView settings={state.settings} engines={engines} client={client} onClose={actions.closeSettings} />
+            <div className="row-span-3 flex min-h-0 flex-col">
+              <TopStrip leftOpen={left === "on"} onToggleLeft={actions.toggleLeft} />
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                <SettingsView settings={state.settings} engines={engines} client={client} onClose={actions.closeSettings} />
+              </div>
             </div>
           ) : view === "thread" && thread != null ? (
             <ThreadView
@@ -122,6 +126,7 @@ export function Shell({ token }: { token: string }) {
               client={client}
               changes={changes}
               rightOpen={right.open}
+              leftOpen={left === "on"}
               engines={engines}
               runMode={state.settings?.runMode}
               allowlist={state.settings?.allowlist}
@@ -129,7 +134,9 @@ export function Shell({ token }: { token: string }) {
               onMessages={onMessages}
             />
           ) : (
-            <div className="row-span-3 min-h-0 overflow-y-auto">
+            <div className="row-span-3 flex min-h-0 flex-col">
+              <TopStrip leftOpen={left === "on"} onToggleLeft={actions.toggleLeft} />
+              <div className="min-h-0 flex-1 overflow-y-auto">
               <EmptyState
                 projects={state.projects}
                 projectId={activeProjectId}
@@ -141,11 +148,12 @@ export function Shell({ token }: { token: string }) {
                 onPickFolder={actions.pickFolder}
                 onStart={actions.startThread}
               />
+              </div>
             </div>
           )}
         </main>
 
-        {!settingsOpen && (
+        {showRight && (
           <RightPane
             queue={queue}
             open={right.open}
@@ -158,6 +166,7 @@ export function Shell({ token }: { token: string }) {
             refreshKey={thread?.updatedAt ?? ""}
             messages={messages}
             thread={thread}
+            place={state.projects.find((entry) => entry.id === thread?.projectId)?.name}
             live={isLiveThread(thread)}
             onBuild={actions.buildFromPlan}
           />

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { ChevronDown } from "lucide-react";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ProjectPicker } from "@/components/ProjectPicker";
 import { Composer } from "@/features/composer/Composer";
@@ -152,7 +153,7 @@ export function EmptyState({
                 className="inline-flex h-xl items-center gap-3xs rounded-sm px-xs text-fg-muted text-sm hover:bg-bg-hover hover:text-fg"
               >
                 <span>{project?.name ?? "选择仓库"}</span>
-                <span className="opacity-60">▾</span>
+                <ChevronDown className="size-sm flex-none text-fg-faint" />
               </button>
             )}
           />
@@ -194,10 +195,10 @@ export function EmptyState({
                   type="button"
                   {...props}
                   title="这个任务在哪里改文件"
-                  className="inline-flex h-lg items-center gap-3xs rounded-sm px-2xs text-fg-muted text-xs hover:bg-bg-hover hover:text-fg"
+                  className="inline-flex h-xl items-center gap-3xs rounded-md px-2xs hover:bg-bg-hover hover:text-fg"
                 >
                   <span>{WORKSPACES.find((entry) => entry.id === workspace)?.label}</span>
-                  <span className="opacity-60">▾</span>
+                  <ChevronDown className="size-sm flex-none text-fg-faint" />
                 </button>
               )}
             >

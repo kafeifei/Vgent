@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { UIMessage } from "ai";
-import { ArrowUp, AtSign, File, Folder, ListPlus, Plus, Square, X } from "lucide-react";
+import { ArrowUp, AtSign, ChevronDown, File, Folder, ListPlus, Plus, Square, X } from "lucide-react";
 import { ModelPicker, effectiveModel } from "@/components/ModelPicker";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ReasoningPicker } from "@/components/ReasoningPicker";
@@ -15,6 +15,7 @@ import { acceptMention, findMention, mentionSegments, type Mention } from "./men
 import { isImeKeyEvent } from "@/lib/ime";
 
 export const COMPOSER_PLACEHOLDER = "规划、构建，/ 输入命令，@ 引用上下文";
+const FOLLOW_UP_PLACEHOLDER = "继续追问";
 
 /** 模式: what the next message does. One line each, because that is the whole choice. */
 const MODES: ReadonlyArray<{ id: ThreadMode; label: string; hint: string }> = [
@@ -228,9 +229,9 @@ export function Composer({
         </div>
       )}
 
-      <div className="relative rounded-lg border border-border bg-bg-elevated focus-within:border-border-strong">
+      <div className="relative rounded-2xl border border-border bg-bg-elevated shadow-xs focus-within:border-border-strong">
         {open && (
-          <div className="absolute bottom-full left-0 z-10 mb-2xs max-h-[calc(var(--spacing-xl)*8)] w-full overflow-y-auto rounded-md border border-border bg-bg-elevated shadow-lg">
+          <div className="absolute bottom-full left-0 z-10 mb-2xs max-h-[calc(var(--spacing-xl)*8)] w-full overflow-y-auto rounded-xl border border-border bg-bg-elevated p-2xs shadow-lg">
             {rows.map((entry, index) => (
               <button
                 key={entry.path}
@@ -243,7 +244,7 @@ export function Composer({
                 }}
                 onMouseEnter={() => setActive(index)}
                 className={cn(
-                  "flex h-row-file w-full items-center gap-2xs px-xs text-left",
+                  "flex h-row-file w-full items-center gap-2xs rounded-md px-xs text-left",
                   index === active ? "bg-bg-inset" : "hover:bg-bg-hover",
                 )}
               >
@@ -270,87 +271,7 @@ export function Composer({
           />
         )}
 
-        <div className="relative">
-          {/* The pill layer: the textarea's own text is transparent above it. */}
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words px-md py-sm text-body text-fg leading-body"
-          >
-            {segments.map((segment, index) => (
-              // The index is the identity: the list is rebuilt from the text.
-              // The pill's padding is cancelled by an equal negative margin —
-              // anything that moved a glyph would drift from the real caret.
-              <span key={index} className={segment.mention ? "-mx-3xs rounded bg-bg-inset px-3xs text-fg" : undefined}>
-                {segment.text}
-              </span>
-            ))}
-            {"\n"}
-          </div>
-
-          <textarea
-            ref={textarea}
-            value={value}
-            autoFocus={autoFocus}
-            rows={2}
-            placeholder={COMPOSER_PLACEHOLDER}
-            onChange={(event) => {
-              onChange(event.target.value);
-              setMention(completeFiles == null ? null : findMention(event.target.value, event.target.selectionStart));
-            }}
-            onBlur={() => setMention(null)}
-            onKeyDown={(event) => {
-              // A key the input method is still using is not ours: confirming a
-              // candidate with Enter must not send, arrows must not move our list.
-              if (isImeKeyEvent(event)) return;
-              if (open) {
-                if (event.key === "ArrowDown") {
-                  event.preventDefault();
-                  setActive((index) => (index + 1) % rows.length);
-                  return;
-                }
-                if (event.key === "ArrowUp") {
-                  event.preventDefault();
-                  setActive((index) => (index - 1 + rows.length) % rows.length);
-                  return;
-                }
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  setMention(null);
-                  return;
-                }
-                // Enter picks a candidate here; it must not also send the turn.
-                if (event.key === "Enter" || event.key === "Tab") {
-                  event.preventDefault();
-                  const entry = rows[active];
-                  if (entry != null) accept(entry);
-                  return;
-                }
-              }
-              // ⇧Tab switches 模式. `preventDefault` only when it really does —
-              // otherwise the key keeps its normal job of leaving the textarea.
-              if (event.key === "Tab" && event.shiftKey) {
-                if (!canSwitchMode) return;
-                event.preventDefault();
-                onPickMode(mode === "plan" ? "agent" : "plan");
-                return;
-              }
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                // 运行中按 Enter = 排队。Which of the two it is, is the caller's
-                // business: `onSubmit` sends or queues by itself, and only it
-                // knows whether the request went through — the draft is cleared
-                // there, never here.
-                onSubmit();
-              }
-            }}
-            className={cn(
-              "relative block w-full resize-none bg-transparent px-md py-sm text-body text-transparent caret-fg leading-body outline-none placeholder:text-fg-faint",
-              big ? "min-h-[calc(var(--spacing-xl)*3)]" : "min-h-[calc(var(--spacing-xl)*2)]",
-            )}
-          />
-        </div>
-
-        <div className="flex items-center gap-2xs px-xs pt-2xs pb-xs">
+        <div className={cn("flex items-end gap-2xs p-1.25", big && "flex-wrap px-xs pt-xs")}>
           {/* 「+」: one small menu — 引用文件 and 模式. The mode chip is gone from
               the default mode, so this is where Plan is reached by mouse. */}
           <Popover
@@ -362,9 +283,9 @@ export function Composer({
                 {...props}
                 aria-label="添加上下文和模式"
                 title="引用文件、切换模式"
-                className="grid size-xl flex-none place-items-center rounded-full bg-bg-inset text-fg-muted hover:bg-bg-active hover:text-fg"
+                className="grid size-7 flex-none place-items-center rounded-full bg-bg-active text-fg-muted hover:bg-bg-strong hover:text-fg"
               >
-                <Plus className="size-md" />
+                <Plus className="size-lg" />
               </button>
             )}
           >
@@ -410,10 +331,89 @@ export function Composer({
               </>
             )}
           </Popover>
+          <div className={cn("relative min-w-0 flex-1", big && "order-first basis-full")}>
+            {/* The pill layer: the textarea's own text is transparent above it. */}
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words px-2xs py-3xs text-fg text-md leading-chat"
+            >
+              {segments.map((segment, index) => (
+                // The index is the identity: the list is rebuilt from the text.
+                // The pill's padding is cancelled by an equal negative margin —
+                // anything that moved a glyph would drift from the real caret.
+                <span key={index} className={segment.mention ? "-mx-3xs rounded bg-bg-inset px-3xs text-fg" : undefined}>
+                  {segment.text}
+                </span>
+              ))}
+              {"\n"}
+            </div>
+
+            <textarea
+              ref={textarea}
+              value={value}
+              autoFocus={autoFocus}
+              rows={1}
+              placeholder={big ? COMPOSER_PLACEHOLDER : FOLLOW_UP_PLACEHOLDER}
+              onChange={(event) => {
+                onChange(event.target.value);
+                setMention(completeFiles == null ? null : findMention(event.target.value, event.target.selectionStart));
+              }}
+              onBlur={() => setMention(null)}
+              onKeyDown={(event) => {
+                // A key the input method is still using is not ours: confirming a
+                // candidate with Enter must not send, arrows must not move our list.
+                if (isImeKeyEvent(event)) return;
+                if (open) {
+                  if (event.key === "ArrowDown") {
+                    event.preventDefault();
+                    setActive((index) => (index + 1) % rows.length);
+                    return;
+                  }
+                  if (event.key === "ArrowUp") {
+                    event.preventDefault();
+                    setActive((index) => (index - 1 + rows.length) % rows.length);
+                    return;
+                  }
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    setMention(null);
+                    return;
+                  }
+                  // Enter picks a candidate here; it must not also send the turn.
+                  if (event.key === "Enter" || event.key === "Tab") {
+                    event.preventDefault();
+                    const entry = rows[active];
+                    if (entry != null) accept(entry);
+                    return;
+                  }
+                }
+                // ⇧Tab switches 模式. `preventDefault` only when it really does —
+                // otherwise the key keeps its normal job of leaving the textarea.
+                if (event.key === "Tab" && event.shiftKey) {
+                  if (!canSwitchMode) return;
+                  event.preventDefault();
+                  onPickMode(mode === "plan" ? "agent" : "plan");
+                  return;
+                }
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  // 运行中按 Enter = 排队。Which of the two it is, is the caller's
+                  // business: `onSubmit` sends or queues by itself, and only it
+                  // knows whether the request went through — the draft is cleared
+                  // there, never here.
+                  onSubmit();
+                }
+              }}
+              className={cn(
+                "relative block max-h-[40vh] w-full resize-none bg-transparent px-2xs py-3xs text-md text-transparent caret-fg leading-chat outline-none placeholder:text-fg-faint",
+                big && "min-h-[calc(var(--leading-chat)*3)]",
+              )}
+            />
+          </div>
           {/* 模式 chip, only away from the default: what the next message does
               differently has to be readable, and one × puts it back. */}
           {mode !== "agent" && (
-            <span className="inline-flex h-xl flex-none items-center gap-3xs rounded-sm bg-brand-bg pr-3xs pl-xs text-brand text-xs">
+            <span className="inline-flex h-7 flex-none items-center gap-3xs rounded-full bg-brand-bg pr-2xs pl-sm text-brand text-sm">
               <span title={MODES.find((entry) => entry.id === mode)?.hint}>
                 {MODES.find((entry) => entry.id === mode)?.label}
               </span>
@@ -442,10 +442,10 @@ export function Composer({
                 type="button"
                 {...(chip.title != null ? { title: chip.title } : {})}
                 {...props}
-                className="inline-flex h-xl items-center gap-3xs rounded-sm px-xs text-fg-muted text-xs hover:bg-bg-hover hover:text-fg"
+                className="inline-flex h-7 flex-none items-center gap-3xs rounded-full px-xs text-fg-muted text-sm hover:bg-bg-hover hover:text-fg"
               >
-                <span className="font-mono">{chip.label}</span>
-                <span className="opacity-60">▾</span>
+                <span className="max-w-[22ch] truncate">{chip.label}</span>
+                <ChevronDown className="size-sm flex-none text-fg-faint" />
               </button>
             )}
           />
@@ -460,14 +460,14 @@ export function Composer({
                 type="button"
                 {...props}
                 title="思考等级"
-                className="inline-flex h-xl items-center gap-3xs rounded-sm px-xs text-fg-muted text-xs hover:bg-bg-hover hover:text-fg"
+                className="inline-flex h-7 flex-none items-center gap-3xs rounded-full px-xs text-fg-muted text-sm hover:bg-bg-hover hover:text-fg"
               >
                 <span>思考 {current}</span>
-                <span className="opacity-60">▾</span>
+                <ChevronDown className="size-sm flex-none text-fg-faint" />
               </button>
             )}
           />
-          <span className="flex-1" />
+          {big && <span className="flex-1" />}
           {/* 运行中，发送键读「排队」: the same message, one turn later. The round
               stop button stays where it is, so 停止 never moves under the cursor. */}
           {live && (
@@ -476,7 +476,7 @@ export function Composer({
               aria-label="排队"
               title="排到队列，这一轮结束后自动发出"
               onClick={onSubmit}
-              className="inline-flex h-xl flex-none items-center gap-3xs rounded-full border border-border px-sm text-fg-muted text-xs hover:border-border-strong hover:text-fg"
+              className="inline-flex h-7 flex-none items-center gap-3xs rounded-full border border-border px-sm text-fg-muted text-sm hover:border-border-strong hover:text-fg"
             >
               <ListPlus className="size-sm" />
               <span>排队</span>
@@ -486,9 +486,9 @@ export function Composer({
             type="button"
             aria-label={live ? "停止" : "发送"}
             onClick={() => (live ? onStop?.() : onSubmit())}
-            className="grid size-2xl flex-none place-items-center rounded-full bg-brand text-brand-fg hover:bg-brand-hover"
+            className="grid size-7 flex-none place-items-center rounded-full bg-fg text-bg hover:opacity-85"
           >
-            {live ? <Square className="size-md fill-current" /> : <ArrowUp className="size-lg" />}
+            {live ? <Square className="size-sm fill-current" /> : <ArrowUp className="size-lg" />}
           </button>
         </div>
       </div>

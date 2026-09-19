@@ -1,9 +1,11 @@
 import { useState, type ComponentType } from "react";
 import type { Chat } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
-import { ListFilter, Plus, Search, Settings } from "lucide-react";
+import { ChevronRight, FolderOpen, FolderPlus, ListFilter, PanelLeft, Search, Settings, SquarePen } from "lucide-react";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
+import { ProjectPicker } from "@/components/ProjectPicker";
 import { BUILD_DETAIL, BUILD_LABEL } from "@/lib/build";
+import { hasTrafficLights } from "@/lib/host";
 import type { Project, ThreadSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { GROUPING_LABELS, groupThreads, type Grouping } from "./grouping";
@@ -11,8 +13,12 @@ import { TaskItem } from "./TaskItem";
 
 const GROUPINGS: readonly Grouping[] = ["project", "status", "updated"];
 
+/** The small icon buttons: the top bar's toggle, the section header's two, the foot's gear. */
+export const SIDEBAR_ICON_BUTTON =
+  "grid size-xl flex-none place-items-center rounded-md text-fg-muted hover:bg-bg-hover hover:text-fg";
+
 /**
- * One of the two plain entries at the top. They are entries, not buttons with
+ * One of the plain entries at the top. They are entries, not buttons with
  * frames: the sidebar's top is a list of places to go, and the task list below
  * is what the eye should land on.
  */
@@ -20,13 +26,11 @@ function TopEntry({
   icon: Icon,
   label,
   shortcut,
-  rail,
   onClick,
 }: {
   icon: ComponentType<{ className?: string }>;
   label: string;
   shortcut: string;
-  rail: boolean;
   onClick: () => void;
 }) {
   return (
@@ -34,34 +38,32 @@ function TopEntry({
       type="button"
       onClick={onClick}
       title={`${label} ${shortcut}`}
-      className={cn(
-        "flex h-xl w-full items-center gap-xs rounded-md text-fg-muted text-sm hover:bg-bg-hover hover:text-fg",
-        rail ? "justify-center px-0" : "px-xs",
-      )}
+      className="group flex h-row w-full items-center gap-row-pad rounded-md px-row-pad text-body text-fg hover:bg-bg-hover"
     >
-      <Icon className="size-md flex-none" />
-      {!rail && (
-        <>
-          <span>{label}</span>
-          <span className="ml-auto font-mono text-2xs text-fg-faint">{shortcut}</span>
-        </>
-      )}
+      <Icon className="size-lg flex-none text-fg-muted" />
+      <span className="min-w-0 truncate">{label}</span>
+      <span className="ml-auto text-fg-faint text-xs opacity-0 group-hover:opacity-100">{shortcut}</span>
     </button>
   );
 }
 
-/** Left column: the two top entries, the grouped task list, the settings foot. */
+/** Left column: the window strip, the top entries, the grouped task list, the foot. */
 export function Sidebar({
   projects,
+  projectId,
   threads,
   grouping,
   onGrouping,
   selectedThreadId,
-  rail,
+  connected,
   onSelect,
   onNewTask,
   onOpenPalette,
   onOpenSettings,
+  onToggle,
+  onSelectProject,
+  onAddProject,
+  onPickFolder,
   settingsOpen,
   getChat,
   onArchive,
@@ -69,16 +71,23 @@ export function Sidebar({
   onDelete,
 }: {
   projects: Project[];
+  /** The project a new task would start in; the add-folder picker marks it. */
+  projectId: string | null;
   threads: ThreadSummary[];
   grouping: Grouping;
   onGrouping: (grouping: Grouping) => void;
   selectedThreadId: string | null;
-  rail: boolean;
+  connected: boolean;
   onSelect: (threadId: string) => void;
   onNewTask: () => void;
   /** 搜索 ⌘K: the command palette, which is also how tasks are searched. */
   onOpenPalette: () => void;
   onOpenSettings: () => void;
+  /** 收起侧栏 ⌘B. */
+  onToggle: () => void;
+  onSelectProject: (projectId: string) => void;
+  onAddProject: (repoPath: string) => Promise<void>;
+  onPickFolder: () => Promise<string | null>;
   settingsOpen: boolean;
   /** Live chats only: the sidebar reads the current action off them. */
   getChat: (threadId: string) => Chat<UIMessage>;
@@ -91,84 +100,114 @@ export function Sidebar({
   // Only 已归档 folds, and only for as long as the sidebar is mounted: it is a
   // glance, not a preference.
   const [expanded, setExpanded] = useState(false);
+  const GroupIcon = grouping === "project" ? FolderOpen : null;
 
   return (
-    <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-border border-r bg-bg">
-      <div className={cn("flex flex-none flex-col gap-3xs", rail ? "p-2xs" : "p-sm pb-2xs")}>
-        <TopEntry icon={Plus} label="新任务" shortcut="⌘N" rail={rail} onClick={onNewTask} />
-        <TopEntry icon={Search} label="搜索" shortcut="⌘K" rail={rail} onClick={onOpenPalette} />
+    <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-border border-r bg-bg-sidebar">
+      {/* The window strip: the traffic lights sit on its left under the desktop
+          shell, and the whole strip drags the window. */}
+      <div
+        data-tauri-drag-region
+        className={cn("flex h-topbar flex-none items-center pr-sm", hasTrafficLights() ? "pl-traffic" : "pl-sm")}
+      >
+        <button type="button" title="收起侧栏 ⌘B" aria-label="收起侧栏" onClick={onToggle} className={SIDEBAR_ICON_BUTTON}>
+          <PanelLeft className="size-lg" />
+        </button>
       </div>
 
-      {/* 任务 with one filter icon: what the list is grouped by is a setting of
-          the list, not a control that has to sit in the way of it. */}
-      {!rail && (
-        <div className="flex flex-none items-center gap-2xs px-sm pt-xs pb-3xs">
-          <span className="min-w-0 flex-1 truncate text-2xs text-fg-faint tracking-wider">任务</span>
-          <Popover
-            align="end"
-            trigger={(props) => (
-              <button
-                type="button"
-                {...props}
-                aria-label="筛选"
-                title={`分组方式：${GROUPING_LABELS[grouping]}`}
-                className="grid size-lg flex-none place-items-center rounded-sm text-fg-faint hover:bg-bg-hover hover:text-fg"
-              >
-                <ListFilter className="size-sm" />
-              </button>
-            )}
-          >
-            {(close) => (
-              <>
-                <PopTitle>分组方式</PopTitle>
-                {GROUPINGS.map((entry) => (
-                  <PopItem
-                    key={entry}
-                    selected={entry === grouping}
-                    onClick={() => {
-                      onGrouping(entry);
-                      close();
-                    }}
-                  >
-                    {GROUPING_LABELS[entry]}
-                  </PopItem>
-                ))}
-              </>
-            )}
-          </Popover>
-        </div>
-      )}
+      <div className="flex flex-none flex-col gap-px px-sm pt-sm">
+        <TopEntry icon={SquarePen} label="新任务" shortcut="⌘N" onClick={onNewTask} />
+        <TopEntry icon={Search} label="搜索" shortcut="⌘K" onClick={onOpenPalette} />
+      </div>
 
-      <nav className={cn("min-h-0 flex-1 overflow-y-auto pb-md", rail ? "px-2xs" : "px-sm")}>
+      {/* 工作区 with its two icons: how the list is grouped, and adding a
+          folder. Both are settings of the list, so they sit on its header. */}
+      <div className="mt-section-gap flex h-row flex-none items-center pr-sm pl-[calc(var(--spacing-sm)+var(--spacing-row-pad))]">
+        <span className="min-w-0 flex-1 truncate text-fg-muted text-xs">工作区</span>
+        <Popover
+          align="end"
+          trigger={(props) => (
+            <button
+              type="button"
+              {...props}
+              aria-label="筛选"
+              title={`分组方式：${GROUPING_LABELS[grouping]}`}
+              className={SIDEBAR_ICON_BUTTON}
+            >
+              <ListFilter className="size-lg" />
+            </button>
+          )}
+        >
+          {(close) => (
+            <>
+              <PopTitle>分组方式</PopTitle>
+              {GROUPINGS.map((entry) => (
+                <PopItem
+                  key={entry}
+                  selected={entry === grouping}
+                  onClick={() => {
+                    onGrouping(entry);
+                    close();
+                  }}
+                >
+                  {GROUPING_LABELS[entry]}
+                </PopItem>
+              ))}
+            </>
+          )}
+        </Popover>
+        <ProjectPicker
+          projects={projects}
+          selectedId={projectId}
+          onSelect={onSelectProject}
+          onAdd={onAddProject}
+          onPickFolder={onPickFolder}
+          align="end"
+          trigger={(props) => (
+            <button type="button" {...props} aria-label="添加项目" title="项目：切换、添加文件夹" className={SIDEBAR_ICON_BUTTON}>
+              <FolderPlus className="size-lg" />
+            </button>
+          )}
+        />
+      </div>
+
+      <nav className="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-sm pt-3xs pb-md">
         {groups.map((group) => {
           const folded = group.collapsible === true && !expanded;
+          const title = (
+            <>
+              {group.collapsible === true ? (
+                <ChevronRight
+                  className={cn("size-lg flex-none text-fg-muted transition-transform duration-[var(--duration-fast)]", expanded && "rotate-90")}
+                />
+              ) : (
+                GroupIcon != null && <GroupIcon className="size-lg flex-none text-fg-muted" />
+              )}
+              <span className="min-w-0 truncate">{group.title}</span>
+              {group.count != null && <span className="text-fg-faint text-sm">{group.count}</span>}
+            </>
+          );
+          const rowClass = "flex h-row w-full flex-none items-center gap-row-pad rounded-md px-row-pad text-left text-body text-fg";
           return (
-            <div key={group.key}>
-              {!rail &&
-                (group.collapsible === true ? (
-                  <button
-                    type="button"
-                    aria-expanded={expanded}
-                    onClick={() => setExpanded((open) => !open)}
-                    className="flex w-full items-center gap-2xs rounded-sm px-xs pt-md pb-2xs text-2xs text-fg-faint tracking-wider hover:text-fg-muted"
-                  >
-                    <span className="flex-none">{expanded ? "▾" : "▸"}</span>
-                    <span className="min-w-0 truncate">{group.title}</span>
-                    {group.count != null && <span className="font-mono">{group.count}</span>}
-                  </button>
-                ) : (
-                  <div className="flex items-center gap-2xs px-xs pt-md pb-2xs text-2xs text-fg-faint tracking-wider">
-                    <span className="min-w-0 truncate">{group.title}</span>
-                    {group.count != null && <span className="font-mono">{group.count}</span>}
-                  </div>
-                ))}
+            <div key={group.key} className="flex flex-col gap-px">
+              {group.collapsible === true ? (
+                <button
+                  type="button"
+                  aria-expanded={expanded}
+                  onClick={() => setExpanded((open) => !open)}
+                  className={cn(rowClass, "hover:bg-bg-hover")}
+                >
+                  {title}
+                </button>
+              ) : (
+                <div className={rowClass}>{title}</div>
+              )}
               {!folded &&
                 group.threads.map((thread) => (
                   <TaskItem
                     key={thread.id}
                     thread={thread}
                     selected={thread.id === selectedThreadId}
-                    rail={rail}
                     chat={thread.status === "running" ? getChat(thread.id) : undefined}
                     onSelect={() => onSelect(thread.id)}
                     onArchive={(archived) => onArchive(thread.id, archived)}
@@ -179,38 +218,32 @@ export function Sidebar({
             </div>
           );
         })}
-        {threads.length === 0 && !rail && <p className="px-xs py-md text-fg-faint text-xs">还没有任务。</p>}
+        {threads.length === 0 && <p className="px-row-pad py-sm text-fg-faint text-sm">还没有任务。</p>}
       </nav>
 
-      <div className={cn("flex flex-none items-center gap-xs border-border border-t py-xs", rail ? "justify-center px-0" : "px-sm")}>
-        <span className="grid size-avatar flex-none place-items-center rounded-full bg-bg-active font-bold text-fg-muted text-xs">
+      <div className="flex h-foot flex-none items-center gap-sm pr-sm pl-[calc(var(--spacing-sm)+var(--spacing-row-pad))]">
+        <span className="grid size-avatar flex-none place-items-center rounded-full bg-bg-strong font-medium text-fg-secondary text-sm">
           V
         </span>
-        {!rail && (
-          <>
-            <div className="flex min-w-0 flex-1 flex-col justify-center">
-              <span className="truncate text-fg-muted text-sm leading-tight">本机</span>
-              <span
-                className="truncate font-mono text-2xs text-fg-faint leading-tight"
-                title={BUILD_DETAIL}
-              >
-                {BUILD_LABEL}
-              </span>
-            </div>
-            <button
-              type="button"
-              title="设置 ⌘,"
-              aria-pressed={settingsOpen}
-              onClick={onOpenSettings}
-              className={cn(
-                "grid size-xl flex-none place-items-center rounded-md text-fg-muted hover:bg-bg-hover hover:text-fg",
-                settingsOpen && "bg-bg-active text-fg",
-              )}
-            >
-              <Settings className="size-md" />
-            </button>
-          </>
-        )}
+        <div className="flex min-w-0 flex-1 flex-col justify-center">
+          <span className="truncate text-body text-fg leading-tight">本机</span>
+          <span
+            className={cn("truncate text-2xs leading-tight", connected ? "text-fg-faint" : "text-danger")}
+            title={BUILD_DETAIL}
+          >
+            {connected ? BUILD_LABEL : "连接断开"}
+          </span>
+        </div>
+        <button
+          type="button"
+          title="设置 ⌘,"
+          aria-label="设置"
+          aria-pressed={settingsOpen}
+          onClick={onOpenSettings}
+          className={cn(SIDEBAR_ICON_BUTTON, settingsOpen && "bg-bg-active text-fg")}
+        >
+          <Settings className="size-lg" />
+        </button>
       </div>
     </aside>
   );

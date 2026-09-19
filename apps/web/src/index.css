@@ -25,12 +25,15 @@
   --color-bg: var(--color-bg);
   --color-bg-elevated: var(--color-bg-elevated);
   --color-bg-inset: var(--color-bg-inset);
+  --color-bg-sidebar: var(--color-bg-sidebar);
+  --color-bg-strong: var(--color-bg-strong);
   --color-bg-hover: var(--color-bg-hover);
   --color-bg-active: var(--color-bg-active);
   --color-bg-scrim: var(--color-bg-scrim);
   --color-border: var(--color-border);
   --color-border-strong: var(--color-border-strong);
   --color-fg: var(--color-fg);
+  --color-fg-secondary: var(--color-fg-secondary);
   --color-fg-muted: var(--color-fg-muted);
   --color-fg-faint: var(--color-fg-faint);
 
@@ -99,6 +102,7 @@
   --leading-none: var(--leading-none);
   --leading-tight: var(--leading-tight);
   --leading-body: var(--leading-body);
+  --leading-chat: var(--leading-chat);
   --leading-code: var(--leading-code);
 
   /* ── 间距（含布局常量：w-sidebar / h-topbar / h-row-tool …） ── */
@@ -115,6 +119,15 @@
   --spacing-sidebar: var(--spacing-sidebar);
   --spacing-sidebar-rail: var(--spacing-sidebar-rail);
   --spacing-rightpane: var(--spacing-rightpane);
+  --spacing-rightlist: var(--spacing-rightlist);
+  --spacing-row: var(--spacing-row);
+  --spacing-row-pad: var(--spacing-row-pad);
+  --spacing-row-indent: var(--spacing-row-indent);
+  --spacing-section-gap: var(--spacing-section-gap);
+  --spacing-foot: var(--spacing-foot);
+  --spacing-composer: var(--spacing-composer);
+  --spacing-chat-inset: var(--spacing-chat-inset);
+  --spacing-traffic: var(--spacing-traffic);
   --spacing-log-max: var(--spacing-log-max);
   --spacing-review-bar: var(--spacing-review-bar);
   --spacing-ring: var(--spacing-ring);
@@ -132,6 +145,7 @@
   --radius-md: var(--radius-md);
   --radius-lg: var(--radius-lg);
   --radius-xl: var(--radius-xl);
+  --radius-2xl: var(--radius-2xl);
   --radius-full: var(--radius-full);
 
   /* ── 阴影 ── */
@@ -167,6 +181,7 @@
     font-family: var(--font-sans);
     font-size: var(--text-body);
     line-height: var(--leading-body);
+    letter-spacing: -0.08px;
     -webkit-font-smoothing: antialiased;
   }
 

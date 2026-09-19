@@ -19,6 +19,18 @@ export function relativeTime(iso: string, now = Date.now()): string {
   return `${Math.floor(delta / DAY)} 天前`;
 }
 
+/** The sidebar's right-hand stamp: `now` / `5m` / `3h` / `2d` / `4w`, as terse as the row is narrow. */
+export function shortTime(iso: string, now = Date.now()): string {
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return "";
+  const delta = Math.max(0, now - then);
+  if (delta < MINUTE) return "now";
+  if (delta < HOUR) return `${Math.floor(delta / MINUTE)}m`;
+  if (delta < DAY) return `${Math.floor(delta / HOUR)}h`;
+  if (delta < 7 * DAY) return `${Math.floor(delta / DAY)}d`;
+  return `${Math.floor(delta / (7 * DAY))}w`;
+}
+
 /** The trailing path segment — what a tool row shows instead of a long path. */
 export function baseName(path: string): string {
   const cleaned = path.replace(/[/\\]+$/, "");

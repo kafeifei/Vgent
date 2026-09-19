@@ -2,10 +2,10 @@ import { useRef, useState, type RefObject } from "react";
 import { useChat } from "@ai-sdk/react";
 import type { Chat } from "@ai-sdk/react";
 import { isToolUIPart, type UIMessage } from "ai";
-import { MoreHorizontal } from "lucide-react";
+import { GitFork, MoreHorizontal } from "lucide-react";
 import { OutcomeBadge } from "@/components/OutcomeBadge";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
-import { relativeTime } from "@/lib/format";
+import { shortTime } from "@/lib/format";
 import { LIVE_REASON, LIVE_STATUSES, type ThreadStatus, type ThreadSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { describeTool } from "@/features/worklog/toolMeta";
@@ -35,10 +35,10 @@ function currentAction(messages: readonly UIMessage[]): string | undefined {
   return undefined;
 }
 
-/** The second line of a running task, read off its live chat. */
-function LiveAction({ chat }: { chat: Chat<UIMessage> }) {
+/** A running task's row: its title, with the current action as the hover text. */
+function LiveTitle({ chat, title }: { chat: Chat<UIMessage>; title: string }) {
   const { messages } = useChat({ chat });
-  return <>{currentAction(messages) ?? "运行中"}</>;
+  return <span title={currentAction(messages) ?? "运行中"}>{title}</span>;
 }
 
 type RowMenuActions = {
@@ -129,7 +129,7 @@ function RowMenu({ openRef, ...actions }: RowMenuActions & { openRef: RefObject<
           type="button"
           aria-label="任务操作"
           {...props}
-          className="absolute top-xs right-2xs grid size-lg place-items-center rounded-sm text-fg-faint opacity-0 hover:bg-bg-active hover:text-fg focus-visible:opacity-100 aria-expanded:opacity-100 group-hover:opacity-100"
+          className="absolute top-1/2 right-2xs grid size-xl -translate-y-1/2 place-items-center rounded-md text-fg-muted opacity-0 hover:bg-bg-active hover:text-fg focus-visible:opacity-100 aria-expanded:opacity-100 group-hover:opacity-100"
         >
           <MoreHorizontal className="size-md" />
         </button>
@@ -143,7 +143,6 @@ function RowMenu({ openRef, ...actions }: RowMenuActions & { openRef: RefObject<
 export function TaskItem({
   thread,
   selected,
-  rail,
   chat,
   onSelect,
   onArchive,
@@ -152,7 +151,6 @@ export function TaskItem({
 }: {
   thread: ThreadSummary;
   selected: boolean;
-  rail: boolean;
   /** Only supplied for running threads, so idle ones cost nothing. */
   chat: Chat<UIMessage> | undefined;
   onSelect: () => void;
@@ -162,55 +160,19 @@ export function TaskItem({
 }) {
   const openMenu = useRef<(() => void) | null>(null);
   const unread = thread.unread === true;
-  const meta =
+  const state =
     thread.status === "awaiting-approval"
       ? "等待审批"
       : thread.status === "awaiting-input"
         ? "等待回答"
         : thread.status === "error"
-          ? `失败 · ${relativeTime(thread.updatedAt)}`
+          ? "失败"
           : thread.status === "interrupted"
-            ? `已中断 · ${relativeTime(thread.updatedAt)}`
-            : relativeTime(thread.updatedAt);
-  const stats = thread.changeStats;
-
-  const row = (
-    <button
-      type="button"
-      onClick={onSelect}
-      aria-current={selected}
-      title={thread.title}
-      className={cn(
-        "relative block w-full rounded-md py-xs pr-xs text-left hover:bg-bg-hover",
-        rail ? "mb-3xs min-h-xl px-2xs" : "min-h-row-task pl-md",
-        selected && "bg-bg-active",
-      )}
-    >
-      {selected && <span className="absolute top-xs bottom-xs left-0 w-[2px] rounded-full bg-brand" />}
-      <span className={cn("flex items-center gap-xs", rail && "justify-center")}>
-        <StatusDot status={thread.status} />
-        {!rail && <span className={cn("min-w-0 flex-1 truncate text-sm", unread && "font-medium")}>{thread.title}</span>}
-        {/* 未读: it changed while you were away and you have not looked yet. */}
-        {!rail && unread && <span aria-label="未读" title="未读" className="size-xs flex-none rounded-full bg-brand" />}
-      </span>
-      {!rail && (
-        <span className="mt-3xs flex items-center gap-xs pl-md text-fg-faint text-xs">
-          <span className="min-w-0 flex-1 truncate">
-            {thread.status === "running" && chat != null ? <LiveAction chat={chat} /> : meta}
-          </span>
-          <OutcomeBadge outcome={thread.outcome} pr={thread.pr} />
-          {stats != null && stats.files > 0 && (
-            <span className="flex flex-none gap-2xs font-mono text-2xs">
-              <span className="text-diff-add-fg">+{stats.additions}</span>
-              <span className="text-diff-del-fg">−{stats.deletions}</span>
-            </span>
-          )}
-        </span>
-      )}
-    </button>
-  );
-
-  if (rail) return row;
+            ? "已中断"
+            : undefined;
+  // The gutter left of the title is where a row says it needs a look: a task
+  // that is not simply idle shows its state there, an unread one a solid dot.
+  const marked = thread.status !== "idle" || unread;
 
   return (
     <div
@@ -220,7 +182,35 @@ export function TaskItem({
         openMenu.current?.();
       }}
     >
-      {row}
+      <button
+        type="button"
+        onClick={onSelect}
+        aria-current={selected}
+        title={state != null ? `${thread.title} · ${state}` : thread.title}
+        className={cn(
+          "relative flex h-row w-full items-center gap-xs rounded-md pr-xs pl-row-indent text-left text-body hover:bg-bg-hover",
+          selected && "bg-bg-active hover:bg-bg-active",
+        )}
+      >
+        {marked && (
+          <span className="absolute left-0 grid h-full w-row-indent place-items-center">
+            {thread.status === "idle" ? (
+              <span aria-label="未读" title="未读" className="size-xs flex-none rounded-full bg-info" />
+            ) : (
+              <StatusDot status={thread.status} />
+            )}
+          </span>
+        )}
+        <span className={cn("min-w-0 flex-1 truncate", unread && "font-medium")}>
+          {thread.status === "running" && chat != null ? <LiveTitle chat={chat} title={thread.title} /> : thread.title}
+        </span>
+        <OutcomeBadge outcome={thread.outcome} pr={thread.pr} />
+        {/* The stamp gives way to the row's menu on hover, so the two never fight for the corner. */}
+        <span className="flex flex-none items-center gap-xs text-fg-faint text-sm group-hover:invisible group-has-[[aria-expanded=true]]:invisible">
+          {thread.workspace != null && <GitFork className="size-md" aria-label="在 worktree 里" />}
+          <span>{shortTime(thread.updatedAt)}</span>
+        </span>
+      </button>
       <RowMenu
         archived={thread.archivedAt != null}
         unread={unread}

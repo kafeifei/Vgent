@@ -42,7 +42,7 @@ export function WorkLog({
 
   return (
     <Conversation className="min-h-0 flex-1">
-      <ConversationContent className="mx-auto flex w-full max-w-log-max flex-col gap-0 px-md pb-2xl">
+      <ConversationContent className="mx-auto flex w-full max-w-[calc(var(--spacing-log-max)+2*var(--spacing-md))] flex-col gap-0 px-md pt-2xs pb-2xl">
         {turns.map((turn, index) => (
           <Fragment key={turn.key}>
             {index === restoredIndex && <RestoredBar live={live} onLatest={actions.restoreLatest} />}

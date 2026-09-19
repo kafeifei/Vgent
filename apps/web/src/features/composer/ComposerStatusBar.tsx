@@ -38,14 +38,14 @@ export function ComposerStatusBar({
   const sums = changedFiles == null ? null : sumChanges(changedFiles);
 
   return (
-    <div className="flex min-h-review-bar items-center gap-2xs pt-2xs">
+    <div className="mt-1.25 flex min-h-review-bar items-center gap-xs px-chat-inset text-fg-muted text-sm">
       {branch != null && (
         <span
           title={branchTitle ?? "当前分支"}
-          className="inline-flex min-w-0 items-center gap-3xs px-2xs text-fg-muted text-xs"
+          className="inline-flex min-w-0 items-center gap-2xs"
         >
           <GitBranch className="size-md flex-none text-fg-faint" />
-          <span className="min-w-0 truncate font-mono">{branch}</span>
+          <span className="min-w-0 truncate">{branch}</span>
         </span>
       )}
       {location}
@@ -54,13 +54,14 @@ export function ComposerStatusBar({
           type="button"
           title={`${sums.files} 个文件有改动，点开右栏逐个看 diff`}
           onClick={onOpenChanges}
-          className="inline-flex h-lg items-center gap-2xs rounded-full border border-border px-xs text-fg-muted text-xs hover:border-border-strong hover:text-fg"
+          className="inline-flex h-xl items-center gap-2xs rounded-full border border-border px-sm text-fg-muted text-sm hover:border-border-strong hover:text-fg"
         >
           <span>审查</span>
           <span className="font-mono text-diff-add-fg">+{sums.additions}</span>
           <span className="font-mono text-diff-del-fg">−{sums.deletions}</span>
         </button>
       )}
+      <span className="flex-1" />
       {messages != null && <ContextRing messages={messages} {...(contextWindow != null ? { contextWindow } : {})} />}
     </div>
   );

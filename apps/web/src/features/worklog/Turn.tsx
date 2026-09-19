@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { getToolName } from "ai";
+import { Check, ChevronDown, Copy } from "lucide-react";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
 import {
@@ -79,14 +80,14 @@ export function Turn({
   const checkpoint = (turn.user?.metadata as ThreadMessageMetadata | undefined)?.checkpoint;
 
   return (
-    <section className={cn("flex flex-col gap-block-gap pb-xl", dimmed && "opacity-45")}>
+    <section className={cn("flex flex-col gap-block-gap pb-xl text-md leading-chat", dimmed && "opacity-45")}>
       {turn.user != null && (
         <div
           ref={ref}
           className={cn(
-            "group rounded-lg border border-border bg-bg-elevated px-md py-sm",
+            "group rounded-xl border border-border bg-bg-elevated px-chat-inset py-sm shadow-xs",
             isLast && "sticky top-0 z-2",
-            pinned && "border-b-border-strong shadow-sm",
+            pinned && "shadow-sm",
           )}
         >
           {compacted != null && <p className="m-0 mb-2xs text-fg-muted text-xs">上下文已压缩（原 {compacted.before} 条消息）</p>}
@@ -114,7 +115,7 @@ export function Turn({
         run.kind === "foldable" && folded ? (
           <Fold key={run.key} run={run} actions={actions} allowlist={allowlist} />
         ) : (
-          <div key={run.key} className="flex flex-col gap-2xs">
+          <div key={run.key} className="flex flex-col gap-block-gap px-chat-inset">
             {run.blocks.map((block, index) => (
               <BlockView
                 key={block.key}
@@ -127,7 +128,36 @@ export function Turn({
           </div>
         ),
       )}
+      {folded && <ReplyActions turn={turn} />}
     </section>
+  );
+}
+
+/** The quiet row under a finished reply. 复制 takes the reply's text, not the process above it. */
+function ReplyActions({ turn }: { turn: TurnModel }) {
+  const [copied, setCopied] = useState(false);
+  const text = turn.blocks
+    .flatMap((block) => (block.kind === "text" ? [block.part.text] : []))
+    .join("\n\n")
+    .trim();
+  if (text === "") return null;
+  return (
+    <div className="-mt-xs flex items-center gap-2xs px-chat-inset text-fg-faint">
+      <button
+        type="button"
+        aria-label="复制回复"
+        title={copied ? "已复制" : "复制回复"}
+        onClick={() => {
+          void navigator.clipboard.writeText(text).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1200);
+          });
+        }}
+        className="-ml-2xs grid size-xl place-items-center rounded-md hover:bg-bg-hover hover:text-fg"
+      >
+        {copied ? <Check className="size-md" /> : <Copy className="size-md" />}
+      </button>
+    </div>
   );
 }
 
@@ -236,17 +266,18 @@ function RestoreAction({
 function Fold({ run, actions, allowlist }: { run: Run; actions: TurnActions; allowlist: readonly string[] }) {
   const [open, setOpen] = useState(false);
   return (
-    <div>
+    <div className="px-chat-inset">
       <button
         type="button"
+        aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
-        className="inline-flex h-row-tool items-center gap-2xs rounded-sm px-2xs text-fg-faint text-sm hover:bg-bg-hover hover:text-fg-muted"
+        className="inline-flex min-h-row-tool items-center gap-xs text-fg-muted hover:text-fg"
       >
-        <span className={cn("text-2xs transition-transform duration-[var(--duration-fast)]", open && "rotate-90")}>▸</span>
-        <span>查看 {run.blocks.length} 步</span>
+        <span>共 {run.blocks.length} 步</span>
+        <ChevronDown className={cn("size-md text-fg-faint transition-transform duration-[var(--duration-fast)]", !open && "-rotate-90")} />
       </button>
       {open && (
-        <div className="mt-2xs flex flex-col gap-3xs border-border border-l pl-sm">
+        <div className="mt-xs flex flex-col gap-xs">
           {run.blocks.map((block) => (
             <BlockView key={block.key} block={block} actions={actions} allowlist={allowlist} running={false} />
           ))}
@@ -267,8 +298,8 @@ function BlockView({
       <Reasoning className="mb-0" defaultOpen={false} isStreaming={block.part.state === "streaming"}>
         {/* No duration rides on the part, so the label stays generic. */}
         <ReasoningTrigger
-          className="text-fg-faint hover:text-fg-muted"
-          getThinkingMessage={(isStreaming) => <span className="text-sm">{isStreaming ? "思考中…" : "思考"}</span>}
+          className="text-fg-muted text-md hover:text-fg"
+          getThinkingMessage={(isStreaming) => <span>{isStreaming ? "思考中…" : "思考"}</span>}
         />
         <ReasoningContent className="mt-2xs border-border border-l pl-md text-fg-faint text-sm">
           {block.part.text}
@@ -279,8 +310,8 @@ function BlockView({
 
   if (block.kind === "text") {
     return (
-      <div className="text-body">
-        <MessageResponse>{block.part.text}</MessageResponse>
+      <div className="text-md leading-chat">
+        <MessageResponse className="text-md leading-chat">{block.part.text}</MessageResponse>
       </div>
     );
   }
@@ -310,7 +341,7 @@ function BlockView({
 
   if (getToolName(part) === "askUserQuestions") {
     return (
-      <div className="flex h-row-tool items-center gap-xs px-2xs text-fg-muted text-sm">
+      <div className="flex min-h-row-tool items-center gap-xs text-fg-muted">
         <span className="flex-none">提问</span>
         <span className="min-w-0 truncate text-fg-faint">已回答</span>
       </div>

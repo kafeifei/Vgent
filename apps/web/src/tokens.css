@@ -26,8 +26,9 @@
  *      一眼能认出来不是 shadcn 默认皮。
  *   c) 不撞 diff。diff 的红（色相 ~27）绿（~152）是屏幕上信息量最大的两个
  *      颜色，主色必须让开；琥珀在 72，两边都有距离，且深色底上亮度够高。
- *   d) 只有一个。accent 的用途被限死在五处：品牌标记、主按钮、焦点环、
- *      "运行中"指示、当前选中任务的左侧标记。其余一律中性色。
+ *   d) 只有一个。accent 的用途被限死在几处：品牌标记、焦点环、"运行中"指示、
+ *      角标、Plan chip。其余一律中性色 —— 2026-09-19 对齐 Cursor 之后，发送键是
+ *      前景色实心圆，选中行只有底色，都不再用 accent。
  *      为了保证这一点，语义状态色（success/warning/danger/info）刻意压低了
  *      彩度，做成"安静"的颜色 —— 屏幕上只允许 accent 一个响亮的颜色。
  *
@@ -84,22 +85,33 @@
    * 不是深色反相。
    */
 
+  /* 四个底色 —— 和 Cursor 3 的 Agents Window 同一套体系：
+   * 所有表面、描边、文字都从这四个值按百分比混出来，主题只改这四个。
+   * 深色取自 Cursor 包里的默认值，浅色取自真机窗口截图的像素。 */
+  --base:    #F0F0F0;  /* 前景基色 */
+  --chrome:  #141414;  /* 窗口底：会话区、右栏 */
+  --editor:  #181818;  /* 抬起的表面：用户消息、输入框、浮层 */
+  --sidebar: #181818;  /* 左栏 */
+
   /* 背景 */
-  --color-bg:           var(--neutral-950);  /* 页面底 */
-  --color-bg-elevated:  var(--neutral-900);  /* 面板、卡片、浮层 */
-  --color-bg-inset:     var(--neutral-1000); /* 终端输出、输入框、代码块 */
-  --color-bg-hover:     oklch(1 0 0 / 0.045);
-  --color-bg-active:    oklch(1 0 0 / 0.085);
+  --color-bg:           var(--chrome);
+  --color-bg-elevated:  var(--editor);
+  --color-bg-sidebar:   var(--sidebar);
+  --color-bg-inset:     color-mix(in srgb, var(--base) 5%, var(--chrome)); /* 终端输出、代码块 */
+  --color-bg-hover:     color-mix(in srgb, var(--base) 4%, transparent);
+  --color-bg-active:    color-mix(in srgb, var(--base) 6%, transparent);   /* 左栏选中行：量到的就是 6% */
+  --color-bg-strong:    color-mix(in srgb, var(--base) 14%, transparent);
   --color-bg-scrim:     oklch(0.115 0.004 75 / 0.62);
 
   /* 描边 */
-  --color-border:        var(--neutral-850);
-  --color-border-strong: var(--neutral-700);
+  --color-border:        color-mix(in srgb, var(--base) 8%, transparent);
+  --color-border-strong: color-mix(in srgb, var(--base) 14%, transparent);
 
-  /* 前景 */
-  --color-fg:        var(--neutral-100);
-  --color-fg-muted:  var(--neutral-400);
-  --color-fg-faint:  var(--neutral-500);
+  /* 前景：Cursor 的 primary / secondary / tertiary / quaternary */
+  --color-fg:            var(--base);
+  --color-fg-secondary:  color-mix(in srgb, var(--base) 74%, transparent);
+  --color-fg-muted:      color-mix(in srgb, var(--base) 60%, transparent);
+  --color-fg-faint:      color-mix(in srgb, var(--base) 40%, transparent);
 
   /* 主色（用途见文件头） */
   --color-accent:       var(--amber-400);
@@ -137,12 +149,14 @@
                Menlo, Consolas, "Liberation Mono", monospace;
 
   /* ══ 字号阶梯 ══════════════════════════════════════════════════════════ */
-  --text-2xs:  10px;  /* 分组标题、角标 */
-  --text-xs:   11px;  /* 元信息、耗时、行号 */
-  --text-sm:   12px;  /* 次要正文、胶囊、按钮 */
-  --text-code: 12px;  /* mono 正文：路径、diff、终端 */
-  --text-body: 13px;  /* 正文（默认密度）—— 密度会覆盖 */
-  --text-md:   14px;  /* 任务标题 */
+  /* 对 Cursor 3.19.7 的屏上尺寸：它的 token 是 11/12/13/14，Agents 窗口
+   * 自带约 1.1 倍缩放，屏上量到的就是 12/13/14/15。 */
+  --text-2xs:  11px;  /* 角标 */
+  --text-xs:   12px;  /* 元信息、耗时、行号、分组标签 */
+  --text-sm:   13px;  /* 次要正文、composer 下那一行、按钮 */
+  --text-code: 13px;  /* mono 正文：路径、diff、终端 */
+  --text-body: 14px;  /* 界面正文：左栏、右栏、标题 —— 密度会覆盖 */
+  --text-md:   15px;  /* 会话正文：用户消息、回复、工具行 */
   --text-lg:   16px;
   --text-xl:   20px;  /* 空状态标题 */
 
@@ -150,6 +164,7 @@
   --leading-none:  1;
   --leading-tight: 1.25;
   --leading-body:  1.45;  /* 默认密度 —— 密度会覆盖 */
+  --leading-chat:  24px;  /* 会话正文行高（Cursor 22px × 缩放） */
   --leading-code:  1.55;
 
   /* ══ 间距 ═══════════════════════════════════════════════════════════════
@@ -167,18 +182,27 @@
   --spacing-3xl: 48px;
 
   /* 布局常量（也走 --spacing-* 命名空间，Tailwind 里就是 w-sidebar / h-topbar） */
-  --spacing-sidebar:      240px;  /* 左栏展开宽 */
+  --spacing-sidebar:      260px;  /* 左栏展开宽 */
   --spacing-sidebar-rail:  48px;  /* 左栏收成图标条时的宽（⌘B 的中间档） */
-  --spacing-rightpane:    380px;  /* 右栏展开宽 */
-  --spacing-log-max:      860px;  /* 工作日志正文最大宽度 */
+  --spacing-rightpane:    420px;  /* 右栏打开某个工具时的宽 */
+  --spacing-rightlist:    260px;  /* 右栏只是一列入口时的宽 */
+  --spacing-log-max:      760px;  /* 会话列宽 */
+  --spacing-row:           30px;  /* 左栏 / 右栏一行 */
+  --spacing-row-pad:        7px;  /* 行内左右内距，也是图标和文字的间距 */
+  --spacing-row-indent:    30px;  /* 任务行标题的缩进：和上一级的文字对齐 */
+  --spacing-section-gap:   14px;  /* 左栏入口和「工作区」之间 */
+  --spacing-foot:          54px;  /* 左栏底部那一条的高 */
+  --spacing-composer:      40px;  /* 单行 composer 的高 */
+  --spacing-chat-inset:    12px;  /* 会话文字相对消息框左边的缩进：回复、工具行和用户消息里的字对齐 */
+  --spacing-traffic:       76px;  /* macOS 红绿灯占的宽（桌面壳标题栏叠在页面上时） */
   --spacing-review-bar:    30px;  /* composer 上方那条常驻审查条的高 */
   --spacing-ring:          16px;  /* 上下文占用环的直径 */
-  --spacing-avatar:        22px;  /* 左栏底部头像 */
+  --spacing-avatar:        28px;  /* 左栏底部头像 */
 
   /* 密度相关的行高 / 内距 —— 密度会覆盖（见下） */
-  --spacing-topbar:     36px;  /* 窗口条高 */
-  --spacing-row-tool:   28px;  /* 工具卡片摘要行高 */
-  --spacing-row-task:   46px;  /* 左栏任务项高 */
+  --spacing-topbar:     35px;  /* 顶条高：左栏顶和会话标题同一条线 */
+  --spacing-row-tool:   24px;  /* 工具行高 */
+  --spacing-row-task:   30px;  /* 左栏任务项高 */
   --spacing-row-file:   26px;  /* 变更文件行高 */
   --spacing-block-gap:  14px;  /* 日志块之间的距离 */
   --spacing-card-pad:   8px;   /* 卡片内距 */
@@ -189,6 +213,7 @@
   --radius-md:   6px;
   --radius-lg:   8px;
   --radius-xl:   12px;
+  --radius-2xl:  20px;  /* composer */
   --radius-full: 999px;
 
   /* ══ 阴影 ═══════════════════════════════════════════════════════════════ */
@@ -207,26 +232,18 @@
 
 /* ══════════════════════════════════════════════════════════════════════════
  * 浅色主题 —— 单独调过对比度，不是深色反相。
- *   · 底不是纯白（纯白在长时间读代码时太刺眼），是 oklch(0.985) 的暖白。
- *   · 卡片反而是纯白，靠"比底更亮"来抬起层级，和深色的"比底更亮"方向一致。
+ *   · 表面和文字只换四个底色（取自 Cursor 浅色窗口的像素），其余都是派生的。
+ *   · 卡片比底更亮，靠"比底更亮"来抬起层级，和深色方向一致。
  *   · accent 压到 --amber-700：在白底上要过 4.5:1，而深色用的 --amber-400
  *     在白底上是几乎看不清的浅黄。
  *   · 状态色统一下沉一到两档，弱底提高不透明度（浅底上弱底更容易糊掉）。
  * ══════════════════════════════════════════════════════════════════════════ */
 :root[data-theme="light"] {
-  --color-bg:           var(--neutral-25);
-  --color-bg-elevated:  var(--neutral-0);
-  --color-bg-inset:     var(--neutral-50);
-  --color-bg-hover:     oklch(0.400 0.007 75 / 0.065);
-  --color-bg-active:    oklch(0.400 0.007 75 / 0.115);
-  --color-bg-scrim:     oklch(0.305 0.007 75 / 0.30);
-
-  --color-border:        oklch(0.895 0.005 75);
-  --color-border-strong: oklch(0.800 0.006 75);
-
-  --color-fg:       oklch(0.245 0.008 75);
-  --color-fg-muted: oklch(0.495 0.008 75);
-  --color-fg-faint: oklch(0.630 0.007 75);
+  --base:    #141414;
+  --chrome:  #F5F5F5;
+  --editor:  #FCFCFC;
+  --sidebar: #ECECED;
+  --color-bg-scrim: oklch(0.305 0.007 75 / 0.30);
 
   --color-accent:       var(--amber-700);
   --color-accent-hover: var(--amber-800);
@@ -317,36 +334,40 @@
  *   只覆盖字号、行高和几个行高类 spacing，不动色板、不动圆角。
  * ══════════════════════════════════════════════════════════════════════════ */
 :root[data-density="compact"] {
-  --text-body: 12.5px;
-  --text-sm:   11.5px;
-  --text-code: 11.5px;
+  --text-body: 13px;
+  --text-md:   14px;
+  --text-sm:   12px;
+  --text-xs:   11px;
+  --text-code: 12px;
+  --leading-chat: 22px;
+  --spacing-row: 28px;
 
   --leading-body: 1.38;
   --leading-code: 1.45;
 
   --spacing-topbar:    32px;
   --spacing-row-tool:  24px;
-  --spacing-row-task:  38px;
+  --spacing-row-task:  28px;
   --spacing-row-file:  22px;
   --spacing-block-gap: 10px;
   --spacing-card-pad:  6px;
-  --spacing-sidebar:   212px;
+  --spacing-sidebar:   236px;
 }
 
 /* 明确写出 comfortable，方便 tokens.html 对照，也让 data-density 总有值 */
 :root[data-density="comfortable"] {
-  --text-body: 13px;
-  --text-sm:   12px;
-  --text-code: 12px;
+  --text-body: 14px;
+  --text-sm:   13px;
+  --text-code: 13px;
 
   --leading-body: 1.45;
   --leading-code: 1.55;
 
-  --spacing-topbar:    36px;
-  --spacing-row-tool:  28px;
-  --spacing-row-task:  46px;
+  --spacing-topbar:    35px;
+  --spacing-row-tool:  24px;
+  --spacing-row-task:  30px;
   --spacing-row-file:  26px;
   --spacing-block-gap: 14px;
   --spacing-card-pad:  8px;
-  --spacing-sidebar:   240px;
+  --spacing-sidebar:   260px;
 }

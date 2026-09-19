@@ -299,6 +299,13 @@ describe("providerRoute (Claude Code)", () => {
     });
   });
 
+  it("hands Anthropic's own API the key the way it takes it, and leaves its model aliases alone", () => {
+    const anthropic = [
+      { id: "anthropic", name: "Anthropic", apiKey: SECRET, agents: { "claude-code": { baseURL: "https://api.anthropic.com", protocol: "anthropic" as const, models: [{ id: "claude-sonnet-5" }] } } },
+    ];
+    expect(providerRoute("anthropic:claude-sonnet-5", anthropic)).toEqual({ model: "claude-sonnet-5", auth: { ANTHROPIC_API_KEY: SECRET }, env: {} });
+  });
+
   it("refuses a provider that is gone or has no Claude Code endpoint", () => {
     expect(() => providerRoute("gone:model", providers)).toThrow(/可能已被删除/);
     expect(() => providerRoute("vgent-only:model", providers)).toThrow(/没有给 Claude Code/);

@@ -92,15 +92,24 @@ export interface ClaudeCodeEngineOptions {
  * subagents a model of their own — all of which a third-party endpoint has never
  * heard of. Pinning each of them to the chosen model is what vendors' own
  * Claude Code guides do.
+ *
+ * Anthropic's own API is the exception on both counts: it takes the key as
+ * `x-api-key` (`ANTHROPIC_API_KEY`) and refuses it as a Bearer token, and it
+ * knows every alias the CLI asks for — pinning them all to the chosen model
+ * would only send the cheap background calls to the expensive model.
  */
 export function claudeCodeProviderEnv(options: { baseURL: string; apiKey?: string; model: string }): {
   auth: Readonly<Record<string, string>>;
   env: Readonly<Record<string, string>>;
 } {
+  const hasKey = options.apiKey != null && options.apiKey !== "";
+  if (isAnthropicOwnApi(options.baseURL)) {
+    return { auth: hasKey ? { ANTHROPIC_API_KEY: options.apiKey! } : {}, env: {} };
+  }
   return {
     auth: {
       ANTHROPIC_BASE_URL: options.baseURL,
-      ...(options.apiKey != null && options.apiKey !== "" ? { ANTHROPIC_AUTH_TOKEN: options.apiKey } : {}),
+      ...(hasKey ? { ANTHROPIC_AUTH_TOKEN: options.apiKey! } : {}),
     },
     env: {
       ANTHROPIC_MODEL: options.model,
@@ -111,6 +120,14 @@ export function claudeCodeProviderEnv(options: { baseURL: string; apiKey?: strin
       CLAUDE_CODE_SUBAGENT_MODEL: options.model,
     },
   };
+}
+
+function isAnthropicOwnApi(baseURL: string): boolean {
+  try {
+    return new URL(baseURL).hostname === "api.anthropic.com";
+  } catch {
+    return false;
+  }
 }
 
 export interface ClaudeCodeEngine {

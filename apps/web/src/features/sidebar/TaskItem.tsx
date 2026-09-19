@@ -41,27 +41,85 @@ function LiveAction({ chat }: { chat: Chat<UIMessage> }) {
   return <>{currentAction(messages) ?? "运行中"}</>;
 }
 
-/** The row's own menu: 标为未读 / 已读, 归档 / 取消归档 and a two-step 删除任务. */
-function RowMenu({
-  archived,
-  unread,
-  live,
-  openRef,
-  onArchive,
-  onUnread,
-  onDelete,
-}: {
+type RowMenuActions = {
   archived: boolean;
   unread: boolean;
   /** Archiving reclaims the worktree, so a turn that still owns it blocks it. Deleting stops the run first, so it does not. */
   live: boolean;
-  openRef: RefObject<(() => void) | null>;
   onArchive: (archived: boolean) => void;
   onUnread: (unread: boolean) => void;
   onDelete: () => void;
-}) {
+};
+
+/**
+ * What the row's menu holds: 标为未读 / 已读, 归档 / 取消归档 and a two-step
+ * 删除任务. Each answers to a letter while the menu is open (U / A / D), and the
+ * second step of deleting to ↵ — two different keys, so a double tap deletes
+ * nothing. Mounted per opening, so the menu never reopens on that second step.
+ */
+function RowMenuItems({
+  archived,
+  unread,
+  live,
+  close,
+  onArchive,
+  onUnread,
+  onDelete,
+}: RowMenuActions & { close: () => void }) {
   const [confirming, setConfirming] = useState(false);
 
+  if (confirming) {
+    return (
+      <>
+        <PopTitle>删除这个任务？</PopTitle>
+        <p className="m-0 px-xs pb-2xs text-fg-muted text-xs leading-snug">
+          会删掉对话记录、worktree 和快照。分支上如果有提交会保留下来。
+        </p>
+        <PopItem
+          shortcut="Enter"
+          onClick={() => {
+            close();
+            onDelete();
+          }}
+        >
+          <span className="text-danger">确认删除</span>
+        </PopItem>
+        <PopItem onClick={() => setConfirming(false)}>取消</PopItem>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <PopItem
+        shortcut="u"
+        onClick={() => {
+          close();
+          onUnread(!unread);
+        }}
+      >
+        {unread ? "标为已读" : "标为未读"}
+      </PopItem>
+      <PopItem
+        shortcut="a"
+        disabled={live}
+        {...(live ? { hint: "进行中", title: LIVE_REASON } : {})}
+        onClick={() => {
+          close();
+          onArchive(!archived);
+        }}
+      >
+        {archived ? "取消归档" : "归档"}
+      </PopItem>
+      <PopItem shortcut="d" onClick={() => setConfirming(true)}>
+        删除任务…
+      </PopItem>
+    </>
+  );
+}
+
+/** The row's own menu, behind ⋯ and behind a right-click on the row. */
+function RowMenu({ openRef, ...actions }: RowMenuActions & { openRef: RefObject<(() => void) | null> }) {
   return (
     <Popover
       align="end"
@@ -71,57 +129,13 @@ function RowMenu({
           type="button"
           aria-label="任务操作"
           {...props}
-          onClick={() => {
-            setConfirming(false);
-            props.onClick();
-          }}
           className="absolute top-xs right-2xs grid size-lg place-items-center rounded-sm text-fg-faint opacity-0 hover:bg-bg-active hover:text-fg focus-visible:opacity-100 aria-expanded:opacity-100 group-hover:opacity-100"
         >
           <MoreHorizontal className="size-md" />
         </button>
       )}
     >
-      {(close) =>
-        confirming ? (
-          <>
-            <PopTitle>删除这个任务？</PopTitle>
-            <p className="m-0 px-xs pb-2xs text-fg-muted text-xs leading-snug">
-              会删掉对话记录、worktree 和快照。分支上如果有提交会保留下来。
-            </p>
-            <PopItem
-              onClick={() => {
-                close();
-                onDelete();
-              }}
-            >
-              <span className="text-danger">确认删除</span>
-            </PopItem>
-            <PopItem onClick={() => setConfirming(false)}>取消</PopItem>
-          </>
-        ) : (
-          <>
-            <PopItem
-              onClick={() => {
-                close();
-                onUnread(!unread);
-              }}
-            >
-              {unread ? "标为已读" : "标为未读"}
-            </PopItem>
-            <PopItem
-              disabled={live}
-              {...(live ? { hint: "进行中", title: LIVE_REASON } : {})}
-              onClick={() => {
-                close();
-                onArchive(!archived);
-              }}
-            >
-              {archived ? "取消归档" : "归档"}
-            </PopItem>
-            <PopItem onClick={() => setConfirming(true)}>删除任务…</PopItem>
-          </>
-        )
-      }
+      {(close) => <RowMenuItems {...actions} close={close} />}
     </Popover>
   );
 }

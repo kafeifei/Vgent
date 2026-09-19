@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ExternalLink, Plus, Search } from "lucide-react";
+import { Check, Copy, ExternalLink, Plus, Search } from "lucide-react";
 import { ApiError, type ApiClient, type ProviderCatalog } from "@/lib/api";
 import { useToast } from "@/lib/toast";
-import type { CatalogProviderSummary, EngineDescriptor, ProviderAgent, ProviderModel, RedactedProviderConfig } from "@/lib/types";
+import type { CatalogProviderSummary, EngineDescriptor, ProviderAgent, ProviderModel, RedactedProviderConfig, SubscriptionAccount, SubscriptionId } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { BUTTON_GHOST, BUTTON_PRIMARY, BUTTON_SECONDARY, Dialog, LetterAvatar, SettingsEmpty, SettingsGroup, SettingsPage, SettingsRow, Tag } from "./layout";
 import { ModelTable } from "./ModelTable";
-import { AGENT_ORDER, EMPTY_CUSTOM_FORM, agentsOf, connectInput, customInput, filterCatalog, summarizeEnabled, type CustomForm } from "./providerModels";
+import { AGENT_ORDER, EMPTY_CUSTOM_FORM, agentsOf, connectInput, customInput, describeSubscription, filterCatalog, isSignedIn, summarizeEnabled, summarizeSubscription, type CustomForm } from "./providerModels";
+import { SubscriptionTable } from "./SubscriptionTable";
 import { INPUT_CLASS, PILL, PILL_SELECTED } from "./styles";
 
 type AgentLabel = (agent: ProviderAgent) => string;
@@ -434,7 +435,64 @@ function EditDialog({
   );
 }
 
+/**
+ * A subscription has no key to paste: it is signed in to with the vendor's own
+ * CLI, in a terminal. This says which command, and looks again when asked.
+ */
+function LoginDialog({ account, onRecheck, onClose }: { account: SubscriptionAccount; onRecheck: () => Promise<boolean>; onClose: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [note, setNote] = useState<string>();
+
+  const copy = () => {
+    void navigator.clipboard
+      ?.writeText(account.loginCommand)
+      .then(() => setCopied(true))
+      .catch(() => undefined);
+  };
+
+  const recheck = () => {
+    setChecking(true);
+    setNote(undefined);
+    void onRecheck()
+      .then((signedIn) => {
+        if (signedIn) onClose();
+        else setNote("还是没查到登录。登录完成后再点一次。");
+      })
+      .catch((cause: Error) => setNote(cause.message))
+      .finally(() => setChecking(false));
+  };
+
+  return (
+    <Dialog title={`登录 ${account.name}`} onClose={onClose}>
+      <div className="flex flex-col gap-md px-lg py-md">
+        <p className="text-fg-muted text-sm">订阅不用 key。在终端里跑下面这条命令，按它的提示在浏览器里登录；登录存在它自己那里，Vgent 不保存也看不到。</p>
+        <div className="flex items-center gap-xs rounded-md border border-border bg-bg-inset px-sm py-xs">
+          <code className="min-w-0 flex-1 truncate font-mono text-fg text-sm">{account.loginCommand}</code>
+          <button type="button" onClick={copy} className={BUTTON_GHOST}>
+            {copied ? <Check className="size-xs" /> : <Copy className="size-xs" />}
+            {copied ? "已复制" : "复制"}
+          </button>
+        </div>
+        {account.loggedIn == null && <p className="text-fg-faint text-xs">这台机器上没找到它的命令行工具，得先装上。</p>}
+        {account.note != null && <p className="text-fg-faint text-xs">{account.note}</p>}
+        {note != null && <p className="text-danger text-xs">{note}</p>}
+        <div className="flex justify-end gap-xs">
+          <button type="button" onClick={onClose} className={BUTTON_GHOST}>
+            关闭
+          </button>
+          <button type="button" disabled={checking} onClick={recheck} className={BUTTON_PRIMARY}>
+            {checking ? "检查中…" : "我登录好了，重新检查"}
+          </button>
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
 type Open =
+  | { kind: "login"; id: SubscriptionId }
+  | { kind: "subscription-models"; id: SubscriptionId }
   | { kind: "connect"; entry: CatalogProviderSummary }
   | { kind: "custom" }
   | { kind: "browse" }
@@ -459,6 +517,7 @@ export function ProvidersPage({
 }) {
   const toast = useToast();
   const [providers, setProviders] = useState<RedactedProviderConfig[]>([]);
+  const [subscriptions, setSubscriptions] = useState<SubscriptionAccount[]>([]);
   const [catalog, setCatalog] = useState<ProviderCatalog>();
   const [loadError, setLoadError] = useState<string>();
   const [open, setOpen] = useState<Open>();
@@ -477,7 +536,24 @@ export function ProvidersPage({
       .getProviderCatalog()
       .then(setCatalog)
       .catch((cause: Error) => setLoadError(cause.message));
+    void client
+      .listSubscriptions()
+      .then(setSubscriptions)
+      .catch((cause: Error) => setLoadError(cause.message));
   }, [client]);
+
+  const putSubscription = (next: SubscriptionAccount) => {
+    setSubscriptions((current) => current.map((entry) => (entry.id === next.id ? next : entry)));
+    onChanged();
+  };
+
+  /** Reads the logins again; `refresh` also re-asks the vendors for their model lists. */
+  const reloadSubscriptions = (refresh: boolean) =>
+    client.listSubscriptions(refresh).then((next) => {
+      setSubscriptions(next);
+      onChanged();
+      return next;
+    });
 
   const put = (next: RedactedProviderConfig) => {
     setProviders((current) => (current.some((entry) => entry.id === next.id) ? current.map((entry) => (entry.id === next.id ? next : entry)) : [...current, next]));
@@ -510,11 +586,33 @@ export function ProvidersPage({
     [catalog, connectedCatalogIds],
   );
   const modelsOf = open?.kind === "models" ? providers.find((provider) => provider.id === open.providerId) : undefined;
+  const signedIn = subscriptions.filter(isSignedIn);
+  const signedOut = subscriptions.filter((account) => !isSignedIn(account));
+  const subscriptionOf = (id: SubscriptionId) => subscriptions.find((account) => account.id === id);
+  const loginOf = open?.kind === "login" ? subscriptionOf(open.id) : undefined;
+  const subscriptionModelsOf = open?.kind === "subscription-models" ? subscriptionOf(open.id) : undefined;
   const close = () => setOpen(undefined);
 
   return (
-    <SettingsPage title="模型提供商" description="填一次 key 接一家；接上之后，在「模型」页决定每个 agent 用它的哪些模型。">
+    <SettingsPage title="模型提供商" description="Claude 和 Codex 的订阅用它们自己的登录，不用 key；别的填一次 key 接一家。接上之后，在「模型」页决定每个 agent 用它的哪些模型。">
       <SettingsGroup title="已连接">
+        {signedIn.map((account) => (
+          <SettingsRow
+            key={account.id}
+            leading={<LetterAvatar name={account.name} />}
+            title={
+              <>
+                <span className="truncate">{account.name}</span>
+                <Tag>订阅</Tag>
+              </>
+            }
+            help={`${describeSubscription(account, agentLabel)} · 已打开的模型：${summarizeSubscription(account, agentLabel)}`}
+          >
+            <button type="button" onClick={() => setOpen({ kind: "subscription-models", id: account.id })} className={BUTTON_SECONDARY}>
+              选模型
+            </button>
+          </SettingsRow>
+        ))}
         {providers.map((provider) => (
           <SettingsRow
             key={provider.id}
@@ -539,7 +637,7 @@ export function ProvidersPage({
             </button>
           </SettingsRow>
         ))}
-        {providers.length === 0 && <SettingsEmpty>还没有连接任何提供商。</SettingsEmpty>}
+        {providers.length === 0 && signedIn.length === 0 && <SettingsEmpty>还没有连接任何提供商。</SettingsEmpty>}
       </SettingsGroup>
 
       <SettingsGroup
@@ -555,6 +653,23 @@ export function ProvidersPage({
           ) : undefined
         }
       >
+        {signedOut.map((account) => (
+          <SettingsRow
+            key={account.id}
+            leading={<LetterAvatar name={account.name} />}
+            title={
+              <>
+                <span className="truncate">{account.name}</span>
+                <Tag>订阅</Tag>
+              </>
+            }
+            help={describeSubscription(account, agentLabel)}
+          >
+            <button type="button" onClick={() => setOpen({ kind: "login", id: account.id })} className={BUTTON_SECONDARY}>
+              登录
+            </button>
+          </SettingsRow>
+        ))}
         {popular.map((entry) => (
           <SettingsRow key={entry.id} leading={<LetterAvatar name={entry.name} />} title={entry.name} help={`${servedAgents(entry, usable, agentLabel)} · ${entry.modelCount} 个模型`}>
             <button type="button" onClick={() => setOpen({ kind: "connect", entry })} className={BUTTON_SECONDARY}>
@@ -575,9 +690,35 @@ export function ProvidersPage({
         {catalog == null ? "正在读取提供商目录…" : `查看全部 ${catalog.providers.length} 个提供商`}
       </button>
 
-      {unusable.length > 0 && <p className="text-fg-faint text-xs">{unusable.map((engine) => engine.label).join("、")} 只用它自己的登录，接不了这里的提供商。</p>}
+      {unusable.length > 0 && <p className="text-fg-faint text-xs">{unusable.map((engine) => engine.label).join("、")} 只能跑在它自己的订阅上，接不了要 key 的提供商。</p>}
       {loadError != null && <p className="text-danger text-xs">{loadError}</p>}
 
+      {loginOf != null && (
+        <LoginDialog
+          account={loginOf}
+          onRecheck={() =>
+            reloadSubscriptions(true).then((next) => {
+              const now = next.find((account) => account.id === loginOf.id);
+              if (now == null || !isSignedIn(now)) return false;
+              toast(`已登录 ${now.name}`);
+              return true;
+            })
+          }
+          onClose={close}
+        />
+      )}
+      {subscriptionModelsOf != null && (
+        <Dialog title={`${subscriptionModelsOf.name} · 选模型`} onClose={close} wide>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <SubscriptionTable client={client} account={subscriptionModelsOf} agentLabel={agentLabel} onAccount={putSubscription} onReload={() => reloadSubscriptions(true).then(() => undefined)} />
+          </div>
+          <div className="flex justify-end border-border border-t px-lg py-sm">
+            <button type="button" onClick={close} className={BUTTON_PRIMARY}>
+              完成
+            </button>
+          </div>
+        </Dialog>
+      )}
       {open?.kind === "connect" && (
         <ConnectDialog
           client={client}

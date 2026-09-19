@@ -34,6 +34,8 @@ export interface SettingsPatch {
   /** 界面偏好. `undefined` puts the built-in default back. */
   theme?: UiTheme | undefined;
   density?: UiDensity | undefined;
+  /** The whole off list. An agent with nothing switched off is dropped from it; an empty map drops the field. */
+  hiddenModels?: Partial<Record<EngineId, string[]>> | undefined;
 }
 
 /**
@@ -50,6 +52,13 @@ export function asMcpServers(value: unknown): McpServerConfig[] | undefined {
 export interface SettingsStore {
   get(): Promise<Settings>;
   update(patch: SettingsPatch): Promise<Settings>;
+  /**
+   * A patch computed from the settings as they are at the moment it is applied.
+   * For read-modify-write fields (one switch of `hiddenModels`): with `get()`
+   * then `update()`, two quick clicks would each start from the same list and
+   * the second would undo the first.
+   */
+  mutate(patchOf: (current: Settings) => SettingsPatch): Promise<Settings>;
   subscribe(listener: () => void): () => void;
 }
 
@@ -62,9 +71,14 @@ const isSettings = (value: unknown): value is Settings =>
  * the global one; the old field is then dropped rather than kept in sync.
  */
 export function migrateSettings(stored: Settings & { defaultPermissionMode?: PermissionMode }): Settings {
-  const { defaultPermissionMode, ...rest } = stored;
+  const { defaultPermissionMode, hiddenModels, ...rest } = stored;
+  // Read on every model listing, so a hand-edited file must not be able to make it throw.
+  const hidden = Object.entries(typeof hiddenModels === "object" && hiddenModels !== null ? hiddenModels : {}).flatMap(([engine, ids]) =>
+    Array.isArray(ids) ? [[engine, ids.filter((id) => typeof id === "string")] as const] : [],
+  );
   return {
     ...rest,
+    ...(hidden.length > 0 ? { hiddenModels: Object.fromEntries(hidden) } : {}),
     runMode: stored.runMode ?? defaultPermissionMode ?? DEFAULT_SETTINGS.runMode,
     allowlist: Array.isArray(stored.allowlist) ? stored.allowlist.filter((name) => typeof name === "string") : [],
   };
@@ -86,49 +100,63 @@ export function createSettingsStore(dataDir: string, log: Logger = silentLogger)
     return ready;
   };
 
+  // Nothing between reading `settings` and replacing it awaits, so every patch
+  // builds on the one before it.
+  const apply = async (patchOf: (current: Settings) => SettingsPatch): Promise<Settings> => {
+    await ensureReady();
+    const patch = patchOf({ ...(settings ?? DEFAULT_SETTINGS) });
+    const next: Settings = { ...(settings ?? DEFAULT_SETTINGS) };
+    if (patch.defaultEngine != null) next.defaultEngine = patch.defaultEngine;
+    if (patch.runMode != null) next.runMode = patch.runMode;
+    if (patch.allowlist != null) next.allowlist = [...new Set(patch.allowlist)];
+    if ("mcpServers" in patch) {
+      if (patch.mcpServers == null || patch.mcpServers.length === 0) delete next.mcpServers;
+      else next.mcpServers = patch.mcpServers;
+    }
+    if ("defaultModel" in patch) {
+      if (patch.defaultModel == null) delete next.defaultModel;
+      else next.defaultModel = patch.defaultModel;
+    }
+    // Absent means on, so an older file needs no migration; `false` is stored.
+    if ("systemNotifications" in patch) {
+      if (patch.systemNotifications == null) delete next.systemNotifications;
+      else next.systemNotifications = patch.systemNotifications;
+    }
+    if ("worktreeMaxCount" in patch) {
+      if (patch.worktreeMaxCount == null) delete next.worktreeMaxCount;
+      else next.worktreeMaxCount = patch.worktreeMaxCount;
+    }
+    if ("theme" in patch) {
+      if (patch.theme == null) delete next.theme;
+      else next.theme = patch.theme;
+    }
+    if ("density" in patch) {
+      if (patch.density == null) delete next.density;
+      else next.density = patch.density;
+    }
+    if ("hiddenModels" in patch) {
+      const kept = Object.entries(patch.hiddenModels ?? {}).flatMap(([engine, ids]) => {
+        const unique = [...new Set(ids)];
+        return unique.length > 0 ? [[engine, unique] as const] : [];
+      });
+      if (kept.length === 0) delete next.hiddenModels;
+      else next.hiddenModels = Object.fromEntries(kept);
+    }
+    settings = next;
+    const work = () => writeJsonAtomic(path, next);
+    chain = chain.then(work, work);
+    await chain;
+    for (const listener of [...listeners]) listener();
+    return { ...next };
+  };
+
   return {
     async get() {
       await ensureReady();
       return { ...(settings ?? DEFAULT_SETTINGS) };
     },
-    async update(patch) {
-      await ensureReady();
-      const next: Settings = { ...(settings ?? DEFAULT_SETTINGS) };
-      if (patch.defaultEngine != null) next.defaultEngine = patch.defaultEngine;
-      if (patch.runMode != null) next.runMode = patch.runMode;
-      if (patch.allowlist != null) next.allowlist = [...new Set(patch.allowlist)];
-      if ("mcpServers" in patch) {
-        if (patch.mcpServers == null || patch.mcpServers.length === 0) delete next.mcpServers;
-        else next.mcpServers = patch.mcpServers;
-      }
-      if ("defaultModel" in patch) {
-        if (patch.defaultModel == null) delete next.defaultModel;
-        else next.defaultModel = patch.defaultModel;
-      }
-      // Absent means on, so an older file needs no migration; `false` is stored.
-      if ("systemNotifications" in patch) {
-        if (patch.systemNotifications == null) delete next.systemNotifications;
-        else next.systemNotifications = patch.systemNotifications;
-      }
-      if ("worktreeMaxCount" in patch) {
-        if (patch.worktreeMaxCount == null) delete next.worktreeMaxCount;
-        else next.worktreeMaxCount = patch.worktreeMaxCount;
-      }
-      if ("theme" in patch) {
-        if (patch.theme == null) delete next.theme;
-        else next.theme = patch.theme;
-      }
-      if ("density" in patch) {
-        if (patch.density == null) delete next.density;
-        else next.density = patch.density;
-      }
-      settings = next;
-      const work = () => writeJsonAtomic(path, next);
-      chain = chain.then(work, work);
-      await chain;
-      for (const listener of [...listeners]) listener();
-      return { ...next };
-    },
+    update: (patch) => apply(() => patch),
+    mutate: apply,
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);

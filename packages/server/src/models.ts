@@ -19,6 +19,12 @@ export interface ModelEntry {
    */
   provider?: string;
   /**
+   * Switched off in the 模型 table (`Settings.hiddenModels`). The entry still
+   * travels — a task already on this model, or an agent whose default it is,
+   * needs its label, 思考 levels and window — the picker just does not offer it.
+   */
+  hidden?: boolean;
+  /**
    * The「思考等级」this model offers, in the order the picker should show them.
    * Absent means the model has none to choose from and the chip stays hidden —
    * never guessed, only ever taken from the source that knows (Codex's own

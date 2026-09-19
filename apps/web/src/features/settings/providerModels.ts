@@ -1,5 +1,5 @@
 import type { ProviderInputBody } from "@/lib/api";
-import type { CatalogProvider, CatalogProviderSummary, ProviderAgent, ProviderModel, ProviderProtocol, RedactedProviderConfig } from "@/lib/types";
+import type { CatalogProvider, CatalogProviderSummary, ProviderAgent, ProviderModel, ProviderProtocol, RedactedProviderConfig, SubscriptionAccount, SubscriptionModel } from "@/lib/types";
 
 /**
  * The logic behind 模型提供商 and 模型, kept out of the components so it can be
@@ -162,4 +162,39 @@ export function formatContext(tokens: number | undefined): string {
   if (tokens == null) return "";
   if (tokens >= 1_000_000) return `${Number((tokens / 1_000_000).toFixed(1))}M`;
   return `${Math.round(tokens / 1000)}K`;
+}
+
+// --- 订阅 ---------------------------------------------------------------
+
+/** A subscription counts as connected once its login is there; signed out or unknown, it is one more thing to connect. */
+export function isSignedIn(account: SubscriptionAccount): boolean {
+  return account.loggedIn === true;
+}
+
+/** The line under a subscription's name: whose login, which plan, who can use it. */
+export function describeSubscription(account: SubscriptionAccount, label: (agent: ProviderAgent) => string): string {
+  const served = `${account.agents.map(label).join(" · ")} 能用`;
+  if (account.loggedIn == null) return `${served} · 查不到登录状态（没找到它的命令行工具）`;
+  if (!account.loggedIn) return `${served} · 还没登录 · 不用 key`;
+  // Signed in, who can use it is said by the model counts that follow; the account is what is worth the room.
+  const parts = [account.email, account.plan != null ? planLabel(account.plan) : undefined, account.method != null ? `登录方式：${account.method}` : undefined].filter((part) => part != null);
+  return parts.length > 0 ? parts.join(" · ") : "已登录";
+}
+
+/** `max` → `Max`. The vendors' own words, only capitalised: there is no list of plans to keep up with. */
+function planLabel(plan: string): string {
+  return plan.charAt(0).toUpperCase() + plan.slice(1);
+}
+
+/** How many of a subscription's models each agent has on: `自研 3 · Codex 5`. */
+export function summarizeSubscription(account: SubscriptionAccount, label: (agent: ProviderAgent) => string): string {
+  return account.agents.map((agent) => `${label(agent)} ${account.models.filter((model) => model.agents[agent]?.enabled === true).length}`).join(" · ");
+}
+
+/** The table as it will stand once the switch lands — shown at once, ahead of the server's answer. */
+export function withSubscriptionSwitch(models: readonly SubscriptionModel[], agent: ProviderAgent, rowIds: readonly string[], enabled: boolean): SubscriptionModel[] {
+  return models.map((model) => {
+    const cell = model.agents[agent];
+    return cell != null && rowIds.includes(model.id) ? { ...model, agents: { ...model.agents, [agent]: { ...cell, enabled } } } : model;
+  });
 }

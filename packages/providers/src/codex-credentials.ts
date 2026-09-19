@@ -332,7 +332,33 @@ export type SubscriptionAuthStatus = {
   readonly available: boolean;
   readonly source: SubscriptionCredentialSource | null;
   readonly expiresAt?: number;
+  /** Whose login this is and on which plan, so the settings page can say so. Never a token. */
+  readonly email?: string;
+  readonly plan?: string;
 };
+
+/**
+ * The two claims of the login's `id_token` worth showing: the account's email
+ * and `https://api.openai.com/auth`.`chatgpt_plan_type`. The token is only
+ * decoded, never verified or kept — this names an account, it does not trust it.
+ */
+function codexAccountOf(value: CodexAuthValue): { email?: string; plan?: string } {
+  const idToken = isRecord(value.tokens) ? value.tokens.id_token : undefined;
+  const payload = typeof idToken === "string" ? idToken.split(".")[1] : undefined;
+  if (payload == null) return {};
+  try {
+    const claims: unknown = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    if (!isRecord(claims)) return {};
+    const auth = claims["https://api.openai.com/auth"];
+    const plan = isRecord(auth) ? auth.chatgpt_plan_type : undefined;
+    return {
+      ...(typeof claims.email === "string" && claims.email !== "" ? { email: claims.email } : {}),
+      ...(typeof plan === "string" && plan !== "" ? { plan } : {}),
+    };
+  } catch {
+    return {};
+  }
+}
 
 export type SubscriptionAuthReport = {
   readonly codex: SubscriptionAuthStatus;
@@ -354,7 +380,7 @@ async function describeCodexAuth(options: CodexCredentialOptions): Promise<Subsc
     if (stored == null) return { available: false, source: null };
     const credential = await toCodexCredential(stored.value);
     if (credential == null) return { available: false, source: null };
-    return { available: true, source: stored.source, expiresAt: credential.expiresAt };
+    return { available: true, source: stored.source, expiresAt: credential.expiresAt, ...codexAccountOf(stored.value) };
   } catch {
     return { available: false, source: null };
   }

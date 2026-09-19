@@ -21,6 +21,9 @@ import type {
   ProviderModel,
   ProviderProtocol,
   RedactedProviderConfig,
+  SubscriptionAccount,
+  SubscriptionId,
+  SubscriptionModel,
   Settings,
   SetupLog,
   ThreadMode,
@@ -351,6 +354,12 @@ export function createClient(token: string) {
       api<RedactedProviderConfig>(`/providers/${encodeURIComponent(id)}`, token, { method: "PATCH", json: input }),
     deleteProvider: (id: string) => api<void>(`/providers/${encodeURIComponent(id)}`, token, { method: "DELETE" }),
     /** 拉模型清单. With `providerId` and no `apiKey`, the server uses the key it has stored. */
+    /** 订阅: the Claude and Codex logins, with whether each is signed in. `refresh` re-asks the vendors for their model lists. */
+    listSubscriptions: (refresh = false) =>
+      api<{ subscriptions: SubscriptionAccount[] }>(`/subscriptions${refresh ? "?refresh=1" : ""}`, token).then((body) => body.subscriptions),
+    /** One switch of a subscription's model table, or a column of them. Answers with the table as it now stands. */
+    setSubscriptionModels: (id: SubscriptionId, input: { agent: EngineId; models: string[]; enabled: boolean }) =>
+      api<{ models: SubscriptionModel[] }>(`/subscriptions/${encodeURIComponent(id)}/models`, token, { method: "PUT", json: input }).then((body) => body.models),
     discoverProviderModels: (input: { providerId?: string; baseURL: string; protocol: ProviderProtocol; apiKey?: string }) =>
       api<{ models: ProviderModel[] }>("/providers/discover", token, { method: "POST", json: input }).then((body) => body.models),
 

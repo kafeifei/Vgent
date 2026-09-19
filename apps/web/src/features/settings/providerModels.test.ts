@@ -1,18 +1,22 @@
 import { describe, expect, it } from "vitest";
 import { splitByProvider } from "@/components/ModelPicker";
-import type { CatalogProviderSummary, RedactedProviderConfig } from "@/lib/types";
+import type { CatalogProviderSummary, RedactedProviderConfig, SubscriptionAccount } from "@/lib/types";
 import {
   EMPTY_CUSTOM_FORM,
   agentsOf,
   connectInput,
   customInput,
+  describeSubscription,
   filterCatalog,
   filterModels,
   formatContext,
   isEnabled,
+  isSignedIn,
   modelRows,
   summarizeEnabled,
+  summarizeSubscription,
   withModels,
+  withSubscriptionSwitch,
 } from "./providerModels";
 
 const deepseek: CatalogProviderSummary = {
@@ -151,5 +155,48 @@ describe("splitByProvider", () => {
         ["DeepSeek", [{ id: "deepseek:pro", provider: "DeepSeek" }]],
       ],
     });
+  });
+});
+
+describe("订阅", () => {
+  const labelOf = (agent: string) => (agent === "vgent" ? "自研" : agent === "codex" ? "Codex" : "Claude Code");
+  const codex: SubscriptionAccount = {
+    id: "codex-subscription",
+    name: "ChatGPT · Codex 订阅",
+    loggedIn: true,
+    email: "dev@example.com",
+    plan: "pro",
+    loginCommand: "codex login",
+    agents: ["vgent", "codex"],
+    models: [
+      { id: "gpt-5.5", label: "GPT-5.5", agents: { vgent: { spec: "codex-subscription:gpt-5.5", enabled: true }, codex: { spec: "gpt-5.5", enabled: true } } },
+      { id: "gpt-5.5-mini", label: "GPT-5.5 mini", agents: { vgent: { spec: "codex-subscription:gpt-5.5-mini", enabled: false }, codex: { spec: "gpt-5.5-mini", enabled: true } } },
+    ],
+  };
+
+  it("says whose login it is, or what is missing, in one line", () => {
+    expect(describeSubscription(codex, labelOf)).toBe("dev@example.com · Pro");
+    const { email: _email, plan: _plan, ...bare } = codex;
+    expect(describeSubscription(bare, labelOf)).toBe("已登录");
+    expect(describeSubscription({ ...codex, loggedIn: false }, labelOf)).toBe("自研 · Codex 能用 · 还没登录 · 不用 key");
+    const { loggedIn: _unknown, ...unknown } = codex;
+    expect(describeSubscription(unknown, labelOf)).toContain("查不到登录状态");
+    expect(describeSubscription({ ...codex, method: "api_key" }, labelOf)).toContain("登录方式：api_key");
+  });
+
+  it("counts as connected only once it is known to be signed in", () => {
+    const { loggedIn: _unknown, ...unknown } = codex;
+    expect([isSignedIn(codex), isSignedIn({ ...codex, loggedIn: false }), isSignedIn(unknown)]).toEqual([true, false, false]);
+  });
+
+  it("sums up what each agent has on, and flips one agent's switch without touching the other's", () => {
+    expect(summarizeSubscription(codex, labelOf)).toBe("自研 1 · Codex 2");
+    const next = withSubscriptionSwitch(codex.models, "codex", ["gpt-5.5", "gpt-5.5-mini"], false);
+    expect(next.map((model) => [model.agents.vgent?.enabled, model.agents.codex?.enabled])).toEqual([
+      [true, false],
+      [false, false],
+    ]);
+    // An agent the login does not serve has no cell to flip.
+    expect(withSubscriptionSwitch(codex.models, "claude-code", ["gpt-5.5"], false)).toEqual(codex.models);
   });
 });

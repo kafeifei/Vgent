@@ -113,6 +113,17 @@ export {
   type ModelCatalogService,
   type ModelEntry,
 } from "./models.js";
+export {
+  createSubscriptionService,
+  parseClaudeLoginStatus,
+  probeClaudeLogin,
+  SUBSCRIPTION_IDS,
+  type ClaudeLoginStatus,
+  type SubscriptionAccount,
+  type SubscriptionId,
+  type SubscriptionModel,
+  type SubscriptionService,
+} from "./subscriptions.js";
 export { createQueueStore, QUEUE_ITEM_MAX_BYTES, QUEUE_MAX_ITEMS, readQueueText, type QueueStore } from "./queue.js";
 export { AUTO_TITLE_MAX_LEN, createRunManager, deriveThreadTitle, recoverInterruptedThreads, type RunManager } from "./runs.js";
 export { readJsonOrQuarantine, writeFileAtomic, writeJsonAtomic } from "./store/atomic-file.js";

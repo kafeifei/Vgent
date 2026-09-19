@@ -56,6 +56,9 @@ export type {
   ProviderModel,
   ProviderProtocol,
   RedactedProviderConfig,
+  SubscriptionAccount,
+  SubscriptionId,
+  SubscriptionModel,
   UsageInfo,
   WorkspaceSetup,
 } from "@vgent/server";

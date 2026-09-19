@@ -72,6 +72,17 @@ describe("describeSubscriptionAuth", () => {
     expect(JSON.stringify(report)).not.toContain("refresh-token-1");
   });
 
+  it("names the account and the plan from the id token, and nothing else out of it", async () => {
+    const claims = { email: "dev@example.com", sub: "user-1", "https://api.openai.com/auth": { chatgpt_plan_type: "pro", chatgpt_user_id: "u-9" } };
+    const idToken = `header.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.signature`;
+    const fixture = authFixture(Date.now() + 5 * hour);
+    const home = await codexHomeWith({ ...fixture, tokens: { ...fixture.tokens, id_token: idToken } });
+    const report = await describeSubscriptionAuth({ env: { CODEX_HOME: home } });
+    expect(report.codex).toMatchObject({ available: true, email: "dev@example.com", plan: "pro" });
+    expect(JSON.stringify(report)).not.toContain("u-9");
+    expect(JSON.stringify(report)).not.toContain(idToken);
+  });
+
   it("reports unavailable when there is no login", async () => {
     const home = await mkdtemp(join(tmpdir(), "vgent-codex-empty-"));
     const report = await describeSubscriptionAuth({ env: { CODEX_HOME: home } });

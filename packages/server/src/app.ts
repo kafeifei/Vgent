@@ -28,6 +28,7 @@ import { createGit } from "./git.js";
 import { pickFile, pickFolder } from "./folder-picker.js";
 import { asIntegrateAction, changeStatsOf, createIntegrator, taskTarget, type Integrator, type TaskTarget } from "./integrate.js";
 import { createModelCatalog, type ModelEntry } from "./models.js";
+import { SUBSCRIPTION_IDS, createSubscriptionService, markHidden, withHiddenModels, type ClaudeLoginStatus, type SubscriptionId } from "./subscriptions.js";
 import { createQueueStore, readQueueText } from "./queue.js";
 import { asRestoreTarget, lastTurnPair, planRestore, type RestoreTarget } from "./restore.js";
 import { createRunManager, recoverInterruptedThreads } from "./runs.js";
@@ -90,6 +91,8 @@ export interface CreateAppOptions {
   providerFetch?: typeof globalThis.fetch;
   /** What the provider catalog (models.dev) is downloaded with. Tests answer for it, or refuse. */
   catalogFetch?: typeof globalThis.fetch;
+  /** Whether Claude is signed in on this machine. Tests answer; production asks the `claude` CLI. */
+  probeClaudeLogin?: () => Promise<ClaudeLoginStatus>;
 }
 
 export interface VgentApp {
@@ -1141,7 +1144,39 @@ export function createApp(options: CreateAppOptions): VgentApp {
           })),
         )
       : [];
-    return c.json({ ...catalog, models: [...catalog.models, ...fromProviders], ...(defaultModel != null ? { defaultModel } : {}) });
+    // What the 模型 table switched off stays in the list, marked: see `ModelEntry.hidden`.
+    const own = markHidden(catalog.models, current.hiddenModels?.[engine]);
+    return c.json({ ...catalog, models: [...own, ...fromProviders], ...(defaultModel != null ? { defaultModel } : {}) });
+  });
+
+  // --- subscriptions ----------------------------------------------------
+
+  // 订阅: the Claude and Codex logins, listed with the providers because that is
+  // what they are to the user. Nothing here signs anyone in or holds a token —
+  // it reports the login the vendor's CLI made, and keeps the model switches.
+  const subscriptions = createSubscriptionService({
+    modelCatalog,
+    ...(options.probeClaudeLogin != null ? { probeClaude: options.probeClaudeLogin } : {}),
+  });
+
+  app.get("/api/subscriptions", async (c) =>
+    c.json({ subscriptions: await subscriptions.list(await settings.get(), { refresh: c.req.query("refresh") === "1" }) }),
+  );
+
+  // One switch, or a whole column of them. Addressed by the table's row ids; the
+  // per-agent model id behind each is ours to know, not the client's.
+  app.put("/api/subscriptions/:id/models", async (c) => {
+    const id = c.req.param("id") as SubscriptionId;
+    if (!SUBSCRIPTION_IDS.includes(id)) throw new NotFoundError(`没有订阅 ${JSON.stringify(id)}`, "subscription_not_found");
+    const body = (await c.req.json().catch(() => undefined)) as { agent?: unknown; models?: unknown; enabled?: unknown } | undefined;
+    const agent = asEngine(body?.agent);
+    const rowIds = Array.isArray(body?.models) ? body.models.filter((entry): entry is string => typeof entry === "string") : [];
+    if (agent == null || typeof body?.enabled !== "boolean") throw new BadRequestError("需要 agent、models 和 enabled", "invalid_subscription_models");
+    const rows = await subscriptions.models(id, await settings.get());
+    const specs = rows.flatMap((row) => (rowIds.includes(row.id) && row.agents[agent] != null ? [row.agents[agent].spec] : []));
+    const enabled = body.enabled;
+    const next = await settings.mutate((current) => ({ hiddenModels: withHiddenModels(current.hiddenModels, agent, specs, enabled) }));
+    return c.json({ models: await subscriptions.models(id, next) });
   });
 
   // --- chat -------------------------------------------------------------

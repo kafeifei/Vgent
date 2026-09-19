@@ -10,6 +10,79 @@ import { INPUT_CLASS } from "./styles";
 /** A provider like OpenRouter has hundreds of models; past this many rows the search box is the way in. */
 const MAX_ROWS = 80;
 
+const AGENT_COLUMN = "w-[calc(var(--spacing-3xl)*2)] flex-none";
+
+/** The header of a model table: a column per agent, each a button that flips every listed row at once. */
+export function ModelTableHeader<Agent extends string>({
+  agents,
+  agentLabel,
+  count,
+  allOn,
+  onToggleAll,
+}: {
+  agents: readonly Agent[];
+  agentLabel: (agent: Agent) => string;
+  /** How many rows a column click reaches. */
+  count: number;
+  allOn: (agent: Agent) => boolean;
+  onToggleAll: (agent: Agent, on: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center gap-sm border-border border-b bg-bg-inset px-md py-2xs text-fg-faint text-xs">
+      <span className="flex-1">模型</span>
+      {agents.map((agent) => {
+        const on = count > 0 && allOn(agent);
+        return (
+          <button
+            key={agent}
+            type="button"
+            disabled={count === 0}
+            onClick={() => onToggleAll(agent, !on)}
+            title={on ? `${agentLabel(agent)}：关掉列出的这 ${count} 个` : `${agentLabel(agent)}：打开列出的这 ${count} 个`}
+            className={cn(AGENT_COLUMN, "text-right hover:text-fg disabled:hover:text-fg-faint")}
+          >
+            {agentLabel(agent)}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** One model, one switch per agent. `enabled` answering `undefined` means that agent cannot run this model: the cell stays empty. */
+export function ModelTableRow<Agent extends string>({
+  label,
+  detail,
+  agents,
+  agentLabel,
+  enabled,
+  onSwitch,
+}: {
+  label: string;
+  detail: string;
+  agents: readonly Agent[];
+  agentLabel: (agent: Agent) => string;
+  enabled: (agent: Agent) => boolean | undefined;
+  onSwitch: (agent: Agent, on: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center gap-sm px-md py-xs">
+      <div className="flex min-w-0 flex-1 flex-col">
+        <span className="truncate text-fg text-sm">{label}</span>
+        <span className="truncate font-mono text-2xs text-fg-faint">{detail}</span>
+      </div>
+      {agents.map((agent) => {
+        const on = enabled(agent);
+        return (
+          <div key={agent} className={cn(AGENT_COLUMN, "flex justify-end")}>
+            {on != null && <Switch checked={on} onChange={(next) => onSwitch(agent, next)} label={`${agentLabel(agent)} 用 ${label}`} />}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /**
  * 「每个 agent 用哪些模型」 for one provider: a row per model, a switch per
  * agent. A switch saves on the click — there is nothing to submit. The rows are
@@ -139,45 +212,25 @@ export function ModelTable({
         </button>
       </div>
 
-      <div className="flex items-center gap-sm border-border border-b bg-bg-inset px-md py-2xs text-fg-faint text-xs">
-        <span className="flex-1">模型</span>
-        {agents.map((agent) => {
-          const allOn = matching.length > 0 && matching.every((model) => isEnabled(provider, agent, model.id));
-          return (
-            <button
-              key={agent}
-              type="button"
-              disabled={matching.length === 0}
-              onClick={() => save(agent, matching, !allOn)}
-              title={allOn ? `${agentLabel(agent)}：关掉列出的这 ${matching.length} 个` : `${agentLabel(agent)}：打开列出的这 ${matching.length} 个`}
-              className="w-[calc(var(--spacing-3xl)*2)] flex-none text-right hover:text-fg disabled:hover:text-fg-faint"
-            >
-              {agentLabel(agent)}
-            </button>
-          );
-        })}
-      </div>
+      <ModelTableHeader
+        agents={agents}
+        agentLabel={agentLabel}
+        count={matching.length}
+        allOn={(agent) => matching.every((model) => isEnabled(provider, agent, model.id))}
+        onToggleAll={(agent, on) => save(agent, matching, on)}
+      />
 
       <div className="flex flex-col divide-y divide-border">
         {shown.map((model) => (
-          <div key={model.id} className="flex items-center gap-sm px-md py-xs">
-            <div className="flex min-w-0 flex-1 flex-col">
-              <span className="truncate text-fg text-sm">{model.label ?? model.id}</span>
-              <span className="truncate font-mono text-2xs text-fg-faint">
-                {model.id}
-                {model.contextWindow != null && ` · ${formatContext(model.contextWindow)}`}
-              </span>
-            </div>
-            {agents.map((agent) => (
-              <div key={agent} className="flex w-[calc(var(--spacing-3xl)*2)] flex-none justify-end">
-                <Switch
-                  checked={isEnabled(provider, agent, model.id)}
-                  onChange={(on) => save(agent, [model], on)}
-                  label={`${agentLabel(agent)} 用 ${model.label ?? model.id}`}
-                />
-              </div>
-            ))}
-          </div>
+          <ModelTableRow
+            key={model.id}
+            label={model.label ?? model.id}
+            detail={`${model.id}${model.contextWindow != null ? ` · ${formatContext(model.contextWindow)}` : ""}`}
+            agents={agents}
+            agentLabel={agentLabel}
+            enabled={(agent) => isEnabled(provider, agent, model.id)}
+            onSwitch={(agent, on) => save(agent, [model], on)}
+          />
         ))}
         {rows.length === 0 && <div className="px-md py-sm text-fg-faint text-sm">{busy ? "正在向提供商要模型清单…" : "还没有模型。点「拉取模型」，或者在下面手动加一个。"}</div>}
         {rows.length > 0 && matching.length === 0 && <div className="px-md py-sm text-fg-faint text-sm">没有匹配「{query}」的模型</div>}

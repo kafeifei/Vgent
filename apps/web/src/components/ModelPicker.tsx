@@ -222,7 +222,9 @@ export function ModelPicker({
             const groupDefault =
               defaultId == null ? undefined : (entries.find((row) => row.id === defaultId)?.label ?? defaultId);
             const footer = footerOf(state);
-            const { own, fromProviders } = splitByProvider(entries);
+            // Switched off in 设置 › 模型: not on offer, except to the task that is already on it.
+            const offered = entries.filter((row) => row.hidden !== true || (entry.id === engine && row.id === model));
+            const { own, fromProviders } = splitByProvider(offered);
             const pick = (next: string | undefined) => {
               onPick(entry.id, next);
               close();

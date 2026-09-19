@@ -311,3 +311,86 @@ describe("providerRoute (Claude Code)", () => {
     expect(() => providerRoute("vgent-only:model", providers)).toThrow(/没有给 Claude Code/);
   });
 });
+
+describe("subscription routes", () => {
+  // No Codex login and no keys in the environment, so every list is the builtin
+  // one and nothing reaches the network; the Claude login is answered for.
+  const quietEnv = async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "");
+    vi.stubEnv("CODEX_HOME", await tempDir());
+    vi.stubEnv("AI_GATEWAY_API_KEY", "");
+    vi.stubEnv("VERCEL_OIDC_TOKEN", "");
+  };
+  const makeSubscribedApp = (dataDir: string): VgentApp => {
+    const instance = createApp({ dataDir, token: TOKEN, probeClaudeLogin: async () => ({ loggedIn: true, email: "dev@example.com", plan: "max" }) });
+    apps.push(instance);
+    return instance;
+  };
+  type Listed = { subscriptions: { id: string; loggedIn?: boolean; email?: string; agents: string[]; models: { id: string; agents: Record<string, { spec: string; enabled: boolean }> }[] }[] };
+
+  it("lists the two logins with their state, every model on to begin with", async () => {
+    await quietEnv();
+    const app = makeSubscribedApp(await tempDir());
+    const body = (await (await request(app, "/api/subscriptions")).json()) as Listed;
+    expect(body.subscriptions.map((entry) => [entry.id, entry.loggedIn, entry.agents])).toEqual([
+      ["claude-subscription", true, ["claude-code"]],
+      ["codex-subscription", false, ["vgent", "codex"]],
+    ]);
+    expect(body.subscriptions[0]?.email).toBe("dev@example.com");
+    expect(body.subscriptions[1]?.models).toEqual([
+      { id: "gpt-5.5", label: "gpt-5.5", agents: { vgent: { spec: "codex-subscription:gpt-5.5", enabled: true }, codex: { spec: "gpt-5.5", enabled: true } } },
+    ]);
+  });
+
+  it("a switch hides the model from that agent's picker only, survives a restart, and comes back on", async () => {
+    await quietEnv();
+    const dataDir = await tempDir();
+    const app = makeSubscribedApp(dataDir);
+
+    const off = await request(app, "/api/subscriptions/codex-subscription/models", { method: "PUT", body: { agent: "vgent", models: ["gpt-5.5"], enabled: false } });
+    expect(off.status).toBe(200);
+    expect(((await off.json()) as { models: Listed["subscriptions"][number]["models"] }).models[0]?.agents).toEqual({
+      vgent: { spec: "codex-subscription:gpt-5.5", enabled: false },
+      codex: { spec: "gpt-5.5", enabled: true },
+    });
+
+    // Still listed, so「默认」keeps its label and window — but marked, and the picker leaves it out.
+    const vgent = (await (await request(app, "/api/engines/vgent/models")).json()) as { models: { id: string; hidden?: boolean }[] };
+    expect(vgent.models).toContainEqual(expect.objectContaining({ id: "codex-subscription:gpt-5.5", hidden: true }));
+    const codex = (await (await request(app, "/api/engines/codex/models")).json()) as { models: { id: string; hidden?: boolean }[] };
+    expect(codex.models.some((model) => model.hidden === true)).toBe(false);
+
+    const settingsFile = JSON.parse(await readFile(join(dataDir, "settings.json"), "utf8")) as { hiddenModels?: unknown };
+    expect(settingsFile.hiddenModels).toEqual({ vgent: ["codex-subscription:gpt-5.5"] });
+
+    const on = await request(app, "/api/subscriptions/codex-subscription/models", { method: "PUT", body: { agent: "vgent", models: ["gpt-5.5"], enabled: true } });
+    expect(((await on.json()) as { models: Listed["subscriptions"][number]["models"] }).models[0]?.agents.vgent?.enabled).toBe(true);
+    expect("hiddenModels" in (JSON.parse(await readFile(join(dataDir, "settings.json"), "utf8")) as object)).toBe(false);
+  });
+
+  it("two switches clicked together both land", async () => {
+    await quietEnv();
+    const app = makeSubscribedApp(await tempDir());
+    await Promise.all(
+      ["sonnet", "opus"].map((model) => request(app, "/api/subscriptions/claude-subscription/models", { method: "PUT", body: { agent: "claude-code", models: [model], enabled: false } })),
+    );
+    const settings = (await (await request(app, "/api/settings")).json()) as { hiddenModels?: Record<string, string[]> };
+    expect([...(settings.hiddenModels?.["claude-code"] ?? [])].sort()).toEqual(["opus", "sonnet"]);
+  });
+
+  it("ignores an agent the login does not serve, and refuses what it cannot read", async () => {
+    await quietEnv();
+    const app = makeSubscribedApp(await tempDir());
+    await request(app, "/api/subscriptions/claude-subscription/models", { method: "PUT", body: { agent: "vgent", models: ["sonnet"], enabled: false } });
+    expect(((await (await request(app, "/api/settings")).json()) as { hiddenModels?: unknown }).hiddenModels).toBeUndefined();
+
+    expect((await request(app, "/api/subscriptions/nope/models", { method: "PUT", body: { agent: "vgent", models: [], enabled: true } })).status).toBe(404);
+    expect((await request(app, "/api/subscriptions/codex-subscription/models", { method: "PUT", body: { agent: "vgent", models: ["gpt-5.5"] } })).status).toBe(400);
+  });
+
+  it("keeps a provider from taking a subscription's id", async () => {
+    const app = makeSubscribedApp(await tempDir());
+    const created = (await (await request(app, "/api/providers", { method: "POST", body: { name: "claude-subscription", agents: {} } })).json()) as { id: string };
+    expect(created.id).not.toBe("claude-subscription");
+  });
+});

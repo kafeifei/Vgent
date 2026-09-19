@@ -308,6 +308,13 @@ export interface Settings {
   allowlist: string[];
   defaultModel?: string;
   /**
+   * 订阅模型的开关: what an agent gets from a login (Claude 订阅, Codex 订阅) is
+   * all on until the user switches one off in the 模型 table — this is the off
+   * list, per agent, in the ids a task's `model` takes. It only trims the
+   * picker; a task that already names the model keeps running on it.
+   */
+  hiddenModels?: Partial<Record<EngineId, string[]>>;
+  /**
    * 系统通知: whether a finished turn — or one that needs the user — calls them
    * back through the OS while the window is not focused. Absent means on, so an
    * older settings file needs no migration.

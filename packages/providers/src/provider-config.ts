@@ -108,8 +108,12 @@ export interface ProviderConfig {
 /** What a client is given: everything but the key, plus whether there is one. */
 export type RedactedProviderConfig = Omit<ProviderConfig, "apiKey"> & { hasKey: boolean };
 
-/** Ids the registry already uses for its built-in sources; a provider must not shadow them. */
-export const RESERVED_PROVIDER_IDS: readonly string[] = ["codex-subscription", "gateway"];
+/**
+ * Ids the built-in sources already use; a provider must not shadow them. The two
+ * `*-subscription` ids are the logins the settings page lists next to the
+ * connected providers.
+ */
+export const RESERVED_PROVIDER_IDS: readonly string[] = ["codex-subscription", "claude-subscription", "gateway"];
 
 /** The `:` every registry model id is split on. */
 export const PROVIDER_MODEL_SEPARATOR = ":";

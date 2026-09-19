@@ -1,7 +1,7 @@
 import { generateText } from "ai";
 import { describe, expect, it } from "vitest";
-import { anthropicSdkBaseURL, createModelRegistry, describeModelSpec } from "./model-registry.js";
-import type { ProviderConfig } from "./provider-config.js";
+import { anthropicSdkBaseURL, bedrockRegionOf, createModelRegistry, describeModelSpec } from "./model-registry.js";
+import { PROVIDER_PROTOCOLS, SDK_KINDS, type ProviderConfig, type ProviderProtocol } from "./provider-config.js";
 
 const deepseek: ProviderConfig = {
   id: "deepseek",
@@ -136,5 +136,41 @@ describe("createModelRegistry", () => {
     const registry = createModelRegistry();
     expect(registry.languageModel("codex-subscription:gpt-5.5")).toMatchObject({ modelId: "gpt-5.5" });
     expect(registry.languageModel("openai/gpt-5.5")).toMatchObject({ modelId: "openai/gpt-5.5" });
+  });
+});
+
+describe("every protocol", () => {
+  const USER_OWNED: Partial<Record<ProviderProtocol, string>> = {
+    "openai-compatible": "https://gateway.example.com/v1",
+    azure: "https://my-resource.openai.azure.com/openai",
+    "amazon-bedrock": "https://bedrock-runtime.us-east-1.amazonaws.com",
+  };
+
+  // The vendors' response shapes all differ; what is ours to get right is the
+  // request: the vendor's own package was built, pointed at the configured
+  // address, and handed the key. So the fake refuses, and the request is read.
+  it.each(PROVIDER_PROTOCOLS)("%s builds its own SDK provider, reaches the configured address, and sends the key", async (protocol) => {
+    const baseURL = SDK_KINDS[protocol].defaultBaseURL ?? USER_OWNED[protocol];
+    expect(baseURL, `${protocol} needs an address to test with`).toBeDefined();
+    const seen: { url: string; headers: Headers }[] = [];
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      seen.push({ url, headers: new Headers(init?.headers) });
+      return new Response(JSON.stringify({ error: { message: "refused by the test" } }), { status: 400, headers: { "content-type": "application/json" } });
+    };
+    const provider: ProviderConfig = { id: "p", name: "P", apiKey: "sk-the-key", agents: { vgent: { baseURL: baseURL!, protocol, models: [{ id: "some-model" }] } } };
+    const model = createModelRegistry({ providers: [provider], fetch }).languageModel("p:some-model");
+
+    await expect(generateText({ model, prompt: "hi", maxRetries: 0 })).rejects.toThrow();
+
+    expect(seen).toHaveLength(1);
+    expect(new URL(seen[0]!.url).host).toBe(new URL(baseURL!).host);
+    const sent = [...seen[0]!.headers.values()].join("\n");
+    expect(sent).toContain("sk-the-key");
+  });
+
+  it("reads a Bedrock region out of its address", () => {
+    expect(bedrockRegionOf("https://bedrock-runtime.eu-west-3.amazonaws.com")).toBe("eu-west-3");
+    expect(bedrockRegionOf("https://example.com")).toBeUndefined();
   });
 });

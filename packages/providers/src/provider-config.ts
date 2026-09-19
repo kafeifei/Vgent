@@ -13,11 +13,63 @@ export const PROVIDER_AGENTS = ["vgent", "claude-code", "codex"] as const;
 export type ProviderAgent = (typeof PROVIDER_AGENTS)[number];
 
 /**
- * The wire protocol an endpoint speaks. The in-house agent can use either; the
- * Claude Code agent only ever talks Anthropic Messages.
+ * How an endpoint is spoken to — which AI SDK provider package the in-house
+ * agent builds for it. `openai-compatible` and `anthropic` cover any endpoint
+ * that copies those two APIs; the rest are the vendors' own packages, which know
+ * their API's extras (OpenAI's Responses API, Gemini's native one, …). The
+ * Claude Code agent only ever talks `anthropic`.
  */
-export const PROVIDER_PROTOCOLS = ["openai-compatible", "anthropic"] as const;
+export const PROVIDER_PROTOCOLS = [
+  "openai-compatible",
+  "anthropic",
+  "openai",
+  "google",
+  "xai",
+  "mistral",
+  "groq",
+  "deepinfra",
+  "cerebras",
+  "togetherai",
+  "cohere",
+  "perplexity",
+  "azure",
+  "amazon-bedrock",
+  "gateway",
+] as const;
 export type ProviderProtocol = (typeof PROVIDER_PROTOCOLS)[number];
+
+export interface SdkKind {
+  /** The AI SDK package behind this protocol. */
+  npm: string;
+  label: string;
+  /** Where the package points on its own. Absent: the endpoint is the user's own and has to be given. */
+  defaultBaseURL?: string;
+  /** What a base URL of this kind looks like, for the field's placeholder. */
+  baseURLHint?: string;
+  /** How the model listing is asked for; `none` when the vendor serves nothing a key can read. */
+  listing: "openai" | "anthropic" | "google" | "none";
+  /** The listing's path under the base URL, when it is not `/models`. */
+  listingPath?: string;
+}
+
+/** One row per protocol: the package, its default endpoint, and how its model listing is read. */
+export const SDK_KINDS: Record<ProviderProtocol, SdkKind> = {
+  "openai-compatible": { npm: "@ai-sdk/openai-compatible", label: "OpenAI 兼容", baseURLHint: "https://example.com/v1", listing: "openai" },
+  anthropic: { npm: "@ai-sdk/anthropic", label: "Anthropic", defaultBaseURL: "https://api.anthropic.com", listing: "anthropic" },
+  openai: { npm: "@ai-sdk/openai", label: "OpenAI", defaultBaseURL: "https://api.openai.com/v1", listing: "openai" },
+  google: { npm: "@ai-sdk/google", label: "Google Gemini", defaultBaseURL: "https://generativelanguage.googleapis.com/v1beta", listing: "google" },
+  xai: { npm: "@ai-sdk/xai", label: "xAI", defaultBaseURL: "https://api.x.ai/v1", listing: "openai" },
+  mistral: { npm: "@ai-sdk/mistral", label: "Mistral", defaultBaseURL: "https://api.mistral.ai/v1", listing: "openai" },
+  groq: { npm: "@ai-sdk/groq", label: "Groq", defaultBaseURL: "https://api.groq.com/openai/v1", listing: "openai" },
+  deepinfra: { npm: "@ai-sdk/deepinfra", label: "DeepInfra", defaultBaseURL: "https://api.deepinfra.com/v1", listing: "openai", listingPath: "/openai/models" },
+  cerebras: { npm: "@ai-sdk/cerebras", label: "Cerebras", defaultBaseURL: "https://api.cerebras.ai/v1", listing: "openai" },
+  togetherai: { npm: "@ai-sdk/togetherai", label: "Together AI", defaultBaseURL: "https://api.together.xyz/v1", listing: "openai" },
+  cohere: { npm: "@ai-sdk/cohere", label: "Cohere", defaultBaseURL: "https://api.cohere.com/v2", listing: "none" },
+  perplexity: { npm: "@ai-sdk/perplexity", label: "Perplexity", defaultBaseURL: "https://api.perplexity.ai", listing: "none" },
+  azure: { npm: "@ai-sdk/azure", label: "Azure OpenAI", baseURLHint: "https://<资源名>.openai.azure.com/openai", listing: "none" },
+  "amazon-bedrock": { npm: "@ai-sdk/amazon-bedrock", label: "Amazon Bedrock", baseURLHint: "https://bedrock-runtime.<区域>.amazonaws.com", listing: "none" },
+  gateway: { npm: "@ai-sdk/gateway", label: "Vercel AI Gateway", defaultBaseURL: "https://ai-gateway.vercel.sh/v4/ai", listing: "none" },
+};
 
 /** One model of a provider, as the picker shows it. */
 export interface ProviderModel {
@@ -32,7 +84,7 @@ export interface ProviderModel {
 /** How one agent reaches the provider, and the models the user enabled for it. */
 export interface ProviderAgentConfig {
   baseURL: string;
-  /** Only meaningful for the in-house agent; Claude Code is always `anthropic`. */
+  /** Which AI SDK package the in-house agent builds for it; Claude Code is always `anthropic`. */
   protocol: ProviderProtocol;
   /** The ticked models, in the order the picker lists them. */
   models: ProviderModel[];
@@ -142,7 +194,7 @@ function readAgents(value: unknown): ProviderConfig["agents"] {
     // Claude Code speaks Anthropic Messages and nothing else, whatever was sent.
     const protocol = agent === "claude-code" ? "anthropic" : (record.protocol ?? "openai-compatible");
     if (!(PROVIDER_PROTOCOLS as readonly unknown[]).includes(protocol)) {
-      throw new Error(`${where}.protocol 只能是 ${PROVIDER_PROTOCOLS.map((name) => JSON.stringify(name)).join(" 或 ")}`);
+      throw new Error(`${where}.protocol 不认识：${JSON.stringify(protocol)}`);
     }
     agents[agent] = {
       baseURL: readBaseURL(record.baseURL, where),

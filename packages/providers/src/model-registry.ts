@@ -1,6 +1,18 @@
+import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
 import { createAnthropic } from "@ai-sdk/anthropic";
+import { createAzure } from "@ai-sdk/azure";
+import { createCerebras } from "@ai-sdk/cerebras";
+import { createCohere } from "@ai-sdk/cohere";
+import { createDeepInfra } from "@ai-sdk/deepinfra";
+import { createGoogle } from "@ai-sdk/google";
+import { createGroq } from "@ai-sdk/groq";
+import { createMistral } from "@ai-sdk/mistral";
+import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { createProviderRegistry, customProvider, defaultSettingsMiddleware, gateway, wrapProvider } from "ai";
+import { createPerplexity } from "@ai-sdk/perplexity";
+import { createTogetherAI } from "@ai-sdk/togetherai";
+import { createXai } from "@ai-sdk/xai";
+import { createGateway, createProviderRegistry, customProvider, defaultSettingsMiddleware, gateway, wrapProvider } from "ai";
 import type { LanguageModel } from "ai";
 import { createApiKeyModel } from "./api-key-model.js";
 import type { CodexSubscriptionModelOptions } from "./codex-model.js";
@@ -88,29 +100,74 @@ function isAnthropicFirstParty(baseURL: string): boolean {
  */
 const ANTHROPIC_COMPATIBLE_MAX_OUTPUT_TOKENS = 16_000;
 
-function sdkProviderFor(providerId: string, agent: ProviderAgentConfig, apiKey: string | undefined, fetch: typeof globalThis.fetch | undefined) {
-  if (agent.protocol === "anthropic") {
-    const credential = apiKey == null || apiKey === "" ? {} : isAnthropicFirstParty(agent.baseURL) ? { apiKey } : { authToken: apiKey };
-    const anthropic = createAnthropic({
-      name: providerId,
-      baseURL: anthropicSdkBaseURL(agent.baseURL),
-      ...credential,
-      ...(fetch == null ? {} : { fetch }),
-    });
-    if (isAnthropicFirstParty(agent.baseURL)) return anthropic;
-    return wrapProvider({
-      provider: anthropic,
-      languageModelMiddleware: defaultSettingsMiddleware({ settings: { maxOutputTokens: ANTHROPIC_COMPATIBLE_MAX_OUTPUT_TOKENS } }),
-    });
+/** `bedrock-runtime.<region>.amazonaws.com` → the region, which the Bedrock package wants said separately. */
+export function bedrockRegionOf(baseURL: string): string | undefined {
+  try {
+    return /^bedrock-runtime(?:-fips)?\.([a-z0-9-]+)\./.exec(new URL(baseURL).hostname)?.[1];
+  } catch {
+    return undefined;
   }
-  return createOpenAICompatible({
-    name: providerId,
-    baseURL: agent.baseURL,
-    ...(apiKey == null || apiKey === "" ? {} : { apiKey }),
-    // Without it a streamed turn reports no token usage, and the context ring has nothing to show.
-    includeUsage: true,
-    ...(fetch == null ? {} : { fetch }),
-  });
+}
+
+/**
+ * The AI SDK provider of one configured endpoint: the vendor's own package when
+ * the protocol names one, the generic OpenAI-compatible one otherwise. Every
+ * factory takes the same three things — where, the key, and (for tests) the fetch.
+ */
+function sdkProviderFor(providerId: string, agent: ProviderAgentConfig, apiKey: string | undefined, fetch: typeof globalThis.fetch | undefined): RegistryProvider {
+  const key = apiKey == null || apiKey === "" ? {} : { apiKey };
+  const common = { baseURL: agent.baseURL, ...key, ...(fetch == null ? {} : { fetch }) };
+  switch (agent.protocol) {
+    case "anthropic": {
+      const credential = apiKey == null || apiKey === "" ? {} : isAnthropicFirstParty(agent.baseURL) ? { apiKey } : { authToken: apiKey };
+      const anthropic = createAnthropic({
+        name: providerId,
+        baseURL: anthropicSdkBaseURL(agent.baseURL),
+        ...credential,
+        ...(fetch == null ? {} : { fetch }),
+      });
+      if (isAnthropicFirstParty(agent.baseURL)) return anthropic;
+      return wrapProvider({
+        provider: anthropic,
+        languageModelMiddleware: defaultSettingsMiddleware({ settings: { maxOutputTokens: ANTHROPIC_COMPATIBLE_MAX_OUTPUT_TOKENS } }),
+      });
+    }
+    case "openai":
+      return createOpenAI({ name: providerId, ...common });
+    case "google":
+      return createGoogle(common);
+    case "xai":
+      return createXai(common);
+    case "mistral":
+      return createMistral(common);
+    case "groq":
+      return createGroq(common);
+    case "deepinfra":
+      return createDeepInfra(common);
+    case "cerebras":
+      return createCerebras(common);
+    case "togetherai":
+      return createTogetherAI(common);
+    case "cohere":
+      return createCohere(common);
+    case "perplexity":
+      return createPerplexity(common);
+    case "azure":
+      return createAzure(common);
+    case "amazon-bedrock": {
+      const region = bedrockRegionOf(agent.baseURL);
+      return createAmazonBedrock({ ...common, ...(region == null ? {} : { region }) });
+    }
+    case "gateway":
+      return createGateway(common);
+    case "openai-compatible":
+      return createOpenAICompatible({
+        name: providerId,
+        ...common,
+        // Without it a streamed turn reports no token usage, and the context ring has nothing to show.
+        includeUsage: true,
+      });
+  }
 }
 
 export interface ModelRegistryOptions {

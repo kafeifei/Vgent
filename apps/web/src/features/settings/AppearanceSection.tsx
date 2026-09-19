@@ -1,5 +1,6 @@
 import { setDensity, setTheme, usePrefs, type Density, type Theme } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
+import { SettingsGroup, SettingsRow } from "./layout";
 import { PILL, PILL_SELECTED } from "./styles";
 
 const THEMES: ReadonlyArray<{ id: Theme; label: string }> = [
@@ -26,42 +27,28 @@ export function AppearanceSection() {
   const { theme, density } = usePrefs();
 
   return (
-    <section className="flex flex-col gap-sm">
-      <h2 className="font-semibold text-fg text-sm">外观</h2>
-      <div className="flex flex-col gap-2xs">
-        <span className="text-fg-faint text-xs">主题</span>
-        <div className="flex gap-2xs">
-          {THEMES.map((entry) => (
-            <button
-              key={entry.id}
-              type="button"
-              aria-pressed={theme === entry.id}
-              onClick={() => setTheme(entry.id)}
-              className={cn(PILL, theme === entry.id && PILL_SELECTED)}
-            >
-              {entry.label}
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="flex flex-col gap-2xs">
-        <span className="text-fg-faint text-xs">密度</span>
-        <div className="flex gap-2xs">
-          {DENSITIES.map((entry) => (
-            <button
-              key={entry.id}
-              type="button"
-              aria-pressed={density === entry.id}
-              title={entry.hint}
-              onClick={() => setDensity(entry.id)}
-              className={cn(PILL, density === entry.id && PILL_SELECTED)}
-            >
-              {entry.label}
-            </button>
-          ))}
-        </div>
-      </div>
-      <p className="text-fg-faint text-xs">点了就生效，也当场存在 server 上，不用按保存。</p>
-    </section>
+    <SettingsGroup note="点了就生效，也当场存在 server 上，不用按保存。">
+      <SettingsRow title="主题">
+        {THEMES.map((entry) => (
+          <button key={entry.id} type="button" aria-pressed={theme === entry.id} onClick={() => setTheme(entry.id)} className={cn(PILL, theme === entry.id && PILL_SELECTED)}>
+            {entry.label}
+          </button>
+        ))}
+      </SettingsRow>
+      <SettingsRow title="密度" help="紧凑：一屏更多信息。">
+        {DENSITIES.map((entry) => (
+          <button
+            key={entry.id}
+            type="button"
+            aria-pressed={density === entry.id}
+            title={entry.hint}
+            onClick={() => setDensity(entry.id)}
+            className={cn(PILL, density === entry.id && PILL_SELECTED)}
+          >
+            {entry.label}
+          </button>
+        ))}
+      </SettingsRow>
+    </SettingsGroup>
   );
 }

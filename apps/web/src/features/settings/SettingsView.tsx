@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { BASH_TOOL, bashEntryCommand, isVoidedBashEntry } from "@vgent/engine/allowlist";
-import { ArrowLeft, Pencil, Plus, Trash2, X } from "lucide-react";
+import { ArrowLeft, Bot, Boxes, GitBranch, Palette, Pencil, Plug, Plus, Settings2, Trash2, Wrench, X } from "lucide-react";
 import { ModelPicker } from "@/components/ModelPicker";
 import { ApiError, type ApiClient } from "@/lib/api";
 import { useToast } from "@/lib/toast";
@@ -9,9 +9,24 @@ import { cn } from "@/lib/utils";
 import { AppearanceSection } from "./AppearanceSection";
 import { EMPTY_MCP_FORM, fromForm, toForm, type McpForm } from "./mcpForm";
 import { NotificationsSection } from "./NotificationsSection";
-import { ProvidersSection } from "./ProvidersSection";
+import { BUTTON_PRIMARY, BUTTON_SECONDARY, SettingsEmpty, SettingsGroup, SettingsPage, SettingsRow, Tag } from "./layout";
+import { ModelsPage } from "./ModelsPage";
+import { ProvidersPage } from "./ProvidersPage";
 import { INPUT_CLASS, PILL, PILL_SELECTED, TEXTAREA_CLASS } from "./styles";
 import { isImeKeyEvent } from "@/lib/ime";
+
+/** The pages of 设置, in the order of the left-hand list. */
+export type SettingsTab = "general" | "appearance" | "agents" | "providers" | "models" | "mcp" | "worktrees";
+
+const TABS: ReadonlyArray<{ id: SettingsTab; label: string; icon: typeof Bot }> = [
+  { id: "general", label: "通用", icon: Settings2 },
+  { id: "appearance", label: "外观", icon: Palette },
+  { id: "agents", label: "Agents", icon: Bot },
+  { id: "providers", label: "模型提供商", icon: Plug },
+  { id: "models", label: "模型", icon: Boxes },
+  { id: "mcp", label: "工具与 MCP", icon: Wrench },
+  { id: "worktrees", label: "Worktrees", icon: GitBranch },
+];
 
 /**
  * 运行模式: three steps, each described by what it does *to you* rather than by
@@ -212,6 +227,7 @@ export function SettingsView({
   const [formError, setFormError] = useState<string | null>(null);
   const [pickerAvailable, setPickerAvailable] = useState(true);
   const [catalogVersion, setCatalogVersion] = useState(0);
+  const [tab, setTab] = useState<SettingsTab>("general");
 
   // Re-synced from the server only while the draft has no edits the user would lose.
   useEffect(() => {
@@ -310,62 +326,66 @@ export function SettingsView({
       });
   };
 
-  return (
-    <div className="mx-auto flex w-full max-w-log-max flex-col gap-lg px-md py-lg">
-      <div className="flex items-center gap-sm">
-        <button
-          type="button"
-          onClick={onClose}
-          className="inline-flex h-xl items-center gap-2xs rounded-md px-xs text-fg-muted text-sm hover:bg-bg-hover hover:text-fg"
-        >
-          <ArrowLeft className="size-md" />
-          返回
-        </button>
-        <h1 className="flex-1 font-semibold text-lg">设置</h1>
-        <button
-          type="button"
-          disabled={!dirty || saving}
-          onClick={save}
-          className="inline-flex h-xl items-center rounded-full bg-brand px-md text-brand-fg text-sm disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {saving ? "保存中…" : "保存"}
-        </button>
-      </div>
+  const pages: Record<SettingsTab, ReactNode> = {
+    general: (
+      <SettingsPage title="通用">
+        <NotificationsSection enabled={draft.systemNotifications !== false} onChange={(value) => update({ systemNotifications: value })} />
+      </SettingsPage>
+    ),
 
-      <section className="flex flex-col gap-sm">
-        <h2 className="font-semibold text-fg text-sm">运行模式</h2>
-        <div className="flex flex-col gap-2xs">
+    appearance: (
+      <SettingsPage title="外观">
+        <AppearanceSection />
+      </SettingsPage>
+    ),
+
+    agents: (
+      <SettingsPage title="Agents" description="新任务默认用什么，以及 agent 动手之前问不问你。">
+        <SettingsGroup title="对话">
+          <SettingsRow title="默认模型" help="新任务用的模型；选模型也就选了跑它的 agent。">
+            <ModelPicker
+              // Remounted when a provider changes: its lists are loaded once per mount.
+              key={catalogVersion}
+              engines={engines}
+              engine={draft.defaultEngine}
+              model={draft.defaultModel}
+              onPick={setDefaultModel}
+              trigger={(props, chip) => (
+                <button type="button" {...props} className={cn(PILL, "w-fit font-mono")}>
+                  {chip.label}
+                  <span className="ml-2xs opacity-60">▾</span>
+                </button>
+              )}
+            />
+          </SettingsRow>
+        </SettingsGroup>
+
+        <SettingsGroup title="运行模式">
           {RUN_MODES.map((mode) => (
             <button
               key={mode.id}
               type="button"
-              aria-pressed={draft.runMode === mode.id}
+              role="radio"
+              aria-checked={draft.runMode === mode.id}
               onClick={() => update({ runMode: mode.id })}
-              className={cn(
-                "flex w-full flex-col items-start gap-3xs rounded-md border border-border bg-bg-elevated px-sm py-xs text-left hover:border-border-strong",
-                draft.runMode === mode.id && "border-brand bg-brand-bg hover:border-brand",
-              )}
+              className="flex min-h-3xl w-full items-center gap-sm px-md py-xs text-left hover:bg-bg-hover"
             >
-              <span className={cn("text-fg text-sm", draft.runMode === mode.id && "text-brand")}>{mode.label}</span>
-              <span className="text-fg-faint text-xs">{mode.hint}</span>
+              <span className="flex min-w-0 flex-1 flex-col gap-3xs">
+                <span className="text-fg text-sm">{mode.label}</span>
+                <span className="text-fg-faint text-xs">{mode.hint}</span>
+              </span>
+              <span className={cn("grid size-md flex-none place-items-center rounded-full border border-border-strong", draft.runMode === mode.id && "border-brand")}>
+                {draft.runMode === mode.id && <span className="size-xs rounded-full bg-brand" />}
+              </span>
             </button>
           ))}
-        </div>
-      </section>
+        </SettingsGroup>
 
-      <section className="flex flex-col gap-sm">
-        <h2 className="font-semibold text-fg text-sm">一直允许的工具</h2>
-        <div className="flex flex-col gap-2xs">
+        <SettingsGroup title="一直允许的工具">
           {allowlist.map((tool) => {
             const { label, note } = describeAllowEntry(tool);
             return (
-              <div key={tool} className="flex items-center gap-xs rounded-md border border-border bg-bg-elevated px-sm py-xs">
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-fg text-sm" title={tool}>
-                    {label}
-                  </div>
-                  {note != null && <div className="text-fg-faint text-xs">{note}</div>}
-                </div>
+              <SettingsRow key={tool} title={<span className="truncate" title={tool}>{label}</span>} help={note}>
                 <button
                   type="button"
                   title="撤销"
@@ -374,86 +394,36 @@ export function SettingsView({
                 >
                   <X className="size-xs" />
                 </button>
-              </div>
+              </SettingsRow>
             );
           })}
-          {allowlist.length === 0 && <p className="text-fg-faint text-xs">还没有一直允许的工具。审批卡上点「一直允许」会加到这里。</p>}
-        </div>
-      </section>
+          {allowlist.length === 0 && <SettingsEmpty>还没有一直允许的工具。审批卡上点「一直允许」会加到这里。</SettingsEmpty>}
+        </SettingsGroup>
+      </SettingsPage>
+    ),
 
-      <AppearanceSection />
+    providers: <ProvidersPage client={client} engines={engines} onChanged={() => setCatalogVersion((version) => version + 1)} />,
 
-      <NotificationsSection
-        enabled={draft.systemNotifications !== false}
-        onChange={(value) => update({ systemNotifications: value })}
-      />
+    models: (
+      <ModelsPage client={client} engines={engines} onChanged={() => setCatalogVersion((version) => version + 1)} onOpenProviders={() => setTab("providers")} />
+    ),
 
-      <ProvidersSection client={client} engines={engines} onChanged={() => setCatalogVersion((version) => version + 1)} />
-
-      <section className="flex flex-col gap-sm">
-        <h2 className="font-semibold text-fg text-sm">默认模型</h2>
-        <ModelPicker
-          // Remounted when a provider changes: its lists are loaded once per mount.
-          key={catalogVersion}
-          engines={engines}
-          engine={draft.defaultEngine}
-          model={draft.defaultModel}
-          onPick={setDefaultModel}
-          trigger={(props, chip) => (
-            <button type="button" {...props} className={cn(PILL, "w-fit font-mono")}>
-              {chip.label}
-              <span className="ml-2xs opacity-60">▾</span>
-            </button>
-          )}
-        />
-      </section>
-
-      <section className="flex flex-col gap-sm">
-        <h2 className="font-semibold text-fg text-sm">worktree 上限</h2>
-        <label className="flex flex-col gap-2xs">
-          <span className="text-fg-faint text-xs">超过这个数量就回收最旧的空闲任务目录；留空用默认值 25。</span>
-          <input
-            type="number"
-            min={1}
-            step={1}
-            value={draft.worktreeMaxCount ?? ""}
-            placeholder="25"
-            onChange={(event) => {
-              const raw = event.target.value.trim();
-              const parsed = Number.parseInt(raw, 10);
-              // Empty restores the built-in default; the server validates the rest.
-              setDraft((current) => {
-                if (current == null) return current;
-                if (raw === "" || !Number.isInteger(parsed) || parsed < 1) {
-                  const { worktreeMaxCount: _dropped, ...rest } = current;
-                  return rest;
-                }
-                return { ...current, worktreeMaxCount: parsed };
-              });
-            }}
-            className={cn(INPUT_CLASS, "w-[calc(var(--spacing-3xl)*2)] font-mono")}
-          />
-        </label>
-      </section>
-
-      <section className="flex flex-col gap-sm">
-        <h2 className="font-semibold text-fg text-sm">MCP 服务器</h2>
-
-        <div className="flex flex-col gap-2xs">
+    mcp: (
+      <SettingsPage title="工具与 MCP" description="自研引擎每轮启动时连接；修改后下一轮生效。">
+        <SettingsGroup title="MCP 服务器">
           {servers.map((config, index) => {
             const { kind, detail } = describeServer(config);
             return (
-              <div
+              <SettingsRow
                 key={`${config.name}-${index}`}
-                className="flex items-center gap-xs rounded-md border border-border bg-bg-elevated px-sm py-xs"
+                title={
+                  <>
+                    <span className="truncate font-medium">{config.name}</span>
+                    <Tag>{kind}</Tag>
+                  </>
+                }
+                help={<span className="block truncate font-mono">{detail}</span>}
               >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2xs">
-                    <span className="truncate font-medium text-fg text-sm">{config.name}</span>
-                    <span className="flex-none rounded-full bg-bg-inset px-2xs text-2xs text-fg-faint uppercase">{kind}</span>
-                  </div>
-                  <div className="truncate font-mono text-fg-faint text-xs">{detail}</div>
-                </div>
                 <button
                   type="button"
                   onClick={() => openEditForm(index)}
@@ -470,11 +440,11 @@ export function SettingsView({
                 >
                   <Trash2 className="size-xs" />
                 </button>
-              </div>
+              </SettingsRow>
             );
           })}
-          {servers.length === 0 && form == null && <p className="text-fg-faint text-xs">还没有配置 MCP 服务器。</p>}
-        </div>
+          {servers.length === 0 && <SettingsEmpty>还没有配置 MCP 服务器。</SettingsEmpty>}
+        </SettingsGroup>
 
         {form != null ? (
           <McpFormPanel
@@ -487,19 +457,84 @@ export function SettingsView({
             onSubmit={commitForm}
           />
         ) : (
-          <button
-            type="button"
-            onClick={openAddForm}
-            className="inline-flex h-xl w-fit items-center gap-2xs rounded-md border border-border border-dashed px-sm text-fg-muted text-sm hover:border-border-strong hover:text-fg"
-          >
-            <Plus className="size-md" />
+          <button type="button" onClick={openAddForm} className={cn(BUTTON_SECONDARY, "w-fit")}>
+            <Plus className="size-xs" />
             添加服务器
           </button>
         )}
+      </SettingsPage>
+    ),
 
-        {saveError != null && <p className="text-danger text-xs">{saveError}</p>}
-        <p className="text-fg-faint text-xs">自研引擎每轮启动时连接；修改后下一轮生效。</p>
-      </section>
+    worktrees: (
+      <SettingsPage title="Worktrees">
+        <SettingsGroup>
+          <SettingsRow title="worktree 上限" help="超过这个数量就回收最旧的空闲任务目录；留空用默认值 25。">
+            <input
+              type="number"
+              min={1}
+              step={1}
+              value={draft.worktreeMaxCount ?? ""}
+              placeholder="25"
+              onChange={(event) => {
+                const raw = event.target.value.trim();
+                const parsed = Number.parseInt(raw, 10);
+                // Empty restores the built-in default; the server validates the rest.
+                setDraft((current) => {
+                  if (current == null) return current;
+                  if (raw === "" || !Number.isInteger(parsed) || parsed < 1) {
+                    const { worktreeMaxCount: _dropped, ...rest } = current;
+                    return rest;
+                  }
+                  return { ...current, worktreeMaxCount: parsed };
+                });
+              }}
+              className={cn(INPUT_CLASS, "w-[calc(var(--spacing-3xl)*2)] font-mono")}
+            />
+          </SettingsRow>
+        </SettingsGroup>
+      </SettingsPage>
+    ),
+  };
+
+  return (
+    <div className="mx-auto flex w-full max-w-[calc(var(--spacing-log-max)+var(--spacing-sidebar))] gap-xl px-lg py-lg">
+      <nav aria-label="设置" className="sticky top-lg flex h-fit w-[calc(var(--spacing-3xl)*3.5)] flex-none flex-col gap-3xs">
+        <button
+          type="button"
+          onClick={onClose}
+          className="mb-xs inline-flex h-xl w-fit items-center gap-2xs rounded-md px-xs text-fg-muted text-sm hover:bg-bg-hover hover:text-fg"
+        >
+          <ArrowLeft className="size-md" />
+          返回
+        </button>
+        {TABS.map((entry) => (
+          <button
+            key={entry.id}
+            type="button"
+            aria-current={tab === entry.id ? "page" : undefined}
+            onClick={() => setTab(entry.id)}
+            className={cn(
+              "flex h-xl items-center gap-xs rounded-md px-sm text-left text-fg-muted text-sm hover:bg-bg-hover hover:text-fg",
+              tab === entry.id && "bg-bg-active text-fg",
+            )}
+          >
+            <entry.icon className="size-md flex-none" />
+            {entry.label}
+          </button>
+        ))}
+      </nav>
+
+      <div className="flex min-w-0 flex-1 flex-col gap-md">
+        {pages[tab]}
+        {(dirty || saveError != null) && (
+          <div className="sticky bottom-lg flex items-center gap-sm rounded-lg border border-border bg-bg-elevated px-md py-xs shadow-lg">
+            <span className={cn("min-w-0 flex-1 truncate text-xs", saveError != null ? "text-danger" : "text-fg-muted")}>{saveError ?? "有还没保存的修改"}</span>
+            <button type="button" disabled={!dirty || saving} onClick={save} className={BUTTON_PRIMARY}>
+              {saving ? "保存中…" : "保存"}
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

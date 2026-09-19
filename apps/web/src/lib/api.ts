@@ -14,10 +14,11 @@ import type {
   ModelCatalog,
   PlanDocument,
   Project,
+  CatalogProvider,
+  CatalogProviderSummary,
   ProviderAgent,
   ProviderAgentConfig,
   ProviderModel,
-  ProviderPreset,
   ProviderProtocol,
   RedactedProviderConfig,
   Settings,
@@ -30,6 +31,15 @@ import type {
 import { pickNativePath } from "./nativePicker";
 
 /** What the provider form sends. The key travels up only; nothing the server answers carries one. */
+export interface ProviderCatalog {
+  /** `builtin`: models.dev could not be reached and there is no cached copy — only the handful shipped with the app. */
+  source: "live" | "cache" | "builtin";
+  fetchedAt?: string;
+  /** Catalog ids of the first rows, in order. */
+  popular: string[];
+  providers: CatalogProviderSummary[];
+}
+
 export interface ProviderInputBody {
   name: string;
   presetId?: string;
@@ -329,8 +339,12 @@ export function createClient(token: string) {
     /** 引擎能力表: what exists, what it is called, what it can do. */
     listEngines: () => api<{ engines: EngineDescriptor[] }>("/engines", token).then((body) => body.engines),
 
-    /** 模型提供商: the configured ones (never with their key) and the presets a new one can start from. */
-    listProviders: () => api<{ providers: RedactedProviderConfig[]; presets: ProviderPreset[] }>("/providers", token),
+    /** 模型提供商: the connected ones, never with their key. */
+    listProviders: () => api<{ providers: RedactedProviderConfig[] }>("/providers", token).then((body) => body.providers),
+    /** 提供商目录 (models.dev, cached by the server), without models. `refresh` downloads it again. */
+    getProviderCatalog: (refresh = false) => api<ProviderCatalog>(`/providers/catalog${refresh ? "?refresh=1" : ""}`, token),
+    /** One catalog provider with the models an agent can use. */
+    getCatalogProvider: (id: string) => api<CatalogProvider>(`/providers/catalog/${encodeURIComponent(id)}`, token),
     createProvider: (input: ProviderInputBody) => api<RedactedProviderConfig>("/providers", token, { method: "POST", json: input }),
     /** `apiKey` absent keeps the stored key, `""` clears it. */
     updateProvider: (id: string, input: ProviderInputBody) =>

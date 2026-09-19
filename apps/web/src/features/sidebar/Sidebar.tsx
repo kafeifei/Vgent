@@ -199,7 +199,7 @@ export function Sidebar({
             </div>
             <button
               type="button"
-              title="设置"
+              title="设置 ⌘,"
               aria-pressed={settingsOpen}
               onClick={onOpenSettings}
               className={cn(

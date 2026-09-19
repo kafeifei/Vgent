@@ -21,6 +21,7 @@ export {
   PROVIDER_MODEL_SEPARATOR,
   PROVIDER_PROTOCOLS,
   RESERVED_PROVIDER_IDS,
+  SDK_KINDS,
   isProviderConfig,
   parseProviderInput,
   providerModelSpec,
@@ -36,6 +37,7 @@ export type {
   ProviderModel,
   ProviderProtocol,
   RedactedProviderConfig,
+  SdkKind,
 } from "./provider-config.js";
 export { PROVIDER_PRESETS, findProviderPreset } from "./presets.js";
 export type { ProviderPreset } from "./presets.js";
@@ -47,5 +49,14 @@ export {
   describeModelSpec,
 } from "./model-registry.js";
 export type { ModelRegistry, ModelRegistryOptions, ModelSpecKind } from "./model-registry.js";
-export { ModelDiscoveryError, discoverProviderModels } from "./discover.js";
+export { ModelDiscoveryError, canDiscoverModels, discoverProviderModels } from "./discover.js";
 export type { DiscoverModelsOptions } from "./discover.js";
+export {
+  MODELS_DEV_URL,
+  POPULAR_PROVIDER_IDS,
+  builtinCatalog,
+  fetchProviderCatalog,
+  normalizeModelsDev,
+  summarizeCatalogProvider,
+} from "./catalog.js";
+export type { CatalogEndpoint, CatalogProvider, CatalogProviderSummary, FetchCatalogOptions } from "./catalog.js";

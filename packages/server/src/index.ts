@@ -173,10 +173,13 @@ export type { McpHttpServerConfig, McpServerConfig, McpStdioServerConfig } from 
 export { createProviderStore, type ProviderStore } from "./store/providers.js";
 /** Re-exported so the web client types its provider settings from one place. The key never appears in any of them. */
 export type {
+  CatalogEndpoint,
+  CatalogProvider,
+  CatalogProviderSummary,
   ProviderAgent,
   ProviderAgentConfig,
   ProviderModel,
-  ProviderPreset,
   ProviderProtocol,
   RedactedProviderConfig,
 } from "@vgent/providers";
+export { createCatalogStore, type CatalogSnapshot, type CatalogSource, type CatalogStore } from "./store/catalog.js";

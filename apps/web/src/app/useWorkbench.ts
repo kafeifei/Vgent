@@ -431,7 +431,7 @@ export function useWorkbench(token: string) {
     [activeProjectId, chats, client, selectChange, selectThread, selectedThreadId, state.projects, state.threads, thread, toast],
   );
 
-  // ⌘K / ⌘N / ⌘J / ⌘B
+  // ⌘K / ⌘N / ⌘J / ⌘B / ⌘,
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (!event.metaKey && !event.ctrlKey) return;
@@ -448,6 +448,10 @@ export function useWorkbench(token: string) {
       } else if (key === "b") {
         event.preventDefault();
         setLeft((mode) => (mode === "on" ? "rail" : "on"));
+      } else if (key === ",") {
+        // The macOS convention for 设置; pressing it again goes back to the task.
+        event.preventDefault();
+        setSettingsOpen((open) => !open);
       }
     };
     window.addEventListener("keydown", onKeyDown);

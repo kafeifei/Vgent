@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { discoverProviderModels, ModelDiscoveryError } from "./discover.js";
+import { canDiscoverModels, discoverProviderModels, ModelDiscoveryError } from "./discover.js";
 import { PROVIDER_PRESETS } from "./presets.js";
 import { parseProviderInput, providerModelSpec, redactProvider, slugifyProviderId, splitProviderModelSpec } from "./provider-config.js";
 
@@ -91,6 +91,37 @@ describe("discoverProviderModels", () => {
     expect(seen.url).toBe("https://openrouter.ai/api/v1/models");
     expect(seen.headers?.get("authorization")).toBe("Bearer sk-or");
     expect(models).toEqual([{ id: "z-ai/glm-5.2", label: "GLM 5.2", contextWindow: 200000 }, { id: "plain" }]);
+  });
+
+  it("lists Gemini its own way: the key in x-goog-api-key, ids without the models/ prefix, chat models only", async () => {
+    const seen: { url?: string; headers?: Headers } = {};
+    const models = await discoverProviderModels({
+      baseURL: "https://generativelanguage.googleapis.com/v1beta",
+      protocol: "google",
+      apiKey: "g-key",
+      fetch: answering(
+        200,
+        {
+          models: [
+            { name: "models/gemini-3-pro", displayName: "Gemini 3 Pro", inputTokenLimit: 1000000, supportedGenerationMethods: ["generateContent"] },
+            { name: "models/embedding-001", displayName: "Embedding", supportedGenerationMethods: ["embedContent"] },
+          ],
+        },
+        seen,
+      ),
+    });
+    expect(seen.url).toBe("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000");
+    expect(seen.headers?.get("x-goog-api-key")).toBe("g-key");
+    expect(seen.headers?.get("authorization")).toBeNull();
+    expect(models).toEqual([{ id: "gemini-3-pro", label: "Gemini 3 Pro", contextWindow: 1000000 }]);
+  });
+
+  it("uses the listing path of a vendor whose OpenAI surface sits under a sub-path, and says so when a vendor has none", async () => {
+    const seen: { url?: string; headers?: Headers } = {};
+    await discoverProviderModels({ baseURL: "https://api.deepinfra.com/v1", protocol: "deepinfra", apiKey: "k", fetch: answering(200, { data: [] }, seen) });
+    expect(seen.url).toBe("https://api.deepinfra.com/v1/openai/models");
+    expect(canDiscoverModels("perplexity")).toBe(false);
+    await expect(discoverProviderModels({ baseURL: "https://api.perplexity.ai", protocol: "perplexity", fetch: answering(200, {}) })).rejects.toBeInstanceOf(ModelDiscoveryError);
   });
 
   it("lists an Anthropic-compatible endpoint under /v1 with both credential headers", async () => {

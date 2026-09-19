@@ -67,7 +67,7 @@ async function deployServer() {
   run("pnpm", ["deploy", "--filter", "@vgent/server", "--prod", "--legacy", "--node-linker=hoisted", serverDir]);
   // `--node-linker=hoisted` puts every package at the top level, so presence is
   // a plain file check; `exports` maps make `require.resolve` unreliable here.
-  for (const name of ["ai", "hono", "@hono/node-server", "@ai-sdk/harness", "@ai-sdk/harness-claude-code", "@ai-sdk/harness-codex", "@ai-sdk/openai-compatible", "@ai-sdk/anthropic", "@vgent/engines", "@vgent/engine", "@vgent/providers"]) {
+  for (const name of ["ai", "hono", "@hono/node-server", "@ai-sdk/harness", "@ai-sdk/harness-claude-code", "@ai-sdk/harness-codex", "@ai-sdk/openai-compatible", "@ai-sdk/anthropic", "@ai-sdk/google", "@ai-sdk/xai", "@ai-sdk/amazon-bedrock", "@vgent/engines", "@vgent/engine", "@vgent/providers"]) {
     await stat(join(serverDir, "node_modules", name, "package.json")).catch(() => {
       throw new Error(`内置服务缺少依赖 ${name}，pnpm deploy 结果不完整。`);
     });

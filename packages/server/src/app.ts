@@ -2,12 +2,13 @@ import { timingSafeEqual } from "node:crypto";
 import { resolveModel } from "@vgent/engine";
 import {
   ModelDiscoveryError,
-  PROVIDER_PRESETS,
+  POPULAR_PROVIDER_IDS,
   PROVIDER_PROTOCOLS,
   discoverProviderModels,
   parseProviderInput,
   providerModelSpec,
   redactProvider,
+  summarizeCatalogProvider,
   type ProviderInput,
   type ProviderProtocol,
 } from "@vgent/providers";
@@ -34,6 +35,7 @@ import { registerStatic } from "./static.js";
 import { createDraftStore, isDraftKey, MAX_DRAFT_BYTES } from "./store/drafts.js";
 import { createPlanStore, MAX_PLAN_BYTES } from "./store/plans.js";
 import { createProjectStore, type ProjectStore } from "./store/projects.js";
+import { createCatalogStore } from "./store/catalog.js";
 import { createProviderStore } from "./store/providers.js";
 import { asMcpServers, createSettingsStore, type SettingsPatch } from "./store/settings.js";
 import { createThreadStore, type ThreadPatch } from "./store/threads.js";
@@ -86,6 +88,8 @@ export interface CreateAppOptions {
   compactModel?: LanguageModel;
   /** What `POST /api/providers/discover` reaches a provider with. Tests answer for the provider. */
   providerFetch?: typeof globalThis.fetch;
+  /** What the provider catalog (models.dev) is downloaded with. Tests answer for it, or refuse. */
+  catalogFetch?: typeof globalThis.fetch;
 }
 
 export interface VgentApp {
@@ -221,6 +225,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
   const drafts = createDraftStore(dataDir, log);
   const settings = createSettingsStore(dataDir, log);
   const providers = createProviderStore(dataDir, log);
+  const catalog = createCatalogStore(dataDir, { log, ...(options.catalogFetch != null ? { fetch: options.catalogFetch } : {}) });
   const queue = createQueueStore(threads);
   const registry = options.registry ?? createEngineRegistry();
   const git = options.git ?? createGit();
@@ -1038,7 +1043,26 @@ export function createApp(options: CreateAppOptions): VgentApp {
     }
   };
 
-  app.get("/api/providers", async (c) => c.json({ providers: (await providers.list()).map(redactProvider), presets: PROVIDER_PRESETS }));
+  app.get("/api/providers", async (c) => c.json({ providers: (await providers.list()).map(redactProvider) }));
+
+  // 提供商目录: every provider there is to connect (models.dev, cached), without
+  // their models — those come one provider at a time, when the user picks one.
+  app.get("/api/providers/catalog", async (c) => {
+    const snapshot = c.req.query("refresh") != null ? await catalog.refresh() : await catalog.get();
+    return c.json({
+      source: snapshot.source,
+      ...(snapshot.fetchedAt != null ? { fetchedAt: snapshot.fetchedAt } : {}),
+      popular: POPULAR_PROVIDER_IDS.filter((id) => snapshot.providers.some((entry) => entry.id === id)),
+      providers: snapshot.providers.map(summarizeCatalogProvider),
+    });
+  });
+
+  app.get("/api/providers/catalog/:id", async (c) => {
+    const id = c.req.param("id");
+    const entry = (await catalog.get()).providers.find((provider) => provider.id === id);
+    if (entry == null) throw new NotFoundError(`目录里没有提供商 ${JSON.stringify(id)}`, "provider_not_found");
+    return c.json(entry);
+  });
 
   app.post("/api/providers", async (c) => c.json(redactProvider(await providers.create(await readProviderBody(c))), 201));
 
@@ -1072,7 +1096,11 @@ export function createApp(options: CreateAppOptions): VgentApp {
       });
       return c.json({ models });
     } catch (error) {
-      if (error instanceof ModelDiscoveryError) throw new UpstreamModelError(error.message, "provider_discovery_failed");
+      if (error instanceof ModelDiscoveryError) {
+        // The provider answered and said no to the key: the one failure the connect dialog must not shrug off.
+        const rejected = error.status === 401 || error.status === 403;
+        throw new UpstreamModelError(error.message, rejected ? "provider_key_rejected" : "provider_discovery_failed");
+      }
       throw error;
     }
   });

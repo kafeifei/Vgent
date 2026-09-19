@@ -40,6 +40,18 @@ export interface CodexEngineOptions {
   /** Allow the underlying runtime to use live web search. */
   webSearch?: boolean;
   /**
+   * Where Codex gets its models. Unset, it is the machine's ChatGPT / Codex
+   * login (`auth: 'auto'`). Set — see `codexProviderEnv` — Codex runs on that
+   * endpoint and key instead and the login is not read at all.
+   */
+  auth?: CodexAuthEnvironment;
+  /**
+   * Extra Codex config, passed through as is (snake_case keys). Used for what
+   * Codex cannot know about a provider's model — `model_context_window` — since
+   * it only carries metadata for OpenAI's own.
+   */
+  codexConfig?: Record<string, unknown>;
+  /**
    * Stable identifier for the underlying harness session. Required together
    * with `resumeFrom` to reattach a session created by an earlier process.
    */
@@ -72,6 +84,26 @@ export interface CodexEngine {
 }
 
 export const DEFAULT_CODEX_DATA_DIR = join(homedir(), ".vgent", "harness", "codex");
+
+/** The authentication environment the Codex adapter reads (`pickOpenAI`): a key and the endpoint it is for. */
+export type CodexAuthEnvironment = Readonly<Record<string, string>> & {
+  readonly OPENAI_BASE_URL: string;
+  readonly OPENAI_API_KEY: string;
+};
+
+/**
+ * Points Codex at a provider from the settings page. Given an explicit
+ * environment, the adapter skips the subscription login, and its bridge turns
+ * `OPENAI_BASE_URL` into a Codex `model_providers` entry with
+ * `wire_api = "responses"` — so the endpoint has to speak OpenAI's Responses
+ * API (`POST <baseURL>/responses`); chat-completions alone is not enough.
+ *
+ * A keyless endpoint (a server on this machine) still gets a placeholder: the
+ * bridge only builds that provider entry when there is a key to name.
+ */
+export function codexProviderEnv(input: { baseURL: string; apiKey?: string }): CodexAuthEnvironment {
+  return { OPENAI_BASE_URL: input.baseURL.replace(/\/+$/, ""), OPENAI_API_KEY: input.apiKey != null && input.apiKey !== "" ? input.apiKey : "unused" };
+}
 
 /**
  * Codex as an AI SDK `Agent`, driven by the official harness adapter over a
@@ -135,7 +167,8 @@ export async function createCodexEngine(options: CodexEngineOptions): Promise<Co
   const { sandbox, stopHandedOut, forget } = trackSandboxSessions(provider);
 
   const harness = createCodex({
-    auth: "auto",
+    auth: options.auth ?? "auto",
+    ...(options.codexConfig != null ? { codexConfig: options.codexConfig } : {}),
     port: 0,
     ...(options.reasoningEffort != null ? { reasoningEffort: options.reasoningEffort } : {}),
     ...(options.webSearch != null ? { webSearch: options.webSearch } : {}),

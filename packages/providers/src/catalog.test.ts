@@ -62,6 +62,13 @@ describe("normalizeModelsDev", () => {
     expect(byId("xai")?.agents["claude-code"]).toBeUndefined();
   });
 
+  it("offers Codex only the providers the catalog reaches through the Responses-speaking OpenAI package", () => {
+    const openai = normalizeModelsDev({ openai: { id: "openai", name: "OpenAI", npm: "@ai-sdk/openai", models: { "gpt-5.4": model({ id: "gpt-5.4" }) } } }).find((entry) => entry.id === "openai");
+    expect(openai?.agents.codex).toEqual({ protocol: "openai", baseURL: SDK_KINDS.openai.defaultBaseURL });
+    expect(byId("deepseek")?.agents.codex).toBeUndefined();
+    expect(byId("xai")?.agents.codex).toBeUndefined();
+  });
+
   it("asks for the address when it is the user's own", () => {
     expect(byId("azure")).toMatchObject({ agents: { vgent: { protocol: "azure" } }, baseURLHint: SDK_KINDS.azure.baseURLHint });
     expect(byId("azure")?.agents.vgent?.baseURL).toBeUndefined();

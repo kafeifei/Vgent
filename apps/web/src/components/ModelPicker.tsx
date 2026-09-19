@@ -29,6 +29,7 @@ const SOURCE_LABELS: Record<string, string> = {
   "codex-cache": "来自 Codex 缓存",
   gateway: "来自 AI Gateway",
   "anthropic-api": "来自 Anthropic API",
+  "models.dev": "来自 models.dev 目录",
   builtin: "内置清单",
 };
 

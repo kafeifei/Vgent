@@ -84,6 +84,17 @@ describe("customInput", () => {
     expect("input" in both && both.input.agents["claude-code"]).toEqual({ baseURL: "https://gw.test", protocol: "anthropic", models: [] });
   });
 
+  it("adds Codex at the same address only when the user says the service speaks Responses", () => {
+    const all = ["vgent", "claude-code", "codex"] as const;
+    const off = customInput({ ...EMPTY_CUSTOM_FORM, name: "网关", baseURL: "https://gw.test/v1" }, all);
+    expect("input" in off && Object.keys(off.input.agents)).toEqual(["vgent"]);
+    const on = customInput({ ...EMPTY_CUSTOM_FORM, name: "网关", baseURL: "https://gw.test/v1/", codexResponses: true }, all);
+    expect("input" in on && on.input.agents.codex).toEqual({ baseURL: "https://gw.test/v1", protocol: "openai", models: [] });
+    // An Anthropic-only service has no Responses endpoint to offer, whatever the switch says.
+    const anthropic = customInput({ ...EMPTY_CUSTOM_FORM, name: "网关", protocol: "anthropic", baseURL: "https://gw.test/anthropic", codexResponses: true }, all);
+    expect("input" in anthropic && anthropic.input.agents.codex).toBeUndefined();
+  });
+
   it("says what is missing", () => {
     expect(customInput(EMPTY_CUSTOM_FORM, usable)).toEqual({ error: "给提供商起个名字" });
     expect(customInput({ ...EMPTY_CUSTOM_FORM, name: "x" }, usable)).toEqual({ error: "填上接入地址" });

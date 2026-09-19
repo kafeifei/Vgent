@@ -143,6 +143,10 @@ function readProvider(key: string, raw: unknown): CatalogProvider | undefined {
   const agents: CatalogProvider["agents"] = { vgent: { protocol, ...(vgentURL != null ? { baseURL: vgentURL } : {}) } };
   const claudeURL = protocol === "anthropic" ? vgentURL : claudeCodeBaseURLFor(vgentURL);
   if (claudeURL != null) agents["claude-code"] = { protocol: "anthropic", baseURL: claudeURL };
+  // Codex speaks OpenAI's Responses API and nothing else. The catalog says who
+  // does by naming `@ai-sdk/openai` as the package — the one that talks
+  // Responses — rather than the chat-completions `openai-compatible` one.
+  if (protocol === "openai") agents.codex = { protocol: "openai", ...(vgentURL != null ? { baseURL: vgentURL } : {}) };
 
   return { ...base, agents, ...(hint != null ? { baseURLHint: hint } : {}) };
 }

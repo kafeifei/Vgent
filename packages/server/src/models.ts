@@ -108,6 +108,12 @@ export interface ModelCatalogOptions {
   /** Test seam for the Codex backend catalog; production hits it through `createCodexFetch`. */
   fetchCodexRemote?: (input: { clientVersion: string; signal: AbortSignal }) => Promise<CodexCatalogModel[]>;
   gateway?: GatewayModelSource;
+  /**
+   * Anthropic's models as the provider catalog (models.dev) lists them — what
+   * Claude Code offers besides its three aliases. Unset, or failing, the list
+   * is the aliases alone.
+   */
+  anthropicModels?: () => Promise<ReadonlyArray<{ id: string; label?: string }>>;
 }
 
 /** How long a fetched catalog is reused. A picker opening twice must not refetch. */
@@ -131,7 +137,8 @@ const VGENT_BUILTIN: ModelEntry[] = [{ id: `${CODEX_SUBSCRIPTION_PREFIX}gpt-5.5`
 /**
  * The Claude Agent SDK has no list endpoint, and the harness passes `model`
  * through verbatim. These three aliases are what it accepts besides a full id
- * (`@ai-sdk/harness-claude-code` types them as `"sonnet" | "opus" | "haiku"`).
+ * (`@ai-sdk/harness-claude-code` types them as `"sonnet" | "opus" | "haiku"`);
+ * the full ids come from the provider catalog, see `anthropicModels`.
  */
 const CLAUDE_CODE_BUILTIN: ModelEntry[] = [
   { id: "sonnet", label: "sonnet", description: "别名：当前默认的 Sonnet 版本" },
@@ -401,18 +408,46 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
     return { models, source: sources.join("+"), ...(warnings.length > 0 ? { warning: warnings.join("；") } : {}) };
   };
 
-  const buildClaudeCode = async (): Promise<Omit<ModelCatalog, "engine" | "fetchedAt">> => {
-    const builtin = withClaudeCodeReasoning(CLAUDE_CODE_BUILTIN);
-    const apiKey = env.ANTHROPIC_API_KEY ?? "";
-    if (apiKey === "") return { models: builtin, source: "builtin" };
+  /**
+   * The catalog's Anthropic models, by full id (`claude` takes them on a
+   * subscription login as well as on a key — checked against the CLI). Their
+   * context window is left out on purpose: the catalog states what the API can
+   * do (1M for several), while the window Claude Code actually runs with is its
+   * own business, and a ring measured against the wrong one would lie.
+   */
+  const listAnthropicCatalog = async (): Promise<ModelEntry[]> => {
+    if (options.anthropicModels == null) return [];
     try {
-      const listed = await fetchAnthropicModels(apiKey, AbortSignal.timeout(REMOTE_TIMEOUT_MS));
-      if (listed.length > 0) return { models: [...builtin, ...withClaudeCodeReasoning(listed)], source: "anthropic-api" };
-      return { models: builtin, source: "builtin" };
+      return (await options.anthropicModels()).map((entry) => ({ id: entry.id, label: entry.label ?? entry.id }));
     } catch (error) {
-      log.warn("拉取 Anthropic 模型列表失败", error);
-      return { models: builtin, source: "builtin", warning: "Anthropic 模型接口不可用，已改用内置别名" };
+      log.warn("读取提供商目录里的 Anthropic 模型失败", error);
+      return [];
     }
+  };
+
+  const buildClaudeCode = async (): Promise<Omit<ModelCatalog, "engine" | "fetchedAt">> => {
+    const apiKey = env.ANTHROPIC_API_KEY ?? "";
+    let warning: string | undefined;
+    const [fromCatalog, fromApi] = await Promise.all([
+      listAnthropicCatalog(),
+      apiKey === ""
+        ? Promise.resolve<ModelEntry[]>([])
+        : fetchAnthropicModels(apiKey, AbortSignal.timeout(REMOTE_TIMEOUT_MS)).catch((error: unknown) => {
+            log.warn("拉取 Anthropic 模型列表失败", error);
+            warning = "Anthropic 模型接口不可用";
+            return [];
+          }),
+    ]);
+    // The aliases first (what「默认」resolves among), then every full id once:
+    // the account's own listing wins over the catalog's word for the same model.
+    const seen = new Set(CLAUDE_CODE_BUILTIN.map((entry) => entry.id));
+    const full = [...fromApi, ...fromCatalog].filter((entry) => !seen.has(entry.id) && seen.add(entry.id) != null);
+    const sources = ["builtin", ...(fromApi.length > 0 ? ["anthropic-api"] : []), ...(fromCatalog.length > 0 ? ["models.dev"] : [])];
+    return {
+      models: withClaudeCodeReasoning([...CLAUDE_CODE_BUILTIN, ...full]),
+      source: sources.join("+"),
+      ...(warning != null ? { warning } : {}),
+    };
   };
 
   const build = async (engine: EngineId): Promise<ModelCatalog> => {

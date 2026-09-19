@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp, type VgentApp } from "./app.js";
 import { providerRoute } from "./engines/claude-code.js";
+import { codexProviderRoute } from "./engines/codex.js";
 import { createProviderStore } from "./store/providers.js";
 
 const TOKEN = "test-token-0123456789";
@@ -25,8 +26,13 @@ async function tempDir(): Promise<string> {
   return dir;
 }
 
+/** Claude Code's model list reads the provider catalog; unless a test answers for models.dev, nothing goes there. */
+const offlineCatalog: typeof globalThis.fetch = async () => {
+  throw new Error("offline in tests");
+};
+
 function makeApp(dataDir: string, providerFetch?: typeof globalThis.fetch): VgentApp {
-  const instance = createApp({ dataDir, token: TOKEN, ...(providerFetch != null ? { providerFetch } : {}) });
+  const instance = createApp({ dataDir, token: TOKEN, catalogFetch: offlineCatalog, ...(providerFetch != null ? { providerFetch } : {}) });
   apps.push(instance);
   return instance;
 }
@@ -122,7 +128,7 @@ describe("provider routes", () => {
     expect(await response.json()).toMatchObject({ error: { code: "invalid_provider" } });
   });
 
-  it("lists each engine's provider models under `<provider>:<model>`, and none for an engine that cannot use them", async () => {
+  it("lists each engine's provider models under `<provider>:<model>`, and only for the engines the provider has an address for", async () => {
     // No Codex login, no gateway key, no Anthropic key: every engine's own list
     // stays builtin, so the route answers without touching the network.
     vi.stubEnv("ANTHROPIC_API_KEY", "");
@@ -145,9 +151,21 @@ describe("provider routes", () => {
     const engines = (await (await request(app, "/api/engines")).json()) as { engines: { id: string; capabilities: { customProviders: boolean } }[] };
     expect(Object.fromEntries(engines.engines.map((engine) => [engine.id, engine.capabilities.customProviders]))).toEqual({
       "claude-code": true,
-      codex: false,
+      codex: true,
       vgent: true,
     });
+  });
+
+  it("offers Codex a provider's models once the provider has a Codex address, under the Responses protocol whatever was sent", async () => {
+    vi.stubEnv("CODEX_HOME", await tempDir());
+    const app = makeApp(await tempDir());
+    const created = await request(app, "/api/providers", {
+      method: "POST",
+      body: { name: "OpenAI", presetId: "openai", apiKey: SECRET, agents: { codex: { baseURL: "https://api.openai.com/v1", protocol: "anthropic", models: [{ id: "gpt-5.4", label: "GPT-5.4" }] } } },
+    });
+    expect(((await created.json()) as { agents: { codex: { protocol: string } } }).agents.codex.protocol).toBe("openai");
+    const codex = (await (await request(app, "/api/engines/codex/models")).json()) as { models: { id: string; provider?: string }[] };
+    expect(codex.models).toContainEqual({ id: "openai:gpt-5.4", label: "GPT-5.4", provider: "OpenAI" });
   });
 
   it("pulls a provider's model list with the form's key, or the stored one when the form has none", async () => {
@@ -321,8 +339,8 @@ describe("subscription routes", () => {
     vi.stubEnv("AI_GATEWAY_API_KEY", "");
     vi.stubEnv("VERCEL_OIDC_TOKEN", "");
   };
-  const makeSubscribedApp = (dataDir: string): VgentApp => {
-    const instance = createApp({ dataDir, token: TOKEN, probeClaudeLogin: async () => ({ loggedIn: true, email: "dev@example.com", plan: "max" }) });
+  const makeSubscribedApp = (dataDir: string, catalogFetch: typeof globalThis.fetch = offlineCatalog): VgentApp => {
+    const instance = createApp({ dataDir, token: TOKEN, catalogFetch, probeClaudeLogin: async () => ({ loggedIn: true, email: "dev@example.com", plan: "max" }) });
     apps.push(instance);
     return instance;
   };
@@ -340,6 +358,19 @@ describe("subscription routes", () => {
     expect(body.subscriptions[1]?.models).toEqual([
       { id: "gpt-5.5", label: "gpt-5.5", agents: { vgent: { spec: "codex-subscription:gpt-5.5", enabled: true }, codex: { spec: "gpt-5.5", enabled: true } } },
     ]);
+  });
+
+  it("gives Claude Code every Anthropic model the provider catalog knows, by full id, after the aliases", async () => {
+    await quietEnv();
+    const model = (id: string, name: string) => ({ id, name, tool_call: true, modalities: { input: ["text"], output: ["text"] } });
+    const modelsDev = {
+      anthropic: { id: "anthropic", name: "Anthropic", npm: "@ai-sdk/anthropic", models: { "claude-opus-5": model("claude-opus-5", "Claude Opus 5"), "claude-haiku-4-5": model("claude-haiku-4-5", "Claude Haiku 4.5") } },
+    };
+    const app = makeSubscribedApp(await tempDir(), async () => new Response(JSON.stringify(modelsDev), { status: 200 }));
+    const body = (await (await request(app, "/api/subscriptions")).json()) as Listed;
+    const ids = body.subscriptions[0]?.models.map((entry) => entry.id) ?? [];
+    expect(ids.slice(0, 3)).toEqual(["sonnet", "opus", "haiku"]);
+    expect([...ids.slice(3)].sort()).toEqual(["claude-haiku-4-5", "claude-opus-5"]);
   });
 
   it("a switch hides the model from that agent's picker only, survives a restart, and comes back on", async () => {
@@ -390,7 +421,40 @@ describe("subscription routes", () => {
 
   it("keeps a provider from taking a subscription's id", async () => {
     const app = makeSubscribedApp(await tempDir());
-    const created = (await (await request(app, "/api/providers", { method: "POST", body: { name: "claude-subscription", agents: {} } })).json()) as { id: string };
-    expect(created.id).not.toBe("claude-subscription");
+    const response = await request(app, "/api/providers", { method: "POST", body: { name: "claude-subscription", agents: { vgent: { baseURL: "https://gw.test/v1", models: [] } } } });
+    expect(response.status).toBe(201);
+    expect(((await response.json()) as { id: string }).id).toBe("claude-subscription-2");
+  });
+});
+
+describe("codexProviderRoute", () => {
+  const providers = [
+    { id: "openai", name: "OpenAI", apiKey: SECRET, agents: { codex: { baseURL: "https://api.openai.com/v1/", protocol: "openai" as const, models: [{ id: "gpt-5.4" }] } } },
+    { id: "local", name: "本机", agents: { codex: { baseURL: "http://127.0.0.1:8000/v1", protocol: "openai" as const, models: [] } } },
+    { id: "vgent-only", name: "只给自研", agents: { vgent: { baseURL: "https://x.test", protocol: "openai-compatible" as const, models: [] } } },
+  ];
+
+  it("leaves the login's own models alone", () => {
+    expect(codexProviderRoute(undefined, providers)).toBeUndefined();
+    expect(codexProviderRoute("gpt-5.5", providers)).toBeUndefined();
+  });
+
+  it("hands Codex the provider's endpoint and key, and the bare model id", () => {
+    expect(codexProviderRoute("openai:gpt-5.4", providers)).toEqual({ model: "gpt-5.4", auth: { OPENAI_BASE_URL: "https://api.openai.com/v1", OPENAI_API_KEY: SECRET } });
+  });
+
+  it("tells Codex the model's context window when the provider's list knows it", () => {
+    const sized = [{ id: "gw", name: "网关", apiKey: SECRET, agents: { codex: { baseURL: "https://gw.test/v1", protocol: "openai" as const, models: [{ id: "big", contextWindow: 400_000 }] } } }];
+    expect(codexProviderRoute("gw:big", sized)?.codexConfig).toEqual({ model_context_window: 400_000 });
+    expect(codexProviderRoute("gw:other", sized)?.codexConfig).toBeUndefined();
+  });
+
+  it("still names a key for a keyless endpoint, because the bridge only builds the provider entry when there is one", () => {
+    expect(codexProviderRoute("local:qwen", providers)?.auth).toEqual({ OPENAI_BASE_URL: "http://127.0.0.1:8000/v1", OPENAI_API_KEY: "unused" });
+  });
+
+  it("refuses a provider that is gone or has no Codex endpoint", () => {
+    expect(() => codexProviderRoute("gone:model", providers)).toThrow(/可能已被删除/);
+    expect(() => codexProviderRoute("vgent-only:model", providers)).toThrow(/没有给 Codex/);
   });
 });

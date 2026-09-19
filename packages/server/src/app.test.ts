@@ -80,6 +80,10 @@ function makeApp(dataDir: string, factory?: EngineFactoryOverride, webDist?: str
   const instance = createApp({
     dataDir,
     token: TOKEN,
+    // Claude Code's model list reads the provider catalog; tests never go to models.dev for it.
+    catalogFetch: async () => {
+      throw new Error("offline in tests");
+    },
     ...(factory != null ? { registry: createEngineRegistry({ "claude-code": factory }) } : {}),
     ...(webDist != null ? { webDist } : {}),
   });

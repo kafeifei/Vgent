@@ -1116,7 +1116,10 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   // --- model catalog ----------------------------------------------------
 
-  const modelCatalog = createModelCatalog({ log });
+  const modelCatalog = createModelCatalog({
+    log,
+    anthropicModels: async () => (await catalog.get()).providers.find((entry) => entry.id === "anthropic")?.models ?? [],
+  });
 
   app.get("/api/engines/:engine/models", async (c) => {
     const raw = c.req.param("engine");

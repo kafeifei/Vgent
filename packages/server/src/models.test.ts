@@ -285,3 +285,42 @@ describe("createModelCatalog", () => {
     expect(calls).toBe(3);
   });
 });
+
+describe("Claude Code's full model ids", () => {
+  const rejectCodex = async (): Promise<never> => {
+    throw new Error("offline");
+  };
+
+  it("lists the provider catalog's Anthropic models after the aliases, without the catalog's context window", async () => {
+    const catalog = createModelCatalog({
+      env: {},
+      fetchCodexRemote: rejectCodex,
+      anthropicModels: async () => [{ id: "claude-opus-5", label: "Claude Opus 5", contextWindow: 1_000_000 } as { id: string; label?: string }, { id: "claude-haiku-4-5" }],
+    });
+    const result = await catalog.list("claude-code");
+    expect(result.source).toBe("builtin+models.dev");
+    expect(result.models.map((entry) => [entry.id, entry.label])).toEqual([
+      ["sonnet", "sonnet"],
+      ["opus", "opus"],
+      ["haiku", "haiku"],
+      ["claude-opus-5", "Claude Opus 5"],
+      ["claude-haiku-4-5", "claude-haiku-4-5"],
+    ]);
+    // What the API can do is not what Claude Code runs with; the ring must not measure against it.
+    expect(result.models.every((entry) => entry.contextWindow === undefined)).toBe(true);
+    expect(result.models.every((entry) => entry.reasoningLevels?.length === 3)).toBe(true);
+  });
+
+  it("falls back to the aliases alone when the catalog cannot be read", async () => {
+    const catalog = createModelCatalog({
+      env: {},
+      fetchCodexRemote: rejectCodex,
+      anthropicModels: async () => {
+        throw new Error("no catalog");
+      },
+    });
+    const result = await catalog.list("claude-code");
+    expect(result).toMatchObject({ source: "builtin" });
+    expect(result.models.map((entry) => entry.id)).toEqual(["sonnet", "opus", "haiku"]);
+  });
+});

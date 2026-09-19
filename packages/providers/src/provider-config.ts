@@ -195,8 +195,8 @@ function readAgents(value: unknown): ProviderConfig["agents"] {
     const agent = key as ProviderAgent;
     const where = `agents.${key}`;
     const record = raw as Record<string, unknown>;
-    // Claude Code speaks Anthropic Messages and nothing else, whatever was sent.
-    const protocol = agent === "claude-code" ? "anthropic" : (record.protocol ?? "openai-compatible");
+    // Claude Code speaks Anthropic Messages and nothing else, and Codex OpenAI's Responses API, whatever was sent.
+    const protocol = agent === "claude-code" ? "anthropic" : agent === "codex" ? "openai" : (record.protocol ?? "openai-compatible");
     if (!(PROVIDER_PROTOCOLS as readonly unknown[]).includes(protocol)) {
       throw new Error(`${where}.protocol 不认识：${JSON.stringify(protocol)}`);
     }

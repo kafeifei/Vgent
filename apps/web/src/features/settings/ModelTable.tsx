@@ -111,7 +111,7 @@ export function ModelTable({
   const [error, setError] = useState<string>();
 
   const agents = agentsOf(provider);
-  const endpoint = provider.agents.vgent ?? provider.agents["claude-code"];
+  const endpoint = provider.agents.vgent ?? provider.agents["claude-code"] ?? provider.agents.codex;
 
   const discover = useCallback(
     (quiet: boolean) => {

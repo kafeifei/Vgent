@@ -4,7 +4,7 @@ import { ApiError, type ApiClient, type ProviderCatalog } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import type { CatalogProviderSummary, EngineDescriptor, ProviderAgent, ProviderModel, RedactedProviderConfig, SubscriptionAccount, SubscriptionId } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { BUTTON_GHOST, BUTTON_PRIMARY, BUTTON_SECONDARY, Dialog, LetterAvatar, SettingsEmpty, SettingsGroup, SettingsPage, SettingsRow, Tag } from "./layout";
+import { BUTTON_GHOST, BUTTON_PRIMARY, BUTTON_SECONDARY, Dialog, LetterAvatar, SettingsEmpty, SettingsGroup, SettingsPage, SettingsRow, Switch, Tag } from "./layout";
 import { ModelTable } from "./ModelTable";
 import { AGENT_ORDER, EMPTY_CUSTOM_FORM, agentsOf, connectInput, customInput, describeSubscription, filterCatalog, isSignedIn, summarizeEnabled, summarizeSubscription, type CustomForm } from "./providerModels";
 import { SubscriptionTable } from "./SubscriptionTable";
@@ -71,7 +71,7 @@ function ConnectDialog({
     setBusy(true);
     setError(undefined);
     try {
-      const endpoint = result.input.agents.vgent ?? result.input.agents["claude-code"];
+      const endpoint = result.input.agents.vgent ?? result.input.agents["claude-code"] ?? result.input.agents.codex;
       let discovered: ProviderModel[] | undefined;
       if (endpoint != null) {
         try {
@@ -272,6 +272,15 @@ function CustomDialog({
           <Field label={`${agentLabel("claude-code")} 用的地址（可选）`} hint="Claude Code 只说 Anthropic 协议。同一个服务要是也有 Anthropic 兼容的地址，填在这里它就也能用。">
             <input value={form.claudeBaseURL} onChange={(event) => set({ claudeBaseURL: event.target.value })} placeholder="https://example.com/anthropic" spellCheck={false} className={cn(INPUT_CLASS, "font-mono")} />
           </Field>
+        )}
+        {form.protocol === "openai-compatible" && usable.includes("codex") && (
+          <div className="flex items-start gap-sm">
+            <div className="flex min-w-0 flex-1 flex-col gap-2xs">
+              <span className={FIELD_LABEL}>{agentLabel("codex")} 也用它</span>
+              <span className="text-fg-faint text-xs">Codex 只说 OpenAI 的 Responses 协议（上面的地址加 /responses）。这个服务支持才打开；只有聊天补全接口的服务，Codex 用不了。</span>
+            </div>
+            <Switch checked={form.codexResponses} onChange={(on) => set({ codexResponses: on })} label={`${agentLabel("codex")} 也用这个提供商`} />
+          </div>
         )}
         <Field label="API key" hint="没有 key 的本机服务可以留空。">
           <input type="password" autoComplete="off" value={form.apiKey} onChange={(event) => set({ apiKey: event.target.value })} placeholder="粘贴 key" className={cn(INPUT_CLASS, "font-mono")} />

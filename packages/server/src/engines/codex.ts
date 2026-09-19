@@ -1,7 +1,8 @@
-import { createCodexEngine, type CodexEngineOptions } from "@vgent/engines";
-import { describeSubscriptionAuth } from "@vgent/providers";
+import { codexProviderEnv, createCodexEngine, type CodexEngineOptions } from "@vgent/engines";
+import { describeSubscriptionAuth, splitProviderModelSpec, type ProviderConfig } from "@vgent/providers";
 import type { TextStreamPart, ToolSet } from "ai";
-import { EngineUnavailableError } from "../errors.js";
+import { BadRequestError, EngineUnavailableError } from "../errors.js";
+import { createProviderStore } from "../store/providers.js";
 import type { EngineDescriptor } from "./capabilities.js";
 import { stripDeniedApprovalResults } from "./harness-messages.js";
 import type { EngineContext, EngineFactory, EngineRunner } from "./registry.js";
@@ -21,9 +22,36 @@ const DESCRIPTOR: EngineDescriptor = {
     compact: false,
     knownDefaultModel: false,
     extensions: false,
-    customProviders: false,
+    customProviders: true,
   },
 };
+
+/**
+ * A thread model of the form `<providerId>:<model>` runs on that provider's
+ * endpoint and key instead of the machine's Codex login — the same split the
+ * Claude Code engine makes. Anything else (a Codex slug, nothing) is the login's
+ * business and yields `undefined`. A provider that is gone, or has no `codex`
+ * endpoint, is refused rather than sent to the ChatGPT backend as a model it
+ * would reject.
+ */
+export function codexProviderRoute(model: string | undefined, providers: readonly ProviderConfig[]) {
+  if (model == null) return undefined;
+  const split = splitProviderModelSpec(model);
+  if (split == null) return undefined;
+  const provider = providers.find((entry) => entry.id === split.providerId);
+  if (provider == null) {
+    throw new BadRequestError(`没有叫 ${JSON.stringify(split.providerId)} 的提供商，可能已被删除；请给这个任务换一个模型`, "invalid_model");
+  }
+  const agent = provider.agents.codex;
+  if (agent == null) throw new BadRequestError(`提供商「${provider.name}」没有给 Codex 配置接入地址`, "invalid_model");
+  // Codex only carries metadata for OpenAI's own models; for anything else it falls back to a guess unless told.
+  const contextWindow = agent.models.find((entry) => entry.id === split.modelId)?.contextWindow;
+  return {
+    model: split.modelId,
+    auth: codexProviderEnv({ baseURL: agent.baseURL, ...(provider.apiKey != null ? { apiKey: provider.apiKey } : {}) }),
+    ...(contextWindow != null ? { codexConfig: { model_context_window: contextWindow } } : {}),
+  };
+}
 
 /**
  * The Codex harness takes a `reasoningEffort` of its own
@@ -61,7 +89,9 @@ export function createCodexEngineFactory(): EngineFactory {
   return {
     descriptor: DESCRIPTOR,
 
-    async ensureAvailable() {
+    async ensureAvailable({ thread }) {
+      // A provider's model runs on the provider's key; the login is not needed, so its absence is no obstacle.
+      if (thread.model != null && splitProviderModelSpec(thread.model) != null) return;
       // The adapter's `auth: 'auto'` reads the same store this reports on.
       const report = await describeSubscriptionAuth();
       if (!report.codex.available) {
@@ -71,10 +101,14 @@ export function createCodexEngineFactory(): EngineFactory {
 
     async create(ctx: EngineContext): Promise<EngineRunner> {
       const reasoningEffort = asCodexEffort(ctx.thread.reasoningEffort);
+      const route = codexProviderRoute(ctx.thread.model, await createProviderStore(ctx.dataDir, ctx.log).list());
+      const model = route?.model ?? ctx.thread.model;
       const engine = await createCodexEngine({
         repoPath: ctx.project.repoPath,
         permissionMode: ctx.permissionMode,
-        ...(ctx.thread.model != null ? { model: ctx.thread.model } : {}),
+        ...(model != null ? { model } : {}),
+        ...(route != null ? { auth: route.auth } : {}),
+        ...(route?.codexConfig != null ? { codexConfig: route.codexConfig } : {}),
         ...(reasoningEffort != null ? { reasoningEffort } : {}),
         sessionId: ctx.thread.id,
         // Codex turns never park, so a `continueFrom` can never be there to honour.

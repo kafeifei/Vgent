@@ -59,10 +59,16 @@ export interface CustomForm {
   baseURL: string;
   /** An Anthropic-compatible address of the same service, for Claude Code. Optional; ignored when `protocol` is already Anthropic. */
   claudeBaseURL: string;
+  /**
+   * The service also answers OpenAI's Responses API at this address
+   * (`<baseURL>/responses`) — the only protocol Codex speaks. Nobody can tell
+   * from outside, so it is the user's word; ignored when `protocol` is Anthropic.
+   */
+  codexResponses: boolean;
   apiKey: string;
 }
 
-export const EMPTY_CUSTOM_FORM: CustomForm = { name: "", protocol: "openai-compatible", baseURL: "", claudeBaseURL: "", apiKey: "" };
+export const EMPTY_CUSTOM_FORM: CustomForm = { name: "", protocol: "openai-compatible", baseURL: "", claudeBaseURL: "", codexResponses: false, apiKey: "" };
 
 /** A provider that is in no catalog: a company gateway, a self-hosted server. */
 export function customInput(form: CustomForm, usable: readonly ProviderAgent[]): { input: ProviderInputBody } | { error: string } {
@@ -82,6 +88,9 @@ export function customInput(form: CustomForm, usable: readonly ProviderAgent[]):
       if (claudeProblem != null) return { error: claudeProblem };
       agents["claude-code"] = { baseURL: claudeURL, protocol: "anthropic", models: [] };
     }
+  }
+  if (usable.includes("codex") && form.protocol === "openai-compatible" && form.codexResponses) {
+    agents.codex = { baseURL, protocol: "openai", models: [] };
   }
   if (Object.keys(agents).length === 0) return { error: "没有能用这个提供商的 agent" };
   const apiKey = form.apiKey.trim();

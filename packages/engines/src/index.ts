@@ -11,8 +11,10 @@ export {
   type ClaudeCodeEngineOptions,
 } from "./claude-code.js";
 export {
+  codexProviderEnv,
   createCodexEngine,
   DEFAULT_CODEX_DATA_DIR,
+  type CodexAuthEnvironment,
   type CodexEngine,
   type CodexEngineOptions,
 } from "./codex.js";

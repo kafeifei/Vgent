@@ -1110,6 +1110,16 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   // 「一直允许」 on an approval card, and the 撤销 next to it in 设置. One tool at
   // a time, because that is how the two buttons think about it.
+  // 记住上次选的引擎: one entry of a map, so it is a read-modify-write on the
+  // server — two quick picks must not start from the same copy.
+  app.put("/api/settings/model-engines", async (c) => {
+    const body = (await c.req.json().catch(() => undefined)) as { modelKey?: unknown; engine?: unknown } | undefined;
+    const engine = asEngine(body?.engine);
+    const modelKey = typeof body?.modelKey === "string" ? body.modelKey.trim() : "";
+    if (engine == null || modelKey === "" || modelKey.length > 300) throw new BadRequestError("需要 modelKey 和 engine", "invalid_model_engine");
+    return c.json(await settings.mutate((current) => ({ modelEngines: { ...current.modelEngines, [modelKey]: engine } })));
+  });
+
   app.post("/api/settings/allowlist", async (c) => {
     const body = (await c.req.json().catch(() => undefined)) as { tool?: unknown } | undefined;
     const tool = readToolName(body?.tool);

@@ -129,6 +129,7 @@ export function Shell({ token }: { token: string }) {
               leftOpen={left === "on"}
               engines={engines}
               runMode={state.settings?.runMode}
+              modelEngines={state.settings?.modelEngines}
               allowlist={state.settings?.allowlist}
               onQueue={onQueue}
               onMessages={onMessages}
@@ -147,6 +148,7 @@ export function Shell({ token }: { token: string }) {
                 onAddProject={actions.addProject}
                 onPickFolder={actions.pickFolder}
                 onStart={actions.startThread}
+                onRememberEngine={actions.rememberModelEngine}
               />
               </div>
             </div>

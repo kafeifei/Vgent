@@ -38,6 +38,8 @@ export interface SettingsPatch {
   density?: UiDensity | undefined;
   /** The whole off list. An agent with nothing switched off is dropped from it; an empty map drops the field. */
   hiddenModels?: Partial<Record<EngineId, string[]>> | undefined;
+  /** The whole map; an empty one drops the field. */
+  modelEngines?: Record<string, EngineId> | undefined;
 }
 
 /**
@@ -147,6 +149,10 @@ export function createSettingsStore(dataDir: string, log: Logger = silentLogger)
       });
       if (kept.length === 0) delete next.hiddenModels;
       else next.hiddenModels = Object.fromEntries(kept);
+    }
+    if ("modelEngines" in patch) {
+      if (patch.modelEngines == null || Object.keys(patch.modelEngines).length === 0) delete next.modelEngines;
+      else next.modelEngines = patch.modelEngines;
     }
     settings = next;
     const work = () => writeJsonAtomic(path, next);

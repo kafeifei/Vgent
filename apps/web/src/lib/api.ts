@@ -400,6 +400,9 @@ export function createClient(token: string) {
      * now — it is clicked mid-turn, so it cannot go through the settings draft.
      * Taking one back off is an ordinary settings edit (`putSettings`).
      */
+    /** 记住上次选的引擎, for the model with this `modelKey`. */
+    rememberModelEngine: (modelKey: string, engine: EngineId) =>
+      api<Settings>("/settings/model-engines", token, { method: "PUT", json: { modelKey, engine } }),
     allowTool: (tool: string) => api<Settings>("/settings/allowlist", token, { method: "POST", json: { tool } }),
 
     stopChat: (threadId: string) => api<void>(`/chat/${threadId}/stop`, token, { method: "POST" }),

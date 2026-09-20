@@ -146,7 +146,12 @@ export function optionNodes({
   /** Absent: only the engine is offered. */
   options: ModelOptions | undefined;
   engineLocked: boolean;
-  pick: (route: EngineRoute, patch?: Partial<{ reasoningEffort: string; serviceTier: string | null; contextWindow: number | null }>) => void;
+  /** `chosen`: the engine itself was picked — 引擎 submenu — which is what gets remembered for this model. */
+  pick: (
+    route: EngineRoute,
+    patch?: Partial<{ reasoningEffort: string; serviceTier: string | null; contextWindow: number | null }>,
+    chosen?: boolean,
+  ) => void;
 }): CascadeNode[] {
   const { entry } = route;
   const engineNode: CascadeNode[] = [
@@ -160,7 +165,7 @@ export function optionNodes({
         selected: candidate.engine === route.engine,
         disabled: engineLocked && candidate.engine !== route.engine,
         ...(engineLocked && candidate.engine !== route.engine ? { title: "已有对话的任务不能换引擎" } : {}),
-        onPick: () => pick(candidate),
+        onPick: () => pick(candidate, undefined, true),
       })),
     },
   ];
@@ -233,6 +238,8 @@ export function ModelPicker({
   engineLocked = false,
   onPick,
   onPickOptions,
+  modelEngines,
+  onRememberEngine,
   onCatalog,
   trigger,
   align = "start",
@@ -250,6 +257,9 @@ export function ModelPicker({
   onPick: (engine: EngineId, model: string | undefined) => void;
   /** `null` hands a choice back to the model's own default. Called after `onPick` when the row was not the current one. */
   onPickOptions?: (patch: Partial<{ reasoningEffort: string; serviceTier: string | null; contextWindow: number | null }>) => void;
+  /** 记住上次选择: the engine last chosen per `modelKey` (`Settings.modelEngines`), and how a new choice is kept. */
+  modelEngines?: Readonly<Record<string, EngineId>>;
+  onRememberEngine?: (modelKey: string, engine: EngineId) => void;
   /** See `useModelCatalog`: the *selected* engine's list, handed up for a sibling to read. */
   onCatalog?: (catalog: ModelCatalog) => void;
   /** `chip` is the effective model — a task that named none still shows what will run. */
@@ -285,15 +295,17 @@ export function ModelPicker({
   return (
     <Popover align={align} side={side} trigger={(props) => trigger(props, chip)}>
       {(close) => {
-        const pick: Parameters<typeof optionNodes>[0]["pick"] = (route, patch) => {
+        const pick = (choice: ModelChoice): Parameters<typeof optionNodes>[0]["pick"] => (route, patch, chosen) => {
+          if (chosen === true) onRememberEngine?.(choice.key, route.engine);
           if (route.engine !== engine || route.entry.id !== model) onPick(route.engine, route.entry.id);
           if (patch != null) onPickOptions?.(patch);
           close();
         };
         const nodes: CascadeNode[] = choices.flatMap((choice, at) => {
-          const route = preferredRoute(choice, engine, engineLocked);
-          if (route == null) return [];
           const isMine = mine?.key === choice.key;
+          // The task's own row shows the engine it is really on; any other, the one it would get.
+          const route = (isMine ? choice.routes.find((candidate) => candidate.engine === engine) : undefined) ?? preferredRoute(choice, engine, engineLocked, modelEngines);
+          if (route == null) return [];
           const previous = choices[at - 1];
           return [
             {
@@ -302,8 +314,8 @@ export function ModelPicker({
               icon: <SourceIcon source={choice.source} />,
               selected: isMine,
               separated: previous != null && (previous.source.kind !== choice.source.kind || previous.source.id !== choice.source.id),
-              onPick: () => pick(route),
-              children: optionNodes({ choice, route, mine: isMine, options, engineLocked, pick }),
+              onPick: () => pick(choice)(route),
+              children: optionNodes({ choice, route, mine: isMine, options, engineLocked, pick: pick(choice) }),
             },
           ];
         });

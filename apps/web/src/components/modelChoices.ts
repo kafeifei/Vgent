@@ -60,14 +60,28 @@ export function buildModelChoices(
 export const currentChoice = (choices: readonly ModelChoice[], engine: EngineId, model: string | undefined): ModelChoice | undefined =>
   model == null ? undefined : choices.find((choice) => choice.routes.some((route) => route.engine === engine && route.entry.id === model));
 
+/** Whose model it is decides who runs it: the vendor's own agent for a subscription's models, the in-house engine for the rest. */
+function defaultEngineOf(source: ModelChoice["source"]): EngineId {
+  if (source.kind === "codex-subscription") return "codex";
+  if (source.kind === "claude-subscription") return "claude-code";
+  return "vgent";
+}
+
 /**
- * The engine a row would run on when it is simply clicked: the one the task is
- * already on when that engine can run this model, else the first listed. A task
- * with history cannot change engines, so there it is that engine or nothing.
+ * The engine a row runs on when it is simply clicked: the one the user last
+ * chose for this model, else the model's default engine (see
+ * {@link defaultEngineOf}), else whichever can run it. A task with history
+ * cannot change engines, so there it is the task's engine or nothing.
  */
-export function preferredRoute(choice: ModelChoice, engine: EngineId, engineLocked: boolean): EngineRoute | undefined {
-  const same = choice.routes.find((route) => route.engine === engine);
-  return same ?? (engineLocked ? undefined : choice.routes[0]);
+export function preferredRoute(
+  choice: ModelChoice,
+  engine: EngineId,
+  engineLocked: boolean,
+  remembered: Readonly<Record<string, EngineId>> = {},
+): EngineRoute | undefined {
+  const on = (id: EngineId | undefined) => choice.routes.find((route) => route.engine === id);
+  if (engineLocked) return on(engine);
+  return on(remembered[choice.key]) ?? on(defaultEngineOf(choice.source)) ?? choice.routes[0];
 }
 
 /** `272000` → `272K`, `1050000` → `1M`. */

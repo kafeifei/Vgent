@@ -53,6 +53,8 @@ export function Composer({
   engineLocked,
   model,
   runMode,
+  modelEngines,
+  onRememberEngine,
   onPickModel,
   reasoningEffort,
   onPickReasoning,
@@ -94,6 +96,9 @@ export function Composer({
   model: string | undefined;
   /** The global 运行模式, so an engine that cannot ask can say so. */
   runMode?: PermissionMode | undefined;
+  /** 记住上次选的引擎: `Settings.modelEngines`, and how the picker keeps a new choice. */
+  modelEngines?: Readonly<Record<string, EngineId>> | undefined;
+  onRememberEngine?: (modelKey: string, engine: EngineId) => void;
   onPickModel: (engine: EngineId, model: string | undefined) => void;
   reasoningEffort: string | undefined;
   onPickReasoning: (level: string) => void;
@@ -595,6 +600,8 @@ export function Composer({
               if ("serviceTier" in patch) onPickServiceTier(patch.serviceTier ?? null);
               if ("contextWindow" in patch) onPickContext(patch.contextWindow ?? null);
             }}
+            {...(modelEngines != null ? { modelEngines } : {})}
+            {...(onRememberEngine != null ? { onRememberEngine } : {})}
             onCatalog={setCatalog}
             side="top"
             trigger={(props, chip) => (

@@ -42,6 +42,7 @@ export function EmptyState({
   onAddProject,
   onPickFolder,
   onStart,
+  onRememberEngine,
 }: {
   projects: Project[];
   projectId: string | null;
@@ -67,6 +68,7 @@ export function EmptyState({
     serviceTier: string | null,
     contextWindow: number | null,
   ) => Promise<boolean>;
+  onRememberEngine: (modelKey: string, engine: EngineId) => void;
 }) {
   const toast = useToast();
   // 草稿不丢, here too: the empty state has no task yet, so its draft is kept
@@ -184,6 +186,8 @@ export function EmptyState({
           engine={engine}
           model={model ?? undefined}
           runMode={settings?.runMode}
+          modelEngines={settings?.modelEngines}
+          onRememberEngine={onRememberEngine}
           onPickModel={(nextEngine, nextModel) => {
             setPicked({ engine: nextEngine, model: nextModel ?? null });
             setReasoningEffort(null);

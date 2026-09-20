@@ -354,6 +354,13 @@ export interface Settings {
    * start on it, which is what makes doing it unasked safe.
    */
   autoUpgradeRuntimes?: boolean;
+  /**
+   * The engine last chosen for a model, by `ModelEntry.modelKey`. The picker
+   * runs a model on it next time instead of on the model's default engine.
+   * On the server rather than in the browser because the desktop app's origin
+   * changes with its port.
+   */
+  modelEngines?: Record<string, EngineId>;
   /** MCP servers the `vgent` engine connects to per turn. Their tools are deferred; see `connectMcpServers`. */
   mcpServers?: McpServerConfig[];
   /** How many live worktrees to keep before the oldest idle ones are reclaimed. Absent = `DEFAULT_WORKTREE_MAX_COUNT`. */

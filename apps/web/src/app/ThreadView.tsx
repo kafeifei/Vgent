@@ -15,7 +15,7 @@ import type { TurnActions } from "@/features/worklog/Turn";
 import { pendingAutoApprovals } from "@/lib/autoApprove";
 import type { ApiClient } from "@/lib/api";
 import { useDraft } from "@/lib/drafts";
-import type { EngineDescriptor, PermissionMode, ThreadSummary } from "@/lib/types";
+import type { EngineDescriptor, EngineId, PermissionMode, ThreadSummary } from "@/lib/types";
 import { isLiveThread, type WorkbenchActions } from "./useWorkbench";
 
 /** Waits for the thread's history to land before mounting the chat view. */
@@ -30,6 +30,8 @@ export function ThreadView(props: {
   engines: EngineDescriptor[];
   /** The global 运行模式; the composer's notice reads it. */
   runMode: PermissionMode | undefined;
+  /** 记住上次选的引擎, by model. */
+  modelEngines: Readonly<Record<string, EngineId>> | undefined;
   /** The global 「一直允许」 list, which auto-answers matching approvals. */
   allowlist: readonly string[] | undefined;
   onQueue: (queue: QueueItem[]) => void;
@@ -62,6 +64,7 @@ function ThreadChatView({
   leftOpen,
   engines,
   runMode,
+  modelEngines,
   allowlist,
   onQueue,
   onMessages,
@@ -75,6 +78,8 @@ function ThreadChatView({
   leftOpen: boolean;
   engines: EngineDescriptor[];
   runMode: PermissionMode | undefined;
+  /** 记住上次选的引擎, by model. */
+  modelEngines: Readonly<Record<string, EngineId>> | undefined;
   allowlist: readonly string[] | undefined;
   onQueue: (queue: QueueItem[]) => void;
   onMessages: (messages: UIMessage[]) => void;
@@ -290,6 +295,8 @@ function ThreadChatView({
           engineLocked={thread.messageCount > 0}
           model={thread.model}
           runMode={runMode}
+          modelEngines={modelEngines}
+          onRememberEngine={actions.rememberModelEngine}
           // Same rule as the 思考 chip below: a running turn already carries
           // the model it started with, so switching it mid-flight would be a lie.
           onPickModel={(engine, model) =>

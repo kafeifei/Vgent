@@ -54,16 +54,28 @@ describe("buildModelChoices", () => {
 });
 
 describe("preferredRoute", () => {
-  const [gpt, , , opus] = buildModelChoices(ENGINES, catalogs);
+  const [gpt, xdGpt, xdOpus, opus] = buildModelChoices(ENGINES, catalogs);
 
-  it("stays on the task's engine when it can run the model, else takes the first listed", () => {
-    expect(preferredRoute(gpt!, "codex", false)?.engine).toBe("codex");
-    expect(preferredRoute(gpt!, "claude-code", false)?.engine).toBe("vgent");
+  it("runs a subscription's model on the vendor's own agent, and everything else on the in-house engine", () => {
+    expect(preferredRoute(gpt!, "claude-code", false)?.engine).toBe("codex");
+    expect(preferredRoute(opus!, "codex", false)?.engine).toBe("claude-code");
+    expect(preferredRoute(xdGpt!, "codex", false)?.engine).toBe("vgent");
+    // The in-house engine was never given this one, so it runs where it can.
+    expect(preferredRoute(xdOpus!, "codex", false)?.engine).toBe("claude-code");
+  });
+
+  it("remembers the engine last chosen for that model, and only for that model", () => {
+    const remembered = { [gpt!.key]: "vgent", [xdGpt!.key]: "codex" } as const;
+    expect(preferredRoute(gpt!, "codex", false, remembered)?.engine).toBe("vgent");
+    expect(preferredRoute(xdGpt!, "vgent", false, remembered)?.engine).toBe("codex");
+    expect(preferredRoute(opus!, "codex", false, remembered)?.engine).toBe("claude-code");
+    // A remembered engine that no longer offers the model falls back to the default.
+    expect(preferredRoute(opus!, "codex", false, { [opus!.key]: "vgent" })?.engine).toBe("claude-code");
   });
 
   it("offers nothing across engines once the task has history", () => {
     expect(preferredRoute(opus!, "codex", true)).toBeUndefined();
-    expect(preferredRoute(gpt!, "codex", true)?.engine).toBe("codex");
+    expect(preferredRoute(gpt!, "vgent", true, { [gpt!.key]: "codex" })?.engine).toBe("vgent");
   });
 });
 

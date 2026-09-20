@@ -354,6 +354,10 @@ export function useWorkbench(token: string) {
         void client.patchThread(threadId, { engine, model: model ?? null }).catch((error: Error) => toast(error.message));
       },
 
+      /** 记住上次选择: the settings come back on the snapshot, so nothing is set here. */
+      rememberModelEngine: (modelKey: string, engine: EngineId) => {
+        void client.rememberModelEngine(modelKey, engine).catch((error: Error) => toast(error.message));
+      },
       setContextWindow: (threadId: string, contextWindow: number | null) => {
         void client.patchThread(threadId, { contextWindow }).catch((error: Error) => toast(error.message));
       },

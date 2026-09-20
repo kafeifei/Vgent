@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createClient, getToken } from "@/lib/api";
 import type { EngineDescriptor, EngineId, ModelCatalog } from "@/lib/types";
-import { PopItem, PopTitle, Popover } from "./Popover";
+import { CascadeLevel, type CascadeNode } from "./CascadeMenu";
+import { buildModelChoices, currentChoice, formatContext, preferredRoute, type EngineRoute, type ModelChoice } from "./modelChoices";
+import { Popover } from "./Popover";
+import { reasoningLabel } from "./reasoningLabels";
+import { SourceIcon } from "./SourceIcon";
 
 export const modelLabel = (model: string | undefined): string => model ?? "默认";
 
@@ -111,37 +115,124 @@ function useAllCatalogs(
   return states;
 }
 
+/** What the task runs with besides the model itself — the third level of the menu. */
+export interface ModelOptions {
+  reasoningEffort: string | undefined;
+  serviceTier: string | undefined;
+  contextWindow: number | undefined;
+}
+
 /**
- * An engine's list in the order the picker shows it: its own models first (the
- * source line under them describes *that* list), then each settings-page
- * provider's models under the provider's name, in the order they first appear.
+ * The second level under one model: 引擎 / 上下文 / 推理强度 / Fast, each opening
+ * its values. They are read off `route` — the engine this row would run on —
+ * because the same model offers different levels and windows under different
+ * engines. A section the model has nothing to choose in is simply not there.
+ *
+ * `mine` is whether the task is on this very model and engine: only then do the
+ * task's own choices tick a value; for any other row the ticks are that model's
+ * defaults, since picking the row is what would apply.
  */
-export function splitByProvider<T extends { provider?: string }>(entries: readonly T[]): { own: T[]; fromProviders: [string, T[]][] } {
-  const own: T[] = [];
-  const groups = new Map<string, T[]>();
-  for (const entry of entries) {
-    if (entry.provider == null) own.push(entry);
-    else groups.set(entry.provider, [...(groups.get(entry.provider) ?? []), entry]);
-  }
-  return { own, fromProviders: [...groups] };
-}
+export function optionNodes({
+  choice,
+  route,
+  mine,
+  options,
+  engineLocked,
+  pick,
+}: {
+  choice: ModelChoice;
+  route: EngineRoute;
+  mine: boolean;
+  /** Absent: only the engine is offered. */
+  options: ModelOptions | undefined;
+  engineLocked: boolean;
+  pick: (route: EngineRoute, patch?: Partial<{ reasoningEffort: string; serviceTier: string | null; contextWindow: number | null }>) => void;
+}): CascadeNode[] {
+  const { entry } = route;
+  const engineNode: CascadeNode[] = [
+    {
+      key: "engine",
+      label: "引擎",
+      hint: route.label,
+      children: choice.routes.map((candidate) => ({
+        key: candidate.engine,
+        label: candidate.label,
+        selected: candidate.engine === route.engine,
+        disabled: engineLocked && candidate.engine !== route.engine,
+        ...(engineLocked && candidate.engine !== route.engine ? { title: "已有对话的任务不能换引擎" } : {}),
+        onPick: () => pick(candidate),
+      })),
+    },
+  ];
+  // The settings page picks a default *model*; what a task runs it with is the task's.
+  if (options == null) return engineNode;
+  const nodes = engineNode;
 
-/** The one line a group may carry: that its list could not be loaded. Where a list came from is nobody's business here. */
-function failureOf(state: CatalogState | undefined): string | undefined {
-  return state?.status === "error" ? `模型列表加载失败：${state.message}` : undefined;
+  const windows = entry.contextOptions ?? [];
+  if (windows.length > 0) {
+    const chosen = mine && options.contextWindow != null && windows.includes(options.contextWindow) ? options.contextWindow : (entry.contextWindow ?? windows[0]);
+    nodes.push({
+      key: "context",
+      label: "上下文",
+      ...(chosen != null ? { hint: formatContext(chosen) } : {}),
+      children: windows.map((window) => ({
+        key: String(window),
+        label: formatContext(window),
+        selected: window === chosen,
+        // The engine's own window is the absence of a choice.
+        onPick: () => pick(route, { contextWindow: window === (entry.contextWindow ?? windows[0]) ? null : window }),
+      })),
+    });
+  }
+
+  const levels = entry.reasoningLevels ?? [];
+  if (levels.length > 0) {
+    const level = mine && options.reasoningEffort != null && levels.includes(options.reasoningEffort) ? options.reasoningEffort : entry.defaultReasoningLevel;
+    nodes.push({
+      key: "effort",
+      label: "推理强度",
+      ...(level != null ? { hint: reasoningLabel(level) } : {}),
+      children: levels.map((option) => ({
+        key: option,
+        label: reasoningLabel(option),
+        selected: option === level,
+        onPick: () => pick(route, { reasoningEffort: option }),
+      })),
+    });
+  }
+
+  // Fast is the one tier on offer today; a model that declares several would want a list here instead.
+  const fast = entry.serviceTiers?.[0];
+  if (fast != null) {
+    const on = mine && options.serviceTier === fast.id;
+    nodes.push({
+      key: "fast",
+      label: fast.name,
+      hint: on ? "开" : "关",
+      ...(fast.description != null ? { title: fast.description } : {}),
+      children: [
+        { key: "on", label: "开", selected: on, onPick: () => pick(route, { serviceTier: fast.id }) },
+        { key: "off", label: "关", selected: !on, onPick: () => pick(route, { serviceTier: null }) },
+      ],
+    });
+  }
+  return nodes;
 }
 
 /**
- * 「选模型即选引擎」: one popover, one group per engine — the agent's name in
- * grey, then its models, and nothing else. The user never picks an engine; it
- * comes along with the model.
+ * 「选模型」: one menu, a row per model with its source's icon — a model that
+ * several engines can run is one row, not one per engine. Clicking a row picks
+ * it as it stands; its submenu is where the engine, the context window, the
+ * 推理强度 and Fast are chosen, each a third level (用户画的层级，2026-09-20).
  */
 export function ModelPicker({
   engines,
   engine,
   model,
+  options,
   engineLocked = false,
   onPick,
+  onPickOptions,
   onCatalog,
   trigger,
   align = "start",
@@ -151,10 +242,14 @@ export function ModelPicker({
   engines: readonly EngineDescriptor[];
   engine: EngineId;
   model: string | undefined;
-  /** A task with history cannot cross engines, so only its own engine's group is shown. */
+  /** What the task runs the model with. Absent — the settings page — leaves the menu at model and engine. */
+  options?: ModelOptions;
+  /** A task with history cannot cross engines: models only another engine runs are not offered. */
   engineLocked?: boolean;
-  /** `model: undefined` means「默认」. The engine always travels with it. */
+  /** The engine always travels with the model. */
   onPick: (engine: EngineId, model: string | undefined) => void;
+  /** `null` hands a choice back to the model's own default. Called after `onPick` when the row was not the current one. */
+  onPickOptions?: (patch: Partial<{ reasoningEffort: string; serviceTier: string | null; contextWindow: number | null }>) => void;
   /** See `useModelCatalog`: the *selected* engine's list, handed up for a sibling to read. */
   onCatalog?: (catalog: ModelCatalog) => void;
   /** `chip` is the effective model — a task that named none still shows what will run. */
@@ -170,80 +265,61 @@ export function ModelPicker({
   const effective = effectiveModel(model, catalog);
   /** What the catalog calls a model; its raw id until the list is loaded. */
   const nameOf = (id: string): string => catalog?.models.find((entry) => entry.id === id)?.label ?? id;
-  // The 「默认」 row below stays the selected one: what runs is shown, what the
-  // task persists is unchanged. When nobody knows the default, the engine's own
-  // name keeps the chip from reading as「哪个引擎的默认？」.
+  // What runs is shown, what the task persists is unchanged. When nobody knows
+  // the default, the engine's own name keeps the chip from reading as「哪个引擎的默认？」.
   const chip: ModelChip =
     model != null
       ? { label: nameOf(model) }
       : effective != null
         ? { label: nameOf(effective), title: DEFAULT_MODEL_TITLE }
         : { label: `${label} 默认`, title: label };
-  // A thread can carry a model the catalog no longer lists (another machine, an
-  // older list). Losing the ability to see it would be worse than an odd row.
-  const orphan =
-    model != null && catalog != null && !catalog.models.some((entry) => entry.id === model) ? model : undefined;
 
-  const shown = engines.filter((entry) => !engineLocked || entry.id === engine);
+  const lists = Object.fromEntries(
+    Object.entries(states).flatMap(([id, state]) => (state.status === "ready" ? [[id, state.catalog.models]] : [])),
+  ) as Partial<Record<EngineId, ModelCatalog["models"]>>;
+  const choices = buildModelChoices(engines, lists, { engine, model });
+  const mine = currentChoice(choices, engine, effective);
+  const loading = Object.values(states).some((state) => state.status === "loading");
+  const failures = Object.values(states).flatMap((state) => (state.status === "error" ? [state.message] : []));
 
   return (
-    <Popover
-      align={align}
-      side={side}
-      // Three engines' lists in one panel; it has to be able to scroll.
-      className="max-h-[calc(var(--spacing-xl)*14)] overflow-y-auto"
-      trigger={(props) => trigger(props, chip)}
-    >
-      {(close) => (
-        <>
-          {shown.map((entry) => {
-            const state = states[entry.id];
-            const entries = state?.status === "ready" ? state.catalog.models : [];
-            const defaultId = state?.status === "ready" ? state.catalog.defaultModel : undefined;
-            const groupDefault =
-              defaultId == null ? undefined : (entries.find((row) => row.id === defaultId)?.label ?? defaultId);
-            const failure = failureOf(state);
-            // Switched off in 设置 › 提供商: not on offer, except to the task that is already on it.
-            const offered = entries.filter((row) => row.hidden !== true || (entry.id === engine && row.id === model));
-            const { own, fromProviders } = splitByProvider(offered);
-            const pick = (next: string | undefined) => {
-              onPick(entry.id, next);
-              close();
-            };
-
-            return (
-              <div key={entry.id}>
-                <PopTitle>{entry.label}</PopTitle>
-                  <PopItem selected={entry.id === engine && model === undefined} onClick={() => pick(undefined)}>
-                    默认{groupDefault != null && ` · ${groupDefault}`}
-                  </PopItem>
-                  {entry.id === engine && orphan != null && (
-                    <PopItem selected onClick={close}>
-                      当前：{orphan}
-                    </PopItem>
-                  )}
-                  {state?.status === "loading" && <PopItem disabled>加载中…</PopItem>}
-                  {own.map((row) => (
-                    <PopItem key={row.id} selected={entry.id === engine && row.id === model} onClick={() => pick(row.id)}>
-                      {row.label}
-                    </PopItem>
-                  ))}
-                  {failure != null && <div className="px-xs py-2xs text-2xs text-fg-faint">{failure}</div>}
-                  {fromProviders.map(([provider, rows]) => (
-                    <div key={provider}>
-                      <div className="px-xs pt-2xs text-2xs text-fg-faint">{provider}</div>
-                      {rows.map((row) => (
-                        <PopItem key={row.id} selected={entry.id === engine && row.id === model} onClick={() => pick(row.id)}>
-                          {row.label}
-                        </PopItem>
-                      ))}
-                    </div>
-                  ))}
+    <Popover align={align} side={side} trigger={(props) => trigger(props, chip)}>
+      {(close) => {
+        const pick: Parameters<typeof optionNodes>[0]["pick"] = (route, patch) => {
+          if (route.engine !== engine || route.entry.id !== model) onPick(route.engine, route.entry.id);
+          if (patch != null) onPickOptions?.(patch);
+          close();
+        };
+        const nodes: CascadeNode[] = choices.flatMap((choice, at) => {
+          const route = preferredRoute(choice, engine, engineLocked);
+          if (route == null) return [];
+          const isMine = mine?.key === choice.key;
+          const previous = choices[at - 1];
+          return [
+            {
+              key: choice.key,
+              label: choice.label,
+              icon: <SourceIcon source={choice.source} />,
+              selected: isMine,
+              separated: previous != null && (previous.source.kind !== choice.source.kind || previous.source.id !== choice.source.id),
+              onPick: () => pick(route),
+              children: optionNodes({ choice, route, mine: isMine, options, engineLocked, pick }),
+            },
+          ];
+        });
+        return (
+          <>
+            {/* Every model of every source in one list; it has to be able to scroll. */}
+            <CascadeLevel nodes={nodes} className="max-h-[calc(var(--spacing-xl)*14)] overflow-y-auto" />
+            {loading && nodes.length === 0 && <div className="px-xs py-2xs text-fg-faint text-sm">加载中…</div>}
+            {failures.map((message) => (
+              <div key={message} className="px-xs py-2xs text-2xs text-fg-faint">
+                模型列表加载失败：{message}
               </div>
-            );
-          })}
-        </>
-      )}
+            ))}
+          </>
+        );
+      }}
     </Popover>
   );
 }

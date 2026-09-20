@@ -58,6 +58,8 @@ export function Composer({
   onPickReasoning,
   serviceTier,
   onPickServiceTier,
+  contextWindow: chosenWindow,
+  onPickContext,
   mode,
   onPickMode,
   queue,
@@ -99,6 +101,9 @@ export function Composer({
   serviceTier: string | undefined;
   /** `null` goes back to standard. */
   onPickServiceTier: (tier: string | null) => void;
+  /** 上下文: the window the task chose, in tokens; unset means the engine's own for the model. */
+  contextWindow: number | undefined;
+  onPickContext: (window: number | null) => void;
   /** 模式 of the next message. The chip and ⇧Tab both write it. */
   mode: ThreadMode;
   onPickMode: (mode: ThreadMode) => void;
@@ -156,7 +161,9 @@ export function Composer({
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const running = effectiveModel(model, catalog);
   const runningEntry = catalog?.models.find((entry) => entry.id === running);
-  const contextWindow = runningEntry?.contextWindow;
+  // A window the model does not offer (it was picked for another) is not what runs.
+  const contextWindow =
+    chosenWindow != null && runningEntry?.contextOptions?.includes(chosenWindow) === true ? chosenWindow : runningEntry?.contextWindow;
   // Fast and its kin: only what the running model's own catalog entry declares.
   const tiers = runningEntry?.serviceTiers ?? [];
   // A tier picked for another model does not follow the task onto one that
@@ -580,8 +587,14 @@ export function Composer({
             engines={engines}
             engine={engine}
             model={model}
+            options={{ reasoningEffort, serviceTier, contextWindow: chosenWindow }}
             {...(engineLocked === true ? { engineLocked: true } : {})}
             onPick={pickModel}
+            onPickOptions={(patch) => {
+              if (patch.reasoningEffort != null) onPickReasoning(patch.reasoningEffort);
+              if ("serviceTier" in patch) onPickServiceTier(patch.serviceTier ?? null);
+              if ("contextWindow" in patch) onPickContext(patch.contextWindow ?? null);
+            }}
             onCatalog={setCatalog}
             side="top"
             trigger={(props, chip) => (

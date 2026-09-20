@@ -65,6 +65,7 @@ export function EmptyState({
     mode: ThreadMode,
     files: FileUIPart[],
     serviceTier: string | null,
+    contextWindow: number | null,
   ) => Promise<boolean>;
 }) {
   const toast = useToast();
@@ -81,6 +82,7 @@ export function EmptyState({
   // model's own default applies again.
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [serviceTier, setServiceTier] = useState<string | null>(null);
+  const [contextWindow, setContextWindow] = useState<number | null>(null);
   const [workspace, setWorkspace] = useState<WorkspaceMode>("project");
   /** 模式 rides on the creation request; there is no task to PATCH yet. */
   const [mode, setMode] = useState<ThreadMode>("agent");
@@ -126,7 +128,7 @@ export function EmptyState({
       return;
     }
     starting.current = true;
-    void onStart(text, engine, workspace, model, reasoningEffort, mode, toFileParts(attachments), serviceTier).then((started) => {
+    void onStart(text, engine, workspace, model, reasoningEffort, mode, toFileParts(attachments), serviceTier, contextWindow).then((started) => {
       starting.current = false;
       if (!started) return;
       draft.clear();
@@ -185,7 +187,11 @@ export function EmptyState({
           onPickModel={(nextEngine, nextModel) => {
             setPicked({ engine: nextEngine, model: nextModel ?? null });
             setReasoningEffort(null);
+            // A window belongs to the model it was picked for.
+            setContextWindow(null);
           }}
+          contextWindow={contextWindow ?? undefined}
+          onPickContext={setContextWindow}
           reasoningEffort={reasoningEffort ?? undefined}
           serviceTier={serviceTier ?? undefined}
           onPickServiceTier={setServiceTier}

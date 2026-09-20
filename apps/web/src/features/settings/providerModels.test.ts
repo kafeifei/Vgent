@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { splitByProvider } from "@/components/ModelPicker";
 import type { CatalogProviderSummary, RedactedProviderConfig, SubscriptionAccount } from "@/lib/types";
 import {
   EMPTY_CUSTOM_FORM,
@@ -153,19 +152,6 @@ describe("filterCatalog / formatContext", () => {
     expect(formatContext(128000)).toBe("128K");
     expect(formatContext(1_000_000)).toBe("1M");
     expect(formatContext(undefined)).toBe("");
-  });
-});
-
-describe("splitByProvider", () => {
-  it("keeps an engine's own models first and groups the rest under their provider, in first-seen order", () => {
-    const rows = [{ id: "sonnet" }, { id: "kimi:k3", provider: "Kimi" }, { id: "deepseek:pro", provider: "DeepSeek" }, { id: "opus" }, { id: "kimi:k2", provider: "Kimi" }];
-    expect(splitByProvider(rows)).toEqual({
-      own: [{ id: "sonnet" }, { id: "opus" }],
-      fromProviders: [
-        ["Kimi", [{ id: "kimi:k3", provider: "Kimi" }, { id: "kimi:k2", provider: "Kimi" }]],
-        ["DeepSeek", [{ id: "deepseek:pro", provider: "DeepSeek" }]],
-      ],
-    });
   });
 });
 

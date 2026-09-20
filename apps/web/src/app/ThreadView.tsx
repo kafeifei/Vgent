@@ -300,6 +300,10 @@ function ThreadChatView({
           onPickReasoning={(level) =>
             live ? actions.toast("运行中不能改，先停止") : actions.setReasoningEffort(thread.id, level)
           }
+          contextWindow={thread.contextWindow}
+          onPickContext={(window) =>
+            live ? actions.toast("运行中不能改，先停止") : actions.setContextWindow(thread.id, window)
+          }
           serviceTier={thread.serviceTier}
           onPickServiceTier={(tier) =>
             live ? actions.toast("运行中不能改，先停止") : actions.setServiceTier(thread.id, tier)

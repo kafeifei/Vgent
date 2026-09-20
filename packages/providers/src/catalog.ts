@@ -246,16 +246,17 @@ export async function fetchProviderCatalog(options: FetchCatalogOptions = {}): P
 const modelKey = (id: string): string => id.slice(id.lastIndexOf("/") + 1).toLowerCase();
 
 /**
- * 「这个模型有哪几档推理强度」, answered from the catalog for a model id that may
- * have come from anywhere — a company gateway's `vendor/model`, a relay's bare
- * name. The vendor's own entry wins over a reseller's copy of the same model:
- * an aggregator lists models as `vendor/model`, a vendor lists its own bare, so
- * bare ids are read first (the popular providers ahead of the rest), and the
- * `vendor/model` rows only fill in what no vendor listed. An id the catalog has
- * never seen answers undefined rather than a guess.
+ * 「目录对这个模型知道什么」— its effort levels, its context window — answered
+ * for a model id that may have come from anywhere: a company gateway's
+ * `vendor/model`, a relay's bare name. The vendor's own entry wins over a
+ * reseller's copy of the same model: an aggregator lists models as
+ * `vendor/model`, a vendor lists its own bare, so bare ids are read first (the
+ * popular providers ahead of the rest), and the `vendor/model` rows only fill in
+ * what no vendor listed. An id the catalog has never seen answers undefined
+ * rather than a guess.
  */
-export function createReasoningIndex(providers: readonly CatalogProvider[]): (modelId: string) => string[] | undefined {
-  const index = new Map<string, string[]>();
+export function createModelIndex(providers: readonly CatalogProvider[]): (modelId: string) => ProviderModel | undefined {
+  const index = new Map<string, ProviderModel>();
   const rank = (provider: CatalogProvider): number => {
     const at = POPULAR_PROVIDER_IDS.indexOf(provider.id);
     return at < 0 ? POPULAR_PROVIDER_IDS.length : at;
@@ -264,11 +265,17 @@ export function createReasoningIndex(providers: readonly CatalogProvider[]): (mo
   for (const resold of [false, true]) {
     for (const provider of ordered) {
       for (const model of provider.models) {
-        if (model.id.includes("/") !== resold || model.reasoningLevels == null) continue;
+        if (model.id.includes("/") !== resold) continue;
         const key = modelKey(model.id);
-        if (!index.has(key)) index.set(key, model.reasoningLevels);
+        if (!index.has(key)) index.set(key, model);
       }
     }
   }
   return (modelId) => index.get(modelKey(modelId));
+}
+
+/** 「这个模型有哪几档推理强度」: {@link createModelIndex}, reduced to the levels. */
+export function createReasoningIndex(providers: readonly CatalogProvider[]): (modelId: string) => string[] | undefined {
+  const modelOf = createModelIndex(providers);
+  return (modelId) => modelOf(modelId)?.reasoningLevels;
 }

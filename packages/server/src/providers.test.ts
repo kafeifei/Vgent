@@ -145,6 +145,10 @@ describe("provider routes", () => {
       label: "DeepSeek V4 Pro",
       provider: "DeepSeek",
       contextWindow: 1_000_000,
+      // The same key under every agent it is switched on for: the picker shows it once.
+      modelKey: "deepseek/deepseek-v4-pro",
+      // In the catalog, so it has a logo to show.
+      source: { kind: "provider", id: "deepseek", name: "DeepSeek", logo: "deepseek" },
       reasoningLevels: ["provider-default", "low", "medium", "high"],
       defaultReasoningLevel: "high",
     });
@@ -177,6 +181,8 @@ describe("provider routes", () => {
       id: "openai:gpt-5.4",
       label: "GPT-5.4",
       provider: "OpenAI",
+      modelKey: "openai/gpt-5.4",
+      source: { kind: "provider", id: "openai", name: "OpenAI" },
       reasoningLevels: ["low", "medium", "high", "xhigh"],
       defaultReasoningLevel: "high",
     });

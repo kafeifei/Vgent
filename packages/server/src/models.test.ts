@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createModelCatalog, type CodexCatalogModel, type GatewayModelSource } from "./models.js";
+import { contextOptionsFor, createModelCatalog, type CodexCatalogModel, type GatewayModelSource } from "./models.js";
 
 const dirs: string[] = [];
 
@@ -75,8 +75,8 @@ describe("createModelCatalog", () => {
 
     expect(result.source).toBe("codex-cache");
     expect(result.models).toEqual([
-      { id: "gpt-6-astra", label: "GPT-6-Astra", description: "最强" },
-      { id: "gpt-5.5", label: "GPT-5.5" },
+      { id: "gpt-6-astra", label: "GPT-6-Astra", description: "最强", modelKey: "codex-subscription/gpt-6-astra", source: { kind: "codex-subscription", name: "Codex", logo: "openai" } },
+      { id: "gpt-5.5", label: "GPT-5.5", modelKey: "codex-subscription/gpt-5.5", source: { kind: "codex-subscription", name: "Codex", logo: "openai" } },
     ]);
     expect(result.warning).toContain("在线目录不可用");
   });
@@ -111,14 +111,15 @@ describe("createModelCatalog", () => {
     });
 
     expect((await catalog.list("codex")).models).toEqual([
-      { id: "gpt-6-astra", label: "GPT-6-Astra", contextWindow: 272_000 },
-      { id: "gpt-old", label: "GPT-Old" },
+      { id: "gpt-6-astra", label: "GPT-6-Astra", contextWindow: 272_000, modelKey: "codex-subscription/gpt-6-astra", source: { kind: "codex-subscription", name: "Codex", logo: "openai" } },
+      { id: "gpt-old", label: "GPT-Old", modelKey: "codex-subscription/gpt-old", source: { kind: "codex-subscription", name: "Codex", logo: "openai" } },
     ]);
     // The `vgent` engine's prefixed mapping inherits the same window — and the
     // same name: it is the same model, and only the id carries the prefix.
     expect((await catalog.list("vgent")).models).toEqual([
-      { id: "codex-subscription:gpt-6-astra", label: "GPT-6-Astra", contextWindow: 272_000 },
-      { id: "codex-subscription:gpt-old", label: "GPT-Old" },
+      // The key is the Codex engine's own: one model, two engines.
+      { id: "codex-subscription:gpt-6-astra", label: "GPT-6-Astra", contextWindow: 272_000, modelKey: "codex-subscription/gpt-6-astra", source: { kind: "codex-subscription", name: "Codex", logo: "openai" } },
+      { id: "codex-subscription:gpt-old", label: "GPT-Old", modelKey: "codex-subscription/gpt-old", source: { kind: "codex-subscription", name: "Codex", logo: "openai" } },
     ]);
   });
 
@@ -337,7 +338,7 @@ describe("Claude Code's full model ids", () => {
       env: {},
       fetchCodexRemote: rejectCodex,
       anthropicModels: async () => [{ id: "claude-opus-5" }, { id: "claude-opus-4-5" }, { id: "claude-haiku-4-5" }],
-      reasoningLevelsOf: async () => (id) => levels[id],
+      catalogModelOf: async () => (id) => (levels[id] == null ? undefined : { reasoningLevels: levels[id] }),
     });
     const byId = Object.fromEntries((await catalog.list("claude-code")).models.map((entry) => [entry.id, entry.reasoningLevels]));
     expect(byId["claude-opus-5"]).toHaveLength(5);
@@ -362,5 +363,18 @@ describe("Claude Code's full model ids", () => {
     const result = await catalog.list("claude-code");
     expect(result).toMatchObject({ source: "builtin" });
     expect(result.models.map((entry) => entry.id)).toEqual(["sonnet", "opus", "haiku"]);
+  });
+});
+
+describe("contextOptionsFor", () => {
+  it("offers a choice only when the engine's word and the catalog's differ", () => {
+    expect(contextOptionsFor("codex", 272_000, 1_050_000)).toEqual({ contextOptions: [272_000, 1_050_000] });
+    expect(contextOptionsFor("vgent", 272_000, 272_000)).toEqual({});
+    expect(contextOptionsFor("codex", undefined, 128_000)).toEqual({});
+  });
+
+  it("gives Claude Code standard or long, and long only to a model the catalog says can do it", () => {
+    expect(contextOptionsFor("claude-code", undefined, 1_000_000)).toEqual({ contextOptions: [200_000, 1_000_000] });
+    expect(contextOptionsFor("claude-code", undefined, 200_000)).toEqual({});
   });
 });

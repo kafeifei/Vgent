@@ -36,6 +36,20 @@ const PLAN_ACTIVE_TOOLS = ["read", "grep", "glob", "TodoWrite"] as const;
 /** Claude Code has no `askUserQuestions`, so the addendum tells it to ask in prose. */
 const PLAN_INSTRUCTIONS = planModeInstructions({ askTool: false });
 
+/** From here up, a window is Claude Code's long one. */
+export const CLAUDE_CODE_LONG_CONTEXT = 1_000_000;
+
+/**
+ * Claude Code takes its 1M window as a suffix on the model name (`opus[1m]`,
+ * `claude-opus-5[1m]`) — the same spelling `/model` uses — rather than as a
+ * setting. A task that chose the long window gets the suffix; one that chose
+ * the standard window, or nothing, is left exactly as named.
+ */
+export function withLongContext(model: string, contextWindow: number | undefined): string {
+  if (contextWindow == null || contextWindow < CLAUDE_CODE_LONG_CONTEXT || model.endsWith("[1m]")) return model;
+  return `${model}[1m]`;
+}
+
 /**
  * A thread model of the form `<providerId>:<model>` runs on that provider's
  * Anthropic-compatible endpoint instead of the machine's Claude login: the
@@ -101,12 +115,14 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
       const continueFrom = ctx.continuesTurn ? ctx.harnessState?.continueFrom : undefined;
       const resumeFrom = continueFrom == null ? ctx.harnessState?.resumeFrom : undefined;
 
-      const route = providerRoute(ctx.thread.model, await createProviderStore(ctx.dataDir, ctx.log).list());
+      const routed = providerRoute(ctx.thread.model, await createProviderStore(ctx.dataDir, ctx.log).list());
+      // 上下文: Claude Code's long window is asked for on the model name itself.
+      const route = routed == null ? undefined : { ...routed, model: withLongContext(routed.model, ctx.thread.contextWindow) };
 
       const engine = await createClaudeCodeEngine({
         repoPath: ctx.project.repoPath,
         permissionMode: ctx.permissionMode,
-        ...(route != null ? route : ctx.thread.model != null ? { model: ctx.thread.model } : {}),
+        ...(route != null ? route : ctx.thread.model != null ? { model: withLongContext(ctx.thread.model, ctx.thread.contextWindow) } : {}),
         // 推理强度 is the harness's `effort`; thinking itself stays adaptive and
         // `summarized`, which is what puts the reasoning in the stream. A task
         // that names no level runs on 高.

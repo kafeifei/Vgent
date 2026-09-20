@@ -49,6 +49,7 @@ export interface CreateThreadInput {
   model?: string;
   reasoningEffort?: string;
   serviceTier?: string;
+  contextWindow?: number;
   /** 模式 of the first turn. Omitted (or `agent`) leaves the field off the record. */
   mode?: ThreadMode;
   /** 分叉: the history the task starts with, and where it was cut from. */
@@ -63,6 +64,7 @@ export type ThreadPatch = Partial<{
   model: string | undefined;
   reasoningEffort: string | undefined;
   serviceTier: string | undefined;
+  contextWindow: number | undefined;
   /** `undefined` (or `agent`) clears it back to 直接动手. */
   mode: ThreadMode | undefined;
   status: ThreadStatus;
@@ -265,6 +267,7 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
         ...(input.model != null ? { model: input.model } : {}),
         ...(input.reasoningEffort != null ? { reasoningEffort: input.reasoningEffort } : {}),
         ...(input.serviceTier != null ? { serviceTier: input.serviceTier } : {}),
+        ...(input.contextWindow != null ? { contextWindow: input.contextWindow } : {}),
         ...(input.mode === "plan" ? { mode: "plan" as const } : {}),
         status: "idle",
         createdAt: now,
@@ -300,6 +303,10 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
         if ("reasoningEffort" in patch) {
           if (patch.reasoningEffort == null) delete next.reasoningEffort;
           else next.reasoningEffort = patch.reasoningEffort;
+        }
+        if ("contextWindow" in patch) {
+          if (patch.contextWindow == null) delete next.contextWindow;
+          else next.contextWindow = patch.contextWindow;
         }
         if ("serviceTier" in patch) {
           if (patch.serviceTier == null) delete next.serviceTier;

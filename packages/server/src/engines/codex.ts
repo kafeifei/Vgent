@@ -108,9 +108,16 @@ export function createCodexEngineFactory(): EngineFactory {
       // advertises for the model (`priority`). A tier the model does not
       // advertise is dropped by the CLI itself, with a warning, not an error.
       const tier = ctx.thread.serviceTier;
+      // 上下文: the task's own choice is Codex's `model_context_window`, over
+      // whatever the provider's model row said.
+      const window = ctx.thread.contextWindow;
       const codexConfig =
-        route?.codexConfig != null || tier != null
-          ? { ...route?.codexConfig, ...(tier != null ? { service_tier: tier } : {}) }
+        route?.codexConfig != null || tier != null || window != null
+          ? {
+              ...route?.codexConfig,
+              ...(window != null ? { model_context_window: window } : {}),
+              ...(tier != null ? { service_tier: tier } : {}),
+            }
           : undefined;
       const engine = await createCodexEngine({
         repoPath: ctx.project.repoPath,

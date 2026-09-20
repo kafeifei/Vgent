@@ -256,6 +256,7 @@ export function useWorkbench(token: string) {
         mode: ThreadMode,
         files: FileUIPart[] = [],
         serviceTier: string | null = null,
+        contextWindow: number | null = null,
       ): Promise<boolean> => {
         if (activeProjectId == null) {
           toast("先添加一个项目");
@@ -270,6 +271,7 @@ export function useWorkbench(token: string) {
             ...(model == null ? {} : { model }),
             ...(reasoningEffort == null ? {} : { reasoningEffort }),
             ...(serviceTier == null ? {} : { serviceTier }),
+            ...(contextWindow == null ? {} : { contextWindow }),
             mode,
           })
           .catch((error: Error) => {
@@ -352,6 +354,9 @@ export function useWorkbench(token: string) {
         void client.patchThread(threadId, { engine, model: model ?? null }).catch((error: Error) => toast(error.message));
       },
 
+      setContextWindow: (threadId: string, contextWindow: number | null) => {
+        void client.patchThread(threadId, { contextWindow }).catch((error: Error) => toast(error.message));
+      },
       setServiceTier: (threadId: string, serviceTier: string | null) => {
         void client.patchThread(threadId, { serviceTier }).catch((error: Error) => toast(error.message));
       },

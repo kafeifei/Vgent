@@ -6,6 +6,7 @@ import { CHATGPT_CODEX_BASE_URL, CodexTokenProvider, createCodexFetch, describeS
 import { gateway as defaultGateway } from "ai";
 import type { EngineId, Logger } from "./types.js";
 import { silentLogger } from "./types.js";
+import { CLAUDE_CODE_LONG_CONTEXT } from "./engines/claude-code.js";
 import { DEFAULT_REASONING_LEVEL, defaultLevelFor, reasoningFor } from "./reasoning.js";
 
 /** One selectable model. `id` is what a thread's `model` field is set to. */
@@ -49,6 +50,56 @@ export interface ModelEntry {
    * default.
    */
   contextWindow?: number;
+  /**
+   * The windows this model can be run with on this engine, smallest first —
+   * present only when there is a choice to make. What the engine itself said
+   * (Codex's 272K) next to what the provider catalog lists for the model (1M);
+   * for Claude Code, the standard window next to the long one.
+   */
+  contextOptions?: number[];
+  /**
+   * The same under every engine that can run this very model — the Codex
+   * login's GPT-5.5 is one model whether the Codex CLI or the in-house engine
+   * drives it — so the picker can show it once and offer the engine as a choice.
+   */
+  modelKey?: string;
+  /** Whose model it is: what the picker's row icon and its grouping are drawn from. */
+  source?: ModelSource;
+}
+
+export interface ModelSource {
+  kind: "codex-subscription" | "claude-subscription" | "provider" | "gateway";
+  /** The settings-page provider's id, for `provider`. */
+  id?: string;
+  name: string;
+  /**
+   * The provider-catalog id whose logo stands for this source (models.dev serves
+   * one per provider). Absent for a provider the catalog does not know — a
+   * company gateway — which gets its initial instead.
+   */
+  logo?: string;
+}
+
+const CODEX_SOURCE: ModelSource = { kind: "codex-subscription", name: "Codex", logo: "openai" };
+const CLAUDE_SOURCE: ModelSource = { kind: "claude-subscription", name: "Claude", logo: "anthropic" };
+const GATEWAY_SOURCE: ModelSource = { kind: "gateway", name: "AI Gateway", logo: "vercel" };
+
+/** Claude Code's window when the model name carries no `[1m]`. */
+const CLAUDE_CODE_STANDARD_CONTEXT = 200_000;
+
+/**
+ * `ModelEntry.contextOptions` out of the two things known about a model's
+ * window: what the engine's own source said, and what the provider catalog
+ * lists. Claude Code is its own case — its choice is standard or long, and long
+ * exists only for a model the catalog says can do it.
+ */
+export function contextOptionsFor(engine: EngineId, own: number | undefined, listed: number | undefined): Pick<ModelEntry, "contextOptions"> {
+  if (engine === "claude-code") {
+    const long = Math.max(own ?? 0, listed ?? 0);
+    return long >= CLAUDE_CODE_LONG_CONTEXT ? { contextOptions: [CLAUDE_CODE_STANDARD_CONTEXT, long] } : {};
+  }
+  const options = [...new Set([own, listed].filter((value): value is number => value != null))].sort((a, b) => a - b);
+  return options.length > 1 ? { contextOptions: options } : {};
 }
 
 /** The two reasoning fields of a `ModelEntry`, as the builders below merge them in. */
@@ -131,11 +182,12 @@ export interface ModelCatalogOptions {
    */
   anthropicModels?: () => Promise<ReadonlyArray<{ id: string; label?: string }>>;
   /**
-   * 「这个模型有哪几档」, from the provider catalog (`createReasoningIndex`).
-   * Absent — a test, a build with no catalog — every Claude Code model offers
-   * the harness's five.
+   * 「目录对这个模型知道什么」— its effort levels, its window — from the provider
+   * catalog (`createModelIndex`). Absent — a test, a build with no catalog —
+   * every Claude Code model offers the harness's five and nothing has a choice
+   * of window.
    */
-  reasoningLevelsOf?: () => Promise<(modelId: string) => string[] | undefined>;
+  catalogModelOf?: () => Promise<(modelId: string) => { reasoningLevels?: string[]; contextWindow?: number } | undefined>;
 }
 
 /** How long a fetched catalog is reused. A picker opening twice must not refetch. */
@@ -152,9 +204,14 @@ const FALLBACK_CODEX_CLIENT_VERSION = "0.155.0";
 /** Either of these lets the AI Gateway authenticate a `provider/model` spec. */
 const GATEWAY_ENV_VARS = ["AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"] as const;
 
-const CODEX_BUILTIN: ModelEntry[] = [{ id: "gpt-5.5", label: "gpt-5.5" }];
+/** One key for the Codex login's model, whichever engine names it. */
+const codexModelKey = (slug: string): string => `codex-subscription/${slug}`;
 
-const VGENT_BUILTIN: ModelEntry[] = [{ id: `${CODEX_SUBSCRIPTION_PREFIX}gpt-5.5`, label: "gpt-5.5" }];
+const CODEX_BUILTIN: ModelEntry[] = [{ id: "gpt-5.5", label: "gpt-5.5", modelKey: codexModelKey("gpt-5.5"), source: CODEX_SOURCE }];
+
+const VGENT_BUILTIN: ModelEntry[] = [
+  { id: `${CODEX_SUBSCRIPTION_PREFIX}gpt-5.5`, label: "gpt-5.5", modelKey: codexModelKey("gpt-5.5"), source: CODEX_SOURCE },
+];
 
 /**
  * The Claude Agent SDK has no list endpoint, and the harness passes `model`
@@ -190,17 +247,26 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 function withClaudeCodeReasoning(
   entries: readonly ModelEntry[],
-  levelsOf: ((modelId: string) => string[] | undefined) | undefined,
+  modelOf: ((modelId: string) => { reasoningLevels?: string[]; contextWindow?: number } | undefined) | undefined,
   newestFirst: readonly ModelEntry[],
 ): ModelEntry[] {
-  const known = (entry: ModelEntry): string[] | undefined => {
-    if (levelsOf == null) return undefined;
-    const direct = levelsOf(entry.id);
+  const known = (entry: ModelEntry) => {
+    if (modelOf == null) return undefined;
+    const direct = modelOf(entry.id);
     if (direct != null) return direct;
     const family = newestFirst.find((candidate) => candidate.id.startsWith(`claude-${entry.id}-`));
-    return family == null ? undefined : levelsOf(family.id);
+    return family == null ? undefined : modelOf(family.id);
   };
-  return entries.map((entry) => ({ ...entry, ...reasoningFor("claude-code", known(entry)) }));
+  return entries.map((entry) => {
+    const listed = known(entry);
+    return {
+      ...entry,
+      modelKey: `claude-subscription/${entry.id}`,
+      source: CLAUDE_SOURCE,
+      ...reasoningFor("claude-code", listed?.reasoningLevels),
+      ...contextOptionsFor("claude-code", undefined, listed?.contextWindow),
+    };
+  });
 }
 
 /**
@@ -352,6 +418,13 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
 
   const cached = new Map<EngineId, { at: number; catalog: ModelCatalog }>();
 
+  /** Best-effort like every other source: no catalog means no levels and no choice of window, not a failed list. */
+  const catalogModelOf = async () =>
+    options.catalogModelOf?.().catch((error: unknown) => {
+      log.warn("读取提供商目录失败", error);
+      return undefined;
+    });
+
   /** Codex's own catalog, shared by the `codex` and `vgent` engines. */
   const listCodexModels = async (): Promise<{ models: CodexCatalogModel[]; source: string; warning?: string }> => {
     const report = await describeSubscriptionAuth({ env });
@@ -385,6 +458,8 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
           .map((entry) => ({
             id: entry.id,
             label: entry.name ?? entry.id,
+            modelKey: `gateway/${entry.id}`,
+            source: GATEWAY_SOURCE,
             ...(typeof entry.description === "string" ? { description: entry.description } : {}),
             ...(entry.id.startsWith("openai/")
               ? {
@@ -401,7 +476,7 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
   };
 
   const buildCodex = async (): Promise<Omit<ModelCatalog, "engine" | "fetchedAt">> => {
-    const codex = await listCodexModels();
+    const [codex, modelOf] = await Promise.all([listCodexModels(), catalogModelOf()]);
     if (codex.models.length === 0) {
       return { models: CODEX_BUILTIN, source: "builtin", ...(codex.warning != null ? { warning: codex.warning } : {}) };
     }
@@ -413,6 +488,9 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
         ...codexReasoning(entry),
         ...codexTiers(entry),
         ...(entry.context_window != null ? { contextWindow: entry.context_window } : {}),
+        ...contextOptionsFor("codex", entry.context_window, modelOf?.(entry.slug)?.contextWindow),
+        modelKey: codexModelKey(entry.slug),
+        source: CODEX_SOURCE,
       })),
       source: codex.source,
       ...(codex.warning != null ? { warning: codex.warning } : {}),
@@ -420,7 +498,7 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
   };
 
   const buildVgent = async (): Promise<Omit<ModelCatalog, "engine" | "fetchedAt">> => {
-    const [codex, gatewayModels] = await Promise.all([listCodexModels(), listGatewayModels()]);
+    const [codex, gatewayModels, modelOf] = await Promise.all([listCodexModels(), listGatewayModels(), catalogModelOf()]);
     const models: ModelEntry[] = [];
     const sources: string[] = [];
     const warnings = [codex.warning, gatewayModels.warning].filter((value): value is string => value != null);
@@ -440,6 +518,9 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
           ...codexReasoning(entry),
           ...codexTiers(entry),
           ...(entry.context_window != null ? { contextWindow: entry.context_window } : {}),
+          ...contextOptionsFor("vgent", entry.context_window, modelOf?.(entry.slug)?.contextWindow),
+          modelKey: codexModelKey(entry.slug),
+          source: CODEX_SOURCE,
         })),
       );
     }
@@ -473,10 +554,7 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
   const buildClaudeCode = async (): Promise<Omit<ModelCatalog, "engine" | "fetchedAt">> => {
     const apiKey = env.ANTHROPIC_API_KEY ?? "";
     let warning: string | undefined;
-    const levelsOf = await options.reasoningLevelsOf?.().catch((error: unknown) => {
-      log.warn("读取提供商目录里的推理强度失败", error);
-      return undefined;
-    });
+    const modelOf = await catalogModelOf();
     const [fromCatalog, fromApi] = await Promise.all([
       listAnthropicCatalog(),
       apiKey === ""
@@ -493,7 +571,7 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
     const full = [...fromApi, ...fromCatalog].filter((entry) => !seen.has(entry.id) && seen.add(entry.id) != null);
     const sources = ["builtin", ...(fromApi.length > 0 ? ["anthropic-api"] : []), ...(fromCatalog.length > 0 ? ["models.dev"] : [])];
     return {
-      models: withClaudeCodeReasoning([...CLAUDE_CODE_BUILTIN, ...full], levelsOf, fromCatalog),
+      models: withClaudeCodeReasoning([...CLAUDE_CODE_BUILTIN, ...full], modelOf, fromCatalog),
       source: sources.join("+"),
       ...(warning != null ? { warning } : {}),
     };

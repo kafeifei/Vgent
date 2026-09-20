@@ -252,6 +252,8 @@ export function createClient(token: string) {
       reasoningEffort?: string;
       /** Fast and the like: a service tier id the model's catalog entry offers. */
       serviceTier?: string;
+      /** 上下文: one of the model's `contextOptions`, in tokens. */
+      contextWindow?: number;
       /** `worktree` gives the task its own checkout; the default edits the project. */
       workspace?: WorkspaceMode;
       /** 模式 of the first turn; `plan` needs an engine with `capabilities.planMode`. */
@@ -269,6 +271,8 @@ export function createClient(token: string) {
         reasoningEffort?: string | null;
         /** `null` puts the task back on the standard tier. */
         serviceTier?: string | null;
+        /** `null` hands the window back to the engine's own for the model. */
+        contextWindow?: number | null;
         /** Agent / Plan for the next turn. Refused while the task is live. */
         mode?: ThreadMode;
         /** 归档 also reclaims the task's worktree; un-archiving restores it. */

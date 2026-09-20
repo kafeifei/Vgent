@@ -8,7 +8,7 @@ import {
   PROVIDER_PROTOCOLS,
   discoverProviderModels,
   parseProviderInput,
-  createReasoningIndex,
+  createModelIndex,
   providerModelSpec,
   redactProvider,
   summarizeCatalogProvider,
@@ -33,7 +33,7 @@ import { createGit } from "./git.js";
 import { pickFile, pickFolder } from "./folder-picker.js";
 import { planFork } from "./fork.js";
 import { asIntegrateAction, changeStatsOf, createIntegrator, taskTarget, type Integrator, type TaskTarget } from "./integrate.js";
-import { createModelCatalog, type ModelEntry } from "./models.js";
+import { contextOptionsFor, createModelCatalog, type ModelEntry } from "./models.js";
 import { reasoningFor } from "./reasoning.js";
 import { SUBSCRIPTION_IDS, createSubscriptionService, markHidden, withHiddenModels, type ClaudeLoginStatus, type SubscriptionId } from "./subscriptions.js";
 import { createQueueStore, readQueueText } from "./queue.js";
@@ -144,6 +144,15 @@ function readServiceTier(value: unknown): string | undefined {
     throw new BadRequestError("serviceTier 必须是非空短字符串", "invalid_service_tier");
   }
   return trimmed;
+}
+
+/** Tokens. The catalog names the choices; this only refuses what is not a window at all. */
+function readContextWindow(value: unknown): number | undefined {
+  if (value == null) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1_000 || value > 100_000_000) {
+    throw new BadRequestError("contextWindow 必须是 token 数", "invalid_context_window");
+  }
+  return value;
 }
 
 function readReasoningEffort(value: unknown): string | undefined {
@@ -778,6 +787,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const model = body?.model ?? (engine === defaults.defaultEngine ? defaults.defaultModel : undefined);
     const reasoningEffort = readReasoningEffort(body?.reasoningEffort);
     const serviceTier = readServiceTier(body?.serviceTier);
+    const contextWindow = readContextWindow(body?.contextWindow);
     const mode = body?.mode === undefined ? "agent" : readThreadMode(body.mode);
     assertModeSupported(mode, engine);
     // `permissionMode` is no longer a thread field — 运行模式 is global — but an
@@ -789,6 +799,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
       ...(typeof model === "string" ? { model } : {}),
       ...(reasoningEffort != null ? { reasoningEffort } : {}),
       ...(serviceTier != null ? { serviceTier } : {}),
+      ...(contextWindow != null ? { contextWindow } : {}),
       mode,
     });
     if (body?.workspace !== "worktree") return c.json(record);
@@ -836,6 +847,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
       ...(source.model != null ? { model: source.model } : {}),
       ...(source.reasoningEffort != null ? { reasoningEffort: source.reasoningEffort } : {}),
       ...(source.serviceTier != null ? { serviceTier: source.serviceTier } : {}),
+      ...(source.contextWindow != null ? { contextWindow: source.contextWindow } : {}),
       ...(source.mode != null ? { mode: source.mode } : {}),
       messages,
       forkedFrom: { threadId: source.id, messageId: body.messageId, pending: true },
@@ -914,6 +926,12 @@ export function createApp(options: CreateAppOptions): VgentApp {
       // `null` clears it; an absent key leaves it alone.
       ...("reasoningEffort" in (body ?? {}) ? { reasoningEffort: readReasoningEffort(body?.reasoningEffort) } : {}),
       ...("serviceTier" in (body ?? {}) ? { serviceTier: readServiceTier(body?.serviceTier) } : {}),
+      // A window belongs to the model it was picked for: another model takes its own unless the same edit names one.
+      ...("contextWindow" in (body ?? {})
+        ? { contextWindow: readContextWindow(body?.contextWindow) }
+        : "model" in (body ?? {}) && body?.model !== current.model
+          ? { contextWindow: undefined }
+          : {}),
     });
     return c.json(record);
   });
@@ -1229,7 +1247,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
   const modelCatalog = createModelCatalog({
     log,
     anthropicModels: async () => (await catalog.get()).providers.find((entry) => entry.id === "anthropic")?.models ?? [],
-    reasoningLevelsOf: async () => createReasoningIndex((await catalog.get()).providers),
+    catalogModelOf: async () => createModelIndex((await catalog.get()).providers),
   });
 
   app.get("/api/engines/:engine/models", async (c) => {
@@ -1248,14 +1266,20 @@ export function createApp(options: CreateAppOptions): VgentApp {
       (capabilitiesOf(engine).knownDefaultModel ? DEFAULT_VGENT_MODEL : undefined);
     // Provider models are merged per request for the same reason: the list is
     // the user's, edited on the settings page, and must not wait out a cache.
-    const levelsOf = capabilitiesOf(engine).customProviders ? createReasoningIndex((await catalog.get()).providers) : undefined;
-    const fromProviders: ModelEntry[] = levelsOf != null
+    const known = capabilitiesOf(engine).customProviders ? (await catalog.get()).providers : undefined;
+    const modelOf = known != null ? createModelIndex(known) : undefined;
+    const hasLogo = new Set(known?.map((entry) => entry.id));
+    const fromProviders: ModelEntry[] = modelOf != null
       ? (await providers.list()).flatMap((provider) =>
           (provider.agents[engine]?.models ?? []).map((model) => ({
             id: providerModelSpec(provider.id, model.id),
             label: model.label ?? model.id,
             provider: provider.name,
-            ...reasoningFor(engine, levelsOf(model.id)),
+            // One key across the agents it is switched on for: it is one model.
+            modelKey: `${provider.id}/${model.id}`,
+            source: { kind: "provider" as const, id: provider.id, name: provider.name, ...(hasLogo.has(provider.id) ? { logo: provider.id } : {}) },
+            ...reasoningFor(engine, modelOf(model.id)?.reasoningLevels),
+            ...contextOptionsFor(engine, model.contextWindow, modelOf(model.id)?.contextWindow),
             ...(model.contextWindow != null ? { contextWindow: model.contextWindow } : {}),
           })),
         )

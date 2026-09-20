@@ -51,6 +51,9 @@ export interface VgentEngineFactoryOptions {
   model?: LanguageModel;
 }
 
+/** How much of a chosen window the history may fill before pruning; the rest is the reply's and the tools'. */
+const CONTEXT_BUDGET_SHARE = 0.8;
+
 /**
  * Vgent's own engine — a plain `ToolLoopAgent` — behind the same `EngineRunner`
  * contract as the harness engines.
@@ -127,6 +130,9 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
         // 「不指定」sends none, for an endpoint that refuses the parameter.
         reasoning:
           ctx.thread.reasoningEffort === PROVIDER_DEFAULT_LEVEL ? {} : { effort: effectiveReasoningLevel(ctx.thread.reasoningEffort) },
+        // 上下文: the in-house engine has no window setting to pass on — what it
+        // owns is when to start pruning, so a chosen window moves that line.
+        ...(ctx.thread.contextWindow != null ? { contextTokenBudget: Math.floor(ctx.thread.contextWindow * CONTEXT_BUDGET_SHARE) } : {}),
         // Fast: the Responses API's `service_tier`, for the models that offer one.
         ...(ctx.thread.serviceTier != null ? { serviceTier: ctx.thread.serviceTier } : {}),
         // Everything the model cannot work out for itself: which model it is,

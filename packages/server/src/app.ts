@@ -1187,6 +1187,9 @@ export function createApp(options: CreateAppOptions): VgentApp {
       .catch((error: unknown) => log.warn("自动升级引擎运行时失败", error));
   };
   const runtimeTimers: NodeJS.Timeout[] = [];
+  // An install the last run did not live to finish leaves an engine unable to
+  // start; putting it back is the first thing a new run does, asked or not.
+  void harnessRuntime.recover();
   if (options.autoUpgradeRuntimes === true) {
     runtimeTimers.push(setTimeout(autoUpgradeTick, 60_000), setInterval(autoUpgradeTick, RUNTIME_CHECK_MS));
     for (const timer of runtimeTimers) timer.unref();

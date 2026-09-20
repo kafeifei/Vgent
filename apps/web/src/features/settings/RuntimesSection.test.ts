@@ -11,6 +11,7 @@ const base: HarnessRuntimeStatus = {
   bad: [],
   busy: false,
   working: false,
+  broken: false,
 };
 
 describe("runtimeSummary", () => {
@@ -20,6 +21,9 @@ describe("runtimeSummary", () => {
     expect(runtimeSummary({ ...base, installed: "2.1.245", latest: "2.1.278", updateAvailable: true })).toBe("2.1.245 · 最新 2.1.278");
     expect(runtimeSummary({ ...base, installed: "2.1.278", unverified: true, previous: "2.1.245" })).toContain("自动退回 2.1.245");
     expect(runtimeSummary({ ...base, installed: "2.1.245", working: true })).toBe("2.1.245 · 正在安装…");
+    // Half way through, the packages are not there; that must not read as never installed.
+    expect(runtimeSummary({ ...base, working: true })).toContain("正在安装");
+    expect(runtimeSummary({ ...base, broken: true })).toContain("安装不完整");
   });
 
   it("explains why a newer version is not being installed on its own", () => {

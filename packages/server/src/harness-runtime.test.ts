@@ -160,6 +160,59 @@ describe("createHarnessRuntime", () => {
     expect(await burnt.claude()).toMatchObject({ installed: "2.1.245", bad: ["2.1.278"] });
   });
 
+  it("repairs an install that was cut off, without blaming the version", async () => {
+    const { runtime, dir, root, claude } = await fixture();
+    // What a quit mid-download leaves: the intent noted by a process that is
+    // gone, the workspace file already retargeted, the packages unlinked.
+    await mkdir(join(dir, ".vgent-previous"), { recursive: true });
+    for (const name of ["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"]) {
+      await writeFile(join(dir, ".vgent-previous", name), await readFile(join(dir, name), "utf8"));
+    }
+    await writeFile(join(dir, "pnpm-workspace.yaml"), `allowBuilds:\n  '${CLI}@2.1.278': true\n`);
+    await rm(join(dir, "node_modules", CLI), { recursive: true });
+    await rm(join(dir, "node_modules", SDK), { recursive: true });
+    await writeFile(
+      join(root, ".vgent-runtime.json"),
+      JSON.stringify({ upgrading: { from: { [CLI]: "2.1.245", [SDK]: "0.3.245" }, to: { [CLI]: "2.1.278", [SDK]: "0.3.278" }, pid: 2 ** 22 + 12345, startedAt: "x" } }),
+    );
+
+    const status = await claude();
+
+    expect(status).toMatchObject({ installed: "2.1.245", broken: false, bad: [] });
+    expect(status.lastError).toContain("被打断");
+    expect(await readFile(join(dir, "pnpm-workspace.yaml"), "utf8")).toContain(`'${CLI}@2.1.245': true`);
+    expect(await readFile(join(root, ".vgent-runtime.log"), "utf8")).toContain("was interrupted");
+    // A routine check does not wipe the explanation.
+    expect((await runtime.check())[0]?.lastError).toContain("被打断");
+  });
+
+  it("stops retrying on its own a version whose install was cut off twice", async () => {
+    const { runtime, root, claude } = await fixture();
+    const note = { from: { [CLI]: "2.1.245", [SDK]: "0.3.245" }, to: { [CLI]: "2.1.278", [SDK]: "0.3.278" }, pid: 2 ** 22 + 12345, startedAt: "x" };
+    for (let round = 0; round < 2; round += 1) {
+      await runtime.upgrade("claude-code");
+      await runtime.rollback("claude-code");
+      // Pretend that attempt never finished instead: forget the rollback's verdict, leave the note.
+      await writeFile(join(root, ".vgent-runtime.json"), JSON.stringify({ ...JSON.parse(await readFile(join(root, ".vgent-runtime.json"), "utf8")), bad: [], upgrading: note }));
+      await runtime.recover();
+    }
+    await runtime.autoUpgrade();
+    expect(await claude()).toMatchObject({ installed: "2.1.245", updateAvailable: true });
+    // By hand it still goes through.
+    expect(await runtime.upgrade("claude-code")).toMatchObject({ installed: "2.1.278" });
+  });
+
+  it("leaves an install alone while the process that started it is still alive", async () => {
+    const { root, dir, claude, calls } = await fixture();
+    await rm(join(dir, "node_modules", CLI), { recursive: true });
+    await writeFile(
+      join(root, ".vgent-runtime.json"),
+      JSON.stringify({ upgrading: { from: { [CLI]: "2.1.245" }, to: { [CLI]: "2.1.278" }, pid: process.ppid, startedAt: "x" } }),
+    );
+    expect(await claude()).toMatchObject({ broken: true });
+    expect(calls).toEqual([]);
+  });
+
   it("ignores turns of an engine it does not keep, and turns when nothing is pending", async () => {
     const { runtime, calls } = await fixture();
     await runtime.reportTurn("vgent", { ok: false, produced: false });

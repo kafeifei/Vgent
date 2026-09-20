@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { DEFAULT_CLAUDE_CODE_DATA_DIR, DEFAULT_CODEX_DATA_DIR } from "@vgent/engines";
@@ -32,6 +32,16 @@ import { silentLogger } from "./types.js";
  *   4. the new version stays 未验证 until a turn of that engine ends well. A
  *      turn that dies before producing anything rolls it back and remembers the
  *      version as bad, so an automatic upgrade does not walk into it again.
+ *
+ * An install can also be cut off half way — the app is quit while pnpm is still
+ * downloading — which leaves the top-level links gone and nothing recorded.
+ * So the intent is written down *before* the first file is touched
+ * (`upgrading`), and whoever next finds that note with its writer dead puts
+ * the copies back and reinstalls (`recover`, run at start-up and before every
+ * other operation). Everything that happens is appended to
+ * `<harness dir>/.vgent-runtime.log`, pnpm's own output included on a failure:
+ * the desktop shell keeps no server log, and this is the one place that has to
+ * be readable after the fact.
  *
  * The adapter's own marker (`.bootstrap-<hash>.ok`) is left alone, so it does
  * not reinstall its pins on top. A new adapter release with a different recipe
@@ -138,11 +148,17 @@ export interface HarnessRuntimeStatus {
   busy: boolean;
   /** An install or rollback is running. */
   working: boolean;
+  /** The directory is there but the packages are not: an install was cut off and has not been repaired yet. */
+  broken: boolean;
   lastCheckedAt?: string;
   lastError?: string;
 }
 
 interface RuntimeState {
+  /** Written before an install touches anything, removed when it is over either way. */
+  upgrading?: { from: VersionSet; to: VersionSet; pid: number; startedAt: string };
+  /** How often an install of a version was cut off. Twice, and only a click installs it. */
+  interrupted?: Record<string, number>;
   previous?: VersionSet;
   unverified?: boolean;
   bad?: string[];
@@ -174,6 +190,8 @@ export interface HarnessRuntime {
   reportTurn(engine: string, outcome: { ok: boolean; produced: boolean }): Promise<void>;
   /** Check, and upgrade whatever is idle, newer and not known bad. Never throws. */
   autoUpgrade(): Promise<void>;
+  /** Repairs an install that was cut off (the app quit mid-download). Never throws; cheap when there is nothing to do. */
+  recover(): Promise<void>;
 }
 
 /** `1.2.10` vs `1.2.9`, numerically; anything unparsable compares as equal. */
@@ -240,6 +258,45 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
     await writeFile(statePath(spec), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
   };
 
+  /**
+   * Every change to the state file goes through here, one at a time per engine
+   * and always from a fresh read. A check that was waiting on npm while an
+   * install finished must not write its stale copy back — least of all a stale
+   * `upgrading` note, which the next `recover` would act on.
+   */
+  const chains = new Map<HarnessEngineId, Promise<unknown>>();
+  const updateState = (spec: RuntimeSpec, change: (state: RuntimeState) => RuntimeState): Promise<void> => {
+    const next = (chains.get(spec.engine) ?? Promise.resolve()).then(
+      async () => writeState(spec, change(await readState(spec))),
+      async () => writeState(spec, change(await readState(spec))),
+    );
+    chains.set(spec.engine, next.catch(() => undefined));
+    return next;
+  };
+
+  const CHECK_FAILED = "检查更新失败：";
+
+  /** The after-the-fact record: one line per event, plus the tool's output when something failed. */
+  const record = async (spec: RuntimeSpec, line: string, detail?: string): Promise<void> => {
+    const text = `${now().toISOString()} ${line}\n${detail != null && detail !== "" ? `${detail.trim().slice(-4000)}\n` : ""}`;
+    await mkdir(dataDirOf(spec), { recursive: true }).catch(() => undefined);
+    await appendFile(join(dataDirOf(spec), ".vgent-runtime.log"), text, { mode: 0o600 }).catch(() => undefined);
+  };
+
+  const errorDetail = (error: unknown): string => {
+    const parts = error as { message?: string; stdout?: string; stderr?: string };
+    return [parts.message, parts.stdout, parts.stderr].filter((part) => typeof part === "string" && part !== "").join("\n");
+  };
+
+  const isAlive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   /** What is really in `node_modules`, not what `package.json` asks for. */
   const installedSet = async (spec: RuntimeSpec): Promise<VersionSet | undefined> => {
     const set: VersionSet = {};
@@ -252,7 +309,12 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
   };
 
   const describe = async (spec: RuntimeSpec): Promise<HarnessRuntimeStatus> => {
-    const [state, installed, busy] = await Promise.all([readState(spec), installedSet(spec), options.isBusy(spec.engine)]);
+    const [state, installed, busy, project] = await Promise.all([
+      readState(spec),
+      installedSet(spec),
+      options.isBusy(spec.engine),
+      stat(join(dirOf(spec), "package.json")).catch(() => undefined),
+    ]);
     const current = installed?.[spec.primary];
     const latest = state.latest?.[spec.primary];
     return {
@@ -267,21 +329,27 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
       bad: state.bad ?? [],
       busy,
       working: working.has(spec.engine),
+      // A project with no packages in it is not「never installed」: that one has no project either.
+      broken: installed == null && project != null && !working.has(spec.engine),
       ...(state.lastCheckedAt != null ? { lastCheckedAt: state.lastCheckedAt } : {}),
       ...(state.lastError != null ? { lastError: state.lastError } : {}),
     };
   };
 
   const checkOne = async (spec: RuntimeSpec): Promise<void> => {
-    const state = await readState(spec);
     try {
       const latest = await spec.resolveLatest(fetchJson);
-      const { lastError: _cleared, ...rest } = state;
-      await writeState(spec, { ...rest, latest, lastCheckedAt: now().toISOString() });
+      await updateState(spec, (state) => {
+        // Only a failed *check* is forgotten by a good one; why an install was
+        // rolled back or repaired stays until something supersedes it.
+        const { lastError, ...rest } = state;
+        const kept = lastError != null && !lastError.startsWith(CHECK_FAILED) ? { lastError } : {};
+        return { ...rest, ...kept, latest, lastCheckedAt: now().toISOString() };
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log.warn(`查询 ${spec.label} 最新版本失败`, error);
-      await writeState(spec, { ...state, lastCheckedAt: now().toISOString(), lastError: `检查更新失败：${message}` });
+      await updateState(spec, (state) => ({ ...state, lastCheckedAt: now().toISOString(), lastError: `${CHECK_FAILED}${message}` }));
     }
   };
 
@@ -360,7 +428,14 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
       if (compareVersions(installed[spec.primary] as string, wanted) >= 0) return;
 
       await copyProjectFiles(dirOf(spec), backupDir(spec));
+      // From here on the tree may be half of each version. The note is what
+      // lets the next start repair it if this process does not live to.
+      await updateState(spec, (current) => ({
+        ...current,
+        upgrading: { from: installed, to: target, pid: process.pid, startedAt: now().toISOString() },
+      }));
       log.info(`升级 ${spec.label}：${installed[spec.primary]} → ${wanted}`);
+      await record(spec, `upgrade ${spec.label} ${installed[spec.primary]} -> ${wanted}: started`);
       try {
         await retargetWorkspace(spec, installed, target);
         await pnpm(spec, ["add", "--save-exact", ...Object.entries(target).map(([name, version]) => `${name}@${version}`)]);
@@ -368,16 +443,24 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         log.error(`升级 ${spec.label} 到 ${wanted} 失败，退回 ${installed[spec.primary]}`, error);
-        await restoreBackup(spec).catch((restoreError) => log.error(`退回 ${spec.label} 失败`, restoreError));
-        await writeState(spec, {
-          ...state,
-          bad: [...new Set([...(state.bad ?? []), wanted])],
-          lastError: `升级到 ${wanted} 失败，已退回 ${installed[spec.primary]}：${message.slice(0, 300)}`,
+        await record(spec, `upgrade ${spec.label} -> ${wanted}: FAILED, restoring ${installed[spec.primary]}`, errorDetail(error));
+        await restoreBackup(spec).catch(async (restoreError) => {
+          log.error(`退回 ${spec.label} 失败`, restoreError);
+          await record(spec, `restore ${spec.label}: FAILED`, errorDetail(restoreError));
         });
+        await updateState(spec, ({ upgrading: _over, ...current }) => ({
+          ...current,
+          bad: [...new Set([...(current.bad ?? []), wanted])],
+          lastError: `升级到 ${wanted} 失败，已退回 ${installed[spec.primary]}：${message.slice(0, 300)}`,
+        }));
         throw new VgentServerError({ message: `升级到 ${wanted} 失败，已退回 ${installed[spec.primary]}`, status: 500, code: "runtime_upgrade_failed" });
       }
-      const { lastError: _cleared, ...rest } = state;
-      await writeState(spec, { ...rest, previous: installed, unverified: true });
+      await updateState(spec, ({ upgrading: _over, lastError: _cleared, ...current }) => ({
+        ...current,
+        previous: installed,
+        unverified: true,
+      }));
+      await record(spec, `upgrade ${spec.label} -> ${wanted}: installed, awaiting a good turn`);
     });
 
   const rollbackOne = (spec: RuntimeSpec, reason?: string): Promise<void> =>
@@ -387,16 +470,52 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
       if (state.previous == null) throw new VgentServerError({ message: "没有可以回退的上一版", status: 409, code: "runtime_no_previous" });
       log.info(`回退 ${spec.label}：${installed?.[spec.primary] ?? "?"} → ${state.previous[spec.primary]}`);
       await restoreBackup(spec);
+      await record(spec, `rollback ${spec.label} ${installed?.[spec.primary] ?? "?"} -> ${state.previous[spec.primary]}${reason != null ? `: ${reason}` : ""}`);
       const abandoned = installed?.[spec.primary];
-      const { previous: _gone, unverified: _flag, lastError: _cleared, ...rest } = state;
-      await writeState(spec, {
-        ...rest,
+      await updateState(spec, ({ previous: _gone, unverified: _flag, lastError: _cleared, ...current }) => ({
+        ...current,
         // Rolled back on purpose or by a failed turn: either way the automatic
         // upgrade must not put the same version straight back.
-        bad: [...new Set([...(state.bad ?? []), ...(abandoned != null ? [abandoned] : [])])],
+        bad: [...new Set([...(current.bad ?? []), ...(abandoned != null ? [abandoned] : [])])],
         ...(reason != null ? { lastError: reason } : {}),
-      });
+      }));
     });
+
+  /**
+   * An `upgrading` note whose writer is gone means the tree was left half way.
+   * The copies go back and the lockfile is installed again — from the local
+   * store, so this needs no network. The target is not marked bad: being
+   * interrupted says nothing about the version.
+   */
+  const recoverOne = async (spec: RuntimeSpec): Promise<void> => {
+    const state = await readState(spec);
+    const note = state.upgrading;
+    if (note == null || working.has(spec.engine)) return;
+    if (note.pid !== process.pid && isAlive(note.pid)) return;
+    const from = note.from[spec.primary] ?? "上一版";
+    working.add(spec.engine);
+    try {
+      log.warn(`${spec.label} 上次升级被打断，恢复到 ${from}`);
+      await record(spec, `recover ${spec.label}: upgrade to ${note.to[spec.primary]} was interrupted, restoring ${from}`);
+      await restoreBackup(spec);
+      const target = note.to[spec.primary] ?? "";
+      await updateState(spec, ({ upgrading: _done, ...current }) => ({
+        ...current,
+        interrupted: { ...current.interrupted, [target]: (current.interrupted?.[target] ?? 0) + 1 },
+        lastError: `上次升级到 ${note.to[spec.primary]} 时被打断（多半是安装途中退出了 app），已恢复到 ${from}`,
+      }));
+    } catch (error) {
+      log.error(`恢复 ${spec.label} 失败`, error);
+      await record(spec, `recover ${spec.label}: FAILED`, errorDetail(error));
+      await updateState(spec, (current) => ({ ...current, lastError: `上次升级被打断，自动恢复也失败了：${errorDetail(error).slice(0, 300)}` }));
+    } finally {
+      working.delete(spec.engine);
+    }
+  };
+
+  const recoverAll = async (): Promise<void> => {
+    for (const spec of SPECS) await recoverOne(spec).catch((error) => log.error(`恢复 ${spec.label} 失败`, error));
+  };
 
   const must = (engine: string): RuntimeSpec => {
     const spec = specOf(engine);
@@ -405,9 +524,15 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
   };
 
   return {
-    status: () => Promise.all(SPECS.map(describe)),
+    recover: recoverAll,
+
+    async status() {
+      await recoverAll();
+      return Promise.all(SPECS.map(describe));
+    },
 
     async check() {
+      await recoverAll();
       await Promise.all(SPECS.map(checkOne));
       return Promise.all(SPECS.map(describe));
     },
@@ -430,8 +555,7 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
       const state = await readState(spec);
       if (state.unverified !== true) return;
       if (outcome.ok) {
-        const { unverified: _flag, ...rest } = state;
-        await writeState(spec, rest);
+        await updateState(spec, ({ unverified: _flag, ...current }) => current);
         // The old version is no longer needed for a rollback that will not come.
         await pnpm(spec, ["store", "prune"]).catch((error) => log.warn(`清理 ${spec.label} 的旧版本缓存失败`, error));
         return;
@@ -447,12 +571,16 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
     },
 
     async autoUpgrade() {
+      await recoverAll();
       for (const spec of SPECS) {
         try {
           await checkOne(spec);
           const status = await describe(spec);
-          if (!status.updateAvailable || status.busy || status.working || status.unverified) continue;
+          if (!status.updateAvailable || status.busy || status.working || status.unverified || status.broken) continue;
           if (status.latest != null && status.bad.includes(status.latest)) continue;
+          // Once is a quit at the wrong moment. Twice is something about this
+          // machine, and retrying at every start would only break it again.
+          if (status.latest != null && ((await readState(spec)).interrupted?.[status.latest] ?? 0) >= 2) continue;
           await upgradeOne(spec);
         } catch (error) {
           // Refused because a task started in between, or rolled back: both are

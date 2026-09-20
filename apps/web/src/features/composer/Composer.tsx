@@ -189,6 +189,16 @@ export function Composer({
     toast(`${next.label} 不支持 Plan 模式，已切回 Agent`);
   };
 
+  // A draft that just went out (or was cleared by a command) leaves the caret
+  // where it was: in the box, ready for the next message — also when the send
+  // came from somewhere that took the focus away.
+  const previousValue = useRef(value);
+  useEffect(() => {
+    const sent = previousValue.current !== "" && value === "";
+    previousValue.current = value;
+    if (sent) textarea.current?.focus();
+  }, [value]);
+
   // Auto-grow: reset, then take the content height.
   useEffect(() => {
     const element = textarea.current;
@@ -631,7 +641,10 @@ export function Composer({
               type="button"
               aria-label="排队"
               title="排到队列，这一轮结束后自动发出"
-              onClick={onSubmit}
+              onClick={() => {
+                onSubmit();
+                textarea.current?.focus();
+              }}
               className="inline-flex h-7 flex-none items-center gap-3xs rounded-full border border-border px-sm text-fg-muted text-sm hover:border-border-strong hover:text-fg"
             >
               <ListPlus className="size-sm" />
@@ -641,7 +654,12 @@ export function Composer({
           <button
             type="button"
             aria-label={live ? "停止" : "发送"}
-            onClick={() => (live ? onStop?.() : onSubmit())}
+            onClick={() => {
+              if (live) onStop?.();
+              else onSubmit();
+              // The click took the focus; the next message is typed without reaching for the mouse.
+              textarea.current?.focus();
+            }}
             className="grid size-7 flex-none place-items-center rounded-full bg-fg text-bg hover:opacity-85"
           >
             {live ? <Square className="size-sm fill-current" /> : <ArrowUp className="size-lg" />}

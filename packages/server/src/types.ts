@@ -327,6 +327,13 @@ export interface Settings {
    * older settings file needs no migration.
    */
   systemNotifications?: boolean;
+  /**
+   * 自动升级引擎运行时: whether Claude Code / Codex are moved to their newest
+   * release on their own while no task of that engine runs. Absent means on —
+   * an upgrade is verified before it counts and rolled back if a turn cannot
+   * start on it, which is what makes doing it unasked safe.
+   */
+  autoUpgradeRuntimes?: boolean;
   /** MCP servers the `vgent` engine connects to per turn. Their tools are deferred; see `connectMcpServers`. */
   mcpServers?: McpServerConfig[];
   /** How many live worktrees to keep before the oldest idle ones are reclaimed. Absent = `DEFAULT_WORKTREE_MAX_COUNT`. */

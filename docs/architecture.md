@@ -372,6 +372,16 @@ docs/
 - **模式走 `/`**。「+」菜单里的 Agent / Plan 拿掉。输入 `/`（行首、空白或 `(` 之后，规则同 Cursor 的 `recognizeSlash`）出菜单：模式两行在前（当前的打勾，进不去的灰掉并写原因），后面是调用方给的命令——任务里是 `/compact`（别名 `summarize`）和 `/new`。选中后把 `/xxx` 从草稿里删掉再执行。⇧Tab 和 Plan chip 的 × 不变。`features/composer/slash.ts`。
 - **「+」= 选文件，支持粘贴和拖入**。附件作为普通 `file` part（data URL）跟着用户消息走，所以日志里能画缩略图。单个 10MB 上限；不进草稿；运行中带附件不能排队（队列只存文字）。引擎拿到的不一样，在 `packages/server/src/attachments.ts`：Claude Code / Codex 两个 harness 适配器遇到非文本的用户 part 直接抛 `HarnessCapabilityUnsupportedError`，所以落盘到 `<dataDir>/attachments/<threadId>/` 并把 part 换成一句带绝对路径的话，CLI 用自己的读文件工具看（两个都能看图）；自研引擎直连模型，图片和 PDF 保留为 file part，文本类文件解码后内联（20 万字符截断），其它二进制给一句「读不了」——它的工具出不了工作目录，给路径没用。删线程时清掉那个目录。没验：真发一条带图消息给三个引擎（会花订阅额度），转换逻辑有单测。
 
+### 引擎运行时：Claude Code / Codex 的 CLI 升级（2026-09-20）
+
+- **三层，别混**。harness 引擎下面是：AI SDK 的适配器（`@ai-sdk/harness-claude-code` / `-codex`，随 app 打包）→ 厂商自己的 SDK（Anthropic 的 `@anthropic-ai/claude-agent-sdk` / `@openai/codex-sdk`）→ 厂商的 CLI。后两层由适配器第一次运行时装进 `~/.vgent/harness/<id>/.harness-bootstrap/<id>/`（一个 pnpm 项目，`--frozen-lockfile`），和用户终端里自己装的 `claude` / `codex` 无关，只共用登录态。
+- **为什么要自己升**。适配器把这一对钉死，而且钉得很旧：2026-09-20 最新的适配器（1.0.121 / 1.0.119）仍然钉 Claude Code 2.1.245 和 Codex SDK 0.149.1，上游已经是 2.1.278 和 0.155.1。升适配器拿不到新 CLI。配对关系是数据：Agent SDK 的 npm 元数据里有 `claudeCodeVersion`，Codex SDK 依赖同版本号的 `@openai/codex`。
+- **怎么升**（`packages/server/src/harness-runtime.ts`）。就地用 pnpm：该引擎有任务在跑或停在审批时拒绝；先把 `package.json` / `pnpm-lock.yaml` / `pnpm-workspace.yaml` 抄一份；`pnpm add --save-exact` 装配对的最新版；让 CLI 自己报 `--version`，对不上就把三份文件放回去再 `pnpm install --frozen-lockfile`。`pnpm-workspace.yaml` 也要改，因为它按版本号放行安装脚本（`allowBuilds: '@anthropic-ai/claude-code@2.1.245': true`），不改的话新版 CLI 的原生二进制装不上。Codex 的 CLI 是 SDK 的传递依赖，顶层没有 `.bin/codex`，按 pnpm 布局从 SDK 的真实目录旁边找。适配器自己的 `.bootstrap-<hash>.ok` 标记不动，所以它不会把钉的版本装回来；将来适配器换了 recipe 会重装，下次检查再升上去。
+- **「无害就自动」的定义**。不靠 semver 猜（Codex 每次发版都涨 minor）。靠两道闸：装完 CLI 必须自己报出新版本号；新版本标「待验证」，直到该引擎有一轮正常结束；如果升级后的一轮在产生任何输出之前就挂了，自动退回上一版并把这个版本记为 bad，自动升级不再装它。运行结果由 `createRunManager` 的 `onTurnSettled` 回报，用户手动停止的不算。设置 `autoUpgradeRuntimes`（缺省为开）；启动一分钟后查一次，之后每 6 小时；只有拥有默认数据目录的实例才自动升（`--data-dir` 起的临时实例看不到正式实例的任务）。
+- **界面**。设置 → Agents →「引擎运行时」：自动升级开关、每个引擎一行（已装 / 最新 / 待验证 / 上次失败原因）、升级到 X、回退到 Y、检查更新。路由 `GET /api/runtimes`、`POST /api/runtimes/check`、`POST /api/runtimes/:engine/{upgrade,rollback}`。
+- 验过：把 Codex 的 recipe 抄到临时目录真跑了一遍 0.149.1 → 0.155.1 → 回退，CLI 报出的版本号对得上；中途一次验证脚本写错，正好走了自动退回那条路。没验：新版 SDK 和适配器自带的 `bridge.mjs` 在真实一轮里的兼容性（要花订阅额度），这正是「待验证 + 自动退回」兜的那一段；Claude Code 那一对没有真装过（单测用假 pnpm）。
+- 顺带：输入框发送后保持焦点（点发送键、`/` 命令清空草稿、从空状态进任务都一样）。
+
 ### 明确未做
 
 - `askUserQuestions` 在 TUI 里不可用（需要 Web `useChat`）。

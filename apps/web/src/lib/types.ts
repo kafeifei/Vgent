@@ -61,6 +61,8 @@ export type {
   SubscriptionModel,
   UsageInfo,
   WorkspaceSetup,
+  HarnessEngineId,
+  HarnessRuntimeStatus,
 } from "@vgent/server";
 
 /**

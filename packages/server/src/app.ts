@@ -25,6 +25,8 @@ import { createEngineRegistry, engineDescriptors, engineIds } from "./engines/re
 import { DEFAULT_VGENT_MODEL } from "./engines/vgent.js";
 import type { Files } from "./files.js";
 import { createFiles } from "./files.js";
+import type { HarnessEngineId, HarnessRuntime } from "./harness-runtime.js";
+import { createHarnessRuntime } from "./harness-runtime.js";
 import type { ChangesResponse, DiffBase, Git } from "./git.js";
 import { createGit } from "./git.js";
 import { pickFile, pickFolder } from "./folder-picker.js";
@@ -95,6 +97,14 @@ export interface CreateAppOptions {
   catalogFetch?: typeof globalThis.fetch;
   /** Whether Claude is signed in on this machine. Tests answer; production asks the `claude` CLI. */
   probeClaudeLogin?: () => Promise<ClaudeLoginStatus>;
+  /**
+   * The keeper of Claude Code's and Codex's CLI + SDK. Tests pass a fake; left
+   * unset the real one is built, but it only checks and upgrades on its own
+   * when `autoUpgradeRuntimes` is set — a test server must never reach for npm.
+   */
+  harnessRuntime?: HarnessRuntime;
+  /** Turns on the background check-and-upgrade loop. `main.ts` sets it; tests do not. */
+  autoUpgradeRuntimes?: boolean;
 }
 
 export interface VgentApp {
@@ -277,6 +287,19 @@ export function createApp(options: CreateAppOptions): VgentApp {
     return changeStatsOf(await git.changes(target.repoPath, target.baseline));
   };
 
+  // Declared before the run manager, which reports every turn's outcome to it;
+  // it asks the run manager back whether an engine is busy, lazily.
+  const LIVE_FOR_RUNTIME: readonly string[] = ["running", "awaiting-approval", "awaiting-input"];
+  const harnessRuntime: HarnessRuntime =
+    options.harnessRuntime ??
+    createHarnessRuntime({
+      log,
+      isBusy: async (engine) =>
+        (await threads.list()).some(
+          (thread) => thread.engine === engine && (LIVE_FOR_RUNTIME.includes(thread.status) || runs.isRunning(thread.id)),
+        ),
+    });
+
   const runs = createRunManager({
     threads,
     projects,
@@ -286,6 +309,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     log,
     changeStats: changeStatsFor,
     savePlan: (threadId, content) => plans.put(threadId, content).then(() => {}),
+    onTurnSettled: ({ engine, ok, produced }) => harnessRuntime.reportTurn(engine, { ok, produced }),
     queue,
     ...(options.stopTimeoutMs != null ? { stopTimeoutMs: options.stopTimeoutMs } : {}),
   });
@@ -1025,6 +1049,10 @@ export function createApp(options: CreateAppOptions): VgentApp {
       // Unlike the scalars above, a malformed server list is rejected rather
       // than dropped: silently ignoring it would look exactly like an MCP
       // server whose tools never showed up.
+      // Same convention as 系统通知: absent is on, only `false` is stored.
+      ...("autoUpgradeRuntimes" in (body ?? {})
+        ? { autoUpgradeRuntimes: body?.autoUpgradeRuntimes === false ? false : undefined }
+        : {}),
       ...("mcpServers" in (body ?? {}) ? { mcpServers: readMcpServers(body?.mcpServers) } : {}),
       ...("worktreeMaxCount" in (body ?? {}) ? { worktreeMaxCount: readWorktreeMaxCount(body?.worktreeMaxCount) } : {}),
       // 界面偏好: the title bar's two toggles write them here, so they survive
@@ -1131,6 +1159,39 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   // 引擎能力表. The client shows what an engine can do from this and never
   // branches on its name.
+  // --- 引擎运行时 ---------------------------------------------------------
+  // Which Claude Code / Codex is installed, what the newest is, and moving
+  // between them. An install takes a while, so both POSTs answer when it is
+  // over — with the fresh status, or with why it was refused or rolled back.
+  const asRuntimeEngine = (value: string): HarnessEngineId => {
+    if (value === "claude-code" || value === "codex") return value;
+    throw new NotFoundError(`${value} 没有可升级的运行时`);
+  };
+  app.get("/api/runtimes", async (c) => c.json({ runtimes: await harnessRuntime.status() }));
+  app.post("/api/runtimes/check", async (c) => c.json({ runtimes: await harnessRuntime.check() }));
+  app.post("/api/runtimes/:engine/upgrade", async (c) =>
+    c.json(await harnessRuntime.upgrade(asRuntimeEngine(c.req.param("engine")))),
+  );
+  app.post("/api/runtimes/:engine/rollback", async (c) =>
+    c.json(await harnessRuntime.rollback(asRuntimeEngine(c.req.param("engine")))),
+  );
+
+  // 自动升级: a minute after start (the first window must not wait on npm), then
+  // every six hours. Skipped per engine while a task of it is live, so a busy
+  // day simply upgrades at the next quiet tick.
+  const RUNTIME_CHECK_MS = 6 * 60 * 60 * 1000;
+  const autoUpgradeTick = (): void => {
+    void settings
+      .get()
+      .then((current) => (current.autoUpgradeRuntimes === false ? undefined : harnessRuntime.autoUpgrade()))
+      .catch((error: unknown) => log.warn("自动升级引擎运行时失败", error));
+  };
+  const runtimeTimers: NodeJS.Timeout[] = [];
+  if (options.autoUpgradeRuntimes === true) {
+    runtimeTimers.push(setTimeout(autoUpgradeTick, 60_000), setInterval(autoUpgradeTick, RUNTIME_CHECK_MS));
+    for (const timer of runtimeTimers) timer.unref();
+  }
+
   app.get("/api/engines", (c) => c.json({ engines: engineDescriptors(registry) }));
 
   // --- model catalog ----------------------------------------------------
@@ -1289,6 +1350,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     projects,
     async shutdown() {
       if (debounce != null) clearTimeout(debounce);
+      for (const timer of runtimeTimers) clearTimeout(timer);
       for (const unsubscribe of unsubscribes) unsubscribe();
       clients.clear();
       await runs.stopAll();

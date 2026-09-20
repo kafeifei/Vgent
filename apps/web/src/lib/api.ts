@@ -1,4 +1,6 @@
 import type {
+  HarnessEngineId,
+  HarnessRuntimeStatus,
   ChangesResponse,
   ChangesScope,
   CheckpointPreview,
@@ -370,6 +372,17 @@ export function createClient(token: string) {
     /** The engine's model list. `refresh` skips the server's 10-minute cache. */
     listModels: (engine: EngineId, refresh = false) =>
       api<ModelCatalog>(`/engines/${engine}/models${refresh ? "?refresh=1" : ""}`, token),
+
+    /** 引擎运行时: which Claude Code / Codex is installed, and what the newest is. */
+    listRuntimes: () => api<{ runtimes: HarnessRuntimeStatus[] }>("/runtimes", token).then((body) => body.runtimes),
+    /** Asks npm again first. */
+    checkRuntimes: () =>
+      api<{ runtimes: HarnessRuntimeStatus[] }>("/runtimes/check", token, { method: "POST" }).then((body) => body.runtimes),
+    /** Answers when the install is over: the fresh status, or why it was refused or rolled back. */
+    upgradeRuntime: (engine: HarnessEngineId) =>
+      api<HarnessRuntimeStatus>(`/runtimes/${engine}/upgrade`, token, { method: "POST" }),
+    rollbackRuntime: (engine: HarnessEngineId) =>
+      api<HarnessRuntimeStatus>(`/runtimes/${engine}/rollback`, token, { method: "POST" }),
 
     getSettings: () => api<Settings>("/settings", token),
     putSettings: (patch: Partial<Settings>) => api<Settings>("/settings", token, { method: "PUT", json: patch }),

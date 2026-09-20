@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { BASH_TOOL, bashEntryCommand, isVoidedBashEntry } from "@vgent/engine/allowlist";
 import { ArrowLeft, Bot, Boxes, GitBranch, Palette, Pencil, Plug, Plus, Settings2, Trash2, Wrench, X } from "lucide-react";
 import { ModelPicker } from "@/components/ModelPicker";
+import { RuntimesSection } from "./RuntimesSection";
 import { ApiError, type ApiClient } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import type { EngineDescriptor, McpServerConfig, PermissionMode, Settings } from "@/lib/types";
@@ -399,6 +400,11 @@ export function SettingsView({
           })}
           {allowlist.length === 0 && <SettingsEmpty>还没有一直允许的工具。审批卡上点「一直允许」会加到这里。</SettingsEmpty>}
         </SettingsGroup>
+        <RuntimesSection
+          client={client}
+          autoUpgrade={draft.autoUpgradeRuntimes !== false}
+          onAutoUpgrade={(value) => update({ autoUpgradeRuntimes: value })}
+        />
       </SettingsPage>
     ),
 

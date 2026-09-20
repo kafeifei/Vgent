@@ -194,3 +194,4 @@ export type {
   RedactedProviderConfig,
 } from "@vgent/providers";
 export { createCatalogStore, type CatalogSnapshot, type CatalogSource, type CatalogStore } from "./store/catalog.js";
+export type { HarnessEngineId, HarnessRuntimeStatus } from "./harness-runtime.js";

@@ -30,6 +30,7 @@ import type { SettingsStore } from "./store/settings.js";
 import { DEFAULT_THREAD_TITLE, type ThreadStore } from "./store/threads.js";
 import type {
   ChangeStats,
+  EngineId,
   Logger,
   MessageCheckpoint,
   QueuedMessage,
@@ -187,12 +188,27 @@ export function createRunManager(options: {
    */
   savePlan?: (threadId: string, content: string) => Promise<void>;
   /**
+   * How a turn ended, for whoever keeps the engines' runtimes: a fresh upgrade
+   * counts as good once a turn ends well on it, and is rolled back when one
+   * dies before producing anything. A stop by the user says nothing either way
+   * and is not reported. Never awaited into the turn: a rejection is logged.
+   */
+  onTurnSettled?: (info: { engine: EngineId; ok: boolean; produced: boolean }) => Promise<void>;
+  /**
    * 排队. Absent leaves the manager without a dispatcher — nothing is ever sent
    * by itself, which is what a test that only drives turns by hand wants.
    */
   queue?: QueueStore;
 }): RunManager {
   const { threads, projects, settings, registry, dataDir } = options;
+
+  /** Fire-and-forget: the runtime keeper's bookkeeping must never hold up or fail a turn. */
+  const reportTurn = (engine: EngineId, ok: boolean, assistant: UIMessage | undefined): void => {
+    const produced = (assistant?.parts.length ?? 0) > 0;
+    void options.onTurnSettled?.({ engine, ok, produced }).catch((error: unknown) =>
+      (options.log ?? silentLogger).warn(`回报 ${engine} 的运行结果失败`, error),
+    );
+  };
   const log = options.log ?? silentLogger;
   const stopTimeoutMs = options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS;
   const runs = new Map<string, LiveRun>();
@@ -603,6 +619,7 @@ export function createRunManager(options: {
       await reader;
 
       const status = streamError != null ? "error" : deriveStatus(assistant);
+      if (!run.stopped) reportTurn(thread.engine, status !== "error", assistant);
       park = !run.stopped && (status === "awaiting-approval" || status === "awaiting-input");
       // A turn that is over has nothing left that could finish a half-streamed
       // call: either the engine re-issued it in a later step, or it never will
@@ -645,6 +662,7 @@ export function createRunManager(options: {
       // offering to answer a turn nobody holds any more.
       const resumeFailed = error instanceof TurnResumeFailedError;
       if (resumeFailed) await clearContinueFrom(thread.id);
+      if (!run.stopped && !resumeFailed) reportTurn(thread.engine, false, assistant);
       const message = error instanceof VgentServerError ? error.message : getHarnessErrorMessage(error);
       // The masked `message` above is what the client sees; the thread record
       // keeps the raw text for debugging (see `rawErrorText`).

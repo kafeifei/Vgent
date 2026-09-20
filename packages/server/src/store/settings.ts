@@ -29,6 +29,8 @@ export interface SettingsPatch {
   defaultModel?: string | undefined;
   /** 系统通知. `undefined` drops the field, which is the same as on. */
   systemNotifications?: boolean | undefined;
+  /** 自动升级引擎运行时. `undefined` drops the field, which is the same as on. */
+  autoUpgradeRuntimes?: boolean | undefined;
   mcpServers?: McpServerConfig[] | undefined;
   worktreeMaxCount?: number | undefined;
   /** 界面偏好. `undefined` puts the built-in default back. */
@@ -121,6 +123,10 @@ export function createSettingsStore(dataDir: string, log: Logger = silentLogger)
     if ("systemNotifications" in patch) {
       if (patch.systemNotifications == null) delete next.systemNotifications;
       else next.systemNotifications = patch.systemNotifications;
+    }
+    if ("autoUpgradeRuntimes" in patch) {
+      if (patch.autoUpgradeRuntimes == null) delete next.autoUpgradeRuntimes;
+      else next.autoUpgradeRuntimes = patch.autoUpgradeRuntimes;
     }
     if ("worktreeMaxCount" in patch) {
       if (patch.worktreeMaxCount == null) delete next.worktreeMaxCount;

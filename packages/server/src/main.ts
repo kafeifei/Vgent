@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { serve } from "@hono/node-server";
 import { createApp } from "./app.js";
 import { acquireInstanceLock, INSTANCE_LOCKED_EXIT_CODE, InstanceLockedError } from "./instance-lock.js";
-import { resolveDataDir } from "./paths.js";
+import { DEFAULT_DATA_DIR, resolveDataDir } from "./paths.js";
 import { writeJsonAtomic } from "./store/atomic-file.js";
 import { consoleLogger, type ConnectionInfo } from "./types.js";
 
@@ -146,6 +146,11 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       token,
       log: consoleLogger,
       ...(webDist != null ? { webDist } : {}),
+      // The engines' CLIs live in one place per user (`~/.vgent/harness`), and
+      // only the instance that owns the default data dir can see every task
+      // that uses them. A scratch instance (`--data-dir …`) must not upgrade
+      // them behind that instance's back.
+      autoUpgradeRuntimes: dataDir === DEFAULT_DATA_DIR,
     });
     const connectionPath = join(dataDir, "connection.json");
 

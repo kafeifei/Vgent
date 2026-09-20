@@ -285,6 +285,9 @@ function ThreadChatView({
           attachments={attachments}
           onAttachments={setAttachments}
           commands={commands}
+          // Opening a task — including the one the empty state just started —
+          // puts the caret in its composer.
+          autoFocus
           onSubmit={submit}
           onStop={() => actions.stop(thread.id)}
           live={live}

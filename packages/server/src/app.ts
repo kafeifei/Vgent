@@ -818,8 +818,8 @@ export function createApp(options: CreateAppOptions): VgentApp {
     }
   });
 
-  // 分叉: a new task holding this one's conversation up to a user message, whose
-  // text comes back as the draft to edit. Same project, same engine and model —
+  // 分叉: a new task holding this one's conversation up to the end of one of its
+  // turns, named by the user message that started it. Same project, same engine and model —
   // and the project directory as its workspace: a fork copies what was said, not
   // a worktree.
   app.post("/api/threads/:id/fork", async (c) => {
@@ -827,7 +827,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     if (source == null) throw new NotFoundError(`线程不存在: ${c.req.param("id")}`, "thread_not_found");
     const body = (await c.req.json().catch(() => undefined)) as { messageId?: unknown } | undefined;
     if (typeof body?.messageId !== "string") throw new BadRequestError("缺少 messageId", "invalid_message");
-    const plan = planFork(source.messages, body.messageId);
+    const messages = planFork(source.messages, body.messageId);
     const thread = await threads.create({
       projectId: source.projectId,
       title: `${source.title}（分叉）`,
@@ -836,11 +836,9 @@ export function createApp(options: CreateAppOptions): VgentApp {
       ...(source.reasoningEffort != null ? { reasoningEffort: source.reasoningEffort } : {}),
       ...(source.serviceTier != null ? { serviceTier: source.serviceTier } : {}),
       ...(source.mode != null ? { mode: source.mode } : {}),
-      messages: plan.messages,
-      forkedFrom: { threadId: source.id, messageId: body.messageId, ...(plan.messages.length > 0 ? { pending: true as const } : {}) },
+      messages,
+      forkedFrom: { threadId: source.id, messageId: body.messageId, pending: true },
     });
-    // Into the new task's composer, written before the client opens it.
-    if (plan.draft !== "") await drafts.put(thread.id, plan.draft.slice(0, MAX_DRAFT_BYTES)).catch((error) => log.warn(`写分叉草稿失败 (thread ${thread.id})`, error));
     return c.json(thread, 201);
   });
 

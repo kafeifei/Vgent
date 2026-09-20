@@ -1,10 +1,10 @@
 /**
  * 分叉: a new task that starts from an earlier point of this one's conversation.
  *
- * The point is a user message. The fork gets every message before it, and that
- * message's own text comes back as a draft — the user is branching because they
- * want to say something different there, so it goes into the composer to be
- * edited, not into the history to be re-run as it was.
+ * The point is a reply: the button sits in the action row under it, where
+ * Cursor has it. The fork gets the conversation up to the end of that turn —
+ * the user message that started it and everything the assistant answered — and
+ * an empty composer: what comes next is the user's to say.
  *
  * Only the conversation forks. The files are whatever the new task's working
  * directory holds; nothing on disk is copied or rolled back.
@@ -13,13 +13,6 @@ import { randomUUID } from "node:crypto";
 import type { UIMessage } from "ai";
 import { NotFoundError } from "./errors.js";
 import type { ThreadMessageMetadata } from "./types.js";
-
-export interface ForkPlan {
-  /** The history the new task starts with: copies, under ids of their own. */
-  messages: UIMessage[];
-  /** The text of the message forked at, for the new task's composer. */
-  draft: string;
-}
 
 const textOf = (message: UIMessage): string =>
   message.parts
@@ -39,11 +32,18 @@ function withoutCheckpoints(message: UIMessage): UIMessage {
   return { ...bare, id: randomUUID(), ...(Object.keys(rest).length > 0 ? { metadata: rest } : {}) };
 }
 
-export function planFork(messages: readonly UIMessage[], messageId: string): ForkPlan {
+/**
+ * The history a fork starts with: everything up to the end of the turn that
+ * `messageId` — the user message that started it — belongs to. Copies, under
+ * ids of their own.
+ */
+export function planFork(messages: readonly UIMessage[], messageId: string): UIMessage[] {
   const index = messages.findIndex((message) => message.id === messageId);
-  const at = messages[index];
-  if (at == null || at.role !== "user") throw new NotFoundError(`这个任务里没有用户消息 ${JSON.stringify(messageId)}`, "message_not_found");
-  return { messages: messages.slice(0, index).map(withoutCheckpoints), draft: textOf(at) };
+  if (index < 0 || messages[index]?.role !== "user") {
+    throw new NotFoundError(`这个任务里没有用户消息 ${JSON.stringify(messageId)}`, "message_not_found");
+  }
+  const next = messages.findIndex((message, at) => at > index && message.role === "user");
+  return messages.slice(0, next < 0 ? messages.length : next).map(withoutCheckpoints);
 }
 
 /** The transcript handed over is the tail of the conversation, capped: the recent turns are the ones the next message leans on. */

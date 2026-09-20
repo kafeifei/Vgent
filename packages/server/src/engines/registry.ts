@@ -138,9 +138,11 @@ export type EngineFactoryOverride = Omit<EngineFactory, "descriptor"> & { descri
 
 /** All three engines, each backed by its real runtime. */
 export function createEngineRegistry(overrides?: Partial<Record<EngineId, EngineFactoryOverride>>): EngineRegistry {
+  // Insertion order is the order every list shows the agents in — the model
+  // picker's groups, the settings tables' columns: Codex, Claude Code, Vgent.
   const base: EngineRegistry = {
-    "claude-code": createClaudeCodeEngineFactory(),
     codex: createCodexEngineFactory(),
+    "claude-code": createClaudeCodeEngineFactory(),
     vgent: createVgentEngineFactory(),
   };
   if (overrides == null) return base;

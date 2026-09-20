@@ -13,7 +13,7 @@ import type { EngineContext, EngineFactory, EngineRunner } from "./registry.js";
 /** 引擎能力表, the 自研 row: everything, because everything in it is ours. */
 const DESCRIPTOR: EngineDescriptor = {
   id: "vgent",
-  label: "Vgent（自研）",
+  label: "Vgent",
   capabilities: {
     approvals: true,
     askUser: true,

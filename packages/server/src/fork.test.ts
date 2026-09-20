@@ -13,20 +13,20 @@ const history = [
 ];
 
 describe("planFork", () => {
-  it("copies what came before the message and hands its text back as the draft", () => {
-    const plan = planFork(history, "u2");
-    expect(plan.draft).toBe("修第一个");
-    expect(plan.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+  it("copies the conversation up to the end of that turn", () => {
+    const forked = planFork(history, "u1");
+    expect(forked.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(forked.at(-1)?.parts).toEqual(history[1]?.parts);
     // Copies: a fork must not share ids with the task it came from.
-    expect(plan.messages.map((message) => message.id)).not.toContain("u1");
+    expect(forked.map((message) => message.id)).not.toContain("u1");
+  });
+
+  it("takes everything when the turn is the last one", () => {
+    expect(planFork(history, "u2")).toHaveLength(4);
   });
 
   it("drops the source task's checkpoints and keeps the rest of the metadata", () => {
-    expect(planFork(history, "u2").messages[0]?.metadata).toEqual({ compacted: { before: 3, at: "x" } });
-  });
-
-  it("forks at the first message into an empty task", () => {
-    expect(planFork(history, "u1")).toEqual({ messages: [], draft: "先看一下登录页" });
+    expect(planFork(history, "u1")[0]?.metadata).toEqual({ compacted: { before: 3, at: "x" } });
   });
 
   it("refuses a message that is not one of the user's", () => {

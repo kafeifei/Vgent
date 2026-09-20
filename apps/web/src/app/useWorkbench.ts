@@ -287,7 +287,7 @@ export function useWorkbench(token: string) {
         return true;
       },
 
-      /** 分叉: the server builds the new task and leaves the message's text as its draft; all that is left is opening it. */
+      /** 分叉: the server builds the new task; all that is left is opening it. */
       forkThread: (threadId: string, messageId: string) => {
         void client.forkThread(threadId, messageId).then(
           (record) => selectThread(record.id),

@@ -14,8 +14,8 @@ const settingsWith = (runMode: PermissionMode, allowlist: string[] = []): Settin
 
 describe("引擎能力表", () => {
   it("names every engine the registry serves", () => {
-    expect(engineDescriptors(registry).map((entry) => entry.id)).toEqual(["claude-code", "codex", "vgent"]);
-    expect(engineDescriptors(registry).map((entry) => entry.label)).toEqual(["Claude Code", "Codex", "Vgent（自研）"]);
+    expect(engineDescriptors(registry).map((entry) => entry.id)).toEqual(["codex", "claude-code", "vgent"]);
+    expect(engineDescriptors(registry).map((entry) => entry.label)).toEqual(["Codex", "Claude Code", "Vgent"]);
   });
 
   it("matches 产品文档's table", () => {

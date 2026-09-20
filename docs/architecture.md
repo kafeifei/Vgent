@@ -402,5 +402,5 @@ docs/
 
 **红点**：侧栏左边那个位置表示「需要你看一眼」。在跑、等审批、等回答，状态持续多久就显示多久；已经停下的（完成、失败、中断）只在未读期间显示，失败的是红点。原来 `error` / `interrupted` 不管读没读都画红点，而状态要到下一轮才会变，所以永远消不掉。
 
-**分叉**：`fork.ts`（`planFork` 切历史、去掉源任务的 checkpoint 元数据、换新 id；`forkNote` 给有自己会话的引擎拼一次性的文字记录），路由 `POST /api/threads/:id/fork`，草稿由 server 直接写进新任务。记录上的 `forkedFrom.pending` 在新任务第一轮开跑时清掉。恢复相关的 server 代码（`restore.ts`、checkpoints 路由）没删：快照还在给任务基线和「上一轮」用，「回到最新」也还要它。
+**分叉**：按钮在回复下面的动作行里（用户当天纠正：不在用户消息上，位置照 Cursor），含义是「从这条回复之后分叉」。`fork.ts`（`planFork` 取到这一轮结束为止的历史、去掉源任务的 checkpoint 元数据、换新 id；`forkNote` 给有自己会话的引擎拼一次性的文字记录），路由 `POST /api/threads/:id/fork`，`messageId` 是开始这一轮的那条用户消息。记录上的 `forkedFrom.pending` 在新任务第一轮开跑时清掉。恢复相关的 server 代码（`restore.ts`、checkpoints 路由）没删：快照还在给任务基线和「上一轮」用，「回到最新」也还要它。
 

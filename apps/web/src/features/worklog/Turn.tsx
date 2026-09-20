@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { getToolName } from "ai";
-import { Check, ChevronDown, Copy, FileText, GitFork } from "lucide-react";
+import { Check, ChevronDown, Copy, FileText, Split } from "lucide-react";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
 import { type AskUserQuestionsInput, type AskUserQuestionsOutput } from "@/lib/types";
@@ -17,7 +17,7 @@ export interface TurnActions {
   alwaysAllow: (approvalId: string, entries: string[]) => void;
   answerQuestions: (toolCallId: string, output: AskUserQuestionsOutput) => void;
   openFile: (file: string) => void;
-  /** 分叉: a new task with the conversation before this message, its text ready to edit. */
+  /** 分叉: a new task with the conversation up to the end of the turn this user message started. */
   fork: (messageId: string) => void;
   /** 回到最新, for a task an older build left standing at an earlier checkpoint. */
   restoreLatest: () => void;
@@ -104,7 +104,6 @@ export function Turn({
               </p>
             ) : null,
           )}
-          <ForkAction onFork={() => actions.fork(turn.user!.id)} />
         </div>
       )}
 
@@ -125,13 +124,13 @@ export function Turn({
           </div>
         ),
       )}
-      {folded && <ReplyActions turn={turn} />}
+      {folded && <ReplyActions turn={turn} {...(turn.user != null ? { onFork: () => actions.fork(turn.user!.id) } : {})} />}
     </section>
   );
 }
 
 /** The quiet row under a finished reply. 复制 takes the reply's text, not the process above it. */
-function ReplyActions({ turn }: { turn: TurnModel }) {
+function ReplyActions({ turn, onFork }: { turn: TurnModel; onFork?: () => void }) {
   const [copied, setCopied] = useState(false);
   const text = turn.blocks
     .flatMap((block) => (block.kind === "text" ? [block.part.text] : []))
@@ -154,33 +153,19 @@ function ReplyActions({ turn }: { turn: TurnModel }) {
       >
         {copied ? <Check className="size-md" /> : <Copy className="size-md" />}
       </button>
-    </div>
-  );
-}
-
-const QUIET_BUTTON =
-  "inline-flex h-xl flex-none items-center rounded-sm border border-border px-xs text-fg-muted text-xs hover:border-border-strong hover:bg-bg-hover hover:text-fg disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border disabled:hover:bg-transparent";
-
-/**
- * 「分叉」: quiet until the message is hovered or the button itself is focused,
- * so the log reads as a log. One click and no confirm — it opens a new task and
- * leaves this one exactly as it is.
- */
-function ForkAction({ onFork }: { onFork: () => void }) {
-  return (
-    <div className="mt-2xs flex justify-end">
-      <button
-        type="button"
-        title="从这条消息之前分叉出一个新任务，这条消息放进输入框里改了再发"
-        onClick={onFork}
-        className={cn(
-          QUIET_BUTTON,
-          "gap-2xs opacity-0 transition-opacity duration-[var(--duration-fast)] group-hover:opacity-100 focus-visible:opacity-100",
-        )}
-      >
-        <GitFork className="size-sm" />
-        分叉
-      </button>
+      {/* One click and no confirm: it opens a new task and leaves this one exactly as it is. */}
+      {onFork != null && (
+        <button
+          type="button"
+          aria-label="从这里分叉"
+          title="从这里分叉出一个新任务"
+          onClick={onFork}
+          className="grid size-xl place-items-center rounded-md hover:bg-bg-hover hover:text-fg"
+        >
+          {/* Cursor's glyph: one stem branching upward. */}
+          <Split className="-rotate-90 size-md" />
+        </button>
+      )}
     </div>
   );
 }

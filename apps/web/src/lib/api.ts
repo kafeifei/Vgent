@@ -299,7 +299,7 @@ export function createClient(token: string) {
         token,
       ),
 
-    /** 分叉: a new task with the conversation before this message; its text is waiting in the new task's draft. */
+    /** 分叉: a new task with the conversation up to the end of the turn this user message started. */
     forkThread: (threadId: string, messageId: string) =>
       api<ThreadRecord>(`/threads/${threadId}/fork`, token, { method: "POST", json: { messageId } }),
 

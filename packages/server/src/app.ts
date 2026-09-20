@@ -1271,17 +1271,22 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const hasLogo = new Set(known?.map((entry) => entry.id));
     const fromProviders: ModelEntry[] = modelOf != null
       ? (await providers.list()).flatMap((provider) =>
-          (provider.agents[engine]?.models ?? []).map((model) => ({
-            id: providerModelSpec(provider.id, model.id),
-            label: model.label ?? model.id,
-            provider: provider.name,
-            // One key across the agents it is switched on for: it is one model.
-            modelKey: `${provider.id}/${model.id}`,
-            source: { kind: "provider" as const, id: provider.id, name: provider.name, ...(hasLogo.has(provider.id) ? { logo: provider.id } : {}) },
-            ...reasoningFor(engine, modelOf(model.id)?.reasoningLevels),
-            ...contextOptionsFor(engine, model.contextWindow, modelOf(model.id)?.contextWindow),
-            ...(model.contextWindow != null ? { contextWindow: model.contextWindow } : {}),
-          })),
+          (provider.agents[engine]?.models ?? []).map((model) => {
+            const listed = modelOf(model.id);
+            // A window the user never stored is the catalog's word for the model.
+            const window = model.contextWindow ?? listed?.contextWindow;
+            return {
+              id: providerModelSpec(provider.id, model.id),
+              label: model.label ?? model.id,
+              provider: provider.name,
+              // One key across the agents it is switched on for: it is one model.
+              modelKey: `${provider.id}/${model.id}`,
+              source: { kind: "provider" as const, id: provider.id, name: provider.name, ...(hasLogo.has(provider.id) ? { logo: provider.id } : {}) },
+              ...reasoningFor(engine, listed?.reasoningLevels),
+              ...contextOptionsFor(engine, model.contextWindow, listed?.contextWindow),
+              ...(window != null ? { contextWindow: window } : {}),
+            };
+          }),
         )
       : [];
     // What the 模型 table switched off stays in the list, marked: see `ModelEntry.hidden`.

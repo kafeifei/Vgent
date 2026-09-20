@@ -242,8 +242,30 @@ export async function fetchProviderCatalog(options: FetchCatalogOptions = {}): P
   return normalizeModelsDev(await response.json());
 }
 
-/** What a model id is looked up by: its last path segment, lowercased — `anthropic-claude/claude-opus-5` is `claude-opus-5`. */
-const modelKey = (id: string): string => id.slice(id.lastIndexOf("/") + 1).toLowerCase();
+/**
+ * The spellings a model id is looked up by, most exact first. A gateway names
+ * models its own way — `anthropic-claude/claude-opus-5`, `codex/gpt-5.5:auto`,
+ * `claude-haiku-4-5-20251001`, `Claude-Opus-4.5` — and they are all a model the
+ * catalog knows under a plainer name:
+ *
+ * 1. the last path segment, lowercased (the vendor prefix is the gateway's);
+ * 2. that, without what gateways append: a `:variant`, Claude Code's `[1m]`,
+ *    a `-latest`, a trailing date;
+ * 3. that, with `.` and `_` read as `-` (`claude-opus-4.5` is `claude-opus-4-5`).
+ *
+ * Each step only ever removes decoration; none of them guesses at a *different*
+ * model (no dropping of `-mini`, `-pro`, version numbers), so a miss stays a miss.
+ */
+export function modelKeys(id: string): string[] {
+  const tail = id.slice(id.lastIndexOf("/") + 1).toLowerCase().trim();
+  const bare = tail
+    .replace(/\[[^\]]*\]$/, "")
+    .replace(/:[^:]*$/, "")
+    .replace(/-latest$/, "")
+    .replace(/-(\d{8}|\d{4}-\d{2}-\d{2})$/, "");
+  const dashed = bare.replace(/[._]/g, "-");
+  return [...new Set([tail, bare, dashed])].filter((key) => key !== "");
+}
 
 /**
  * 「目录对这个模型知道什么」— its effort levels, its context window — answered
@@ -262,16 +284,25 @@ export function createModelIndex(providers: readonly CatalogProvider[]): (modelI
     return at < 0 ? POPULAR_PROVIDER_IDS.length : at;
   };
   const ordered = [...providers].sort((a, b) => rank(a) - rank(b));
-  for (const resold of [false, true]) {
-    for (const provider of ordered) {
-      for (const model of provider.models) {
-        if (model.id.includes("/") !== resold) continue;
-        const key = modelKey(model.id);
-        if (!index.has(key)) index.set(key, model);
+  // Exact names are all registered before any looser spelling is, so a loose key never shadows a model really called that.
+  for (const level of [0, 1, 2]) {
+    for (const resold of [false, true]) {
+      for (const provider of ordered) {
+        for (const model of provider.models) {
+          if (model.id.includes("/") !== resold) continue;
+          const key = modelKeys(model.id)[level];
+          if (key != null && !index.has(key)) index.set(key, model);
+        }
       }
     }
   }
-  return (modelId) => index.get(modelKey(modelId));
+  return (modelId) => {
+    for (const key of modelKeys(modelId)) {
+      const hit = index.get(key);
+      if (hit != null) return hit;
+    }
+    return undefined;
+  };
 }
 
 /** 「这个模型有哪几档推理强度」: {@link createModelIndex}, reduced to the levels. */

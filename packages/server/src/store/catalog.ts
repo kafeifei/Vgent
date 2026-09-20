@@ -27,7 +27,11 @@ export interface CatalogStore {
   refresh(): Promise<CatalogSnapshot>;
 }
 
-/** 2: models carry `reasoningLevels`; a version-1 file has none and is fetched again. */
+/**
+ * 2: models carry `reasoningLevels`. An older file is still a catalog — it is
+ * what gets served when models.dev cannot be reached — it just counts as stale,
+ * so the next chance to fetch is taken.
+ */
 const CATALOG_FILE_VERSION = 2;
 
 interface CatalogFile {
@@ -41,7 +45,6 @@ const FRESH_FOR_MS = 24 * 60 * 60 * 1000;
 const isCatalogFile = (value: unknown): value is CatalogFile =>
   typeof value === "object" &&
   value !== null &&
-  (value as CatalogFile).version === CATALOG_FILE_VERSION &&
   typeof (value as CatalogFile).fetchedAt === "string" &&
   Array.isArray((value as CatalogFile).providers) &&
   (value as CatalogFile).providers.length > 0;
@@ -68,7 +71,11 @@ export function createCatalogStore(dataDir: string, options: CatalogStoreOptions
   const readDisk = async (): Promise<CatalogSnapshot | undefined> => {
     try {
       const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
-      if (isCatalogFile(parsed)) return { providers: parsed.providers, source: "cache", fetchedAt: parsed.fetchedAt };
+      if (isCatalogFile(parsed)) {
+        // An older layout keeps its providers and loses its date: never fresh, always usable.
+        const current = (parsed as { version?: unknown }).version === CATALOG_FILE_VERSION;
+        return { providers: parsed.providers, source: "cache", ...(current ? { fetchedAt: parsed.fetchedAt } : {}) };
+      }
     } catch {
       // Missing or mangled: it is a cache, the next fetch rewrites it.
     }
@@ -88,8 +95,11 @@ export function createCatalogStore(dataDir: string, options: CatalogStoreOptions
         await writeJsonAtomic(path, { version: CATALOG_FILE_VERSION, fetchedAt, providers } satisfies CatalogFile);
         return memory;
       } catch (error) {
-        log.warn?.(`provider catalog: ${error instanceof Error ? error.message : String(error)}`);
-        memory ??= (await readDisk()) ?? { providers: builtinCatalog(), source: "builtin" };
+        // 保底: models.dev is out of reach, so the last copy that did arrive is
+        // the catalog — however old. Only a machine that never fetched one falls
+        // back to the presets built into the app.
+        log.warn?.(`provider catalog: ${error instanceof Error ? error.message : String(error)}，改用本地缓存`);
+        if (memory == null || memory.source === "builtin") memory = (await readDisk()) ?? memory ?? { providers: builtinCatalog(), source: "builtin" };
         return memory;
       } finally {
         refreshing = undefined;

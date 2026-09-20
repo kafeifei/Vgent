@@ -84,13 +84,18 @@ const CODEX_SOURCE: ModelSource = { kind: "codex-subscription", name: "Codex", l
 const CLAUDE_SOURCE: ModelSource = { kind: "claude-subscription", name: "Claude", logo: "anthropic" };
 const GATEWAY_SOURCE: ModelSource = { kind: "gateway", name: "AI Gateway", logo: "vercel" };
 
+/** From here up a window counts as long, and a model that has nothing shorter is offered {@link SHORT_CONTEXT_OPTION} beside it. */
+const LONG_CONTEXT = 1_000_000;
+const SHORT_CONTEXT_OPTION = 300_000;
+
 /** Claude Code's window when the model name carries no `[1m]`. */
 const CLAUDE_CODE_STANDARD_CONTEXT = 200_000;
 
 /**
  * `ModelEntry.contextOptions` out of the two things known about a model's
  * window: what the engine's own source said, and what the provider catalog
- * lists. Claude Code is its own case — its choice is standard or long, and long
+ * lists; a model with a single, long window gets a shorter one added. Claude
+ * Code is its own case — its choice is standard or long, and long
  * exists only for a model the catalog says can do it.
  */
 export function contextOptionsFor(engine: EngineId, own: number | undefined, listed: number | undefined): Pick<ModelEntry, "contextOptions"> {
@@ -99,6 +104,10 @@ export function contextOptionsFor(engine: EngineId, own: number | undefined, lis
     return long >= CLAUDE_CODE_LONG_CONTEXT ? { contextOptions: [CLAUDE_CODE_STANDARD_CONTEXT, long] } : {};
   }
   const options = [...new Set([own, listed].filter((value): value is number => value != null))].sort((a, b) => a - b);
+  // A model known only by a 1M window still gets a choice (用户 2026-09-20): a
+  // long window is slower and dearer to fill, and most tasks never need it.
+  const only = options[0];
+  if (options.length === 1 && only != null && only >= LONG_CONTEXT) return { contextOptions: [SHORT_CONTEXT_OPTION, only] };
   return options.length > 1 ? { contextOptions: options } : {};
 }
 

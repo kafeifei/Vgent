@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { POPULAR_PROVIDER_IDS, builtinCatalog, createReasoningIndex, fetchProviderCatalog, normalizeModelsDev, summarizeCatalogProvider } from "./catalog.js";
+import { POPULAR_PROVIDER_IDS, builtinCatalog, createModelIndex, createReasoningIndex, fetchProviderCatalog, modelKeys, normalizeModelsDev, summarizeCatalogProvider } from "./catalog.js";
 import { SDK_KINDS, parseProviderInput } from "./provider-config.js";
 
 const model = (extra: Record<string, unknown> = {}) => ({ tool_call: true, modalities: { input: ["text"], output: ["text"] }, ...extra });
@@ -63,6 +63,34 @@ describe("normalizeModelsDev", () => {
     expect(levelsOf("DeepSeek/deepseek-v4-pro")).toEqual(["high", "max"]);
     expect(levelsOf("deepseek-v3")).toEqual([]);
     expect(levelsOf("never-heard-of-it")).toBeUndefined();
+  });
+
+  it("recognises a gateway's spelling of a model the catalog knows under a plainer name", () => {
+    const modelOf = createModelIndex([
+      {
+        id: "anthropic",
+        name: "Anthropic",
+        npm: "x",
+        agents: {},
+        models: [{ id: "claude-opus-4-5", contextWindow: 200_000 }, { id: "claude-haiku-4-5-20251001" }, { id: "gpt-5.5" }, { id: "gpt-5.5-mini" }],
+      },
+    ]);
+    // A vendor prefix of the gateway's own, a `:variant`, Claude Code's `[1m]`, a date, dots for dashes, capitals.
+    for (const id of ["anthropic-claude/claude-opus-4-5", "claude-opus-4.5", "Claude-Opus-4-5", "claude-opus-4-5[1m]", "claude-opus-4-5-20251101", "x/claude-opus-4-5:thinking", "claude-opus-4-5-latest"]) {
+      expect(modelOf(id)?.id, id).toBe("claude-opus-4-5");
+    }
+    expect(modelOf("codex/gpt-5.5:auto")?.id).toBe("gpt-5.5");
+    // The exact name wins over a plainer one that also exists.
+    expect(modelOf("claude-haiku-4-5-20251001")?.id).toBe("claude-haiku-4-5-20251001");
+    // Decoration is removed; a different model is never guessed at.
+    expect(modelOf("gpt-5.5-mini")?.id).toBe("gpt-5.5-mini");
+    expect(modelOf("gpt-5.5-nano")).toBeUndefined();
+    expect(modelOf("seed-2.1-pro")).toBeUndefined();
+  });
+
+  it("lists a name's spellings most exact first", () => {
+    expect(modelKeys("Vendor/Claude-Opus-4.5-20251101:thinking")).toEqual(["claude-opus-4.5-20251101:thinking", "claude-opus-4.5", "claude-opus-4-5"]);
+    expect(modelKeys("gpt-5")).toEqual(["gpt-5"]);
   });
 
   it("takes the vendor's word over a reseller's for the same model", () => {

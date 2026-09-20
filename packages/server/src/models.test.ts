@@ -373,6 +373,11 @@ describe("contextOptionsFor", () => {
     expect(contextOptionsFor("codex", undefined, 128_000)).toEqual({});
   });
 
+  it("adds a 300K choice beside a long window that is the only one known", () => {
+    expect(contextOptionsFor("vgent", 1_000_000, 1_000_000)).toEqual({ contextOptions: [300_000, 1_000_000] });
+    expect(contextOptionsFor("codex", undefined, 1_050_000)).toEqual({ contextOptions: [300_000, 1_050_000] });
+  });
+
   it("gives Claude Code standard or long, and long only to a model the catalog says can do it", () => {
     expect(contextOptionsFor("claude-code", undefined, 1_000_000)).toEqual({ contextOptions: [200_000, 1_000_000] });
     expect(contextOptionsFor("claude-code", undefined, 200_000)).toEqual({});

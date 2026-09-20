@@ -58,6 +58,7 @@ export {
   createModelIndex,
   createReasoningIndex,
   fetchProviderCatalog,
+  modelKeys,
   normalizeModelsDev,
   summarizeCatalogProvider,
 } from "./catalog.js";

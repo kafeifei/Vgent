@@ -2,12 +2,11 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { CODEX_SUBSCRIPTION_PREFIX } from "@vgent/engine";
-import { CLAUDE_CODE_EFFORTS } from "@vgent/engines";
 import { CHATGPT_CODEX_BASE_URL, CodexTokenProvider, createCodexFetch, describeSubscriptionAuth } from "@vgent/providers";
 import { gateway as defaultGateway } from "ai";
 import type { EngineId, Logger } from "./types.js";
 import { silentLogger } from "./types.js";
-import { DEFAULT_REASONING_LEVEL, defaultLevelFor } from "./reasoning.js";
+import { DEFAULT_REASONING_LEVEL, defaultLevelFor, reasoningFor } from "./reasoning.js";
 
 /** One selectable model. `id` is what a thread's `model` field is set to. */
 export interface ModelEntry {
@@ -131,6 +130,12 @@ export interface ModelCatalogOptions {
    * is the aliases alone.
    */
   anthropicModels?: () => Promise<ReadonlyArray<{ id: string; label?: string }>>;
+  /**
+   * 「这个模型有哪几档」, from the provider catalog (`createReasoningIndex`).
+   * Absent — a test, a build with no catalog — every Claude Code model offers
+   * the harness's five.
+   */
+  reasoningLevelsOf?: () => Promise<(modelId: string) => string[] | undefined>;
 }
 
 /** How long a fetched catalog is reused. A picker opening twice must not refetch. */
@@ -166,13 +171,6 @@ const CLAUDE_CODE_BUILTIN: ModelEntry[] = [
 const CODEX_LOGGED_OUT = "Codex 未登录：找不到可用的 ChatGPT / Codex 登录态（~/.codex/auth.json，或 CODEX_HOME）";
 
 /**
- * Claude Code's 推理强度 is the harness `effort` setting
- * (`ClaudeCodeHarnessSettings.effort`), not a per-model capability, so every
- * entry in that catalog offers the same five.
- */
-const CLAUDE_CODE_REASONING_LEVELS: readonly string[] = CLAUDE_CODE_EFFORTS;
-
-/**
  * What `@ai-sdk/openai` documents for a gateway-routed OpenAI model. Only
  * `openai/*` gets these: no other provider on the gateway shares the option,
  * and inventing levels for one would make the picker lie.
@@ -183,13 +181,26 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Stamps the harness's five effort levels onto every Claude Code entry. */
-function withClaudeCodeReasoning(entries: readonly ModelEntry[]): ModelEntry[] {
-  return entries.map((entry) => ({
-    ...entry,
-    reasoningLevels: [...CLAUDE_CODE_REASONING_LEVELS],
-    defaultReasoningLevel: DEFAULT_REASONING_LEVEL,
-  }));
+/**
+ * 推理强度 for every Claude Code entry. `effort` is a harness setting, but what
+ * a model does with it is the model's: Opus 4.5 stops at 高, Haiku has no knob.
+ * So each entry offers what the catalog lists for it, and an alias (`opus`)
+ * what the newest model of that family lists — `newestFirst` is the catalog's
+ * Anthropic list, which is in that order.
+ */
+function withClaudeCodeReasoning(
+  entries: readonly ModelEntry[],
+  levelsOf: ((modelId: string) => string[] | undefined) | undefined,
+  newestFirst: readonly ModelEntry[],
+): ModelEntry[] {
+  const known = (entry: ModelEntry): string[] | undefined => {
+    if (levelsOf == null) return undefined;
+    const direct = levelsOf(entry.id);
+    if (direct != null) return direct;
+    const family = newestFirst.find((candidate) => candidate.id.startsWith(`claude-${entry.id}-`));
+    return family == null ? undefined : levelsOf(family.id);
+  };
+  return entries.map((entry) => ({ ...entry, ...reasoningFor("claude-code", known(entry)) }));
 }
 
 /**
@@ -462,6 +473,10 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
   const buildClaudeCode = async (): Promise<Omit<ModelCatalog, "engine" | "fetchedAt">> => {
     const apiKey = env.ANTHROPIC_API_KEY ?? "";
     let warning: string | undefined;
+    const levelsOf = await options.reasoningLevelsOf?.().catch((error: unknown) => {
+      log.warn("读取提供商目录里的推理强度失败", error);
+      return undefined;
+    });
     const [fromCatalog, fromApi] = await Promise.all([
       listAnthropicCatalog(),
       apiKey === ""
@@ -478,7 +493,7 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
     const full = [...fromApi, ...fromCatalog].filter((entry) => !seen.has(entry.id) && seen.add(entry.id) != null);
     const sources = ["builtin", ...(fromApi.length > 0 ? ["anthropic-api"] : []), ...(fromCatalog.length > 0 ? ["models.dev"] : [])];
     return {
-      models: withClaudeCodeReasoning([...CLAUDE_CODE_BUILTIN, ...full]),
+      models: withClaudeCodeReasoning([...CLAUDE_CODE_BUILTIN, ...full], levelsOf, fromCatalog),
       source: sources.join("+"),
       ...(warning != null ? { warning } : {}),
     };

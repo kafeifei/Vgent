@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { POPULAR_PROVIDER_IDS, builtinCatalog, fetchProviderCatalog, normalizeModelsDev, summarizeCatalogProvider } from "./catalog.js";
+import { POPULAR_PROVIDER_IDS, builtinCatalog, createReasoningIndex, fetchProviderCatalog, normalizeModelsDev, summarizeCatalogProvider } from "./catalog.js";
 import { SDK_KINDS, parseProviderInput } from "./provider-config.js";
 
 const model = (extra: Record<string, unknown> = {}) => ({ tool_call: true, modalities: { input: ["text"], output: ["text"] }, ...extra });
@@ -14,7 +14,14 @@ const MODELS_DEV = {
     doc: "https://api-docs.deepseek.com",
     env: ["DEEPSEEK_API_KEY"],
     models: {
-      "deepseek-v4-pro": model({ id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", release_date: "2026-04-01", limit: { context: 128000 } }),
+      "deepseek-v4-pro": model({
+        id: "deepseek-v4-pro",
+        name: "DeepSeek V4 Pro",
+        release_date: "2026-04-01",
+        limit: { context: 128000 },
+        reasoning: true,
+        reasoning_options: [{ type: "budget_tokens", min: 1024 }, { type: "effort", values: ["high", "max"] }],
+      }),
       "deepseek-v3": model({ id: "deepseek-v3", name: "DeepSeek V3", release_date: "2025-01-01" }),
       "deepseek-embed": { id: "deepseek-embed", tool_call: false },
       "deepseek-old": model({ id: "deepseek-old", status: "deprecated" }),
@@ -43,9 +50,32 @@ describe("normalizeModelsDev", () => {
 
   it("keeps only the models an agent can use, newest first", () => {
     expect(byId("deepseek")?.models).toEqual([
-      { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", contextWindow: 128000 },
-      { id: "deepseek-v3", label: "DeepSeek V3" },
+      { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", contextWindow: 128000, reasoningLevels: ["high", "max"] },
+      // Known to the catalog, and with no effort to set.
+      { id: "deepseek-v3", label: "DeepSeek V3", reasoningLevels: [] },
     ]);
+  });
+
+  it("answers 「这个模型有哪几档」 for an id from anywhere, by the model's own name", () => {
+    const levelsOf = createReasoningIndex(catalog);
+    expect(levelsOf("deepseek-v4-pro")).toEqual(["high", "max"]);
+    // A gateway's `vendor/model` spelling is the same model.
+    expect(levelsOf("DeepSeek/deepseek-v4-pro")).toEqual(["high", "max"]);
+    expect(levelsOf("deepseek-v3")).toEqual([]);
+    expect(levelsOf("never-heard-of-it")).toBeUndefined();
+  });
+
+  it("takes the vendor's word over a reseller's for the same model", () => {
+    const levelsOf = createReasoningIndex([
+      { id: "some-relay", name: "Relay", npm: "x", agents: {}, models: [{ id: "gpt-x", reasoningLevels: ["low"] }] },
+      { id: "openai", name: "OpenAI", npm: "x", agents: {}, models: [{ id: "gpt-x", reasoningLevels: ["low", "high"] }] },
+      // An aggregator is popular too, but its `vendor/model` rows never outrank the vendor's own.
+      { id: "openrouter", name: "OpenRouter", npm: "x", agents: {}, models: [{ id: "deepseek/ds-x", reasoningLevels: ["high", "xhigh"] }, { id: "only/here", reasoningLevels: ["low"] }] },
+      { id: "deepseek", name: "DeepSeek", npm: "x", agents: {}, models: [{ id: "ds-x", reasoningLevels: ["high", "max"] }] },
+    ]);
+    expect(levelsOf("gpt-x")).toEqual(["low", "high"]);
+    expect(levelsOf("deepseek/ds-x")).toEqual(["high", "max"]);
+    expect(levelsOf("only/here")).toEqual(["low"]);
   });
 
   it("maps the catalog's npm package to the protocol, and falls back to the package's own address", () => {

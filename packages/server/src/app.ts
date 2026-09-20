@@ -8,6 +8,7 @@ import {
   PROVIDER_PROTOCOLS,
   discoverProviderModels,
   parseProviderInput,
+  createReasoningIndex,
   providerModelSpec,
   redactProvider,
   summarizeCatalogProvider,
@@ -33,7 +34,7 @@ import { pickFile, pickFolder } from "./folder-picker.js";
 import { planFork } from "./fork.js";
 import { asIntegrateAction, changeStatsOf, createIntegrator, taskTarget, type Integrator, type TaskTarget } from "./integrate.js";
 import { createModelCatalog, type ModelEntry } from "./models.js";
-import { providerModelReasoning } from "./reasoning.js";
+import { reasoningFor } from "./reasoning.js";
 import { SUBSCRIPTION_IDS, createSubscriptionService, markHidden, withHiddenModels, type ClaudeLoginStatus, type SubscriptionId } from "./subscriptions.js";
 import { createQueueStore, readQueueText } from "./queue.js";
 import { asRestoreTarget, lastTurnPair, planRestore, type RestoreTarget } from "./restore.js";
@@ -1228,13 +1229,14 @@ export function createApp(options: CreateAppOptions): VgentApp {
   const modelCatalog = createModelCatalog({
     log,
     anthropicModels: async () => (await catalog.get()).providers.find((entry) => entry.id === "anthropic")?.models ?? [],
+    reasoningLevelsOf: async () => createReasoningIndex((await catalog.get()).providers),
   });
 
   app.get("/api/engines/:engine/models", async (c) => {
     const raw = c.req.param("engine");
     const engine = asEngine(raw);
     if (engine == null) throw new BadRequestError(`未知引擎: ${JSON.stringify(raw)}`, "unknown_engine");
-    const catalog = await modelCatalog.list(engine, { refresh: c.req.query("refresh") === "1" });
+    const listing = await modelCatalog.list(engine, { refresh: c.req.query("refresh") === "1" });
     // The list is cached per engine; the effective default is a setting, so it
     // is merged in per request instead of baked into the cached catalog. A model
     // id means something to exactly one engine, so `defaultModel` only answers
@@ -1246,20 +1248,21 @@ export function createApp(options: CreateAppOptions): VgentApp {
       (capabilitiesOf(engine).knownDefaultModel ? DEFAULT_VGENT_MODEL : undefined);
     // Provider models are merged per request for the same reason: the list is
     // the user's, edited on the settings page, and must not wait out a cache.
-    const fromProviders: ModelEntry[] = capabilitiesOf(engine).customProviders
+    const levelsOf = capabilitiesOf(engine).customProviders ? createReasoningIndex((await catalog.get()).providers) : undefined;
+    const fromProviders: ModelEntry[] = levelsOf != null
       ? (await providers.list()).flatMap((provider) =>
           (provider.agents[engine]?.models ?? []).map((model) => ({
             id: providerModelSpec(provider.id, model.id),
             label: model.label ?? model.id,
             provider: provider.name,
-            ...providerModelReasoning(engine),
+            ...reasoningFor(engine, levelsOf(model.id)),
             ...(model.contextWindow != null ? { contextWindow: model.contextWindow } : {}),
           })),
         )
       : [];
     // What the 模型 table switched off stays in the list, marked: see `ModelEntry.hidden`.
-    const own = markHidden(catalog.models, current.hiddenModels?.[engine]);
-    return c.json({ ...catalog, models: [...own, ...fromProviders], ...(defaultModel != null ? { defaultModel } : {}) });
+    const own = markHidden(listing.models, current.hiddenModels?.[engine]);
+    return c.json({ ...listing, models: [...own, ...fromProviders], ...(defaultModel != null ? { defaultModel } : {}) });
   });
 
   // --- subscriptions ----------------------------------------------------

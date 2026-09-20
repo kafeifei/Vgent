@@ -27,8 +27,11 @@ export interface CatalogStore {
   refresh(): Promise<CatalogSnapshot>;
 }
 
+/** 2: models carry `reasoningLevels`; a version-1 file has none and is fetched again. */
+const CATALOG_FILE_VERSION = 2;
+
 interface CatalogFile {
-  version: 1;
+  version: typeof CATALOG_FILE_VERSION;
   fetchedAt: string;
   providers: CatalogProvider[];
 }
@@ -38,6 +41,7 @@ const FRESH_FOR_MS = 24 * 60 * 60 * 1000;
 const isCatalogFile = (value: unknown): value is CatalogFile =>
   typeof value === "object" &&
   value !== null &&
+  (value as CatalogFile).version === CATALOG_FILE_VERSION &&
   typeof (value as CatalogFile).fetchedAt === "string" &&
   Array.isArray((value as CatalogFile).providers) &&
   (value as CatalogFile).providers.length > 0;
@@ -81,7 +85,7 @@ export function createCatalogStore(dataDir: string, options: CatalogStoreOptions
         const fetchedAt = new Date(now()).toISOString();
         memory = { providers, source: "live", fetchedAt };
         await mkdir(dir, { recursive: true });
-        await writeJsonAtomic(path, { version: 1, fetchedAt, providers } satisfies CatalogFile);
+        await writeJsonAtomic(path, { version: CATALOG_FILE_VERSION, fetchedAt, providers } satisfies CatalogFile);
         return memory;
       } catch (error) {
         log.warn?.(`provider catalog: ${error instanceof Error ? error.message : String(error)}`);

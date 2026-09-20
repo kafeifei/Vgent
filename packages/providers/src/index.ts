@@ -55,6 +55,7 @@ export {
   MODELS_DEV_URL,
   POPULAR_PROVIDER_IDS,
   builtinCatalog,
+  createReasoningIndex,
   fetchProviderCatalog,
   normalizeModelsDev,
   summarizeCatalogProvider,

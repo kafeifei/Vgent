@@ -28,27 +28,46 @@ export function defaultLevelFor(levels: readonly string[], declared: string | un
   return declared != null && levels.includes(declared) ? declared : undefined;
 }
 
+type ReasoningEngine = "claude-code" | "codex" | "vgent";
+
 /**
- * The levels a settings-page provider's model offers. Such a model comes with no
- * catalog row to declare them, so they follow from *how the engine carries the
- * effort* rather than from the model: Claude Code's `effort` and Codex's
- * `model_reasoning_effort` are harness settings that apply to whatever model
- * runs; the in-house engine sends the AI SDK's portable `reasoning`, of which
- * low / medium / high are the ones every package maps without coercion.
- *
- * One function for all three engines, called where provider models join the
- * catalog, so a model can no longer reach the picker without its levels just
- * because it came in by a different door.
+ * What each engine can *carry* to the model. Claude Code's `effort` and Codex's
+ * `model_reasoning_effort` are harness settings; the in-house engine sends the
+ * AI SDK's portable `reasoning`, which has no `max`.
  */
-export function providerModelReasoning(engine: "claude-code" | "codex" | "vgent"): {
-  reasoningLevels: string[];
-  defaultReasoningLevel: string;
-} {
-  const levels =
-    engine === "claude-code"
-      ? [...CLAUDE_CODE_EFFORTS]
-      : engine === "codex"
-        ? ["low", "medium", "high", "xhigh"]
-        : [PROVIDER_DEFAULT_LEVEL, "low", "medium", "high"];
-  return { reasoningLevels: levels, defaultReasoningLevel: DEFAULT_REASONING_LEVEL };
+const CARRIED_LEVELS: Record<ReasoningEngine, readonly string[]> = {
+  "claude-code": CLAUDE_CODE_EFFORTS,
+  codex: ["low", "medium", "high", "xhigh", "max"],
+  vgent: ["none", "minimal", "low", "medium", "high", "xhigh"],
+};
+
+/** What is offered for a model nobody knows anything about. */
+const UNKNOWN_MODEL_LEVELS: Record<ReasoningEngine, readonly string[]> = {
+  "claude-code": CLAUDE_CODE_EFFORTS,
+  codex: ["low", "medium", "high", "xhigh"],
+  vgent: [PROVIDER_DEFAULT_LEVEL, "low", "medium", "high"],
+};
+
+/**
+ * 推理强度 for a model that arrives without a catalog row of its own to declare
+ * it — a settings-page provider's model, a Claude Code model. One function for
+ * every such door into the picker, so a model can no longer show up without its
+ * levels (or with somebody else's) just because of the way it came in.
+ *
+ * `known` is what the provider catalog lists for this very model (see
+ * `createReasoningIndex`): models differ — Opus 4.5 stops at 高, DeepSeek V4 Pro
+ * has only 高 and 最高, Haiku has no knob at all — so that list is the answer,
+ * cut down to what the engine can carry. An empty result means no chip. Only a
+ * model the catalog has never heard of gets the engine's generic set, and on the
+ * in-house engine that set includes 「不指定」, the way out when an endpoint
+ * refuses the parameter.
+ */
+export function reasoningFor(
+  engine: ReasoningEngine,
+  known: readonly string[] | undefined,
+): { reasoningLevels?: string[]; defaultReasoningLevel?: string } {
+  const levels = known == null ? [...UNKNOWN_MODEL_LEVELS[engine]] : known.filter((level) => CARRIED_LEVELS[engine].includes(level));
+  if (levels.length === 0) return {};
+  // 高 where the model has it; otherwise the most it offers.
+  return { reasoningLevels: levels, defaultReasoningLevel: defaultLevelFor(levels, levels.at(-1)) as string };
 }

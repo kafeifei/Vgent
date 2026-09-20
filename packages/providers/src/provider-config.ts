@@ -79,6 +79,13 @@ export interface ProviderModel {
   label?: string;
   /** Usable context window in tokens, when the source knew it. */
   contextWindow?: number;
+  /**
+   * The reasoning-effort values the catalog lists for this model, in its order.
+   * Empty means the catalog knows the model and it has no effort to set (it does
+   * not reason, or reasons without a knob); absent means nobody said. Catalog
+   * rows carry it; a stored provider's models do not — it is looked up fresh.
+   */
+  reasoningLevels?: string[];
 }
 
 /** How one agent reaches the provider, and the models the user enabled for it. */

@@ -88,6 +88,17 @@ interface DatedModel extends ProviderModel {
   released: string;
 }
 
+/** models.dev's `reasoning_options: [{ type: "effort", values: [...] }, …]`, reduced to the effort values. */
+function readReasoningLevels(record: Record<string, unknown>): string[] {
+  if (record.reasoning !== true || !Array.isArray(record.reasoning_options)) return [];
+  for (const option of record.reasoning_options as unknown[]) {
+    if (typeof option !== "object" || option === null || (option as { type?: unknown }).type !== "effort") continue;
+    const values = (option as { values?: unknown }).values;
+    if (Array.isArray(values)) return values.filter((value): value is string => typeof value === "string" && value !== "");
+  }
+  return [];
+}
+
 /** One models.dev model → a row the page can tick, or undefined when an agent could not use it. */
 function readModel(key: string, raw: unknown): DatedModel | undefined {
   if (typeof raw !== "object" || raw === null) return undefined;
@@ -106,6 +117,7 @@ function readModel(key: string, raw: unknown): DatedModel | undefined {
     id,
     ...(label != null && label !== id ? { label } : {}),
     ...(typeof context === "number" && Number.isFinite(context) && context > 0 ? { contextWindow: context } : {}),
+    reasoningLevels: readReasoningLevels(record),
     released: text(record.release_date) ?? "",
   };
 }
@@ -228,4 +240,35 @@ export async function fetchProviderCatalog(options: FetchCatalogOptions = {}): P
   const response = await fetchImpl(MODELS_DEV_URL, { headers: { accept: "application/json" }, signal });
   if (!response.ok) throw new Error(`models.dev 返回 HTTP ${response.status}`);
   return normalizeModelsDev(await response.json());
+}
+
+/** What a model id is looked up by: its last path segment, lowercased — `anthropic-claude/claude-opus-5` is `claude-opus-5`. */
+const modelKey = (id: string): string => id.slice(id.lastIndexOf("/") + 1).toLowerCase();
+
+/**
+ * 「这个模型有哪几档推理强度」, answered from the catalog for a model id that may
+ * have come from anywhere — a company gateway's `vendor/model`, a relay's bare
+ * name. The vendor's own entry wins over a reseller's copy of the same model:
+ * an aggregator lists models as `vendor/model`, a vendor lists its own bare, so
+ * bare ids are read first (the popular providers ahead of the rest), and the
+ * `vendor/model` rows only fill in what no vendor listed. An id the catalog has
+ * never seen answers undefined rather than a guess.
+ */
+export function createReasoningIndex(providers: readonly CatalogProvider[]): (modelId: string) => string[] | undefined {
+  const index = new Map<string, string[]>();
+  const rank = (provider: CatalogProvider): number => {
+    const at = POPULAR_PROVIDER_IDS.indexOf(provider.id);
+    return at < 0 ? POPULAR_PROVIDER_IDS.length : at;
+  };
+  const ordered = [...providers].sort((a, b) => rank(a) - rank(b));
+  for (const resold of [false, true]) {
+    for (const provider of ordered) {
+      for (const model of provider.models) {
+        if (model.id.includes("/") !== resold || model.reasoningLevels == null) continue;
+        const key = modelKey(model.id);
+        if (!index.has(key)) index.set(key, model.reasoningLevels);
+      }
+    }
+  }
+  return (modelId) => index.get(modelKey(modelId));
 }

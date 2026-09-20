@@ -331,6 +331,26 @@ describe("Claude Code's full model ids", () => {
     expect(result.models.every((entry) => entry.reasoningLevels?.length === 5)).toBe(true);
   });
 
+  it("gives each Claude Code model the levels the catalog lists for it, and an alias its family's newest", async () => {
+    const levels: Record<string, string[]> = { "claude-opus-5": ["low", "medium", "high", "xhigh", "max"], "claude-opus-4-5": ["low", "medium", "high"], "claude-haiku-4-5": [] };
+    const catalog = createModelCatalog({
+      env: {},
+      fetchCodexRemote: rejectCodex,
+      anthropicModels: async () => [{ id: "claude-opus-5" }, { id: "claude-opus-4-5" }, { id: "claude-haiku-4-5" }],
+      reasoningLevelsOf: async () => (id) => levels[id],
+    });
+    const byId = Object.fromEntries((await catalog.list("claude-code")).models.map((entry) => [entry.id, entry.reasoningLevels]));
+    expect(byId["claude-opus-5"]).toHaveLength(5);
+    expect(byId["claude-opus-4-5"]).toEqual(["low", "medium", "high"]);
+    // No knob: no chip.
+    expect(byId["claude-haiku-4-5"]).toBeUndefined();
+    expect(byId.haiku).toBeUndefined();
+    // `opus` is whatever the newest Opus is.
+    expect(byId.opus).toHaveLength(5);
+    // Nothing in the catalog to go by: the harness's five.
+    expect(byId.sonnet).toHaveLength(5);
+  });
+
   it("falls back to the aliases alone when the catalog cannot be read", async () => {
     const catalog = createModelCatalog({
       env: {},

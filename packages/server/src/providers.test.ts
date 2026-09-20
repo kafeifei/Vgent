@@ -145,6 +145,8 @@ describe("provider routes", () => {
       label: "DeepSeek V4 Pro",
       provider: "DeepSeek",
       contextWindow: 1_000_000,
+      // Known only by its 1M window, so a shorter one is offered beside it.
+      contextOptions: [300_000, 1_000_000],
       // The same key under every agent it is switched on for: the picker shows it once.
       modelKey: "deepseek/deepseek-v4-pro",
       // In the catalog, so it has a logo to show.

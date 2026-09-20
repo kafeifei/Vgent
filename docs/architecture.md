@@ -396,7 +396,9 @@ docs/
 
 **模型菜单只剩三样**：灰色的 agent 名、（有的话）灰色的提供商名、模型。清单来源那一行、「只能全自动」、「已有对话的任务不能跨引擎换模型」都拿掉；已有对话的任务干脆只显示自己那个引擎的一组。只有「模型列表加载失败」还会占一行，因为那是用户需要知道的。
 
-**推理强度为什么又丢了一次，以及现在归谁管**。等级原来是「每个清单来源各自往模型条目上贴」：Codex 目录贴它声明的，Claude Code 一律贴五档，网关只给 `openai/*` 贴。提供商的模型是在路由里每次请求现并进去的，绕过了所有这些来源，所以没有等级，聊天框里那个 chip 就消失了。现在由 `reasoning.ts` 的 `providerModelReasoning(engine)` 一处决定，并入目录的地方调它：等级取决于**引擎怎么把强度带给模型**，而不是模型是谁——Claude Code 的 `effort` 和 Codex 的 `model_reasoning_effort` 是 harness 设置，什么模型都吃；自研引擎发的是 AI SDK v7 的顶层 `reasoning`（各家 provider 包自己翻译成 `reasoning_effort`、Anthropic 的 `effort` 等，见包内文档 `03-ai-sdk-core/26-reasoning.mdx`），取每个包都不用折算的 低/中/高。自研引擎这边另有「不指定」（`provider-default`，什么都不发）：对一个一无所知的端点，必须留一条它拒收这个参数时的退路。`portableReasoning()` 只对 `<提供商>:<模型>` 这种 id 生效，订阅和网关的模型还走原来的 `providerOptions.openai`。
+**推理强度为什么又丢了一次，以及现在归谁管**。等级原来是「每个清单来源各自往模型条目上贴」：Codex 目录贴它声明的，Claude Code 一律贴五档，网关只给 `openai/*` 贴。提供商的模型是在路由里每次请求现并进去的，绕过了所有这些来源，所以没有等级，聊天框里那个 chip 就消失了。现在由 `reasoning.ts` 的 `reasoningFor(engine, known)` 一处决定，提供商模型并入目录的地方和 Claude Code 自己的清单都调它。
+
+**每个模型的档位不一样**（用户当天第二次纠正：「每个模型不一定都一样的」——我第一版是按引擎发一套，错的）。`known` 是按模型查出来的：models.dev 每个模型带 `reasoning_options: [{ type: "effort", values: [...] }]`，`catalog.ts` 读成 `reasoningLevels`（空数组＝目录认识这个模型、它没有可调的强度），`createReasoningIndex()` 按模型名的最后一段建索引——公司网关的 `anthropic-claude/claude-opus-5` 查到的就是 Anthropic 自己那条。厂商自己的条目（id 不带 `/`）优先于聚合商转卖的同名条目，否则 OpenRouter 会盖掉 DeepSeek 自己写的档位。查到的列表再按**引擎带得过去的**裁一刀：Claude Code 的 `effort` 五档，Codex 的 `model_reasoning_effort`，自研引擎发的是 AI SDK v7 的顶层 `reasoning`（各家 provider 包自己翻译成 `reasoning_effort`、Anthropic 的 `effort` 等，见包内文档 `03-ai-sdk-core/26-reasoning.mdx`；它没有 `max`）。裁完是空的就不出 chip（Haiku 4.5）。默认是「高」，模型没有「高」就取它最高的一档。只有目录从没见过的模型才用引擎的通用档位，自研引擎那套里多一个「不指定」（`provider-default`，什么都不发）：对一个一无所知的端点，必须留一条它拒收这个参数时的退路。Claude Code 的别名（`opus`）取同族最新那个模型的档位。目录缓存文件版本升到 2：旧缓存没有档位，会重拉。`portableReasoning()` 只对 `<提供商>:<模型>` 这种 id 生效，订阅和网关的模型还走原来的 `providerOptions.openai`。
 
 **没验证的**：还没有对着真端点跑过一轮带 `reasoning` 的请求；公司网关（LiteLLM）对不认这个参数的模型是丢弃还是 400，不知道——400 的话选「不指定」。
 

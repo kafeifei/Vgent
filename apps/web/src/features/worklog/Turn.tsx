@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { getToolName } from "ai";
 import { Check, ChevronDown, Copy, FileText, Split } from "lucide-react";
-import { MessageResponse } from "@/components/ai-elements/message";
+import { RichMarkdown } from "@/components/RichMarkdown";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
 import { type AskUserQuestionsInput, type AskUserQuestionsOutput } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
 import { Spinner, ToolRow } from "./ToolRow";
+import { TurnOutputs } from "./TurnOutputs";
 import type { Block, Run, Turn as TurnModel } from "./turns";
 import { approvalAnchor, compactedOf, isOpenApproval, isOpenQuestion, questionAnchor, runsOf } from "./turns";
 
@@ -124,6 +125,7 @@ export function Turn({
           </div>
         ),
       )}
+      {folded && <TurnOutputs blocks={turn.blocks} />}
       {folded && <ReplyActions turn={turn} {...(turn.user != null ? { onFork: () => actions.fork(turn.user!.id) } : {})} />}
     </section>
   );
@@ -219,7 +221,7 @@ function BlockView({
   if (block.kind === "text") {
     return (
       <div className="text-md leading-chat">
-        <MessageResponse className="text-md leading-chat">{block.part.text}</MessageResponse>
+        <RichMarkdown className="text-md leading-chat">{block.part.text}</RichMarkdown>
       </div>
     );
   }

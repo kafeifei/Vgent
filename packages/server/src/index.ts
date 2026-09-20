@@ -57,6 +57,7 @@ export {
   type FileContent,
   type FileEntry,
   type FileListing,
+  type ResolvedFile,
   type Files,
   type ListFilesOptions,
 } from "./files.js";

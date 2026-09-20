@@ -9,12 +9,14 @@ import { Composer } from "@/features/composer/Composer";
 import { taskBranch, taskLocation } from "@/features/composer/location";
 import { TaskHeader } from "@/features/taskheader/TaskHeader";
 import { SetupNotice } from "@/features/workspace/SetupNotice";
+import { FileAccessProvider } from "@/features/files/fileAccess";
 import { WorkLog } from "@/features/worklog/WorkLog";
 import { pendingQueue, type QueueItem } from "@/features/worklog/queue";
 import type { TurnActions } from "@/features/worklog/Turn";
 import { pendingAutoApprovals } from "@/lib/autoApprove";
 import type { ApiClient } from "@/lib/api";
 import { useDraft } from "@/lib/drafts";
+import { previewKindOf } from "@/lib/preview";
 import type { EngineDescriptor, EngineId, PermissionMode, ThreadSummary } from "@/lib/types";
 import { isLiveThread, type WorkbenchActions } from "./useWorkbench";
 
@@ -126,6 +128,13 @@ function ThreadChatView({
     [actions, changes, client, thread.id],
   );
 
+  // A running turn rewrites its files many times; what the log shows is refetched once it ends.
+  const filesKey = live ? "live" : thread.updatedAt;
+  const fileAccess = useMemo(
+    () => ({ client, threadId: thread.id, refreshKey: filesKey, openFile: actions.openPreview }),
+    [actions.openPreview, client, filesKey, thread.id],
+  );
+
   const turnActions: TurnActions = useMemo(
     () => ({
       respondToApproval: (id, approved) => void addToolApprovalResponse({ id, approved }),
@@ -134,7 +143,8 @@ function ThreadChatView({
         void addToolApprovalResponse({ id, approved: true });
       },
       answerQuestions: (toolCallId, output) => void addToolOutput({ tool: "askUserQuestions", toolCallId, output }),
-      openFile: (file) => actions.openChanges(file),
+      // A picture or a document is opened as what it is; code is opened as its diff.
+      openFile: (file) => (previewKindOf(file) != null ? actions.openPreview(file) : actions.openChanges(file)),
       fork: (messageId) => actions.forkThread(thread.id, messageId),
       restoreLatest: () => restoreCheckpoint({ latest: true }),
     }),
@@ -266,14 +276,16 @@ function ThreadChatView({
         />
       </div>
 
-      <WorkLog
-        messages={messages}
-        thread={thread}
-        live={live}
-        error={thread.error ?? error?.message}
-        actions={turnActions}
-        allowlist={allowlist ?? []}
-      />
+      <FileAccessProvider value={fileAccess}>
+        <WorkLog
+          messages={messages}
+          thread={thread}
+          live={live}
+          error={thread.error ?? error?.message}
+          actions={turnActions}
+          allowlist={allowlist ?? []}
+        />
+      </FileAccessProvider>
 
       <div className="bg-bg px-md pb-xs">
         <Composer

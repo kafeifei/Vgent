@@ -22,10 +22,16 @@ export interface RightState {
   open: boolean;
   tab: RightTab;
   file: string | null;
+  /**
+   * The file the 文件 tab was asked to show, as whoever asked wrote it — a
+   * reply's `![](…)`, an output card. `nonce` makes asking twice for the same
+   * file open it twice.
+   */
+  preview: { path: string; nonce: number } | null;
 }
 
 /** The pane starts as Cursor's does: open, as the short list of what it can show. */
-const RIGHT_INITIAL: RightState = { open: true, tab: "home", file: null };
+const RIGHT_INITIAL: RightState = { open: true, tab: "home", file: null, preview: null };
 
 const readThreadFromUrl = (): string | null => new URLSearchParams(window.location.search).get("thread");
 
@@ -191,7 +197,7 @@ export function useWorkbench(token: string) {
       lastStatus.current.set(entry.id, entry.status);
       if (entry.id !== selectedThreadId || entry.mode !== "plan" || entry.status !== "idle") continue;
       if (previous == null || !(LIVE_STATUSES as readonly string[]).includes(previous)) continue;
-      setRight({ open: true, tab: "plan", file: null });
+      setRight((state) => ({ ...state, open: true, tab: "plan", file: null }));
     }
   }, [selectedThreadId, state.threads]);
 
@@ -224,9 +230,16 @@ export function useWorkbench(token: string) {
         const repoPath =
           thread?.workspace?.path ?? state.projects.find((project) => project.id === activeProjectId)?.repoPath ?? null;
         const relative = file == null || repoPath == null ? null : repoRelative(file, repoPath);
-        setRight({ open: true, tab: "changes", file: relative });
+        setRight((state) => ({ ...state, open: true, tab: "changes", file: relative }));
         if (file != null && relative == null) toast("文件不在任务工作目录内");
       },
+
+      /** A picture or a document the log points at: shown as what it is, in the 文件 tab. */
+      openPreview: (path: string) =>
+        setRight((state) => ({ ...state, open: true, tab: "files", preview: { path, nonce: (state.preview?.nonce ?? 0) + 1 } })),
+
+      /** The 文件 tab took the request; a remount must not replay it. */
+      clearPreview: () => setRight((state) => (state.preview == null ? state : { ...state, preview: null })),
 
       openPalette: () => setPalette(true),
       closePalette: () => setPalette(false),

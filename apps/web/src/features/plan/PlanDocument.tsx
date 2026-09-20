@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { MessageResponse } from "@/components/ai-elements/message";
+import { RichMarkdown } from "@/components/RichMarkdown";
 import { useToast } from "@/lib/toast";
 import type { ApiClient } from "@/lib/api";
 import type { PlanDocument as PlanDoc } from "@/lib/types";
@@ -189,7 +189,7 @@ export function PlanDocument({
         <p className="text-fg-faint text-xs">还没有计划。用 Plan 模式发一条消息，代理调研完会把计划写在这里。</p>
       ) : (
         <div className="text-sm">
-          <MessageResponse>{content}</MessageResponse>
+          <RichMarkdown>{content}</RichMarkdown>
         </div>
       )}
     </section>

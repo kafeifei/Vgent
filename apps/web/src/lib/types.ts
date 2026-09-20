@@ -24,6 +24,7 @@ export type {
   FileDiff,
   FileEntry,
   FileListing,
+  ResolvedFile,
   IntegrateAction,
   IntegrationStatus,
   McpHttpServerConfig,

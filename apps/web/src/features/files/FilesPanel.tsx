@@ -2,10 +2,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ChevronDown, ChevronRight, File, RefreshCw } from "lucide-react";
 import type { BundledLanguage } from "shiki";
 import { CodeBlock } from "@/components/ai-elements/code-block";
+import { RichMarkdown } from "@/components/RichMarkdown";
 import type { ApiClient } from "@/lib/api";
 import { baseName } from "@/lib/format";
+import { type PreviewKind, previewKindOf } from "@/lib/preview";
 import type { FileContent, FileEntry, FileListing } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { FileAccessProvider, useFilePicture } from "./fileAccess";
 
 /** Up to this many entries, the tree opens fully — collapsing would hide everything. */
 const EXPAND_ALL_MAX = 8;
@@ -36,6 +39,7 @@ const LANGUAGES: Record<string, BundledLanguage> = {
   java: "java",
   sql: "sql",
   xml: "xml",
+  svg: "xml",
 };
 
 /** Shiki's plain-text grammar; not part of the bundled-language union. */
@@ -69,6 +73,46 @@ export function buildTree(entries: readonly FileEntry[]): TreeNode[] {
 }
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/** `docs/a.md` → `docs`; a file at the root has none. */
+const dirName = (path: string): string => path.slice(0, Math.max(path.lastIndexOf("/"), 0));
+
+type ViewMode = "preview" | "source";
+const VIEW_MODE_KEY = "vgent.files.viewMode";
+
+/** 预览 or 源码 for the kinds that have both, remembered per kind the way an editor remembers it. */
+function useViewMode(kind: PreviewKind | undefined): [ViewMode, (mode: ViewMode) => void] {
+  const [modes, setModes] = useState<Partial<Record<PreviewKind, ViewMode>>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(VIEW_MODE_KEY) ?? "{}") as Partial<Record<PreviewKind, ViewMode>>;
+    } catch {
+      return {};
+    }
+  });
+  const set = (mode: ViewMode): void => {
+    if (kind == null) return;
+    const next = { ...modes, [kind]: mode };
+    setModes(next);
+    try {
+      localStorage.setItem(VIEW_MODE_KEY, JSON.stringify(next));
+    } catch {
+      // A full or disabled store only costs the memory of the choice.
+    }
+  };
+  return [(kind != null ? modes[kind] : undefined) ?? "preview", set];
+}
+
+/** The file as a picture, on a ground that shows a transparent one for what it is. */
+function Picture({ path }: { path: string }) {
+  const picture = useFilePicture(path);
+  if (picture.status === "loading") return <p className="text-fg-faint text-xs">加载中…</p>;
+  if (picture.status === "unavailable") return <p className="text-fg-faint text-xs">无法显示这张图片</p>;
+  return (
+    <div className="grid place-items-center rounded-lg bg-bg-inset p-sm">
+      <img src={picture.src} alt={baseName(path)} className="max-h-[70vh] max-w-full object-contain" />
+    </div>
+  );
+}
 
 /** One row, plus its children when it is an open directory. */
 function Rows({
@@ -132,6 +176,8 @@ export function FilesPanel({
   threadId,
   active,
   refreshKey,
+  preview,
+  onPreviewTaken,
 }: {
   client: ApiClient;
   threadId: string | null;
@@ -139,6 +185,9 @@ export function FilesPanel({
   active: boolean;
   /** The thread's `updatedAt`: a new one means the engine wrote to disk. */
   refreshKey: string;
+  /** A file the log asked to see, as the log wrote it; `onPreviewTaken` says it has been opened. */
+  preview?: { path: string; nonce: number } | null;
+  onPreviewTaken?: () => void;
 }) {
   const [listing, setListing] = useState<FileListing | null>(null);
   const [loading, setLoading] = useState(false);
@@ -148,6 +197,8 @@ export function FilesPanel({
   const [selected, setSelected] = useState<string | null>(null);
   const [content, setContent] = useState<FileContent | null>(null);
   const [contentError, setContentError] = useState<string | null>(null);
+  /** Why a file the log asked for is not open. It sits above the tree and goes with the next file opened. */
+  const [notice, setNotice] = useState<string | null>(null);
   /** Bumped per load; a stale response never writes state. */
   const generation = useRef(0);
   const [reload, setReload] = useState(0);
@@ -184,13 +235,47 @@ export function FilesPanel({
   useEffect(() => {
     setSelected(null);
     setFilter("");
+    setNotice(null);
   }, [threadId]);
 
+  useEffect(() => {
+    if (selected != null) setNotice(null);
+  }, [selected]);
+
+  // The log asked for a file, in its own words — an absolute path as often as
+  // not. The server says which of this task's files that is.
+  useEffect(() => {
+    if (preview == null || threadId == null) return;
+    let cancelled = false;
+    client.resolveFiles(threadId, [preview.path]).then(
+      (found) => {
+        if (cancelled) return;
+        onPreviewTaken?.();
+        const path = found[0]?.path;
+        setNotice(path == null ? `文件不在任务目录里，或已经不在了：${preview.path}` : null);
+        if (path != null) setSelected(path);
+      },
+      (failure: unknown) => {
+        if (cancelled) return;
+        onPreviewTaken?.();
+        setNotice(message(failure));
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+    // `nonce` is the request; the rest are stable for its lifetime.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preview?.nonce]);
+
+  const kind = selected == null ? undefined : previewKindOf(selected);
+  const [viewMode, setViewMode] = useViewMode(kind);
   const contentGeneration = useRef(0);
 
   useEffect(() => {
     const mine = ++contentGeneration.current;
-    if (threadId == null || selected == null) {
+    // A picture is fetched as bytes by whatever draws it; there is no text to ask for.
+    if (threadId == null || selected == null || kind === "image") {
       setContent(null);
       setContentError(null);
       return;
@@ -207,7 +292,7 @@ export function FilesPanel({
         setContent(null);
         setContentError(message(failure));
       });
-  }, [client, threadId, selected]);
+  }, [client, threadId, selected, kind, refreshKey]);
 
   const entries = listing?.entries ?? [];
   const needle = filter.trim().toLowerCase();
@@ -238,23 +323,48 @@ export function FilesPanel({
             <ArrowLeft className="size-md" />
             返回
           </button>
-          <span className="min-w-0 truncate font-mono text-code text-fg-faint" title={selected}>
+          <span className="min-w-0 flex-1 truncate font-mono text-code text-fg-faint" title={selected}>
             {baseName(selected)}
           </span>
+          {(kind === "svg" || kind === "markdown") && (
+            <div role="tablist" className="flex flex-none items-center rounded-sm border border-border p-px text-xs">
+              {(["preview", "source"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  role="tab"
+                  type="button"
+                  aria-selected={viewMode === mode}
+                  onClick={() => setViewMode(mode)}
+                  className={cn("h-lg rounded-xs px-xs text-fg-muted hover:text-fg", viewMode === mode && "bg-bg-active text-fg")}
+                >
+                  {mode === "preview" ? "预览" : "源码"}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
-        {contentError != null ? (
-          <p className="text-danger text-xs">{contentError}</p>
-        ) : content == null ? (
-          <p className="text-fg-faint text-xs">加载中…</p>
-        ) : content.binary ? (
-          <p className="text-fg-faint text-xs">二进制文件</p>
-        ) : (
-          <>
-            <CodeBlock code={content.content} language={languageOf(selected)} showLineNumbers />
-            {content.truncated && <p className="pt-2xs text-2xs text-fg-faint">文件过长，已截断</p>}
-          </>
-        )}
+        {/* The previews below read this task's files the same way a reply's pictures do. */}
+        <FileAccessProvider
+          value={threadId == null ? null : { client, threadId, refreshKey, openFile: setSelected, baseDir: dirName(selected) }}
+        >
+          {kind === "image" || (kind === "svg" && viewMode === "preview") ? (
+            <Picture path={selected} />
+          ) : contentError != null ? (
+            <p className="text-danger text-xs">{contentError}</p>
+          ) : content == null ? (
+            <p className="text-fg-faint text-xs">加载中…</p>
+          ) : content.binary ? (
+            <p className="text-fg-faint text-xs">二进制文件</p>
+          ) : kind === "markdown" && viewMode === "preview" ? (
+            <RichMarkdown className="text-md leading-chat">{content.content}</RichMarkdown>
+          ) : (
+            <>
+              <CodeBlock code={content.content} language={languageOf(selected)} showLineNumbers />
+              {content.truncated && <p className="pt-2xs text-2xs text-fg-faint">文件过长，已截断</p>}
+            </>
+          )}
+        </FileAccessProvider>
       </>
     );
   }
@@ -278,6 +388,7 @@ export function FilesPanel({
         </button>
       </div>
 
+      {notice != null && <p className="mb-xs text-danger text-xs">{notice}</p>}
       {error != null ? (
         <p className="text-danger text-xs">{error}</p>
       ) : threadId == null ? (

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -648,6 +648,66 @@ describe("createApp", () => {
     expect((await request(app, `/api/threads/${thread.id}/files/content?path=src`)).status).toBe(404);
     expect((await request(app, `/api/threads/${thread.id}/files/content`)).status).toBe(400);
     expect((await request(app, "/api/threads/nope/files")).status).toBe(404);
+  });
+
+  it("serves a file's own bytes and resolves the paths tools and replies wrote", async () => {
+    const repo = await gitRepo();
+    const outside = await tempDir();
+    await writeFile(join(outside, "secret.png"), Buffer.from([1, 2, 3]));
+    await mkdir(join(repo, "out"), { recursive: true });
+    await writeFile(join(repo, "out", "鹈鹕 图.svg"), "<svg xmlns='http://www.w3.org/2000/svg'/>");
+    await writeFile(join(repo, "shot.png"), Buffer.from([0x89, 0x50, 0x00, 0x47]));
+    await symlink(join(outside, "secret.png"), join(repo, "leak.png"));
+
+    const app = makeApp(await tempDir());
+    const { thread } = await setupThread(app, repo);
+    const root = await realpath(repo);
+
+    const png = await request(app, `/api/threads/${thread.id}/files/raw?path=shot.png`);
+    expect(png.status).toBe(200);
+    expect(png.headers.get("content-type")).toBe("image/png");
+    expect(png.headers.get("content-security-policy")).toContain("sandbox");
+    expect([...new Uint8Array(await png.arrayBuffer())]).toEqual([0x89, 0x50, 0x00, 0x47]);
+
+    // A model writes absolute paths as often as relative ones.
+    const svg = await request(app, `/api/threads/${thread.id}/files/raw?path=${encodeURIComponent(join(root, "out", "鹈鹕 图.svg"))}`);
+    expect(svg.status).toBe(200);
+    expect(svg.headers.get("content-type")).toBe("image/svg+xml");
+
+    // Outside the task's directory — by path or through a symlink — is refused.
+    for (const path of [join(outside, "secret.png"), "leak.png", "../escape.png"]) {
+      const response = await request(app, `/api/threads/${thread.id}/files/raw?path=${encodeURIComponent(path)}`);
+      expect(response.status).toBe(400);
+    }
+    expect((await request(app, `/api/threads/${thread.id}/files/raw?path=nope.png`)).status).toBe(404);
+
+    const resolved = (await (
+      await postJson(app, `/api/threads/${thread.id}/files/resolve`, {
+        paths: [join(root, "shot.png"), "./out/鹈鹕 图.svg", "nope.png", join(outside, "secret.png"), "leak.png"],
+      })
+    ).json()) as { files: { raw: string; path: string }[] };
+    expect(resolved.files).toEqual([
+      { raw: join(root, "shot.png"), path: "shot.png" },
+      { raw: "./out/鹈鹕 图.svg", path: "out/鹈鹕 图.svg" },
+    ]);
+    expect((await postJson(app, `/api/threads/${thread.id}/files/resolve`, {})).status).toBe(400);
+  });
+
+  it("lists a 无项目 task's directory without git", async () => {
+    const dataDir = await tempDir();
+    const app = makeApp(dataDir);
+    const thread = (await (await postJson(app, "/api/threads", { projectId: "no-project" })).json()) as ThreadRecord;
+    const scratch = join(dataDir, "scratch", thread.id);
+    await mkdir(join(scratch, "node_modules", "x"), { recursive: true });
+    await writeFile(join(scratch, "node_modules", "x", "index.js"), "");
+    await mkdir(join(scratch, "art"), { recursive: true });
+    await writeFile(join(scratch, "art", "pelican.svg"), "<svg/>");
+
+    const listing = (await (await request(app, `/api/threads/${thread.id}/files`)).json()) as { entries: { path: string; kind: string }[] };
+    expect(listing.entries).toEqual([
+      { path: "art", kind: "dir" },
+      { path: "art/pelican.svg", kind: "file" },
+    ]);
   });
 
   it("refuses to list files once the task's worktree is reclaimed", async () => {

@@ -434,5 +434,30 @@ docs/
 - 项目 id 是常量 `no-project`，不进 `projects.json`。`no-project.ts` 的 `projectOfThread()` 是 server 里「任务 → 项目」的统一入口：普通任务查库，无项目任务返回一个替身，`repoPath` 是 `<dataDir>/scratch/<任务 id>`（用到时才建）。一个 id 是为了侧栏能归到一个「无项目」分组下；目录按任务分是为了两个任务互相看不见对方的文件。删任务时目录一起删。
 - 跟仓库有关的一律不出现，而不是点开了报「不是 git 仓库」：建任务时拒绝 worktree；空状态的运行位置不是选择器，写「临时目录」；任务页状态条写「本机 · 临时目录」、没有分支；右栏不列「变更」。checkpoint、任务基线、收口本来就对非 git 目录无操作，没有额外分支。
 - 入口在项目选择器里，排在已有项目后面、「选择文件夹…」前面。
+- 2026-09-21 补：「文件」的列表原来只会问 git，无项目任务点开就是「不是 git 仓库」。现在不是仓库就直接遍历目录（跳过 `.git`、`node_modules`，同样的条数上限）。
 
 **没验证的**：没用真模型在无项目任务里跑完一整轮（隔离实例里跑到了调模型那一步，前面的建目录、快照、引擎创建都过了）；Claude Code / Codex 在一个空的非 git 目录里启动会不会有自己的提示或限制，没试。
+
+## 2026-09-21：产物的显示（图片、SVG、公式）
+
+起因：一个任务画了张 SVG 存成文件，用户问「不能直接显示？」，模型只能把源码再贴一遍。先读了 Cursor 3.19.7 和 Codex 桌面版的包看它们怎么做（笔记：参考目录 `findings-6-rich-content.md`），再照着做。两家共同点：文件查看器按类型预览；聊天里的图片是 `<img>`、能点开；公式 KaTeX；SVG 一律 `<img>` + data URL，不进 DOM。
+
+**server**（`files.ts`）
+
+- `GET /api/threads/:id/files/raw?path=`：文件本身的字节，带按扩展名定的 `content-type`，上限 20MB。响应头带 `content-security-policy: sandbox`、`nosniff`、`no-store`——这个地址只给前端 `fetch`，不是给人打开的。
+- `POST /api/threads/:id/files/resolve {paths}`：这些路径里，哪些是这个任务目录里此刻存在的文件，返回根相对路径。模型写绝对路径和相对路径一样多，所以这两个接口都收绝对路径；是否在任务目录里仍然由 `realpath` 之后的前缀判断说了算（符号链接指到外面的照样拒绝）。原来的 `files/content` 不变，仍只收相对路径。
+- 鉴权仍是请求头里的 token。`<img>` 带不了请求头，所以前端是 `fetch` 成 blob 再给 `<img>`，token 不进 URL。
+
+**web**
+
+- `lib/preview.ts`：路径 → 预览种类（image / svg / markdown）、SVG → data URI、markdown 里的地址 → 本地路径。`lib/sanitizeSvg.ts`：DOMPurify 的 svg 配置，禁 `script` 和 `foreignObject`（同 Cursor）；`<img>` 本来就不跑脚本，清洗是为了预览和源码看到的是同一个东西。
+- `features/files/fileAccess.tsx`：`FileAccessProvider` 把「这个任务的文件怎么取、点了在哪打开」交给任务视图里的任何东西；`useFilePicture(path)` 给出能放进 `<img>` 的地址（位图是 blob URL，SVG 是清洗后的 data URI），文件被重写时旧图留到新图到了再换。回合进行中不重取，结束时取一次。
+- `components/RichMarkdown.tsx`：工作日志、计划文档、文件预览共用的 markdown。在 AI Elements 的 `MessageResponse`（Streamdown）外面配了四样：
+  - KaTeX 的样式表（之前没引，公式一直是坏的）；`lib/mathDelimiters.ts` 把 `\(…\)`、`\[…\]` 换成 `$$` 形式，代码块和行内代码不动；单个 `$` 保持关闭（同 Cursor）。
+  - 代码块渲染器：`svg`，或 `xml` / `html` 且内容以 `<svg` 开头 → 显示成图，下面一个「源码」切换；不是 SVG 的 xml / html 退回 Streamdown 自己的代码块；没写完的显示「正在画…」（同 Codex）。
+  - `lib/rehypeTaskFiles.ts`：排在 Streamdown 的清洗之前。它的 harden 会把不带 `./` 的相对地址整个拦掉、`file:` 也会被丢，所以本地图片的 `src` 先换成我们自己的根相对地址（`/__task_file__/<编码后的路径>`，能过清洗），渲染 `img` 时再解回来；本地链接直接换成自定义元素 `task-file`（清洗的白名单里加了它），渲染成一个在右栏打开文件的按钮——Streamdown 的链接会弹「在浏览器里打开？」的确认，对本地文件没有意义。
+  - 被预览的 markdown 文档里的相对路径从文档所在目录算起（`FileAccess.baseDir`）。
+- 右栏：`RightState.preview` 是一次「请打开这个文件」的请求（带 nonce，取走即清）；`FilesPanel` 先 `resolve` 成根相对路径再打开，打不开的原因写在文件树上方。工作日志里写入 / 编辑工具的文件 chip：能预览的开预览，其它仍开 diff。
+- `features/worklog/outputs.ts` + `TurnOutputs.tsx`：回合产物。候选来自两处——写入 / 编辑工具的调用，和回复正文（链接目标、读起来像文件名的行内代码；已经用 `![]()` 贴出来的不重复算）。只靠工具调用不够：Codex 改文件不产生工具调用（适配器发的是 `file-change` 事件，server 没接）。候选交给 `resolve` 确认存在之后才出卡片，所以模型随口提到的名字不会变成打不开的卡。图片一律算，文档只有回复提到才算。
+
+**没验证的**：只在隔离实例里对着手造的对话验过（本地图片含中文和空格的文件名、不存在的图片、三种公式写法、svg / html 代码块、点链接和卡片在右栏打开、SVG 里的 `<script>` 被清掉且没执行）；没有用真模型跑一轮看它实际怎么写路径。Tauri 的 WebView 里 blob URL 的图片没单独验过。PDF、视频、CSV 表格（Cursor 有）没做。

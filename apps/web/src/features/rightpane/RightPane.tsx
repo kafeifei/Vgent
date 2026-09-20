@@ -51,6 +51,8 @@ export function RightPane({
   client,
   threadId,
   refreshKey,
+  preview,
+  onPreviewTaken,
   messages,
   thread,
   place,
@@ -68,6 +70,9 @@ export function RightPane({
   threadId: string | null;
   /** The thread's `updatedAt`: a new one means the engine wrote to disk. */
   refreshKey: string;
+  /** The file the 文件 tab was last asked to show. */
+  preview: { path: string; nonce: number } | null;
+  onPreviewTaken: () => void;
   /** The active thread's messages, for 终端 and 计划. Empty without a live thread. */
   messages: UIMessage[];
   /** The project the task runs on, named at the top of the list. */
@@ -189,7 +194,7 @@ export function RightPane({
             {...(thread?.pr != null ? { pr: thread.pr } : { pr: undefined })}
           />
         ) : tab === "files" ? (
-          <FilesPanel client={client} threadId={threadId} active={open} refreshKey={refreshKey} />
+          <FilesPanel client={client} threadId={threadId} active={open} refreshKey={refreshKey} preview={preview} onPreviewTaken={onPreviewTaken} />
         ) : tab === "term" ? (
           <TerminalPanel messages={messages} client={client} threadId={threadId} refreshKey={refreshKey} />
         ) : (

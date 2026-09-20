@@ -77,6 +77,12 @@ importers:
       clsx:
         specifier: 2.1.1
         version: 2.1.1
+      dompurify:
+        specifier: 3.4.15
+        version: 3.4.15
+      katex:
+        specifier: 0.16.47
+        version: 0.16.47
       lucide-react:
         specifier: 1.47.0
         version: 1.47.0(react@19.3.0)

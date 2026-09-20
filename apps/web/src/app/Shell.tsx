@@ -167,6 +167,8 @@ export function Shell({ token }: { token: string }) {
             client={client}
             threadId={selectedThreadId}
             refreshKey={thread?.updatedAt ?? ""}
+            preview={right.preview}
+            onPreviewTaken={actions.clearPreview}
             messages={messages}
             thread={thread}
             place={isNoProject(thread?.projectId) ? NO_PROJECT_NAME : state.projects.find((entry) => entry.id === thread?.projectId)?.name}

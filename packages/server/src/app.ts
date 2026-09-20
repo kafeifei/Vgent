@@ -701,6 +701,33 @@ export function createApp(options: CreateAppOptions): VgentApp {
     return c.json(await files.content(root, path));
   });
 
+  /**
+   * The file itself, for the previews that show a picture as a picture. The
+   * client fetches it with its token and hands the bytes to an `<img>`; nothing
+   * here is ever navigated to, and the headers say so for whoever tries.
+   */
+  app.get("/api/threads/:id/files/raw", async (c) => {
+    const { repoPath: root } = await targetOf(c.req.param("id"));
+    const path = c.req.query("path");
+    if (path == null || path.length === 0) throw new BadRequestError("缺少 path", "invalid_path");
+    const file = await files.bytes(root, path);
+    return c.body(new Uint8Array(file.bytes), 200, {
+      "content-type": file.mediaType,
+      "content-security-policy": "sandbox; default-src 'none'",
+      "x-content-type-options": "nosniff",
+      "cache-control": "no-store",
+    });
+  });
+
+  /** Which of these paths — as tools and replies wrote them — are files of this task, right now. */
+  app.post("/api/threads/:id/files/resolve", async (c) => {
+    const { repoPath: root } = await targetOf(c.req.param("id"));
+    const body = (await c.req.json().catch(() => null)) as { paths?: unknown } | null;
+    const paths = Array.isArray(body?.paths) ? body.paths.filter((entry): entry is string => typeof entry === "string") : null;
+    if (paths == null) throw new BadRequestError("缺少 paths", "invalid_path");
+    return c.json({ files: await files.resolve(root, paths) });
+  });
+
   // --- workspace --------------------------------------------------------
 
   /**

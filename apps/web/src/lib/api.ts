@@ -8,6 +8,7 @@ import type {
   EngineDescriptor,
   EngineId,
   FileContent,
+  ResolvedFile,
   FileDiff,
   FileListing,
   IntegrateAction,
@@ -159,6 +160,20 @@ export async function api<T>(
   return (await response.json()) as T;
 }
 
+/** The same fetch for a body that is not JSON: a file's own bytes. */
+async function apiBlob(path: string, token: string): Promise<Blob> {
+  const response = await fetch(`/api${path}`, { headers: authHeaders(token) });
+  if (response.status === 401) {
+    reportUnauthorized();
+    throw new ApiError(UNAUTHORIZED_MESSAGE, 401, "unauthorized");
+  }
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as { error?: { code?: string; message?: string } } | null;
+    throw new ApiError(body?.error?.message ?? `${response.status} ${response.statusText}`, response.status, body?.error?.code);
+  }
+  return response.blob();
+}
+
 /** One typed call per route in `packages/server/src/app.ts`. */
 export function createClient(token: string) {
   return {
@@ -241,6 +256,11 @@ export function createClient(token: string) {
     },
     getFileContent: (threadId: string, path: string) =>
       api<FileContent>(`/threads/${threadId}/files/content?path=${encodeURIComponent(path)}`, token),
+    /** The file itself; `path` may be absolute, as long as it is inside the task's directory. */
+    getFileBlob: (threadId: string, path: string) => apiBlob(`/threads/${threadId}/files/raw?path=${encodeURIComponent(path)}`, token),
+    /** Of these paths — as tools and replies wrote them — the ones that are this task's files right now. */
+    resolveFiles: (threadId: string, paths: string[]) =>
+      api<{ files: ResolvedFile[] }>(`/threads/${threadId}/files/resolve`, token, { method: "POST", json: { paths } }).then((body) => body.files),
 
     listThreads: () => api<{ threads: ThreadSummary[] }>("/threads", token).then((body) => body.threads),
     createThread: (input: {

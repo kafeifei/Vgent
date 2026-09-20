@@ -75,8 +75,8 @@ describe("createModelCatalog", () => {
 
     expect(result.source).toBe("codex-cache");
     expect(result.models).toEqual([
-      { id: "gpt-6-astra", label: "GPT-6-Astra", description: "最强", modelKey: "codex-subscription/gpt-6-astra", source: { kind: "codex-subscription", name: "Codex", logo: "openai" } },
-      { id: "gpt-5.5", label: "GPT-5.5", modelKey: "codex-subscription/gpt-5.5", source: { kind: "codex-subscription", name: "Codex", logo: "openai" } },
+      { id: "gpt-6-astra", label: "GPT-6-Astra", description: "最强", modelKey: "codex-subscription/gpt-6-astra", source: { kind: "codex-subscription", name: "Codex", logo: "openai" }, vendor: "openai" },
+      { id: "gpt-5.5", label: "GPT-5.5", modelKey: "codex-subscription/gpt-5.5", source: { kind: "codex-subscription", name: "Codex", logo: "openai" }, vendor: "openai" },
     ]);
     expect(result.warning).toContain("在线目录不可用");
   });
@@ -111,15 +111,15 @@ describe("createModelCatalog", () => {
     });
 
     expect((await catalog.list("codex")).models).toEqual([
-      { id: "gpt-6-astra", label: "GPT-6-Astra", contextWindow: 272_000, modelKey: "codex-subscription/gpt-6-astra", source: { kind: "codex-subscription", name: "Codex", logo: "openai" } },
-      { id: "gpt-old", label: "GPT-Old", modelKey: "codex-subscription/gpt-old", source: { kind: "codex-subscription", name: "Codex", logo: "openai" } },
+      { id: "gpt-6-astra", label: "GPT-6-Astra", contextWindow: 272_000, modelKey: "codex-subscription/gpt-6-astra", source: { kind: "codex-subscription", name: "Codex", logo: "openai" }, vendor: "openai" },
+      { id: "gpt-old", label: "GPT-Old", modelKey: "codex-subscription/gpt-old", source: { kind: "codex-subscription", name: "Codex", logo: "openai" }, vendor: "openai" },
     ]);
     // The `vgent` engine's prefixed mapping inherits the same window — and the
     // same name: it is the same model, and only the id carries the prefix.
     expect((await catalog.list("vgent")).models).toEqual([
       // The key is the Codex engine's own: one model, two engines.
-      { id: "codex-subscription:gpt-6-astra", label: "GPT-6-Astra", contextWindow: 272_000, modelKey: "codex-subscription/gpt-6-astra", source: { kind: "codex-subscription", name: "Codex", logo: "openai" } },
-      { id: "codex-subscription:gpt-old", label: "GPT-Old", modelKey: "codex-subscription/gpt-old", source: { kind: "codex-subscription", name: "Codex", logo: "openai" } },
+      { id: "codex-subscription:gpt-6-astra", label: "GPT-6-Astra", contextWindow: 272_000, modelKey: "codex-subscription/gpt-6-astra", source: { kind: "codex-subscription", name: "Codex", logo: "openai" }, vendor: "openai" },
+      { id: "codex-subscription:gpt-old", label: "GPT-Old", modelKey: "codex-subscription/gpt-old", source: { kind: "codex-subscription", name: "Codex", logo: "openai" }, vendor: "openai" },
     ]);
   });
 

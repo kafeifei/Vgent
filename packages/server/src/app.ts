@@ -1292,6 +1292,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
               // One key across the agents it is switched on for: it is one model.
               modelKey: `${provider.id}/${model.id}`,
               source: { kind: "provider" as const, id: provider.id, name: provider.name, ...(hasLogo.has(provider.id) ? { logo: provider.id } : {}) },
+              ...(listed?.vendor != null ? { vendor: listed.vendor } : {}),
               ...reasoningFor(engine, listed?.reasoningLevels),
               ...contextOptionsFor(engine, model.contextWindow, listed?.contextWindow),
               ...(window != null ? { contextWindow: window } : {}),

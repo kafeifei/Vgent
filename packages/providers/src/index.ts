@@ -62,4 +62,4 @@ export {
   normalizeModelsDev,
   summarizeCatalogProvider,
 } from "./catalog.js";
-export type { CatalogEndpoint, CatalogProvider, CatalogProviderSummary, FetchCatalogOptions } from "./catalog.js";
+export type { CatalogEndpoint, CatalogModelMatch, CatalogProvider, CatalogProviderSummary, FetchCatalogOptions } from "./catalog.js";

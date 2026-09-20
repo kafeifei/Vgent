@@ -65,6 +65,14 @@ export interface ModelEntry {
   modelKey?: string;
   /** Whose model it is: what the picker's row icon and its grouping are drawn from. */
   source?: ModelSource;
+  /**
+   * Who *made* the model, as a provider-catalog id (`openai`, `anthropic`, …) —
+   * not who serves it: a company gateway's `codex/gpt-6-astra` is OpenAI's. It
+   * decides the engine a model runs on by default (GPT on Codex, Claude on
+   * Claude Code, the rest on the in-house engine). Absent when the catalog has
+   * never heard of the model.
+   */
+  vendor?: string;
 }
 
 export interface ModelSource {
@@ -196,7 +204,7 @@ export interface ModelCatalogOptions {
    * every Claude Code model offers the harness's five and nothing has a choice
    * of window.
    */
-  catalogModelOf?: () => Promise<(modelId: string) => { reasoningLevels?: string[]; contextWindow?: number } | undefined>;
+  catalogModelOf?: () => Promise<(modelId: string) => { reasoningLevels?: string[]; contextWindow?: number; vendor?: string } | undefined>;
 }
 
 /** How long a fetched catalog is reused. A picker opening twice must not refetch. */
@@ -216,10 +224,10 @@ const GATEWAY_ENV_VARS = ["AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"] as const;
 /** One key for the Codex login's model, whichever engine names it. */
 const codexModelKey = (slug: string): string => `codex-subscription/${slug}`;
 
-const CODEX_BUILTIN: ModelEntry[] = [{ id: "gpt-5.5", label: "gpt-5.5", modelKey: codexModelKey("gpt-5.5"), source: CODEX_SOURCE }];
+const CODEX_BUILTIN: ModelEntry[] = [{ id: "gpt-5.5", label: "gpt-5.5", modelKey: codexModelKey("gpt-5.5"), source: CODEX_SOURCE, vendor: "openai" }];
 
 const VGENT_BUILTIN: ModelEntry[] = [
-  { id: `${CODEX_SUBSCRIPTION_PREFIX}gpt-5.5`, label: "gpt-5.5", modelKey: codexModelKey("gpt-5.5"), source: CODEX_SOURCE },
+  { id: `${CODEX_SUBSCRIPTION_PREFIX}gpt-5.5`, label: "gpt-5.5", modelKey: codexModelKey("gpt-5.5"), source: CODEX_SOURCE, vendor: "openai" },
 ];
 
 /**
@@ -272,6 +280,7 @@ function withClaudeCodeReasoning(
       ...entry,
       modelKey: `claude-subscription/${entry.id}`,
       source: CLAUDE_SOURCE,
+      vendor: "anthropic",
       ...reasoningFor("claude-code", listed?.reasoningLevels),
       ...contextOptionsFor("claude-code", undefined, listed?.contextWindow),
     };
@@ -500,6 +509,7 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
         ...contextOptionsFor("codex", entry.context_window, modelOf?.(entry.slug)?.contextWindow),
         modelKey: codexModelKey(entry.slug),
         source: CODEX_SOURCE,
+        vendor: "openai",
       })),
       source: codex.source,
       ...(codex.warning != null ? { warning: codex.warning } : {}),
@@ -530,6 +540,7 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
           ...contextOptionsFor("vgent", entry.context_window, modelOf?.(entry.slug)?.contextWindow),
           modelKey: codexModelKey(entry.slug),
           source: CODEX_SOURCE,
+          vendor: "openai",
         })),
       );
     }

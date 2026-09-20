@@ -11,16 +11,19 @@ const XD = { kind: "provider", id: "xd", name: "XD" } as const;
 
 const catalogs: Record<string, ModelEntry[]> = {
   codex: [
-    { id: "gpt-6", label: "GPT-6", modelKey: "codex-subscription/gpt-6", source: CODEX },
-    { id: "xd:codex/gpt-6", label: "codex/gpt-6", modelKey: "xd/codex/gpt-6", source: XD },
+    { id: "gpt-6", label: "GPT-6", modelKey: "codex-subscription/gpt-6", source: CODEX, vendor: "openai" },
+    { id: "xd:codex/gpt-6", label: "codex/gpt-6", modelKey: "xd/codex/gpt-6", source: XD, vendor: "openai" },
+    { id: "xd:qwen", label: "qwen", modelKey: "xd/qwen", source: XD, vendor: "alibaba" },
   ],
   "claude-code": [
-    { id: "opus", label: "opus", modelKey: "claude-subscription/opus", source: CLAUDE },
-    { id: "xd:claude-opus", label: "claude-opus", modelKey: "xd/claude-opus", source: XD },
+    { id: "opus", label: "opus", modelKey: "claude-subscription/opus", source: CLAUDE, vendor: "anthropic" },
+    { id: "xd:claude-opus", label: "claude-opus", modelKey: "xd/claude-opus", source: XD, vendor: "anthropic" },
   ],
   vgent: [
     { id: "codex-subscription:gpt-6", label: "GPT-6", modelKey: "codex-subscription/gpt-6", source: CODEX },
     { id: "xd:codex/gpt-6", label: "codex/gpt-6", modelKey: "xd/codex/gpt-6", source: XD },
+    { id: "xd:qwen", label: "qwen", modelKey: "xd/qwen", source: XD },
+    { id: "xd:claude-opus", label: "claude-opus", modelKey: "xd/claude-opus", source: XD },
     { id: "codex-subscription:gpt-old", label: "GPT-Old", modelKey: "codex-subscription/gpt-old", source: CODEX, hidden: true },
   ],
 };
@@ -37,7 +40,7 @@ describe("buildModelChoices", () => {
   });
 
   it("keeps a source's models together, sources in the order they first appear", () => {
-    expect(choices.map((choice) => choice.label)).toEqual(["GPT-6", "codex/gpt-6", "claude-opus", "opus"]);
+    expect(choices.map((choice) => choice.label)).toEqual(["GPT-6", "codex/gpt-6", "qwen", "claude-opus", "opus"]);
   });
 
   it("leaves out a switched-off model, except for the task already on it", () => {
@@ -54,22 +57,23 @@ describe("buildModelChoices", () => {
 });
 
 describe("preferredRoute", () => {
-  const [gpt, xdGpt, xdOpus, opus] = buildModelChoices(ENGINES, catalogs);
+  const [gpt, xdGpt, xdQwen, xdOpus, opus] = buildModelChoices(ENGINES, catalogs);
 
-  it("runs a subscription's model on the vendor's own agent, and everything else on the in-house engine", () => {
+  it("goes by who made the model, not who serves it: GPT on Codex, Claude on Claude Code, the rest in-house", () => {
     expect(preferredRoute(gpt!, "claude-code", false)?.engine).toBe("codex");
     expect(preferredRoute(opus!, "codex", false)?.engine).toBe("claude-code");
-    expect(preferredRoute(xdGpt!, "codex", false)?.engine).toBe("vgent");
-    // The in-house engine was never given this one, so it runs where it can.
-    expect(preferredRoute(xdOpus!, "codex", false)?.engine).toBe("claude-code");
+    // The company gateway's GPT and Claude are still a GPT and a Claude.
+    expect(preferredRoute(xdGpt!, "vgent", false)?.engine).toBe("codex");
+    expect(preferredRoute(xdOpus!, "vgent", false)?.engine).toBe("claude-code");
+    expect(preferredRoute(xdQwen!, "codex", false)?.engine).toBe("vgent");
   });
 
   it("remembers the engine last chosen for that model, and only for that model", () => {
-    const remembered = { [gpt!.key]: "vgent", [xdGpt!.key]: "codex" } as const;
+    const remembered = { [gpt!.key]: "vgent", [xdQwen!.key]: "codex" } as const;
     expect(preferredRoute(gpt!, "codex", false, remembered)?.engine).toBe("vgent");
+    expect(preferredRoute(xdQwen!, "vgent", false, remembered)?.engine).toBe("codex");
     expect(preferredRoute(xdGpt!, "vgent", false, remembered)?.engine).toBe("codex");
-    expect(preferredRoute(opus!, "codex", false, remembered)?.engine).toBe("claude-code");
-    // A remembered engine that no longer offers the model falls back to the default.
+    // A remembered engine that does not offer the model falls back to the default.
     expect(preferredRoute(opus!, "codex", false, { [opus!.key]: "vgent" })?.engine).toBe("claude-code");
   });
 

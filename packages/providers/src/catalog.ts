@@ -267,6 +267,9 @@ export function modelKeys(id: string): string[] {
   return [...new Set([tail, bare, dashed])].filter((key) => key !== "");
 }
 
+/** A catalog row, and whose it is: the id of the provider whose own listing it was found in (`openai`, `anthropic`, …). */
+export type CatalogModelMatch = ProviderModel & { vendor: string };
+
 /**
  * 「目录对这个模型知道什么」— its effort levels, its context window — answered
  * for a model id that may have come from anywhere: a company gateway's
@@ -277,8 +280,8 @@ export function modelKeys(id: string): string[] {
  * what no vendor listed. An id the catalog has never seen answers undefined
  * rather than a guess.
  */
-export function createModelIndex(providers: readonly CatalogProvider[]): (modelId: string) => ProviderModel | undefined {
-  const index = new Map<string, ProviderModel>();
+export function createModelIndex(providers: readonly CatalogProvider[]): (modelId: string) => CatalogModelMatch | undefined {
+  const index = new Map<string, CatalogModelMatch>();
   const rank = (provider: CatalogProvider): number => {
     const at = POPULAR_PROVIDER_IDS.indexOf(provider.id);
     return at < 0 ? POPULAR_PROVIDER_IDS.length : at;
@@ -291,7 +294,7 @@ export function createModelIndex(providers: readonly CatalogProvider[]): (modelI
         for (const model of provider.models) {
           if (model.id.includes("/") !== resold) continue;
           const key = modelKeys(model.id)[level];
-          if (key != null && !index.has(key)) index.set(key, model);
+          if (key != null && !index.has(key)) index.set(key, { ...model, vendor: provider.id });
         }
       }
     }

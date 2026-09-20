@@ -151,6 +151,8 @@ describe("provider routes", () => {
       modelKey: "deepseek/deepseek-v4-pro",
       // In the catalog, so it has a logo to show.
       source: { kind: "provider", id: "deepseek", name: "DeepSeek", logo: "deepseek" },
+      // Who made it, which is what picks its default engine.
+      vendor: "deepseek",
       reasoningLevels: ["provider-default", "low", "medium", "high"],
       defaultReasoningLevel: "high",
     });

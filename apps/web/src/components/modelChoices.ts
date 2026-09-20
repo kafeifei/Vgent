@@ -16,6 +16,8 @@ export interface ModelChoice {
   key: string;
   label: string;
   source: NonNullable<ModelEntry["source"]>;
+  /** Who made the model (`openai`, `anthropic`, …), whoever serves it. */
+  vendor?: string;
   /** In the order the Engine submenu lists them: the in-house engine first, then the server's order. */
   routes: EngineRoute[];
 }
@@ -45,6 +47,7 @@ export function buildModelChoices(
       const sourceKey = `${source.kind}/${source.id ?? source.name}`;
       if (!sourceOrder.includes(sourceKey)) sourceOrder.push(sourceKey);
       const choice: ModelChoice = byKey.get(key) ?? { key, label: entry.label, source, routes: [] };
+      if (choice.vendor == null && entry.vendor != null) choice.vendor = entry.vendor;
       choice.routes.push({ engine: engine.id, label: engine.label, entry });
       byKey.set(key, choice);
     }
@@ -60,10 +63,15 @@ export function buildModelChoices(
 export const currentChoice = (choices: readonly ModelChoice[], engine: EngineId, model: string | undefined): ModelChoice | undefined =>
   model == null ? undefined : choices.find((choice) => choice.routes.some((route) => route.engine === engine && route.entry.id === model));
 
-/** Whose model it is decides who runs it: the vendor's own agent for a subscription's models, the in-house engine for the rest. */
-function defaultEngineOf(source: ModelChoice["source"]): EngineId {
-  if (source.kind === "codex-subscription") return "codex";
-  if (source.kind === "claude-subscription") return "claude-code";
+/**
+ * The model decides who runs it, not whoever serves it (用户 2026-09-20:「看模型，
+ * 别看 Provider」): a GPT goes to Codex and a Claude to Claude Code — their
+ * makers' own agents — whether it came with the login or through a company
+ * gateway; everything else goes to the in-house engine.
+ */
+function defaultEngineOf(choice: ModelChoice): EngineId {
+  if (choice.vendor === "openai") return "codex";
+  if (choice.vendor === "anthropic") return "claude-code";
   return "vgent";
 }
 
@@ -81,7 +89,7 @@ export function preferredRoute(
 ): EngineRoute | undefined {
   const on = (id: EngineId | undefined) => choice.routes.find((route) => route.engine === id);
   if (engineLocked) return on(engine);
-  return on(remembered[choice.key]) ?? on(defaultEngineOf(choice.source)) ?? choice.routes[0];
+  return on(remembered[choice.key]) ?? on(defaultEngineOf(choice)) ?? choice.routes[0];
 }
 
 /** `272000` → `272K`, `1050000` → `1M`. */

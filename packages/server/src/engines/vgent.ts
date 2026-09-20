@@ -7,7 +7,7 @@ import { BadRequestError, EngineUnavailableError } from "../errors.js";
 import { createProviderStore } from "../store/providers.js";
 import { createSettingsStore } from "../store/settings.js";
 import type { EngineDescriptor } from "./capabilities.js";
-import { effectiveReasoningLevel } from "../reasoning.js";
+import { PROVIDER_DEFAULT_LEVEL, effectiveReasoningLevel } from "../reasoning.js";
 import type { EngineContext, EngineFactory, EngineRunner } from "./registry.js";
 
 /** 引擎能力表, the 自研 row: everything, because everything in it is ours. */
@@ -124,7 +124,9 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
         memoryDir: memoryDirOf(ctx),
         // The summary is always asked for (that is the engine's default); the
         // effort is the task's, or 高. A model that does not reason ignores it.
-        reasoning: { effort: effectiveReasoningLevel(ctx.thread.reasoningEffort) },
+        // 「不指定」sends none, for an endpoint that refuses the parameter.
+        reasoning:
+          ctx.thread.reasoningEffort === PROVIDER_DEFAULT_LEVEL ? {} : { effort: effectiveReasoningLevel(ctx.thread.reasoningEffort) },
         // Fast: the Responses API's `service_tier`, for the models that offer one.
         ...(ctx.thread.serviceTier != null ? { serviceTier: ctx.thread.serviceTier } : {}),
         // Everything the model cannot work out for itself: which model it is,

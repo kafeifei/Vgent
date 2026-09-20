@@ -17,28 +17,8 @@ export const effectiveModel = (model: string | undefined, catalog: ModelCatalog 
 /** The chip's tooltip when the name shown is the default rather than the task's pick. */
 const DEFAULT_MODEL_TITLE = "默认模型（在设置里改）";
 
-/** Why the other engines' groups are greyed out once a task has history. */
-const LOCKED_HINT = "已有对话的任务不能跨引擎换模型";
-
 /** What a `ModelPicker` trigger shows: the effective model, and why. */
 export type ModelChip = { label: string; title?: string };
-
-/** What the footer line says about where the list came from. */
-const SOURCE_LABELS: Record<string, string> = {
-  "codex-remote": "来自 Codex 在线目录",
-  "codex-cache": "来自 Codex 缓存",
-  gateway: "来自 AI Gateway",
-  "anthropic-api": "来自 Anthropic API",
-  "models.dev": "来自 models.dev 目录",
-  builtin: "内置清单",
-};
-
-function describeSource(source: string): string {
-  return source
-    .split("+")
-    .map((part) => SOURCE_LABELS[part] ?? part)
-    .join(" + ");
-}
 
 export type CatalogState =
   | { status: "loading" }
@@ -146,16 +126,15 @@ export function splitByProvider<T extends { provider?: string }>(entries: readon
   return { own, fromProviders: [...groups] };
 }
 
-/** The line under a group: where its list came from, or why there is none. */
-function footerOf(state: CatalogState | undefined): string | undefined {
-  if (state == null || state.status === "loading") return undefined;
-  if (state.status === "error") return `模型列表加载失败：${state.message}`;
-  return state.catalog.warning ?? describeSource(state.catalog.source);
+/** The one line a group may carry: that its list could not be loaded. Where a list came from is nobody's business here. */
+function failureOf(state: CatalogState | undefined): string | undefined {
+  return state?.status === "error" ? `模型列表加载失败：${state.message}` : undefined;
 }
 
 /**
- * 「选模型即选引擎」: one popover, one group per engine, engine label as the
- * heading. The user never picks an engine — it comes along with the model.
+ * 「选模型即选引擎」: one popover, one group per engine — the agent's name in
+ * grey, then its models, and nothing else. The user never picks an engine; it
+ * comes along with the model.
  */
 export function ModelPicker({
   engines,
@@ -172,7 +151,7 @@ export function ModelPicker({
   engines: readonly EngineDescriptor[];
   engine: EngineId;
   model: string | undefined;
-  /** A task with history cannot cross engines; the other groups say so and are dead. */
+  /** A task with history cannot cross engines, so only its own engine's group is shown. */
   engineLocked?: boolean;
   /** `model: undefined` means「默认」. The engine always travels with it. */
   onPick: (engine: EngineId, model: string | undefined) => void;
@@ -205,6 +184,8 @@ export function ModelPicker({
   const orphan =
     model != null && catalog != null && !catalog.models.some((entry) => entry.id === model) ? model : undefined;
 
+  const shown = engines.filter((entry) => !engineLocked || entry.id === engine);
+
   return (
     <Popover
       align={align}
@@ -215,15 +196,14 @@ export function ModelPicker({
     >
       {(close) => (
         <>
-          {engines.map((entry) => {
+          {shown.map((entry) => {
             const state = states[entry.id];
-            const locked = engineLocked && entry.id !== engine;
             const entries = state?.status === "ready" ? state.catalog.models : [];
             const defaultId = state?.status === "ready" ? state.catalog.defaultModel : undefined;
             const groupDefault =
               defaultId == null ? undefined : (entries.find((row) => row.id === defaultId)?.label ?? defaultId);
-            const footer = footerOf(state);
-            // Switched off in 设置 › 模型: not on offer, except to the task that is already on it.
+            const failure = failureOf(state);
+            // Switched off in 设置 › 提供商: not on offer, except to the task that is already on it.
             const offered = entries.filter((row) => row.hidden !== true || (entry.id === engine && row.id === model));
             const { own, fromProviders } = splitByProvider(offered);
             const pick = (next: string | undefined) => {
@@ -233,43 +213,32 @@ export function ModelPicker({
 
             return (
               <div key={entry.id}>
-                <PopTitle>
-                  <span className="flex items-center gap-2xs">
-                    <span>{entry.label}</span>
-                    {!entry.capabilities.approvals && <span className="text-fg-faint">只能全自动</span>}
-                  </span>
-                </PopTitle>
-                {locked ? (
-                  <div className="px-xs py-2xs text-2xs text-fg-faint">{LOCKED_HINT}</div>
-                ) : (
-                  <>
-                    <PopItem selected={entry.id === engine && model === undefined} onClick={() => pick(undefined)}>
-                      <span className="font-mono">默认{groupDefault != null && ` · ${groupDefault}`}</span>
+                <PopTitle>{entry.label}</PopTitle>
+                  <PopItem selected={entry.id === engine && model === undefined} onClick={() => pick(undefined)}>
+                    默认{groupDefault != null && ` · ${groupDefault}`}
+                  </PopItem>
+                  {entry.id === engine && orphan != null && (
+                    <PopItem selected onClick={close}>
+                      当前：{orphan}
                     </PopItem>
-                    {entry.id === engine && orphan != null && (
-                      <PopItem selected onClick={close}>
-                        <span className="font-mono">当前：{orphan}</span>
-                      </PopItem>
-                    )}
-                    {state?.status === "loading" && <PopItem disabled>加载中…</PopItem>}
-                    {own.map((row) => (
-                      <PopItem key={row.id} selected={entry.id === engine && row.id === model} onClick={() => pick(row.id)}>
-                        <span className="font-mono">{row.label}</span>
-                      </PopItem>
-                    ))}
-                    {footer != null && <div className="px-xs py-2xs text-2xs text-fg-faint">{footer}</div>}
-                    {fromProviders.map(([provider, rows]) => (
-                      <div key={provider}>
-                        <div className="px-xs pt-2xs text-2xs text-fg-faint">{provider}</div>
-                        {rows.map((row) => (
-                          <PopItem key={row.id} selected={entry.id === engine && row.id === model} onClick={() => pick(row.id)}>
-                            <span className="font-mono">{row.label}</span>
-                          </PopItem>
-                        ))}
-                      </div>
-                    ))}
-                  </>
-                )}
+                  )}
+                  {state?.status === "loading" && <PopItem disabled>加载中…</PopItem>}
+                  {own.map((row) => (
+                    <PopItem key={row.id} selected={entry.id === engine && row.id === model} onClick={() => pick(row.id)}>
+                      {row.label}
+                    </PopItem>
+                  ))}
+                  {failure != null && <div className="px-xs py-2xs text-2xs text-fg-faint">{failure}</div>}
+                  {fromProviders.map(([provider, rows]) => (
+                    <div key={provider}>
+                      <div className="px-xs pt-2xs text-2xs text-fg-faint">{provider}</div>
+                      {rows.map((row) => (
+                        <PopItem key={row.id} selected={entry.id === engine && row.id === model} onClick={() => pick(row.id)}>
+                          {row.label}
+                        </PopItem>
+                      ))}
+                    </div>
+                  ))}
               </div>
             );
           })}

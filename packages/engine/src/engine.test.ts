@@ -7,6 +7,7 @@ import { z } from "zod";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   createVgentEngine,
+  portableReasoning,
   reasoningProviderOptions,
   resolveModel,
   usesOpenAIReasoning,
@@ -260,6 +261,24 @@ function answeringMock(identity: { provider: string; modelId: string }) {
     ],
   });
 }
+
+describe("portableReasoning", () => {
+  const providers = [{ id: "xd", name: "XD", agents: {} }];
+
+  it("sends a settings-page provider's model the level as the SDK's own reasoning setting", () => {
+    expect(portableReasoning("xd:codex/gpt-6", providers, { effort: "high" })).toBe("high");
+    // 「不指定」 reaches here as no effort at all.
+    expect(portableReasoning("xd:codex/gpt-6", providers, {})).toBeUndefined();
+    // A level the portable setting does not have is dropped rather than sent.
+    expect(portableReasoning("xd:codex/gpt-6", providers, { effort: "max" })).toBeUndefined();
+  });
+
+  it("leaves every other model to the path it already had", () => {
+    expect(portableReasoning("codex-subscription:gpt-5.5", providers, { effort: "high" })).toBeUndefined();
+    expect(portableReasoning("openai/gpt-5.5", providers, { effort: "high" })).toBeUndefined();
+    expect(portableReasoning("other:model", providers, { effort: "high" })).toBeUndefined();
+  });
+});
 
 describe("reasoning options", () => {
   it("always asks a codex model for a reasoning summary, and carries the effort when there is one", () => {

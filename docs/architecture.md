@@ -391,3 +391,16 @@ docs/
 - 桌面壳：Windows / Linux、签名与公证、自动更新、多窗口。
 
 下一步：五个里程碑都已落地，先停止加功能。`docs/product.md`「现状对照」里记的缺口按需修，然后等用户在真 app 里把七步走一遍、给 Cursor 对应界面的截图做一轮对齐；每个里程碑落 main 后打包装到 /Applications。发布工程（签名 / 公证、自动更新、Windows）只在有明确需求时再启动。
+
+## 2026-09-20：模型菜单、推理强度的归属、分叉
+
+**模型菜单只剩三样**：灰色的 agent 名、（有的话）灰色的提供商名、模型。清单来源那一行、「只能全自动」、「已有对话的任务不能跨引擎换模型」都拿掉；已有对话的任务干脆只显示自己那个引擎的一组。只有「模型列表加载失败」还会占一行，因为那是用户需要知道的。
+
+**推理强度为什么又丢了一次，以及现在归谁管**。等级原来是「每个清单来源各自往模型条目上贴」：Codex 目录贴它声明的，Claude Code 一律贴五档，网关只给 `openai/*` 贴。提供商的模型是在路由里每次请求现并进去的，绕过了所有这些来源，所以没有等级，聊天框里那个 chip 就消失了。现在由 `reasoning.ts` 的 `providerModelReasoning(engine)` 一处决定，并入目录的地方调它：等级取决于**引擎怎么把强度带给模型**，而不是模型是谁——Claude Code 的 `effort` 和 Codex 的 `model_reasoning_effort` 是 harness 设置，什么模型都吃；自研引擎发的是 AI SDK v7 的顶层 `reasoning`（各家 provider 包自己翻译成 `reasoning_effort`、Anthropic 的 `effort` 等，见包内文档 `03-ai-sdk-core/26-reasoning.mdx`），取每个包都不用折算的 低/中/高。自研引擎这边另有「不指定」（`provider-default`，什么都不发）：对一个一无所知的端点，必须留一条它拒收这个参数时的退路。`portableReasoning()` 只对 `<提供商>:<模型>` 这种 id 生效，订阅和网关的模型还走原来的 `providerOptions.openai`。
+
+**没验证的**：还没有对着真端点跑过一轮带 `reasoning` 的请求；公司网关（LiteLLM）对不认这个参数的模型是丢弃还是 400，不知道——400 的话选「不指定」。
+
+**红点**：侧栏左边那个位置表示「需要你看一眼」。在跑、等审批、等回答，状态持续多久就显示多久；已经停下的（完成、失败、中断）只在未读期间显示，失败的是红点。原来 `error` / `interrupted` 不管读没读都画红点，而状态要到下一轮才会变，所以永远消不掉。
+
+**分叉**：`fork.ts`（`planFork` 切历史、去掉源任务的 checkpoint 元数据、换新 id；`forkNote` 给有自己会话的引擎拼一次性的文字记录），路由 `POST /api/threads/:id/fork`，草稿由 server 直接写进新任务。记录上的 `forkedFrom.pending` 在新任务第一轮开跑时清掉。恢复相关的 server 代码（`restore.ts`、checkpoints 路由）没删：快照还在给任务基线和「上一轮」用，「回到最新」也还要它。
+

@@ -130,6 +130,13 @@ export interface ThreadMessageMetadata {
   checkpointAfter?: MessageCheckpoint;
 }
 
+/** Where a forked task came from. */
+export interface ThreadForkOrigin {
+  threadId: string;
+  messageId: string;
+  pending?: true;
+}
+
 /** What `POST /api/threads/:id/checkpoints/restore` answers with. */
 export interface CheckpointRestore {
   /** The checkpoint commit the working directory now matches. */
@@ -278,6 +285,12 @@ export interface ThreadRecord {
    * because the work log dims from this point down.
    */
   restoredTo?: ThreadRestorePoint;
+  /**
+   * 分叉来源. `pending` stays until the fork's first turn starts: that turn is
+   * the one that has to carry the earlier conversation to an engine whose
+   * session does not have it.
+   */
+  forkedFrom?: ThreadForkOrigin;
   /** Recomputed at the end of every turn and after every 收口 action. */
   changeStats?: ChangeStats;
   /** 排队的消息, oldest first. Never stored empty — an absent field is an empty queue. */

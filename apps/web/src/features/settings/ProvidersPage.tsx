@@ -94,7 +94,7 @@ function ConnectDialog({
   if (connected != null) {
     return (
       <Dialog title={`${entry.name} · 选模型`} onClose={onClose} wide>
-        <p className="border-border border-b px-lg py-xs text-fg-faint text-xs">已连接。打开哪个 agent 的开关，模型就出现在它的模型选择器里；之后在「模型」页随时能改。</p>
+        <p className="border-border border-b px-lg py-xs text-fg-faint text-xs">已连接。打开哪个 agent 的开关，模型就出现在它的模型选择器里；之后点这家的「模型」随时能改。</p>
         <div className="min-h-0 flex-1 overflow-y-auto">
           <ModelTable
             client={client}
@@ -603,7 +603,7 @@ export function ProvidersPage({
   const close = () => setOpen(undefined);
 
   return (
-    <SettingsPage title="模型提供商" description="Claude 和 Codex 的订阅用它们自己的登录，不用 key；别的填一次 key 接一家。接上之后，在「模型」页决定每个 agent 用它的哪些模型。">
+    <SettingsPage title="模型提供商" description="Claude 和 Codex 的订阅用它们自己的登录，不用 key；别的填一次 key 接一家。接上之后，点每一家的「模型」决定每个 agent 用它的哪些。">
       <SettingsGroup title="已连接">
         {signedIn.map((account) => (
           <SettingsRow

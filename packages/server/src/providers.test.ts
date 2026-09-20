@@ -139,7 +139,15 @@ describe("provider routes", () => {
     await request(app, "/api/providers", { method: "POST", body: deepseekInput });
 
     const vgent = (await (await request(app, "/api/engines/vgent/models")).json()) as { models: { id: string; provider?: string; contextWindow?: number }[] };
-    expect(vgent.models).toContainEqual({ id: "deepseek:deepseek-v4-pro", label: "DeepSeek V4 Pro", provider: "DeepSeek", contextWindow: 1_000_000 });
+    // A provider's model arrives with its 推理强度 like any other: the levels follow from how the engine carries the effort.
+    expect(vgent.models).toContainEqual({
+      id: "deepseek:deepseek-v4-pro",
+      label: "DeepSeek V4 Pro",
+      provider: "DeepSeek",
+      contextWindow: 1_000_000,
+      reasoningLevels: ["provider-default", "low", "medium", "high"],
+      defaultReasoningLevel: "high",
+    });
 
     const claude = (await (await request(app, "/api/engines/claude-code/models")).json()) as { models: { id: string }[] };
     expect(claude.models.map((model) => model.id)).toContain("deepseek:deepseek-v4-flash");
@@ -165,7 +173,13 @@ describe("provider routes", () => {
     });
     expect(((await created.json()) as { agents: { codex: { protocol: string } } }).agents.codex.protocol).toBe("openai");
     const codex = (await (await request(app, "/api/engines/codex/models")).json()) as { models: { id: string; provider?: string }[] };
-    expect(codex.models).toContainEqual({ id: "openai:gpt-5.4", label: "GPT-5.4", provider: "OpenAI" });
+    expect(codex.models).toContainEqual({
+      id: "openai:gpt-5.4",
+      label: "GPT-5.4",
+      provider: "OpenAI",
+      reasoningLevels: ["low", "medium", "high", "xhigh"],
+      defaultReasoningLevel: "high",
+    });
   });
 
   it("pulls a provider's model list with the form's key, or the stored one when the form has none", async () => {

@@ -299,6 +299,10 @@ export function createClient(token: string) {
         token,
       ),
 
+    /** 分叉: a new task with the conversation before this message; its text is waiting in the new task's draft. */
+    forkThread: (threadId: string, messageId: string) =>
+      api<ThreadRecord>(`/threads/${threadId}/fork`, token, { method: "POST", json: { messageId } }),
+
     /**
      * 排队: what Enter does while a turn is live. The item lives on the server,
      * so it goes out even with no browser open. Every call answers with the

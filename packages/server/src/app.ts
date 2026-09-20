@@ -30,8 +30,10 @@ import { createHarnessRuntime } from "./harness-runtime.js";
 import type { ChangesResponse, DiffBase, Git } from "./git.js";
 import { createGit } from "./git.js";
 import { pickFile, pickFolder } from "./folder-picker.js";
+import { planFork } from "./fork.js";
 import { asIntegrateAction, changeStatsOf, createIntegrator, taskTarget, type Integrator, type TaskTarget } from "./integrate.js";
 import { createModelCatalog, type ModelEntry } from "./models.js";
+import { providerModelReasoning } from "./reasoning.js";
 import { SUBSCRIPTION_IDS, createSubscriptionService, markHidden, withHiddenModels, type ClaudeLoginStatus, type SubscriptionId } from "./subscriptions.js";
 import { createQueueStore, readQueueText } from "./queue.js";
 import { asRestoreTarget, lastTurnPair, planRestore, type RestoreTarget } from "./restore.js";
@@ -816,6 +818,32 @@ export function createApp(options: CreateAppOptions): VgentApp {
     }
   });
 
+  // 分叉: a new task holding this one's conversation up to a user message, whose
+  // text comes back as the draft to edit. Same project, same engine and model —
+  // and the project directory as its workspace: a fork copies what was said, not
+  // a worktree.
+  app.post("/api/threads/:id/fork", async (c) => {
+    const source = await threads.get(c.req.param("id"));
+    if (source == null) throw new NotFoundError(`线程不存在: ${c.req.param("id")}`, "thread_not_found");
+    const body = (await c.req.json().catch(() => undefined)) as { messageId?: unknown } | undefined;
+    if (typeof body?.messageId !== "string") throw new BadRequestError("缺少 messageId", "invalid_message");
+    const plan = planFork(source.messages, body.messageId);
+    const thread = await threads.create({
+      projectId: source.projectId,
+      title: `${source.title}（分叉）`,
+      engine: source.engine,
+      ...(source.model != null ? { model: source.model } : {}),
+      ...(source.reasoningEffort != null ? { reasoningEffort: source.reasoningEffort } : {}),
+      ...(source.serviceTier != null ? { serviceTier: source.serviceTier } : {}),
+      ...(source.mode != null ? { mode: source.mode } : {}),
+      messages: plan.messages,
+      forkedFrom: { threadId: source.id, messageId: body.messageId, ...(plan.messages.length > 0 ? { pending: true as const } : {}) },
+    });
+    // Into the new task's composer, written before the client opens it.
+    if (plan.draft !== "") await drafts.put(thread.id, plan.draft.slice(0, MAX_DRAFT_BYTES)).catch((error) => log.warn(`写分叉草稿失败 (thread ${thread.id})`, error));
+    return c.json(thread, 201);
+  });
+
   app.get("/api/threads/:id", async (c) => {
     const record = await threads.get(c.req.param("id"));
     if (record == null) throw new NotFoundError(`线程不存在: ${c.req.param("id")}`, "thread_not_found");
@@ -1226,6 +1254,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
             id: providerModelSpec(provider.id, model.id),
             label: model.label ?? model.id,
             provider: provider.name,
+            ...providerModelReasoning(engine),
             ...(model.contextWindow != null ? { contextWindow: model.contextWindow } : {}),
           })),
         )

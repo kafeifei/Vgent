@@ -51,7 +51,6 @@ export function WorkLog({
               isLast={index === turns.length - 1}
               live={live}
               dimmed={restoredIndex >= 0 && index >= restoredIndex}
-              atRestorePoint={index === restoredIndex}
               actions={actions}
               allowlist={allowlist}
             />

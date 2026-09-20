@@ -101,23 +101,16 @@ function ThreadChatView({
   useEffect(() => onMessages(messages), [onMessages, messages]);
 
   /**
-   * 恢复到此处 and 回到最新: one call either way — the server works out from
-   * where the thread stands whether this moves the files back or forward, and
-   * which files it may touch at all. There is no undo toast any more: the
-   * position is recorded on the thread, so the way back is always on screen.
+   * 回到最新, for a task an older build left standing at an earlier checkpoint.
+   * Nothing in the log offers 恢复到此处 any more (分叉 took its place), so this
+   * is the only direction left.
    */
   const restoreCheckpoint = useCallback(
-    (target: { messageId: string } | { latest: true }) => {
+    (target: { latest: true }) => {
       void (async () => {
         try {
           const result = await client.restoreCheckpoint(thread.id, target);
-          actions.toast(
-            result.whole
-              ? "已整个目录恢复"
-              : "latest" in target
-                ? `已回到最新，放回 ${result.files} 个文件`
-                : `已恢复 ${result.files} 个文件`,
-          );
+          actions.toast(result.whole ? "已整个目录恢复" : `已回到最新，放回 ${result.files} 个文件`);
         } catch (failure) {
           actions.toast(failure instanceof Error ? failure.message : String(failure));
         }
@@ -137,11 +130,10 @@ function ThreadChatView({
       },
       answerQuestions: (toolCallId, output) => void addToolOutput({ tool: "askUserQuestions", toolCallId, output }),
       openFile: (file) => actions.openChanges(file),
-      restoreCheckpoint: (messageId) => restoreCheckpoint({ messageId }),
+      fork: (messageId) => actions.forkThread(thread.id, messageId),
       restoreLatest: () => restoreCheckpoint({ latest: true }),
-      previewRestore: (messageId) => client.previewRestore(thread.id, { messageId }),
     }),
-    [actions, addToolApprovalResponse, addToolOutput, client, restoreCheckpoint, thread.id],
+    [actions, addToolApprovalResponse, addToolOutput, restoreCheckpoint, thread.id],
   );
 
   // Every approval the global allowlist already answers, answered once. The

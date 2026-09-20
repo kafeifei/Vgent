@@ -170,9 +170,13 @@ export function TaskItem({
           : thread.status === "interrupted"
             ? "已中断"
             : undefined;
-  // The gutter left of the title is where a row says it needs a look: a task
-  // that is not simply idle shows its state there, an unread one a solid dot.
-  const marked = thread.status !== "idle" || unread;
+  // The gutter left of the title is where a row says it needs a look. A turn in
+  // flight or parked on the human shows its state for as long as that lasts; one
+  // that has settled — done, failed, stopped — is marked only until it is read,
+  // so opening a failed task clears its red dot like any other unread one.
+  const settled = thread.status === "idle" || thread.status === "error" || thread.status === "interrupted";
+  const marked = settled ? unread : true;
+  const archived = thread.archivedAt != null;
 
   return (
     <div
@@ -194,14 +198,18 @@ export function TaskItem({
       >
         {marked && (
           <span className="absolute left-0 grid h-full w-row-indent place-items-center">
-            {thread.status === "idle" ? (
-              <span aria-label="未读" title="未读" className="size-xs flex-none rounded-full bg-info" />
+            {settled ? (
+              <span
+                aria-label={thread.status === "error" ? "失败，未读" : "未读"}
+                title={thread.status === "error" ? "失败，未读" : "未读"}
+                className={cn("size-xs flex-none rounded-full", thread.status === "error" ? "bg-danger" : "bg-info")}
+              />
             ) : (
               <StatusDot status={thread.status} />
             )}
           </span>
         )}
-        <span className={cn("min-w-0 flex-1 truncate", unread && "font-medium")}>
+        <span className={cn("min-w-0 flex-1 truncate", unread && "font-medium", archived && "text-fg-faint")}>
           {thread.status === "running" && chat != null ? <LiveTitle chat={chat} title={thread.title} /> : thread.title}
         </span>
         <OutcomeBadge outcome={thread.outcome} pr={thread.pr} />
@@ -212,7 +220,7 @@ export function TaskItem({
         </span>
       </button>
       <RowMenu
-        archived={thread.archivedAt != null}
+        archived={archived}
         unread={unread}
         live={(LIVE_STATUSES as readonly string[]).includes(thread.status)}
         openRef={openMenu}

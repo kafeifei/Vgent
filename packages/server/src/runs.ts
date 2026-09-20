@@ -24,6 +24,7 @@ import { effectivePermission } from "./engines/capabilities.js";
 import type { EngineRegistry, EngineRunner } from "./engines/registry.js";
 import { statelessEngines } from "./engines/registry.js";
 import type { QueueStore } from "./queue.js";
+import { forkNote } from "./fork.js";
 import { restoreNote } from "./restore.js";
 import type { ProjectStore } from "./store/projects.js";
 import type { SettingsStore } from "./store/settings.js";
@@ -766,7 +767,12 @@ export function createRunManager(options: {
     // 从恢复点继续: the marker goes away with this message — the task is moving
     // forward from here — and the model is told once, in this turn's input, what
     // happened to the files it may remember writing.
-    const note = thread.restoredTo != null && validated.at(-1)?.role === "user" ? restoreNote(thread.messages, thread.restoredTo.messageId) : undefined;
+    const restored = thread.restoredTo != null && validated.at(-1)?.role === "user" ? restoreNote(thread.messages, thread.restoredTo.messageId) : undefined;
+    // 分叉后的第一轮: an engine whose session keeps its own history has none of
+    // what the fork copied, so that turn carries it as text. Said once.
+    const forked =
+      thread.forkedFrom?.pending === true && factory.statelessTurns !== true ? forkNote(thread.messages) : undefined;
+    const note = [forked, restored].filter((part) => part != null).join("\n\n") || undefined;
     // A thread is named by its first user message; an explicit title is kept.
     const title = thread.title === DEFAULT_THREAD_TITLE ? deriveThreadTitle(messages) : undefined;
     const updated = await threads.update(threadId, {
@@ -777,6 +783,7 @@ export function createRunManager(options: {
       // describes what is on disk.
       outcome: undefined,
       restoredTo: undefined,
+      ...(thread.forkedFrom?.pending === true ? { forkedFrom: { threadId: thread.forkedFrom.threadId, messageId: thread.forkedFrom.messageId } } : {}),
       ...(title != null ? { title } : {}),
     });
 

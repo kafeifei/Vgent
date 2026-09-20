@@ -1,6 +1,6 @@
 import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { createModelRegistry, type ProviderConfig } from "@vgent/providers";
+import { createModelRegistry, splitProviderModelSpec, type ProviderConfig } from "@vgent/providers";
 import { createCodingTools } from "@vgent/tools";
 import { ToolLoopAgent, isStepCount, pruneMessages, toolSearch, type LanguageModel, type ModelMessage, type ToolSet } from "ai";
 import { askUserQuestionsTool } from "./ask-user-questions.js";
@@ -198,6 +198,29 @@ export function reasoningProviderOptions(
   return Object.keys(openai).length === 0 ? undefined : { openai };
 }
 
+/** What the AI SDK's provider-agnostic `reasoning` call setting accepts, besides the default. */
+const PORTABLE_REASONING_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"] as const;
+export type PortableReasoningLevel = (typeof PORTABLE_REASONING_LEVELS)[number];
+
+/**
+ * 推理强度 for a model of a settings-page provider (`<providerId>:<model>`).
+ * Those are built from whichever AI SDK package the provider's protocol names,
+ * so the effort travels as the SDK's top-level `reasoning` setting and each
+ * package turns it into its own wire format (`reasoning_effort`, Anthropic's
+ * `effort`, …). Everything else keeps the behaviour it had: OpenAI Responses
+ * models go through {@link reasoningProviderOptions}, the rest get nothing.
+ */
+export function portableReasoning(
+  model: LanguageModel | string,
+  providers: readonly ProviderConfig[],
+  reasoning: VgentReasoningOptions = {},
+): PortableReasoningLevel | undefined {
+  if (typeof model !== "string") return undefined;
+  const spec = splitProviderModelSpec(model);
+  if (spec == null || !providers.some((provider) => provider.id === spec.providerId)) return undefined;
+  return PORTABLE_REASONING_LEVELS.find((level) => level === reasoning.effort);
+}
+
 /** Cheap prompt-size estimate: roughly four characters per token. */
 function estimateTokens(messages: readonly ModelMessage[]): number {
   return JSON.stringify(messages).length / 4;
@@ -264,8 +287,11 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
     options.serviceTier,
   );
 
+  const reasoning = portableReasoning(options.model, options.providers ?? [], options.reasoning);
+
   const agent = new ToolLoopAgent({
     model,
+    ...(reasoning == null ? {} : { reasoning }),
     // Merged with, not replacing, the defaults `createCodexSubscriptionModel`
     // pins on the model (`store: false`): `defaultSettingsMiddleware` merges
     // provider options and lets the call's own win.

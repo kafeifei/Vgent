@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { BASH_TOOL, bashEntryCommand, isVoidedBashEntry } from "@vgent/engine/allowlist";
-import { ArrowLeft, Bot, Boxes, GitBranch, Palette, Pencil, Plug, Plus, Settings2, Trash2, Wrench, X } from "lucide-react";
+import { ArrowLeft, Bot, GitBranch, Palette, Pencil, Plug, Plus, Settings2, Trash2, Wrench, X } from "lucide-react";
 import { ModelPicker } from "@/components/ModelPicker";
 import { RuntimesSection } from "./RuntimesSection";
 import { ApiError, type ApiClient } from "@/lib/api";
@@ -11,20 +11,18 @@ import { AppearanceSection } from "./AppearanceSection";
 import { EMPTY_MCP_FORM, fromForm, toForm, type McpForm } from "./mcpForm";
 import { NotificationsSection } from "./NotificationsSection";
 import { BUTTON_PRIMARY, BUTTON_SECONDARY, SettingsEmpty, SettingsGroup, SettingsPage, SettingsRow, Tag } from "./layout";
-import { ModelsPage } from "./ModelsPage";
 import { ProvidersPage } from "./ProvidersPage";
 import { INPUT_CLASS, PILL, PILL_SELECTED, TEXTAREA_CLASS } from "./styles";
 import { isImeKeyEvent } from "@/lib/ime";
 
 /** The pages of 设置, in the order of the left-hand list. */
-export type SettingsTab = "general" | "appearance" | "agents" | "providers" | "models" | "mcp" | "worktrees";
+export type SettingsTab = "general" | "appearance" | "agents" | "providers" | "mcp" | "worktrees";
 
 const TABS: ReadonlyArray<{ id: SettingsTab; label: string; icon: typeof Bot }> = [
   { id: "general", label: "通用", icon: Settings2 },
   { id: "appearance", label: "外观", icon: Palette },
   { id: "agents", label: "Agents", icon: Bot },
   { id: "providers", label: "模型提供商", icon: Plug },
-  { id: "models", label: "模型", icon: Boxes },
   { id: "mcp", label: "工具与 MCP", icon: Wrench },
   { id: "worktrees", label: "Worktrees", icon: GitBranch },
 ];
@@ -409,10 +407,6 @@ export function SettingsView({
     ),
 
     providers: <ProvidersPage client={client} engines={engines} onChanged={() => setCatalogVersion((version) => version + 1)} />,
-
-    models: (
-      <ModelsPage client={client} engines={engines} onChanged={() => setCatalogVersion((version) => version + 1)} onOpenProviders={() => setTab("providers")} />
-    ),
 
     mcp: (
       <SettingsPage title="工具与 MCP" description="自研引擎每轮启动时连接；修改后下一轮生效。">

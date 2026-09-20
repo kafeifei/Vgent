@@ -17,6 +17,7 @@ const LEVEL_LABELS: Record<string, string> = {
   max: "最高",
   ultra: "极致",
   none: "关",
+  "provider-default": "不指定",
   minimal: "极低",
   disabled: "关",
   adaptive: "自适应",

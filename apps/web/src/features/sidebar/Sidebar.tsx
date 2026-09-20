@@ -69,6 +69,7 @@ export function Sidebar({
   onArchive,
   onUnread,
   onDelete,
+  onRename,
 }: {
   projects: Project[];
   /** The project a new task would start in; the add-folder picker marks it. */
@@ -95,6 +96,7 @@ export function Sidebar({
   /** 标为未读 / 标为已读 from the row's menu. */
   onUnread: (threadId: string, unread: boolean) => void;
   onDelete: (threadId: string) => void;
+  onRename: (threadId: string, title: string) => void;
 }) {
   const groups = groupThreads(threads, projects, grouping);
   // Only 已归档 folds, and only for as long as the sidebar is mounted: it is a
@@ -107,7 +109,7 @@ export function Sidebar({
       {/* The window strip: the traffic lights sit on its left under the desktop
           shell, and the whole strip drags the window. */}
       <div
-        data-tauri-drag-region
+        data-tauri-drag-region="deep"
         className={cn("flex h-topbar flex-none items-center pr-sm", hasTrafficLights() ? "pl-traffic" : "pl-sm")}
       >
         <button type="button" title="收起侧栏 ⌘B" aria-label="收起侧栏" onClick={onToggle} className={SIDEBAR_ICON_BUTTON}>
@@ -213,6 +215,7 @@ export function Sidebar({
                     onArchive={(archived) => onArchive(thread.id, archived)}
                     onUnread={(unread) => onUnread(thread.id, unread)}
                     onDelete={() => onDelete(thread.id)}
+                    onRename={(title) => onRename(thread.id, title)}
                   />
                 ))}
             </div>

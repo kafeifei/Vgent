@@ -261,7 +261,6 @@ function ThreadChatView({
           pending={thread.pendingApprovals + queue.filter((item) => item.kind === "question").length}
           leftOpen={leftOpen}
           rightOpen={rightOpen}
-          onRename={(title) => actions.rename(thread.id, title)}
           onReclaimWorkspace={() => actions.reclaimWorkspace(thread.id)}
           onRestoreWorkspace={() => actions.restoreWorkspace(thread.id)}
           onToggleLeft={actions.toggleLeft}

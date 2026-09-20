@@ -25,7 +25,9 @@ export function TopStrip({
 }) {
   return (
     <div
-      data-tauri-drag-region
+      // 「deep」: text inside the strip drags the window too, and a double-click
+      // anywhere on it zooms. Buttons and fields still take their own clicks.
+      data-tauri-drag-region="deep"
       className={cn(
         "flex h-topbar flex-none select-none items-center gap-2xs pr-sm",
         leftOpen ? "pl-[calc(var(--spacing-md)-var(--spacing-2xs))]" : hasTrafficLights() ? "pl-traffic" : "pl-sm",

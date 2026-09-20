@@ -1,11 +1,10 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { GitFork, PanelRight } from "lucide-react";
 import { STRIP_ICON_BUTTON, TopStrip } from "@/components/TopStrip";
 import { OutcomeBadge } from "@/components/OutcomeBadge";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import type { ThreadSummary, ThreadWorkspace } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { isImeKeyEvent } from "@/lib/ime";
 
 /** The worktree glyph's popover: where the task's files are, and reclaim / restore. */
 function WorkspaceMenu({
@@ -68,7 +67,6 @@ export function TaskHeader({
   pending,
   leftOpen,
   rightOpen,
-  onRename,
   onReclaimWorkspace,
   onRestoreWorkspace,
   onToggleLeft,
@@ -78,23 +76,11 @@ export function TaskHeader({
   pending: number;
   leftOpen: boolean;
   rightOpen: boolean;
-  onRename: (title: string) => void;
   onReclaimWorkspace: () => Promise<void>;
   onRestoreWorkspace: () => Promise<void>;
   onToggleLeft: () => void;
   onToggleRight: () => void;
 }) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(thread.title);
-  useEffect(() => setDraft(thread.title), [thread.title]);
-
-  const commit = () => {
-    setEditing(false);
-    const next = draft.trim();
-    if (next !== "" && next !== thread.title) onRename(next);
-    else setDraft(thread.title);
-  };
-
   const workspace = thread.workspace;
 
   return (
@@ -119,32 +105,12 @@ export function TaskHeader({
         </button>
       }
     >
-      {editing ? (
-        <input
-          autoFocus
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onBlur={commit}
-          onKeyDown={(event) => {
-            if (isImeKeyEvent(event)) return;
-            if (event.key === "Enter") commit();
-            if (event.key === "Escape") {
-              setDraft(thread.title);
-              setEditing(false);
-            }
-          }}
-          className="min-w-0 max-w-[48ch] flex-none rounded-sm border border-border bg-bg-elevated px-2xs text-body outline-none"
-        />
-      ) : (
-        <button
-          type="button"
-          onClick={() => setEditing(true)}
-          title={thread.title}
-          className="min-w-0 max-w-[48ch] flex-none truncate rounded-sm px-2xs text-left text-body text-fg hover:bg-bg-hover"
-        >
-          {thread.title}
-        </button>
-      )}
+      {/* Plain text, not a control: this strip is the window's title bar, so the
+          title drags the window and a double-click zooms it. 重命名 is in the
+          task's row menu, where Cursor keeps it. */}
+      <span title={thread.title} className="min-w-0 max-w-[48ch] flex-none truncate px-2xs text-body text-fg">
+        {thread.title}
+      </span>
 
       {workspace != null && (
         <Popover

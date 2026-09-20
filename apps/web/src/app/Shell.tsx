@@ -1,5 +1,6 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { UIMessage } from "ai";
+import { ResizeHandle } from "@/components/ResizeHandle";
 import { TopStrip } from "@/components/TopStrip";
 import { CommandPalette, type Command } from "@/features/cmdk/CommandPalette";
 import { EmptyState } from "@/features/empty/EmptyState";
@@ -10,11 +11,12 @@ import { Sidebar } from "@/features/sidebar/Sidebar";
 import { GROUPING_LABELS } from "@/features/sidebar/grouping";
 import type { QueueItem } from "@/features/worklog/queue";
 import { oneLine } from "@/lib/format";
+import { type PaneKey, type PaneWidths, clampPaneWidth, fitPaneWidths, loadPaneWidths, savePaneWidths } from "@/lib/paneWidths";
 import { usePrefs, usePrefsSync } from "@/lib/prefs";
 import { ThreadView } from "./ThreadView";
 import { isLiveThread, useWorkbench } from "./useWorkbench";
 
-/** The three-column grid. Widths come straight from the spacing tokens. */
+/** The three-column grid. Widths come from the spacing tokens until a column is dragged to one of its own. */
 export function Shell({ token }: { token: string }) {
   const workbench = useWorkbench(token);
   const {
@@ -77,16 +79,55 @@ export function Shell({ token }: { token: string }) {
   // The right pane belongs to a task: without one open there is nothing for it to list.
   const showRight = right.open && !settingsOpen && view === "thread" && thread != null;
 
+  // Dragged column widths. The grid is the measure of what a column is *now*
+  // — a token, until dragged — so a drag starts from the rendered track.
+  const grid = useRef<HTMLDivElement | null>(null);
+  const [widths, setWidths] = useState<PaneWidths>(loadPaneWidths);
+  const [dragging, setDragging] = useState(false);
+  const rightKey: PaneKey = right.tab === "home" ? "rightList" : "rightPane";
+  const tracks = (): number[] =>
+    grid.current == null ? [] : getComputedStyle(grid.current).gridTemplateColumns.split(" ").map((track) => Number.parseFloat(track) || 0);
+  const resize = (key: PaneKey, wanted: number): void => {
+    const [leftNow = 0, , rightNow = 0] = tracks();
+    const width = clampPaneWidth(key, wanted, window.innerWidth, key === "left" ? rightNow : leftNow);
+    setWidths((current) => (current[key] === width ? current : { ...current, [key]: width }));
+  };
+  const endResize = (): void => {
+    setDragging(false);
+    setWidths((current) => {
+      savePaneWidths(current);
+      return current;
+    });
+  };
+  const resetWidth = (key: PaneKey): void =>
+    setWidths((current) => {
+      const { [key]: _dropped, ...rest } = current;
+      savePaneWidths(rest);
+      return rest;
+    });
+  const [windowWidth, setWindowWidth] = useState(() => window.innerWidth);
+  useEffect(() => {
+    const onResize = (): void => setWindowWidth(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  const fitted = fitPaneWidths(widths, windowWidth, { left: left !== "off", right: showRight ? rightKey : null });
+  const leftTrack = fitted.left != null ? `${fitted.left}px` : "var(--spacing-sidebar)";
+  const rightTrack =
+    fitted[rightKey] != null ? `${fitted[rightKey]}px` : right.tab === "home" ? "var(--spacing-rightlist)" : "var(--spacing-rightpane)";
+
   return (
     // No window bar of its own: like Cursor's Agents Window the three columns
     // run the full height, and each column's top strip is the title bar.
     <div className="h-full overflow-hidden">
       <div
-        className="grid h-full min-h-0 transition-[grid-template-columns] duration-[var(--duration-base)]"
+        ref={grid}
+        className={
+          // The open/close slide would make a drag lag behind the pointer.
+          dragging ? "relative grid h-full min-h-0" : "relative grid h-full min-h-0 transition-[grid-template-columns] duration-[var(--duration-base)]"
+        }
         style={{
-          gridTemplateColumns: `${left === "off" ? "0px" : "var(--spacing-sidebar)"} minmax(0,1fr) ${
-            !showRight ? "0px" : right.tab === "home" ? "var(--spacing-rightlist)" : "var(--spacing-rightpane)"
-          }`,
+          gridTemplateColumns: `${left === "off" ? "0px" : leftTrack} minmax(0,1fr) ${!showRight ? "0px" : rightTrack}`,
         }}
       >
         <Sidebar
@@ -110,6 +151,7 @@ export function Shell({ token }: { token: string }) {
           onArchive={actions.archiveThread}
           onUnread={actions.markUnread}
           onDelete={actions.deleteThread}
+          onRename={actions.rename}
         />
 
         <main className="grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto]">
@@ -174,6 +216,33 @@ export function Shell({ token }: { token: string }) {
             place={isNoProject(thread?.projectId) ? NO_PROJECT_NAME : state.projects.find((entry) => entry.id === thread?.projectId)?.name}
             live={isLiveThread(thread)}
             onBuild={actions.buildFromPlan}
+          />
+        )}
+
+        {left !== "off" && (
+          <ResizeHandle
+            side="left"
+            offset={leftTrack}
+            onStart={() => {
+              setDragging(true);
+              return tracks()[0] ?? 0;
+            }}
+            onDrag={(width) => resize("left", width)}
+            onEnd={endResize}
+            onReset={() => resetWidth("left")}
+          />
+        )}
+        {showRight && (
+          <ResizeHandle
+            side="right"
+            offset={rightTrack}
+            onStart={() => {
+              setDragging(true);
+              return tracks()[2] ?? 0;
+            }}
+            onDrag={(width) => resize(rightKey, width)}
+            onEnd={endResize}
+            onReset={() => resetWidth(rightKey)}
           />
         )}
       </div>

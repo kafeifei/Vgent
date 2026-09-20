@@ -94,7 +94,7 @@ export function RightPane({
   if (tab === "home") {
     return (
       <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-bg">
-        <div data-tauri-drag-region className="h-topbar flex-none" />
+        <div data-tauri-drag-region="deep" className="h-topbar flex-none" />
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-1.25 pt-2xs">
           {place != null && <div className="truncate px-row-pad pb-2xs text-fg-muted text-sm">在 {place}</div>}
           {tabs.map(({ id, label, Icon }) => (
@@ -116,7 +116,7 @@ export function RightPane({
 
   return (
     <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-border border-l bg-bg">
-      <div role="tablist" data-tauri-drag-region className="flex h-topbar flex-none items-center gap-3xs border-border border-b px-xs">
+      <div role="tablist" data-tauri-drag-region="deep" className="flex h-topbar flex-none items-center gap-3xs border-border border-b px-xs">
         <button
           type="button"
           aria-label="回到列表"

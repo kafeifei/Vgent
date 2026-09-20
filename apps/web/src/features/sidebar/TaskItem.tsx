@@ -6,6 +6,7 @@ import { GitFork, MoreHorizontal } from "lucide-react";
 import { OutcomeBadge } from "@/components/OutcomeBadge";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { shortTime } from "@/lib/format";
+import { isImeKeyEvent } from "@/lib/ime";
 import { LIVE_REASON, LIVE_STATUSES, type ThreadStatus, type ThreadSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { describeTool } from "@/features/worklog/toolMeta";
@@ -49,11 +50,13 @@ type RowMenuActions = {
   onArchive: (archived: boolean) => void;
   onUnread: (unread: boolean) => void;
   onDelete: () => void;
+  /** Turns the row's title into a field. */
+  onStartRename: () => void;
 };
 
 /**
- * What the row's menu holds: 标为未读 / 已读, 归档 / 取消归档 and a two-step
- * 删除任务. Each answers to a letter while the menu is open (U / A / D), and the
+ * What the row's menu holds: 重命名, 标为未读 / 已读, 归档 / 取消归档 and a two-step
+ * 删除任务. Each answers to a letter while the menu is open (R / U / A / D), and the
  * second step of deleting to ↵ — two different keys, so a double tap deletes
  * nothing. Mounted per opening, so the menu never reopens on that second step.
  */
@@ -65,6 +68,7 @@ function RowMenuItems({
   onArchive,
   onUnread,
   onDelete,
+  onStartRename,
 }: RowMenuActions & { close: () => void }) {
   const [confirming, setConfirming] = useState(false);
 
@@ -91,6 +95,15 @@ function RowMenuItems({
 
   return (
     <>
+      <PopItem
+        shortcut="r"
+        onClick={() => {
+          close();
+          onStartRename();
+        }}
+      >
+        重命名
+      </PopItem>
       <PopItem
         shortcut="u"
         onClick={() => {
@@ -148,6 +161,7 @@ export function TaskItem({
   onArchive,
   onUnread,
   onDelete,
+  onRename,
 }: {
   thread: ThreadSummary;
   selected: boolean;
@@ -157,8 +171,16 @@ export function TaskItem({
   onArchive: (archived: boolean) => void;
   onUnread: (unread: boolean) => void;
   onDelete: () => void;
+  onRename: (title: string) => void;
 }) {
   const openMenu = useRef<(() => void) | null>(null);
+  /** The title being typed, while the row is being renamed. */
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const commitRename = (): void => {
+    const next = renaming?.trim() ?? "";
+    if (next !== "" && next !== thread.title) onRename(next);
+    setRenaming(null);
+  };
   const unread = thread.unread === true;
   const state =
     thread.status === "awaiting-approval"
@@ -186,6 +208,21 @@ export function TaskItem({
         openMenu.current?.();
       }}
     >
+      {renaming != null && (
+        <input
+          autoFocus
+          value={renaming}
+          onFocus={(event) => event.currentTarget.select()}
+          onChange={(event) => setRenaming(event.target.value)}
+          onBlur={commitRename}
+          onKeyDown={(event) => {
+            if (isImeKeyEvent(event)) return;
+            if (event.key === "Enter") commitRename();
+            if (event.key === "Escape") setRenaming(null);
+          }}
+          className="absolute inset-y-0 right-0 left-row-indent z-1 min-w-0 rounded-md border border-border-strong bg-bg-elevated px-2xs text-body outline-none"
+        />
+      )}
       <button
         type="button"
         onClick={onSelect}
@@ -227,6 +264,7 @@ export function TaskItem({
         onArchive={onArchive}
         onUnread={onUnread}
         onDelete={onDelete}
+        onStartRename={() => setRenaming(thread.title)}
       />
     </div>
   );

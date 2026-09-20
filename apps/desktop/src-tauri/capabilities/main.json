@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "工作台是远端 http://127.0.0.1 页面，只允许它调用 dialog 插件的 open（选择仓库目录 / 可执行文件）和 notification 插件的三个命令（查权限、要权限、发通知）；另加 window 的 start-dragging（页面顶部那条 35px 就是标题栏，要能拖窗口）；其余 Tauri IPC 一律不开，原生对话框只从 Rust 侧调用。",
+  "description": "工作台是远端 http://127.0.0.1 页面，只允许它调用 dialog 插件的 open（选择仓库目录 / 可执行文件）和 notification 插件的三个命令（查权限、要权限、发通知）；另加 window 的 start-dragging 和 internal-toggle-maximize（页面顶部那条 35px 就是标题栏：要能拖窗口，双击要能缩放——Tauri 自带的拖动脚本在双击时调的就是后者，没放行就什么都不发生）；其余 Tauri IPC 一律不开，原生对话框只从 Rust 侧调用。",
   "windows": [
     "main"
   ],
@@ -12,6 +12,7 @@
   },
   "permissions": [
     "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize",
     "dialog:allow-open",
     "notification:allow-is-permission-granted",
     "notification:allow-request-permission",

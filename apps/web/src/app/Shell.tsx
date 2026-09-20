@@ -4,6 +4,7 @@ import { TopStrip } from "@/components/TopStrip";
 import { CommandPalette, type Command } from "@/features/cmdk/CommandPalette";
 import { EmptyState } from "@/features/empty/EmptyState";
 import { RightPane } from "@/features/rightpane/RightPane";
+import { NO_PROJECT_NAME, isNoProject } from "@/lib/noProject";
 import { SettingsView } from "@/features/settings/SettingsView";
 import { Sidebar } from "@/features/sidebar/Sidebar";
 import { GROUPING_LABELS } from "@/features/sidebar/grouping";
@@ -168,7 +169,7 @@ export function Shell({ token }: { token: string }) {
             refreshKey={thread?.updatedAt ?? ""}
             messages={messages}
             thread={thread}
-            place={state.projects.find((entry) => entry.id === thread?.projectId)?.name}
+            place={isNoProject(thread?.projectId) ? NO_PROJECT_NAME : state.projects.find((entry) => entry.id === thread?.projectId)?.name}
             live={isLiveThread(thread)}
             onBuild={actions.buildFromPlan}
           />

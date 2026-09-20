@@ -46,6 +46,7 @@ export async function enforceWorktreeLimit(options: EnforceWorktreeLimitOptions)
     if (count <= max) break;
     const thread = await threads.get(candidate.id);
     if (thread?.workspace == null || thread.workspace.reclaimed === true) continue;
+    // A 无项目 task never has a worktree, so the stored projects are all there is to look in.
     const project = await projects.get(thread.projectId);
     if (project == null) continue;
     try {

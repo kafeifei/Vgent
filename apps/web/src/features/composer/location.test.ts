@@ -51,6 +51,10 @@ describe("taskLocation", () => {
     expect(taskLocation(thread(worktree({ reclaimed: true })), null).label).toBe("本机 · worktree（已回收）");
   });
 
+  it("calls a 无项目 task's directory what it is: temporary, and nobody's checkout", () => {
+    expect(taskLocation({ ...thread(), projectId: "no-project" }, null)).toEqual({ label: "本机 · 临时目录", path: null });
+  });
+
   it("points a 主目录 task at the repo the snapshot came from", () => {
     expect(taskLocation(thread(), snapshot("main", "/repo"))).toEqual({ label: "本机 · 主目录", path: "/repo" });
     expect(taskLocation(thread(), null)).toEqual({ label: "本机 · 主目录", path: null });

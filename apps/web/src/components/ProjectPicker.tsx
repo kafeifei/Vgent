@@ -5,6 +5,7 @@ import { ApiError } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import type { Project } from "@/lib/types";
 import { isImeKeyEvent } from "@/lib/ime";
+import { NO_PROJECT_ID, NO_PROJECT_NAME, isNoProject } from "@/lib/noProject";
 
 /**
  * The project switcher, shared by the window bar and the empty state. Adding a
@@ -117,6 +118,18 @@ function ProjectPanel({
           <span className="block truncate font-mono text-2xs text-fg-faint">{project.repoPath}</span>
         </PopItem>
       ))}
+
+      {/* 无项目: ask something, or do throwaway work, without pointing at a codebase. */}
+      <PopItem
+        selected={isNoProject(selectedId)}
+        onClick={() => {
+          onSelect(NO_PROJECT_ID);
+          close();
+        }}
+      >
+        <span className="block truncate">{NO_PROJECT_NAME}</span>
+        <span className="block truncate text-2xs text-fg-faint">不指向任何仓库，在任务自己的临时目录里跑</span>
+      </PopItem>
 
       <PopItem onClick={pick}>
         <span className="inline-flex items-center gap-xs">

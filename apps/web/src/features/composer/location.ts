@@ -1,3 +1,4 @@
+import { isNoProject } from "@/lib/noProject";
 import type { ChangesSnapshot, ThreadSummary } from "@/lib/types";
 
 /**
@@ -27,5 +28,7 @@ export function taskLocation(
       path: workspace.path,
     };
   }
+  // 无项目: not a checkout of anything — the task's own directory, which goes when the task does.
+  if (isNoProject(thread.projectId)) return { label: "本机 · 临时目录", path: null };
   return { label: "本机 · 主目录", path: snapshot?.repoPath ?? null };
 }

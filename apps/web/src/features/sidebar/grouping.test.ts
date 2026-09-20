@@ -32,6 +32,12 @@ const threads = [
 ];
 
 describe("groupThreads", () => {
+  it("files 无项目 tasks under one heading of their own, after the projects", () => {
+    const groups = groupThreads([...threads, thread("n1", "no-project", "idle", ago(HOUR)), thread("n2", "no-project", "idle", ago(DAY))], projects, "project", NOW);
+    expect(groups.map((group) => group.title)).toEqual(["vgent", "freecode", "无项目"]);
+    expect(groups.at(-1)?.threads.map((entry) => entry.id)).toEqual(["n1", "n2"]);
+  });
+
   it("groups by project in project order and keeps threads newest-first", () => {
     const groups = groupThreads(threads, projects, "project", NOW);
     expect(groups.map((group) => group.title)).toEqual(["vgent", "freecode"]);

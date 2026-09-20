@@ -25,6 +25,7 @@ import type { EngineRegistry, EngineRunner } from "./engines/registry.js";
 import { statelessEngines } from "./engines/registry.js";
 import type { QueueStore } from "./queue.js";
 import { forkNote } from "./fork.js";
+import { projectOfThread } from "./no-project.js";
 import { restoreNote } from "./restore.js";
 import type { ProjectStore } from "./store/projects.js";
 import type { SettingsStore } from "./store/settings.js";
@@ -287,7 +288,7 @@ export function createRunManager(options: {
    */
   const checkpointForTurn = async (thread: ThreadRecord, incoming: UIMessage[]): Promise<MessageCheckpoint | undefined> => {
     if (incoming.at(-1)?.role !== "user") return undefined;
-    const project = await projects.get(thread.projectId).catch(() => undefined);
+    const project = await projectOfThread(projects, dataDir, thread).catch(() => undefined);
     if (project == null) return undefined;
     const repoPath = thread.workspace?.path ?? project.repoPath;
     const startedAt = Date.now();
@@ -373,7 +374,7 @@ export function createRunManager(options: {
     const index = turnMessageIndex(record.messages);
     if (index < 0) return;
     const before = (record.messages[index]!.metadata as ThreadMessageMetadata).checkpoint!;
-    const project = await projects.get(record.projectId).catch(() => undefined);
+    const project = await projectOfThread(projects, dataDir, record).catch(() => undefined);
     if (project == null) return;
     const repoPath = record.workspace?.path ?? project.repoPath;
     const startedAt = Date.now();
@@ -440,7 +441,7 @@ export function createRunManager(options: {
   };
 
   const runTurn = async (thread: ThreadRecord, incoming: UIMessage[], run: LiveRun, note?: string): Promise<void> => {
-    const stored = await projects.get(thread.projectId);
+    const stored = await projectOfThread(projects, dataDir, thread);
     if (stored == null) throw new NotFoundError(`项目不存在: ${thread.projectId}`, "project_not_found");
     // A worktree task sees its own directory as the repo. Nothing below the
     // engine factories knows the difference — they all read `repoPath` only.

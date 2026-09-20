@@ -9,6 +9,7 @@ import type { ApiClient } from "@/lib/api";
 import type { DraftTransport } from "@/lib/drafts";
 import { NEW_TASK_DRAFT, useDraft } from "@/lib/drafts";
 import { useToast } from "@/lib/toast";
+import { NO_PROJECT_NAME, isNoProject } from "@/lib/noProject";
 import type { EngineDescriptor, EngineId, Project, Settings, ThreadMode, WorkspaceMode } from "@/lib/types";
 
 /**
@@ -89,6 +90,7 @@ export function EmptyState({
   /** 模式 rides on the creation request; there is no task to PATCH yet. */
   const [mode, setMode] = useState<ThreadMode>("agent");
   const project = projects.find((entry) => entry.id === projectId);
+  const noProject = isNoProject(projectId);
 
   /**
    * The branch the row under the composer names: whichever one this checkout is
@@ -99,7 +101,8 @@ export function EmptyState({
   const [branch, setBranch] = useState<string | null>(null);
   useEffect(() => {
     setBranch(null);
-    if (projectId == null) return;
+    // 无项目 has no repository, so no branch either.
+    if (projectId == null || isNoProject(projectId)) return;
     let cancelled = false;
     void client.getProjectBranch(projectId).then(
       (result) => {
@@ -125,12 +128,13 @@ export function EmptyState({
     if (engine == null || starting.current) return;
     const text = draft.value.trim();
     if (text === "" && attachments.length === 0) return;
-    if (project == null) {
+    if (project == null && !noProject) {
       toast("先选一个项目");
       return;
     }
     starting.current = true;
-    void onStart(text, engine, workspace, model, reasoningEffort, mode, toFileParts(attachments), serviceTier, contextWindow).then((started) => {
+    // A worktree is cut from a repository; 无项目 has none.
+    void onStart(text, engine, noProject ? "project" : workspace, model, reasoningEffort, mode, toFileParts(attachments), serviceTier, contextWindow).then((started) => {
       starting.current = false;
       if (!started) return;
       draft.clear();
@@ -166,7 +170,7 @@ export function EmptyState({
                 {...props}
                 className="inline-flex h-xl items-center gap-3xs rounded-sm px-xs text-fg-muted text-sm hover:bg-bg-hover hover:text-fg"
               >
-                <span>{project?.name ?? "选择仓库"}</span>
+                <span>{noProject ? NO_PROJECT_NAME : (project?.name ?? "选择仓库")}</span>
                 <ChevronDown className="size-sm flex-none text-fg-faint" />
               </button>
             )}
@@ -211,42 +215,46 @@ export function EmptyState({
           // 运行位置：一个选择器，两个值。它决定这个任务改谁的文件。这里是
           // 唯一还能改它的地方——任务建出来之后它就定了。
           location={
-            <Popover
-              className="max-w-[calc(var(--spacing-3xl)*8)]"
-              side="top"
-              trigger={(props) => (
-                <button
-                  type="button"
-                  {...props}
-                  title="这个任务在哪里改文件"
-                  className="inline-flex h-xl items-center gap-3xs rounded-md px-2xs hover:bg-bg-hover hover:text-fg"
-                >
-                  <span>{WORKSPACES.find((entry) => entry.id === workspace)?.label}</span>
-                  <ChevronDown className="size-sm flex-none text-fg-faint" />
-                </button>
-              )}
-            >
-              {(close) => (
-                <>
-                  <PopTitle>运行位置</PopTitle>
-                  {WORKSPACES.map((entry) => (
-                    <PopItem
-                      key={entry.id}
-                      selected={entry.id === workspace}
-                      onClick={() => {
-                        setWorkspace(entry.id);
-                        close();
-                      }}
-                    >
-                      <span className="flex flex-col gap-3xs whitespace-normal">
-                        <span className="text-fg">{entry.label}</span>
-                        <span className="text-fg-faint text-xs leading-snug">{entry.hint}</span>
-                      </span>
-                    </PopItem>
-                  ))}
-                </>
-              )}
-            </Popover>
+            noProject ? (
+              <span title="这个任务不属于任何项目：它在自己的临时目录里跑，任务删掉目录也删掉">临时目录</span>
+            ) : (
+              <Popover
+                className="max-w-[calc(var(--spacing-3xl)*8)]"
+                side="top"
+                trigger={(props) => (
+                  <button
+                    type="button"
+                    {...props}
+                    title="这个任务在哪里改文件"
+                    className="inline-flex h-xl items-center gap-3xs rounded-md px-2xs hover:bg-bg-hover hover:text-fg"
+                  >
+                    <span>{WORKSPACES.find((entry) => entry.id === workspace)?.label}</span>
+                    <ChevronDown className="size-sm flex-none text-fg-faint" />
+                  </button>
+                )}
+              >
+                {(close) => (
+                  <>
+                    <PopTitle>运行位置</PopTitle>
+                    {WORKSPACES.map((entry) => (
+                      <PopItem
+                        key={entry.id}
+                        selected={entry.id === workspace}
+                        onClick={() => {
+                          setWorkspace(entry.id);
+                          close();
+                        }}
+                      >
+                        <span className="flex flex-col gap-3xs whitespace-normal">
+                          <span className="text-fg">{entry.label}</span>
+                          <span className="text-fg-faint text-xs leading-snug">{entry.hint}</span>
+                        </span>
+                      </PopItem>
+                    ))}
+                  </>
+                )}
+              </Popover>
+            )
           }
           autoFocus
           big

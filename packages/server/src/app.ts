@@ -31,6 +31,7 @@ import { createHarnessRuntime } from "./harness-runtime.js";
 import type { ChangesResponse, DiffBase, Git } from "./git.js";
 import { createGit } from "./git.js";
 import { pickFile, pickFolder } from "./folder-picker.js";
+import { isNoProject, projectOfThread, scratchDirOf } from "./no-project.js";
 import { planFork } from "./fork.js";
 import { asIntegrateAction, changeStatsOf, createIntegrator, taskTarget, type Integrator, type TaskTarget } from "./integrate.js";
 import { contextOptionsFor, createModelCatalog, type ModelEntry } from "./models.js";
@@ -293,7 +294,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
    */
   const changeStatsFor = async (thread: ThreadRecord): Promise<ChangeStats | undefined> => {
     if (thread.workspace?.reclaimed === true) return undefined;
-    const project = await projects.get(thread.projectId);
+    const project = await projectOfThread(projects, dataDir, thread);
     if (project == null) return undefined;
     const target = taskTarget(thread, project);
     return changeStatsOf(await git.changes(target.repoPath, target.baseline));
@@ -461,7 +462,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
   };
 
   const projectOf = async (thread: ThreadRecord): Promise<Project> => {
-    const project = await projects.get(thread.projectId);
+    const project = await projectOfThread(projects, dataDir, thread);
     if (project == null) throw new NotFoundError(`项目不存在: ${thread.projectId}`, "project_not_found");
     return project;
   };
@@ -775,11 +776,13 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const body = (await c.req.json().catch(() => undefined)) as Record<string, unknown> | undefined;
     const projectId = body?.projectId;
     if (typeof projectId !== "string") throw new BadRequestError("缺少 projectId", "invalid_project");
-    const project = await projects.get(projectId);
-    if (project == null) throw new NotFoundError(`项目不存在: ${projectId}`, "project_not_found");
+    // 无项目 is not a stored project: the task gets a directory of its own when it first runs.
+    const project = isNoProject(projectId) ? undefined : await projects.get(projectId);
+    if (project == null && !isNoProject(projectId)) throw new NotFoundError(`项目不存在: ${projectId}`, "project_not_found");
     if (body?.workspace != null && body.workspace !== "project" && body.workspace !== "worktree") {
       throw new BadRequestError("workspace 只能是 project 或 worktree", "invalid_workspace");
     }
+    if (project == null && body?.workspace === "worktree") throw new BadRequestError("无项目的任务没有仓库，开不了 worktree", "invalid_workspace");
     const defaults = await settings.get();
     const engine = asEngine(body?.engine) ?? defaults.defaultEngine;
     // `defaultModel` belongs to `defaultEngine`; another engine would not know
@@ -802,7 +805,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
       ...(contextWindow != null ? { contextWindow } : {}),
       mode,
     });
-    if (body?.workspace !== "worktree") return c.json(record);
+    if (body?.workspace !== "worktree" || project == null) return c.json(record);
     // The worktree is named after the thread, so the record has to exist
     // first — and must not survive a worktree that failed to materialize.
     try {
@@ -1070,8 +1073,12 @@ export function createApp(options: CreateAppOptions): VgentApp {
     await drafts.remove(id).catch((error: unknown) => log.warn(`删除线程 ${id} 的草稿失败`, error));
     // Checkpoint refs live in the project's own ref store, which every worktree
     // shares — removing the directory above does not take them with it.
-    const project = thread == null ? undefined : await projects.get(thread.projectId);
+    const project = thread == null || isNoProject(thread.projectId) ? undefined : await projects.get(thread.projectId);
     if (project != null) await deleteCheckpoints({ repoPath: project.repoPath, threadId: id, log });
+    // 无项目: the task's directory was only ever its own.
+    if (thread != null && isNoProject(thread.projectId)) {
+      await rm(scratchDirOf(dataDir, id), { recursive: true, force: true }).catch((error: unknown) => log.warn(`删除线程 ${id} 的临时目录失败`, error));
+    }
     await threads.remove(id);
     return c.body(null, 204);
   });

@@ -1,3 +1,4 @@
+import { isNoProject } from "@/lib/noProject";
 import type { UIMessage } from "ai";
 import { ChevronLeft, FileDiff, FolderTree, ListChecks, ListTodo, Terminal, X } from "lucide-react";
 import { ChangesPanel } from "@/features/changes/ChangesPanel";
@@ -79,6 +80,8 @@ export function RightPane({
   onBuild: (threadId: string, content: string) => Promise<void>;
 }) {
   const changeCount = changes.snapshot?.files.length ?? 0;
+  // 无项目 has no repository, so there is no diff to open: 变更 is not offered rather than opened onto an error.
+  const tabs = isNoProject(thread?.projectId) ? TABS.filter((entry) => entry.id !== "changes") : TABS;
   const countOf = (id: RightTab): number => (id === "queue" ? queue.length : id === "changes" ? changeCount : 0);
 
   // Nothing opened yet: the pane is a quiet list on the window's own ground —
@@ -89,7 +92,7 @@ export function RightPane({
         <div data-tauri-drag-region className="h-topbar flex-none" />
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-1.25 pt-2xs">
           {place != null && <div className="truncate px-row-pad pb-2xs text-fg-muted text-sm">在 {place}</div>}
-          {TABS.map(({ id, label, Icon }) => (
+          {tabs.map(({ id, label, Icon }) => (
             <button
               key={id}
               type="button"
@@ -118,7 +121,7 @@ export function RightPane({
         >
           <ChevronLeft className="size-lg" />
         </button>
-        {TABS.map(({ id, label, Icon }) => {
+        {tabs.map(({ id, label, Icon }) => {
           const count = countOf(id);
           return (
             <button

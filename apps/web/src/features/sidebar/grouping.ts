@@ -1,3 +1,4 @@
+import { NO_PROJECT_NAME, isNoProject } from "@/lib/noProject";
 import type { Project, ThreadStatus, ThreadSummary } from "@/lib/types";
 
 export type Grouping = "project" | "status" | "updated";
@@ -102,7 +103,7 @@ export function groupThreads(
         .concat(
           [...byProject.entries()]
             .filter(([id]) => !projects.some((project) => project.id === id))
-            .map(([id, list]) => ({ key: id, title: "未知项目", threads: list })),
+            .map(([id, list]) => ({ key: id, title: isNoProject(id) ? NO_PROJECT_NAME : "未知项目", threads: list })),
         ),
     );
   }

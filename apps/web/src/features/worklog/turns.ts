@@ -8,7 +8,17 @@ export type ReasoningPart = Extract<UIMessage["parts"][number], { type: "reasoni
 export type Block =
   | { kind: "reasoning"; key: string; part: ReasoningPart }
   | { kind: "text"; key: string; part: TextPart }
-  | { kind: "tool"; key: string; part: ToolPart };
+  | { kind: "tool"; key: string; part: ToolPart }
+  /** 插话: what the user said while this turn was running, at the point it went in. */
+  | { kind: "steer"; key: string; text: string };
+
+/** The server's `data-steer` part (see `steer.ts` there): a user message taken into a running turn. */
+function steerTextOf(part: UIMessage["parts"][number]): string | undefined {
+  if (part.type !== "data-steer") return undefined;
+  const data = (part as { data?: unknown }).data;
+  const text = typeof data === "object" && data !== null ? (data as { text?: unknown }).text : undefined;
+  return typeof text === "string" ? text : undefined;
+}
 
 /** One user message and everything the assistant did in answer to it. */
 export interface Turn {
@@ -39,7 +49,9 @@ function blocksOf(message: UIMessage): Block[] {
   const blocks: Block[] = [];
   message.parts.forEach((part, index) => {
     const key = `${message.id}:${index}`;
-    if (part.type === "text") blocks.push({ kind: "text", key, part });
+    const steer = steerTextOf(part);
+    if (steer != null) blocks.push({ kind: "steer", key, text: steer });
+    else if (part.type === "text") blocks.push({ kind: "text", key, part });
     // A reasoning part with no text is what an engine sends when the model
     // reasoned but did not summarize it — the ChatGPT/Codex backend encrypts
     // its reasoning, so every turn carries one unless a summary was asked for.
@@ -96,7 +108,8 @@ export type Run = { kind: "foldable"; key: string; blocks: Block[] } | { kind: "
 export function runsOf(blocks: readonly Block[]): Run[] {
   const runs: Run[] = [];
   for (const block of blocks) {
-    const foldable = block.kind !== "text" && !needsHuman(block);
+    // 插话 is the user speaking: it is never folded away with the steps around it.
+    const foldable = block.kind !== "text" && block.kind !== "steer" && !needsHuman(block);
     const kind = foldable ? "foldable" : "open";
     const last = runs.at(-1);
     if (last?.kind === kind) last.blocks.push(block);

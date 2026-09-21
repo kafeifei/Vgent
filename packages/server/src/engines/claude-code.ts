@@ -20,6 +20,8 @@ const DESCRIPTOR: EngineDescriptor = {
     compact: false,
     knownDefaultModel: false,
     extensions: false,
+    // The harness's `experimental_steer`: the adapter hands the message to the runtime's streaming input.
+    steer: true,
     customProviders: true,
   },
 };
@@ -181,6 +183,10 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
           });
           return { stream: result.stream as ReadableStream<TextStreamPart<ToolSet>> };
         },
+
+        // 插话: the harness's own API. It throws when the turn is already over,
+        // which the run manager reads as「排队吧」.
+        steer: (text) => engine.harnessAgent.experimental_steer({ session: engine.session, text }),
 
         async destroy() {
           if (ended) return;

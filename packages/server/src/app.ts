@@ -1003,7 +1003,13 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const id = c.req.param("id");
     await threadOf(id);
     const body = (await c.req.json().catch(() => undefined)) as { text?: unknown } | undefined;
-    const record = await queue.append(id, readQueueText(body?.text));
+    const text = readQueueText(body?.text);
+    // 插话: a turn that is running right now, on an engine that takes input
+    // mid-turn, gets the message at once — it never enters the queue. Anything
+    // else queues, and an engine that reads its queue between steps picks it up
+    // from there.
+    if (await runs.steer(id, text)) return c.json(await threadOf(id));
+    const record = await queue.append(id, text);
     // A turn can settle between the client seeing 「运行中」 and this write
     // landing. The dispatcher already ran on an empty queue by then, so it is
     // nudged again — it re-checks the status and does nothing unless the

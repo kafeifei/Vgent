@@ -22,6 +22,11 @@ export interface EngineCapabilities {
   /** MCP servers, skills and memory. */
   extensions: boolean;
   /**
+   * 插话: a message sent while a turn runs goes into that turn rather than
+   * waiting in the queue for it to end.
+   */
+  steer: boolean;
+  /**
    * Can be pointed at a provider from the settings page (its own endpoint and
    * key). Codex cannot: its harness only ever runs on the machine's Codex login.
    */

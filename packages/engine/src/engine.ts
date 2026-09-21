@@ -84,6 +84,12 @@ export interface VgentEngineOptions {
    * added so the model can still find them.
    */
   extraTools?: ToolSet;
+  /**
+   * 插话: asked between steps for what the user has said since the turn began.
+   * Whatever it returns is appended as `user` messages before the next step,
+   * and must not be returned twice — the caller hands each message over once.
+   */
+  pendingUserMessages?: () => Promise<string[]>;
   /** The skills index for the system prompt. Names and descriptions only; see `loadSkillsIndex`. */
   skills?: readonly SkillSummary[];
   /**
@@ -312,11 +318,17 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
     tools,
     toolApproval: createToolApproval(permissionMode, options.alwaysAllow),
     stopWhen: [isStepCount(maxSteps)],
-    prepareStep: ({ messages }) => {
-      if (estimateTokens(messages) <= contextTokenBudget) return {};
+    prepareStep: async ({ messages, stepNumber }) => {
+      // 插话: what the user said while the last step ran is put in front of the
+      // model now. The list this returns becomes the base of every later step,
+      // so a message goes in once. Not before the first step — that one is
+      // already answering a message, and the rest of a queue is not a reply to it.
+      const said = stepNumber > 0 ? ((await options.pendingUserMessages?.()) ?? []) : [];
+      const current = said.length === 0 ? messages : [...messages, ...said.map((text): ModelMessage => ({ role: "user", content: text }))];
+      if (estimateTokens(current) <= contextTokenBudget) return current === messages ? {} : { messages: current };
       return {
         messages: pruneMessages({
-          messages,
+          messages: current,
           reasoning: "all",
           toolCalls: "before-last-3-messages",
           emptyMessages: "remove",

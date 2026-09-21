@@ -127,15 +127,35 @@ function textOf(message: ModelMessage | undefined): string {
  * the last message each turn was started with — the whole point of the queue is
  * which message ran, and when.
  */
-function createGatedEngine(options: { approvalOn?: string; failOn?: string; instant?: boolean; unavailable?: () => boolean } = {}) {
+function createGatedEngine(
+  options: {
+    approvalOn?: string;
+    failOn?: string;
+    instant?: boolean;
+    unavailable?: () => boolean;
+    /** 插话: `push` takes it through `runner.steer`, `pull` reads the queue once its gate opens, `refuse` has `steer` throw. */
+    steer?: "push" | "pull" | "refuse";
+  } = {},
+) {
   const prompts: string[] = [];
+  /** Every turn's whole history as the engine was handed it: `role:text`. */
+  const histories: string[][] = [];
+  /** What reached the running turn, by either road. */
+  const steered: string[] = [];
   const releases: Array<() => void> = [];
 
-  const body = (text: string, gate: Promise<void>, aborted: () => boolean): ReadableStream<TextStreamPart<ToolSet>> =>
+  const body = (
+    text: string,
+    gate: Promise<void>,
+    aborted: () => boolean,
+    takeSteers: () => Promise<string[]>,
+  ): ReadableStream<TextStreamPart<ToolSet>> =>
     ReadableStream.from(
       (async function* () {
         yield { type: "start" } as TextStreamPart<ToolSet>;
         await gate;
+        // An engine that owns its loop asks between steps; here, once, before it answers.
+        if (options.steer === "pull") steered.push(...(await takeSteers()));
         // A real engine stops when its turn is aborted; this one has to too, or
         // `stop()` would sit out its whole timeout waiting for the gate.
         if (aborted()) return;
@@ -166,12 +186,21 @@ function createGatedEngine(options: { approvalOn?: string; failOn?: string; inst
           },
         }
       : {}),
-    async create(): Promise<EngineRunner> {
+    async create(ctx): Promise<EngineRunner> {
       return {
         hasUnfinishedTurn: () => false,
+        ...(options.steer === "push" || options.steer === "refuse"
+          ? {
+              async steer(text: string) {
+                if (options.steer === "refuse") throw new Error("这一轮已经结束");
+                steered.push(text);
+              },
+            }
+          : {}),
         async stream({ messages, abortSignal }) {
           const text = textOf(messages.at(-1));
           prompts.push(text);
+          histories.push(messages.map((message) => `${message.role}:${textOf(message)}`));
           let release!: () => void;
           const gate = new Promise<void>((resolve) => {
             release = resolve;
@@ -179,7 +208,7 @@ function createGatedEngine(options: { approvalOn?: string; failOn?: string; inst
           });
           releases.push(release);
           if (options.instant === true) release();
-          return { stream: body(text, gate, () => abortSignal.aborted) };
+          return { stream: body(text, gate, () => abortSignal.aborted, ctx.takeSteers) };
         },
         async finish() {},
         async destroy() {},
@@ -190,6 +219,8 @@ function createGatedEngine(options: { approvalOn?: string; failOn?: string; inst
   return {
     factory,
     prompts,
+    histories,
+    steered,
     /** Waits until `count` turns have started, then lets the oldest unreleased one finish. */
     async releaseTurn(count: number): Promise<void> {
       await waitFor(`第 ${count} 轮开始`, () => prompts.length >= count);
@@ -197,6 +228,78 @@ function createGatedEngine(options: { approvalOn?: string; failOn?: string; inst
     },
   };
 }
+
+/** The 插话 texts inside a stored assistant message, in order. */
+const steersIn = (message: UIMessage | undefined): string[] =>
+  (message?.parts ?? []).flatMap((part) => (part.type === "data-steer" ? [(part as { data: { text: string } }).data.text] : []));
+
+describe.skipIf(!hasGit)("插话", () => {
+  it("推：运行中发的消息直接进当前回合，不进队列，也不另起一轮", async () => {
+    const engine = createGatedEngine({ steer: "push" });
+    const app = makeApp(await tempDir(), engine.factory);
+    const thread = await setupThread(app, await repoWithHistory());
+
+    const first = postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "重构 a.ts")] });
+    await waitFor("第一轮开始", () => engine.prompts.length === 1);
+    const answered = (await (await postJson(app, `/api/threads/${thread.id}/queue`, { text: "顺便改 b.ts" })).json()) as ThreadRecord;
+    expect(answered.queue ?? []).toHaveLength(0);
+    expect(engine.steered).toEqual(["顺便改 b.ts"]);
+
+    await engine.releaseTurn(1);
+    await (await first).text();
+    await waitForStatus(app, thread.id, "idle");
+
+    const record = await getThread(app, thread.id);
+    expect(record.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(steersIn(record.messages[1])).toEqual(["顺便改 b.ts"]);
+    expect(engine.prompts).toHaveLength(1);
+
+    // The next turn reads it back as the user message it was.
+    const second = postJson(app, `/api/chat/${thread.id}`, { messages: [...record.messages, userMessage("u2", "继续")] });
+    await engine.releaseTurn(2);
+    await (await second).text();
+    expect(engine.histories[1]).toEqual(["user:重构 a.ts", "user:顺便改 b.ts", "assistant:好的", "user:继续"]);
+  });
+
+  it("拉：排进队列的消息被正在跑的回合在两步之间取走", async () => {
+    const engine = createGatedEngine({ steer: "pull" });
+    const app = makeApp(await tempDir(), engine.factory);
+    const thread = await setupThread(app, await repoWithHistory());
+
+    const first = postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "重构 a.ts")] });
+    await waitFor("第一轮开始", () => engine.prompts.length === 1);
+    const queued = (await (await postJson(app, `/api/threads/${thread.id}/queue`, { text: "顺便改 b.ts" })).json()) as ThreadRecord;
+    expect(queued.queue).toHaveLength(1);
+
+    await engine.releaseTurn(1);
+    await (await first).text();
+    await waitForStatus(app, thread.id, "idle");
+
+    const record = await getThread(app, thread.id);
+    expect(engine.steered).toEqual(["顺便改 b.ts"]);
+    expect(record.queue ?? []).toHaveLength(0);
+    expect(steersIn(record.messages[1])).toEqual(["顺便改 b.ts"]);
+    expect(engine.prompts).toHaveLength(1);
+  });
+
+  it("送不进去就排队：回合已经结束的、引擎不收的，都照旧等下一轮", async () => {
+    const engine = createGatedEngine({ steer: "refuse" });
+    const app = makeApp(await tempDir(), engine.factory);
+    const thread = await setupThread(app, await repoWithHistory());
+
+    const first = postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "第一条")] });
+    await waitFor("第一轮开始", () => engine.prompts.length === 1);
+    const queued = (await (await postJson(app, `/api/threads/${thread.id}/queue`, { text: "改方向" })).json()) as ThreadRecord;
+    expect(queued.queue?.map((item) => item.text)).toEqual(["改方向"]);
+
+    await engine.releaseTurn(1);
+    await (await first).text();
+    await engine.releaseTurn(2);
+    await waitFor("队列跑空", async () => ((await getThread(app, thread.id)).queue ?? []).length === 0);
+    await waitForStatus(app, thread.id, "idle");
+    expect(engine.prompts.map((text) => text.endsWith("改方向"))).toEqual([false, true]);
+  });
+});
 
 describe.skipIf(!hasGit)("排队", () => {
   it("运行中排两条，依次执行，各自带上自己的 checkpoint", async () => {

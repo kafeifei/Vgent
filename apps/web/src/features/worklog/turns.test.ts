@@ -88,6 +88,25 @@ describe("runsOf", () => {
   });
 });
 
+describe("插话", () => {
+  const steer = (text: string) => ({ type: "data-steer", id: text, data: { text } }) as unknown as UIMessage["parts"][number];
+
+  it("stays inside the turn it went into, where it went in, and is never folded", () => {
+    const turns = buildTurns([
+      user("u1", "重构 a.ts"),
+      assistant("a1", [stepStart, toolPart("c1", "output-available"), steer("顺便改 b.ts"), stepStart, toolPart("c2", "output-available"), { type: "text", text: "都改好了" }]),
+    ]);
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.blocks.map((block) => (block.kind === "steer" ? `steer:${block.text}` : block.kind))).toEqual(["tool", "steer:顺便改 b.ts", "tool", "text"]);
+    expect(runsOf(turns[0]?.blocks ?? []).map((run) => `${run.kind}:${run.blocks.length}`)).toEqual(["foldable:1", "open:1", "foldable:1", "open:1"]);
+  });
+
+  it("ignores a data part that is not one", () => {
+    const turns = buildTurns([user("u1", "问"), assistant("a1", [{ type: "data-other", data: {} } as unknown as UIMessage["parts"][number], { type: "text", text: "答" }])]);
+    expect(turns[0]?.blocks.map((block) => block.kind)).toEqual(["text"]);
+  });
+});
+
 describe("compactedOf", () => {
   it("reads the /compact marker off the summary message and ignores ordinary ones", () => {
     const summary: UIMessage = {

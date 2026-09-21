@@ -155,6 +155,47 @@ describe("createVgentEngine", () => {
     expect(result.toolResults).toHaveLength(0);
   });
 
+  it("插话：两步之间把用户新说的话放到模型面前，只放一次，第一步之前不放", async () => {
+    const model = new MockLanguageModelV3({
+      doGenerate: [
+        {
+          content: [{ type: "tool-call" as const, toolCallId: "call-1", toolName: "glob", input: JSON.stringify({ pattern: "*.nothing" }) }],
+          finishReason: { unified: "tool-calls" as const },
+          usage: NO_USAGE,
+          warnings: [],
+        },
+        {
+          content: [{ type: "tool-call" as const, toolCallId: "call-2", toolName: "glob", input: JSON.stringify({ pattern: "*.nothing" }) }],
+          finishReason: { unified: "tool-calls" as const },
+          usage: NO_USAGE,
+          warnings: [],
+        },
+        { content: [{ type: "text" as const, text: "好" }], finishReason: { unified: "stop" as const }, usage: NO_USAGE, warnings: [] },
+      ],
+    });
+    let asked = 0;
+    const { agent } = createVgentEngine({
+      model,
+      repoPath,
+      permissionMode: "allow-all",
+      // Asked before steps 1 and 2; only the first time is there anything to say.
+      pendingUserMessages: async () => (asked++ === 0 ? ["顺便改 b.ts"] : []),
+    });
+
+    await agent.generate({ prompt: "重构 a.ts" });
+
+    const userTexts = (call: number): string[] =>
+      (model.doGenerateCalls[call]?.prompt ?? []).flatMap((message) =>
+        message.role === "user" ? message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])) : [],
+      );
+    expect(asked).toBe(2);
+    expect(userTexts(0)).toEqual(["重构 a.ts"]);
+    expect(userTexts(1)).toEqual(["重构 a.ts", "顺便改 b.ts"]);
+    // The injected message is part of the base now: still there, still once.
+    expect(userTexts(2)).toEqual(["重构 a.ts", "顺便改 b.ts"]);
+    expect(model.doGenerateCalls[1]?.prompt.at(-1)?.role).toBe("user");
+  });
+
   /**
    * What 自动改文件 (the default run mode) does and does not hand over: writes
    * inside the working directory run unattended, a write that points outside it

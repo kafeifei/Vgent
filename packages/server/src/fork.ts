@@ -12,6 +12,7 @@
 import { randomUUID } from "node:crypto";
 import type { UIMessage } from "ai";
 import { NotFoundError } from "./errors.js";
+import { expandSteers } from "./steer.js";
 import type { ThreadMessageMetadata } from "./types.js";
 
 const textOf = (message: UIMessage): string =>
@@ -57,7 +58,8 @@ const FORK_NOTE_MAX_CHARS = 60_000;
  * none of this.
  */
 export function forkNote(messages: readonly UIMessage[]): string | undefined {
-  const lines = messages.flatMap((message) => {
+  // 插话 reads as the user speaking mid-turn, which is what it was.
+  const lines = expandSteers(messages).flatMap((message) => {
     const text = textOf(message);
     return text === "" ? [] : [`【${message.role === "user" ? "用户" : "助手"}】\n${text}`];
   });

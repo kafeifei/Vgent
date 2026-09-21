@@ -218,6 +218,16 @@ function BlockView({
     );
   }
 
+  if (block.kind === "steer") {
+    // The same box a turn's opening message gets — it is the same speaker —
+    // pulled out to the log's full width like that one is.
+    return (
+      <div className="-mx-chat-inset rounded-xl border border-border bg-bg-elevated px-chat-inset py-sm shadow-xs">
+        <p className="m-0 whitespace-pre-wrap">{block.text}</p>
+      </div>
+    );
+  }
+
   if (block.kind === "text") {
     return (
       <div className="text-md leading-chat">

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { convertToModelMessages, generateText, type LanguageModel, type UIMessage } from "ai";
 import type { ThreadRecord } from "./types.js";
+import { expandSteers } from "./steer.js";
 
 /**
  * What the summariser is asked for. The result becomes the *only* thing the
@@ -37,7 +38,7 @@ export async function compactThread({ thread, model }: { thread: ThreadRecord; m
   const before = thread.messages.length;
   // A turn that stopped on an open approval leaves a tool call with no result;
   // dropping those is what makes an arbitrary stored history convertible.
-  const modelMessages = await convertToModelMessages(thread.messages, { ignoreIncompleteToolCalls: true });
+  const modelMessages = await convertToModelMessages(expandSteers(thread.messages), { ignoreIncompleteToolCalls: true });
   const { text } = await generateText({
     model,
     instructions: SUMMARISER_INSTRUCTIONS,

@@ -481,3 +481,18 @@ docs/
 - 回复里指向本地文件的链接仍然在右栏打开；回合产物卡也是。只有「图」点开是叠层。
 
 **没验证的**：叠层和悬停下载在桌面包的 WebView 里没法自己点（隔离实例里验到：小图 426×320、叠层出现且更大、下载落到指定目录并提示路径）。
+
+## 2026-09-21：插话（运行中发的消息进当前回合）
+
+用户提到 Codex 和 Claude Code 现在都能「无损打断」。查下来 AI SDK 的 harness 层就有：`HarnessAgent.experimental_steer({ session, text })` → 适配器的 `submitUserMessage`，消息在运行时的下一个安全输入边界进入**当前回合**，引出的输出仍在当前回合的流里。按「SDK 有的优先用」直接用它。
+
+- **三个引擎三种情况**（能力表多了一列 `steer`）：
+  - Claude Code：适配器实现了 `submitUserMessage`，runner 的 `steer()` 就是一行 `experimental_steer`。**推**。
+  - Codex：适配器沙箱里的 bridge 已经会收 `user-message`，但宿主侧的 control 没有 `submitUserMessage`（1.0.117 和最新 1.0.119 都看过），调了只会抛「不支持」。所以 `steer: false`，照旧排队。升级适配器后先重查这一条。
+  - 自研：SDK 没给现成的，但循环是我们自己的——`createVgentEngine` 多一个 `pendingUserMessages`，`prepareStep` 在每一步之前（第一步除外）问一次，把拿到的文字作为 `user` 消息并进去。v7 里 `prepareStep` 返回的 messages 会成为后续各步的基底，所以只并一次。**拉**：问的是任务的排队队列（`EngineContext.takeSteers`），取走即删。
+- **入口没变**：前端仍然 `POST /api/threads/:id/queue`。server 先 `runs.steer()`——有活着的回合、runner 有 `steer`、运行时收下了——就不进队列；否则入队。入了队的，自研引擎在下一个步间取走；一直没被取走的（回合没再走下一步就结束了、Codex）由原来的排队调度当下一轮发出。所以「送不进去」永远退回排队，消息不会丢。
+- **存成什么**：回合的 assistant 消息里一个 `data-steer` part（`steer.ts`），位置就是它进去的位置。UI message stream 一轮就是一条消息，没法中途结束 assistant、插一条 user、再开一条；data part 正是这个协议装「既不是文字也不是工具调用」的东西的办法。server 在运行时收下之后往 hub 里发这个 chunk，客户端和落盘走的是同一条流。
+- **读回来**：`expandSteers()` 把带插话的 assistant 消息按插话切成 assistant / user / assistant，给一切把历史当对话读的地方用——每轮开头的 `convertToModelMessages`（无状态的自研引擎靠它在下一轮看到那句话）、分叉的文字记录、`/compact` 的摘要。harness 引擎自己的 session 里本来就有那句话。
+- **前端**：`turns.ts` 多一种 block `steer`，永不折叠；`Turn.tsx` 把它画成和回合开头一样的用户消息框，夹在前后两段步骤之间。
+
+**没验证的**：没有用真的 Claude Code 跑一次 `experimental_steer`（测试里是假引擎走真的 run manager、真的流和落盘；适配器那一侧只读了代码）。它名字里带 experimental，上游可能改。自研引擎的 session 文件（CLI 用的那份）不记插话进来的消息；server 每轮从 UI 消息重建历史，不受影响。

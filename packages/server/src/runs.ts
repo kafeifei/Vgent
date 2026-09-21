@@ -27,6 +27,7 @@ import type { QueueStore } from "./queue.js";
 import { forkNote } from "./fork.js";
 import { projectOfThread } from "./no-project.js";
 import { restoreNote } from "./restore.js";
+import { expandSteers, steerChunk } from "./steer.js";
 import type { ProjectStore } from "./store/projects.js";
 import type { SettingsStore } from "./store/settings.js";
 import { DEFAULT_THREAD_TITLE, type ThreadStore } from "./store/threads.js";
@@ -141,6 +142,8 @@ interface LiveRun {
   abort: AbortController;
   done: Promise<void>;
   stopped: boolean;
+  /** Set while the engine is streaming, so a 插话 has someone to go to. */
+  runner?: EngineRunner;
 }
 
 /** A runner kept alive between requests because its turn is waiting on the human. */
@@ -162,6 +165,12 @@ export interface RunManager {
    * unarchived and has one. Used at boot; after a turn it schedules itself.
    */
   dispatchQueue(threadId: string): Promise<void>;
+  /**
+   * 插话: hand a message to the turn that is running right now. `false` means it
+   * did not go in — nothing is running, the engine cannot take one, or the turn
+   * was over by the time it got there — and the caller queues it instead.
+   */
+  steer(threadId: string, text: string): Promise<boolean>;
   stop(threadId: string): Promise<void>;
   subscribe(threadId: string, signal?: AbortSignal): ReadableStream<UIMessageChunk> | undefined;
   isRunning(threadId: string): boolean;
@@ -519,8 +528,9 @@ export function createRunManager(options: {
         engine: thread.engine,
         dir: join(dataDir, "attachments", thread.id),
       });
+      // 插话 parts are read back as the user messages they were.
       const convert = async (tools?: ToolSet) =>
-        withRestoreNote(await convertToModelMessages(readable, ...(tools != null ? [{ tools }] : [])), note);
+        withRestoreNote(await convertToModelMessages(expandSteers(readable), ...(tools != null ? [{ tools }] : [])), note);
       let modelMessages = await convert();
       // The harness itself decides "continue the open turn" vs "start a new
       // one" by whether the last model message is `role: 'tool'` (approval
@@ -566,6 +576,17 @@ export function createRunManager(options: {
           // A parked runner was reused above, so reaching here with
           // `continuesTurn` means the open turn lives in another process.
           continuesTurn,
+          // 插话, pulled: the engine drains the queue between its steps. Each
+          // message shows up in the log at the point it went in.
+          takeSteers: async () => {
+            const taken: string[] = [];
+            if (options.queue == null || run.stopped) return taken;
+            for (let item = await options.queue.take(thread.id); item != null; item = await options.queue.take(thread.id)) {
+              taken.push(item.text);
+              run.hub.publish(steerChunk(item.text));
+            }
+            return taken;
+          },
           saveHarnessState: (state) => threads.saveHarnessState(thread.id, state),
           log,
         });
@@ -579,6 +600,7 @@ export function createRunManager(options: {
       if (runner.tools != null) modelMessages = await convert(runner.tools);
 
       const result = await runner.stream({ messages: modelMessages, abortSignal: run.abort.signal });
+      run.runner = runner;
 
       const uiStream = toUIMessageStream({
         stream: result.stream,
@@ -688,6 +710,7 @@ export function createRunManager(options: {
     } finally {
       // Release the slot first: whatever happens to the engine, the thread must
       // be startable again.
+      delete run.runner;
       runs.delete(thread.id);
       run.hub.close();
       if (runner != null) {
@@ -866,6 +889,21 @@ export function createRunManager(options: {
     },
 
     dispatchQueue,
+
+    async steer(threadId, text) {
+      const run = runs.get(threadId);
+      const runner = run?.runner;
+      if (run == null || run.stopped || run.hub.closed || runner?.steer == null) return false;
+      try {
+        await runner.steer(text);
+      } catch (error) {
+        // Most often the turn ended a moment ago. Either way the message is not lost: it is queued.
+        log.warn(`线程 ${threadId} 的插话没能送进当前回合，改为排队`, error);
+        return false;
+      }
+      run.hub.publish(steerChunk(text));
+      return true;
+    },
 
     async stop(threadId) {
       await releaseParked(threadId, STOP_INTERRUPT_TEXT);

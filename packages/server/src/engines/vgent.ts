@@ -21,6 +21,8 @@ const DESCRIPTOR: EngineDescriptor = {
     compact: true,
     knownDefaultModel: true,
     extensions: true,
+    // Pulled: the loop is ours, so the queue is read between steps (`takeSteers`).
+    steer: true,
     customProviders: true,
   },
 };
@@ -123,6 +125,8 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
         // 计划回合只读：the engine drops every writing tool, MCP included.
         ...(ctx.planMode ? { plan: true } : {}),
         extraTools: mcp.tools,
+        // 插话: whatever the user sent since the last step goes in before the next one.
+        pendingUserMessages: ctx.takeSteers,
         skills,
         memoryDir: memoryDirOf(ctx),
         // The summary is always asked for (that is the engine's default); the

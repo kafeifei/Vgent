@@ -21,6 +21,14 @@ export interface EngineRunner {
    * engines run their tools out of process and leave this undefined.
    */
   tools?: ToolSet;
+  /**
+   * 插话, pushed: hand the running turn another user message. Resolves once the
+   * runtime has taken it for its next safe input boundary; rejects when there
+   * is no turn to take it. Present on the engines whose runtime accepts input
+   * mid-turn. An engine that instead *pulls* at its own step boundaries reads
+   * `EngineContext.takeSteers` and leaves this undefined.
+   */
+  steer?(text: string): Promise<void>;
   /** End the turn: stop the runtime and persist whatever resume state it hands back. */
   finish(): Promise<void>;
   /**
@@ -79,6 +87,13 @@ export interface EngineContext {
    * abandons that turn and has to start from the last finished state instead.
    */
   continuesTurn: boolean;
+  /**
+   * 插话, pulled: the messages the user sent since the turn started, oldest
+   * first, taken out of the task's queue for good. An engine that owns its loop
+   * calls it between steps and puts what comes back in front of the model.
+   * Whatever it never asks for stays queued and runs as the next turn.
+   */
+  takeSteers(): Promise<string[]>;
   /** Where `finish()` writes the resume state. Injected so the factory never reaches for the store. */
   saveHarnessState(state: HarnessState): Promise<void>;
   log: Logger;

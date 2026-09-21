@@ -23,6 +23,8 @@ const DESCRIPTOR: EngineDescriptor = {
     compact: false,
     knownDefaultModel: false,
     extensions: false,
+    // The adapter's host side has no `submitUserMessage` yet (checked up to 1.0.119), so a message waits for the turn to end.
+    steer: false,
     customProviders: true,
   },
 };

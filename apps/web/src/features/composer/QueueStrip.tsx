@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Pencil, Send, X } from "lucide-react";
 import type { QueuedMessage } from "@/lib/types";
 import { isImeKeyEvent } from "@/lib/ime";
+import { cn } from "@/lib/utils";
 
 /**
  * 排队条, right above the textarea and inside the composer's frame — the queue
@@ -45,13 +46,14 @@ export function QueueStrip({
   };
 
   return (
-    <div className="border-border border-b px-xs pt-2xs pb-3xs">
-      <div className="flex items-center gap-xs px-3xs pb-3xs">
-        <span className="text-fg-muted text-xs">排队 {items.length}</span>
-        {note != null && <span className="min-w-0 truncate text-fg-faint text-xs">{note}</span>}
-      </div>
+    <div className="border-border border-b px-xs py-3xs">
       {items.map((item, index) => (
         <div key={item.id} className="group flex h-row-file items-center gap-2xs rounded-sm px-3xs hover:bg-bg-hover">
+          {/* One row: the label leads the head item, and keeps its width on the rows under it so the texts line up. */}
+          <span aria-hidden={index > 0} className={cn("flex-none text-fg-muted text-xs", index > 0 && "invisible")}>
+            排队 {items.length}
+          </span>
+          {index === 0 && note != null && <span className="max-w-[40%] flex-none truncate text-fg-faint text-xs">{note}</span>}
           {editing?.id === item.id ? (
             <input
               autoFocus
@@ -71,7 +73,7 @@ export function QueueStrip({
               className="min-w-0 flex-1 rounded-sm border border-border-strong bg-bg-inset px-2xs py-3xs text-fg text-xs outline-none"
             />
           ) : (
-            <span title={item.text} className="min-w-0 flex-1 truncate text-fg-muted text-xs">
+            <span title={item.text} className="min-w-0 flex-1 truncate text-fg text-xs">
               {item.text}
             </span>
           )}

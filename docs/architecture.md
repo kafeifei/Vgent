@@ -454,6 +454,7 @@ docs/
 - `features/files/fileAccess.tsx`：`FileAccessProvider` 把「这个任务的文件怎么取、点了在哪打开」交给任务视图里的任何东西；`useFilePicture(path)` 给出能放进 `<img>` 的地址（位图是 blob URL，SVG 是清洗后的 data URI），文件被重写时旧图留到新图到了再换。回合进行中不重取，结束时取一次。
 - `components/RichMarkdown.tsx`：工作日志、计划文档、文件预览共用的 markdown。在 AI Elements 的 `MessageResponse`（Streamdown）外面配了四样：
   - KaTeX 的样式表（之前没引，公式一直是坏的）；`lib/mathDelimiters.ts` 把 `\(…\)`、`\[…\]` 换成 `$$` 形式，代码块和行内代码不动；单个 `$` 保持关闭（同 Cursor）。
+  - `lib/svgFences.ts`（2026-09-21 补，来自一次真实任务）：回复里**裸贴**的 `<svg>…</svg>` 先包成 `svg` 代码块。模型画图时不包代码块和包的一样多；不包的话 markdown 把它当原始 HTML 清洗，只剩 `<title>` 里的字——活干了、界面上什么都没有。包了之后和别的图走同一条路；还在流式输出的是一个没闭合的 fence，渲染器本来就当「正在画…」。代码块和行内代码里的不动。
   - 代码块渲染器：`svg`，或 `xml` / `html` 且内容以 `<svg` 开头 → 显示成图，下面一个「源码」切换；不是 SVG 的 xml / html 退回 Streamdown 自己的代码块；没写完的显示「正在画…」（同 Codex）。
   - `lib/rehypeTaskFiles.ts`：排在 Streamdown 的清洗之前。它的 harden 会把不带 `./` 的相对地址整个拦掉、`file:` 也会被丢，所以本地图片的 `src` 先换成我们自己的根相对地址（`/__task_file__/<编码后的路径>`，能过清洗），渲染 `img` 时再解回来；本地链接直接换成自定义元素 `task-file`（清洗的白名单里加了它），渲染成一个在右栏打开文件的按钮——Streamdown 的链接会弹「在浏览器里打开？」的确认，对本地文件没有意义。
   - 被预览的 markdown 文档里的相对路径从文档所在目录算起（`FileAccess.baseDir`）。

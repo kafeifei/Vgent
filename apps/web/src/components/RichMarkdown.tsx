@@ -10,6 +10,7 @@ import { normalizeMathDelimiters } from "@/lib/mathDelimiters";
 import { isSvgFence, taskFileOf } from "@/lib/preview";
 import { TASK_FILE_TAG, rehypeTaskFiles } from "@/lib/rehypeTaskFiles";
 import { svgPictureOf } from "@/lib/sanitizeSvg";
+import { fenceBareSvg } from "@/lib/svgFences";
 import { cn } from "@/lib/utils";
 import "katex/dist/katex.min.css";
 
@@ -116,7 +117,7 @@ const REHYPE = ((): RehypePlugins => {
  * points at one of the task's files loaded from that task.
  */
 export const RichMarkdown = memo(function RichMarkdown({ children, className }: { children: string; className?: string }) {
-  const text = useMemo(() => normalizeMathDelimiters(children), [children]);
+  const text = useMemo(() => normalizeMathDelimiters(fenceBareSvg(children)), [children]);
   return (
     <MessageResponse plugins={PLUGINS} components={COMPONENTS} rehypePlugins={REHYPE} {...(className != null ? { className } : {})}>
       {text}

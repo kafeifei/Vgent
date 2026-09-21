@@ -114,7 +114,8 @@ export function useWorkbench(token: string) {
   const changes = useChanges({
     client,
     // 无项目 runs in a plain directory: no repo, so no 改动 and nothing to 收口 — and nothing to ask the server for.
-    threadId: isNoProject(thread?.projectId) ? null : selectedThreadId,
+    // Nor before the task list has arrived: until then a task opened from the URL is not known to be one.
+    threadId: thread == null || isNoProject(thread.projectId) ? null : selectedThreadId,
     refreshKey: thread?.updatedAt ?? "",
     selected: right.file,
     onSelect: selectChange,

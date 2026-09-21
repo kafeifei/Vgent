@@ -25,6 +25,8 @@ export interface Turn {
   key: string;
   user?: UIMessage;
   blocks: Block[];
+  /** An assistant message exists for this turn — with no blocks, the model answered with nothing. */
+  answered: boolean;
 }
 
 /** Set on the summary message `/compact` leaves behind; absent on an ordinary user message. */
@@ -51,7 +53,11 @@ function blocksOf(message: UIMessage): Block[] {
     const key = `${message.id}:${index}`;
     const steer = steerTextOf(part);
     if (steer != null) blocks.push({ kind: "steer", key, text: steer });
-    else if (part.type === "text") blocks.push({ kind: "text", key, part });
+    // Blank text is not a reply: some models open a step with a lone space, and
+    // one that ends there has said nothing (the turn's `answered` covers that).
+    else if (part.type === "text") {
+      if (part.text.trim() !== "") blocks.push({ kind: "text", key, part });
+    }
     // A reasoning part with no text is what an engine sends when the model
     // reasoned but did not summarize it — the ChatGPT/Codex backend encrypts
     // its reasoning, so every turn carries one unless a summary was asked for.
@@ -83,15 +89,16 @@ export function buildTurns(messages: readonly UIMessage[]): Turn[] {
   const turns: Turn[] = [];
   for (const message of messages) {
     if (message.role === "user") {
-      turns.push({ key: message.id, user: message, blocks: [] });
+      turns.push({ key: message.id, user: message, blocks: [], answered: false });
       continue;
     }
     if (message.role !== "assistant") continue;
     let turn = turns.at(-1);
     if (turn == null) {
-      turn = { key: `head-${message.id}`, blocks: [] };
+      turn = { key: `head-${message.id}`, blocks: [], answered: false };
       turns.push(turn);
     }
+    turn.answered = true;
     turn.blocks.push(...blocksOf(message));
   }
   return turns;

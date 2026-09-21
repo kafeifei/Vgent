@@ -64,6 +64,20 @@ describe("buildTurns", () => {
   });
 });
 
+describe("a reply with nothing in it", () => {
+  it("drops blank text, and tells a turn that was answered with nothing from one still waiting", () => {
+    const turns = buildTurns([
+      user("u1", "再来一次"),
+      assistant("a1", [stepStart, { type: "text", text: " " }]),
+      user("u2", "挂了？"),
+    ]);
+    expect(turns.map((turn) => [turn.blocks.length, turn.answered])).toEqual([
+      [0, true],
+      [0, false],
+    ]);
+  });
+});
+
 describe("runsOf", () => {
   it("keeps order: text splits the foldable runs around it", () => {
     const turns = buildTurns([

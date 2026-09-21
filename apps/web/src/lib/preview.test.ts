@@ -64,6 +64,9 @@ describe("localPathOf", () => {
     expect(localPathOf("file:///Users/me/a%20b.png")).toBe("/Users/me/a b.png");
     expect(localPathOf("out/%E9%B9%88%E9%B9%95.svg")).toBe("out/鹈鹕.svg");
     expect(localPathOf("out/100%.png")).toBe("out/100%.png");
+    expect(localPathOf("sandbox:/Users/me/scratch/pelican.svg")).toBe("/Users/me/scratch/pelican.svg");
+    expect(localPathOf("sandbox:///mnt/data/a.png")).toBe("/mnt/data/a.png");
+    expect(localPathOf("sandbox:out/a.png")).toBe("out/a.png");
     for (const web of ["https://x.dev/a.png", "data:image/png;base64,AA", "blob:http://x/1", "//cdn/a.png", "#anchor", "mailto:a@b", ""]) {
       expect(localPathOf(web)).toBeUndefined();
     }

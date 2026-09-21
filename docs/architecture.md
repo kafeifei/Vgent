@@ -515,3 +515,13 @@ build 84 定的「日志里的图只有一种样子」只覆盖了回复里内�
 - `TaskPicture`（任务自己的图片文件 → `Figure`）从 `RichMarkdown.tsx` 挪到 `features/files/TaskPicture.tsx`，回复里的 `![]()` 和回合产物共用。
 - `TurnOutputs.tsx`：产物里的图片 / SVG 直接是 `Figure`（适中大小、点开叠层、下载），图下面一行文件名，点它在右栏打开；markdown 文档仍是卡片。
 - `outputs.ts` 收紧了候选：回复里**链接**指向的文件照旧算；只在行内代码里**提到**的文件名，要这一轮动过它才算（写 / 改的路径，或 shell 命令里出现过这个文件名）。原来「只发现一个未跟踪文件 `pelican-bicycle.svg`，没有动它」也会出一张产物卡，图变大之后这种误报会很扎眼。
+
+## 2026-09-21：模型空回复——「发了消息没有任何反馈」
+
+用户在自研引擎（自己加的 openai-compatible 提供商，GPT 模型）上追问「再来一次」，界面毫无反应；再问「挂了？」才有回答。记录里那一轮的 assistant 消息只有一个空格，输出 1 个 token；四轮里出现了两次。离线把存下的历史过了一遍 `convertToModelMessages`：历史完整、以用户消息结尾，不是我们喂错了。真正的原因在网关 / 模型那一侧，没有 key 没法在隔离实例里复现（不碰用户的 key），所以**根因未确认**，做的是三层兜底：
+
+- **引擎**：`packages/engine/src/empty-reply.ts`，一个 `wrapLanguageModel` 中间件。一次调用结束时既没有工具调用、正文也没有可见字符，就再调一次，最多 `EMPTY_REPLY_RETRIES = 2` 次；`length` / `content-filter` / `error` 收尾的不重试。正文在出现第一个可见字符之前先扣着，所以被丢掉的那次调用不会在流里留下东西；思考和工具调用照常直通。只管自研引擎——另外两个引擎的循环在厂商的 CLI 里。
+- **日志**：`turns.ts` 丢掉空白的 text block（这个模型几乎每一步正文都以一个空格开头），`Turn.answered` 记下「有 assistant 消息」。回合结束却一个 block 都没有时，显示一行灰字「这一轮模型没有返回内容」，不再是一片空白。
+- **等待中**：最后一轮在跑、还没有任何 block 时，显示 AI Elements 的 `Shimmer`「思考中…」。此前从发送到第一个字到达，聊天区什么都没有。
+
+顺带：GPT 模型给自己写的文件用 `sandbox:/Users/…` 这种链接（ChatGPT 的习惯），被 rehype-harden 拦成 “[blocked]”。`localPathOf` 现在把 `sandbox:` 当本地路径。无项目任务那两个请求还漏了一个时序——从 URL 打开、任务列表还没到时不知道它是无项目——现在任务未知时也不发。

@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
 import { Spinner, ToolRow } from "./ToolRow";
+import { Shimmer } from "@/components/ai-elements/shimmer";
 import { TurnOutputs } from "./TurnOutputs";
 import type { Block, Run, Turn as TurnModel } from "./turns";
 import { approvalAnchor, compactedOf, isOpenApproval, isOpenQuestion, questionAnchor, runsOf } from "./turns";
@@ -125,8 +126,15 @@ export function Turn({
           </div>
         ),
       )}
+      {/* Until the first block lands there is nothing else on screen to say the turn is alive. */}
+      {!folded && turn.blocks.length === 0 && (
+        <div className="px-chat-inset text-fg-muted">
+          <Shimmer>思考中…</Shimmer>
+        </div>
+      )}
+      {folded && turn.answered && turn.blocks.length === 0 && <p className="m-0 px-chat-inset text-fg-faint">这一轮模型没有返回内容</p>}
       {folded && <TurnOutputs blocks={turn.blocks} />}
-      {folded && <ReplyActions turn={turn} {...(turn.user != null ? { onFork: () => actions.fork(turn.user!.id) } : {})} />}
+      {folded && turn.blocks.length > 0 && <ReplyActions turn={turn} {...(turn.user != null ? { onFork: () => actions.fork(turn.user!.id) } : {})} />}
     </section>
   );
 }

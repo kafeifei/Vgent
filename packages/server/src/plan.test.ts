@@ -273,7 +273,13 @@ describe("计划回合", () => {
     const dataDir = await tempDir();
     const repoPath = await tempDir();
     await writeFile(join(repoPath, "README.md"), "# 项目\n");
-    const app = makeApp(dataDir, mockModel([toolCallStream("call-r", "read", { file_path: "README.md" }), emptyStream()]));
+    const app = makeApp(dataDir, mockModel([
+      toolCallStream("call-r", "read", { file_path: "README.md" }),
+      // The engine asks again when a call comes back empty; this model stays empty every time.
+      emptyStream(),
+      emptyStream(),
+      emptyStream(),
+    ]));
     const thread = (await (await makeThread(app, repoPath, { mode: "plan" })).json()) as ThreadRecord;
 
     // A plan the user already has. A turn that produced no closing text must not

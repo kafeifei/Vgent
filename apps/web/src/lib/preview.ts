@@ -81,15 +81,19 @@ export function taskFileOf(url: string): string | undefined {
 
 /**
  * The file a markdown image or link points at, when it points at one of the
- * task's own: `pelican.svg`, `./out/a.png`, `/Users/…/a.png`, `file:///…`.
+ * task's own: `pelican.svg`, `./out/a.png`, `/Users/…/a.png`, `file:///…`,
+ * `sandbox:/…`.
  * Anything with another scheme is the web's and is left alone.
  */
 export function localPathOf(src: string): string | undefined {
   const trimmed = src.trim();
   if (trimmed === "" || trimmed.startsWith("#") || trimmed.startsWith("//")) return undefined;
   const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(trimmed)?.[1]?.toLowerCase();
-  if (scheme != null && scheme !== "file") return undefined;
-  const bare = (scheme === "file" ? trimmed.replace(/^file:\/\/(localhost)?/i, "") : trimmed).replace(/[?#].*$/, "");
+  // `sandbox:` is what GPT models write for a file they made — a ChatGPT habit that means "a local path".
+  if (scheme != null && scheme !== "file" && scheme !== "sandbox") return undefined;
+  const unschemed =
+    scheme === "file" ? trimmed.replace(/^file:\/\/(localhost)?/i, "") : scheme === "sandbox" ? trimmed.replace(/^sandbox:(\/\/(?=\/))?/i, "") : trimmed;
+  const bare = unschemed.replace(/[?#].*$/, "");
   if (bare === "") return undefined;
   // Spaces and CJK arrive percent-encoded from a markdown parser, and raw from a model that did not bother.
   try {

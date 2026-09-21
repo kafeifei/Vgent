@@ -2,7 +2,8 @@ import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { createModelRegistry, splitProviderModelSpec, type ProviderConfig } from "@vgent/providers";
 import { createCodingTools } from "@vgent/tools";
-import { ToolLoopAgent, isStepCount, pruneMessages, toolSearch, type LanguageModel, type ModelMessage, type ToolSet } from "ai";
+import { ToolLoopAgent, isStepCount, pruneMessages, toolSearch, wrapLanguageModel, type LanguageModel, type ModelMessage, type ToolSet } from "ai";
+import { retryEmptyReply } from "./empty-reply.js";
 import { askUserQuestionsTool } from "./ask-user-questions.js";
 import { buildInstructions, type VgentContext } from "./instructions.js";
 import { hasDeferredTools } from "./mcp.js";
@@ -246,7 +247,10 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
   const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
   const contextTokenBudget = options.contextTokenBudget ?? DEFAULT_CONTEXT_TOKEN_BUDGET;
   const { sessionFile, onEvent, skills, memoryDir } = options;
-  const model = resolveModel(options.model, options.providers);
+  const model = wrapLanguageModel({
+    model: resolveModel(options.model, options.providers) as Parameters<typeof wrapLanguageModel>[0]["model"],
+    middleware: retryEmptyReply(),
+  });
   const subagents = options.subagents !== false;
 
   const plan = options.plan === true;

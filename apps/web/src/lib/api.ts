@@ -258,6 +258,9 @@ export function createClient(token: string) {
       api<FileContent>(`/threads/${threadId}/files/content?path=${encodeURIComponent(path)}`, token),
     /** The file itself; `path` may be absolute, as long as it is inside the task's directory. */
     getFileBlob: (threadId: string, path: string) => apiBlob(`/threads/${threadId}/files/raw?path=${encodeURIComponent(path)}`, token),
+    /** 「在浏览器打开」: says what `/api/tickets/<ticket>`, which the caller has already opened, serves. */
+    registerTicket: (threadId: string, ticket: string, content: { path: string } | { svg: string }) =>
+      api<void>(`/threads/${threadId}/files/ticket`, token, { method: "POST", json: { ticket, ...content } }),
     /** Of these paths — as tools and replies wrote them — the ones that are this task's files right now. */
     resolveFiles: (threadId: string, paths: string[]) =>
       api<{ files: ResolvedFile[] }>(`/threads/${threadId}/files/resolve`, token, { method: "POST", json: { paths } }).then((body) => body.files),

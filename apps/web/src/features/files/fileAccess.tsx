@@ -9,12 +9,14 @@ import { svgPictureOf } from "@/lib/sanitizeSvg";
  * then a local path is simply a picture that cannot be shown.
  */
 export interface FileAccess {
-  client: Pick<ApiClient, "getFileBlob" | "resolveFiles">;
+  client: Pick<ApiClient, "getFileBlob" | "resolveFiles" | "registerTicket">;
   threadId: string;
   /** The thread's `updatedAt`: a new one means the engine may have rewritten the file. */
   refreshKey: string;
   /** Show this file in the right pane. */
   openFile: (path: string) => void;
+  /** Show a drawing that exists only in a reply in the right pane. Absent where there is no pane to open. */
+  openDrawing?: (svg: string) => void;
   /** Where a relative path starts from: the directory of the document being shown. The task's root when absent. */
   baseDir?: string;
 }
@@ -25,6 +27,20 @@ export const FileAccessProvider = FileAccessContext.Provider;
 
 export function useFileAccess(): FileAccess | null {
   return useContext(FileAccessContext);
+}
+
+/**
+ * 「在浏览器打开」 for something only this task can serve. The window has to open
+ * in the same tick as the click — after an `await` it is a blocked popup — so
+ * the address is made up here, opened at once, and only then registered; the
+ * server holds the browser's request until it is. In the desktop shell the new
+ * window is handed to the system browser.
+ */
+export function openInBrowser(access: FileAccess, content: { path: string } | { svg: string }): void {
+  const bytes = crypto.getRandomValues(new Uint8Array(24));
+  const ticket = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  window.open(`${window.location.origin}/api/tickets/${ticket}`, "_blank", "noreferrer");
+  void access.client.registerTicket(access.threadId, ticket, content).catch(() => undefined);
 }
 
 /** A document's own relative paths start at the document, not at the root. */

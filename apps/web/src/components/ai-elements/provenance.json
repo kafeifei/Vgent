@@ -1,6 +1,6 @@
 {
   "note": "Fetched from the official registries by scripts/fetch-ai-elements.mjs. `response` has no registry item of its own — the streamdown renderer ships inside `message` as `MessageResponse`.",
-  "fetchedAt": "2026-09-17T12:44:18.096Z",
+  "fetchedAt": "2026-09-21T04:03:05.778Z",
   "patches": [
     {
       "id": "cn-import",
@@ -50,6 +50,22 @@
           "sha256": "afeb8ee000195794ccffbf82ab1860bf083e61d355cbe1385fc6ad73fdecfae8",
           "patches": [
             "cn-import"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "artifact",
+      "kind": "ai-elements",
+      "url": "https://elements.ai-sdk.dev/api/registry/artifact.json",
+      "sha256": "6df97316a98e33936fc001b6b57bbd0fb45efcec5a52b0bc460836eb08a00c9a",
+      "files": [
+        {
+          "registryPath": "registry/default/ai-elements/artifact.tsx",
+          "localPath": "src/components/ai-elements/artifact.tsx",
+          "sha256": "b1ed83b8ef6f38dd045e33e7e7a0960bef43182f308e1169a9467c293f677917",
+          "patches": [
+            "registry-alias"
           ]
         }
       ]

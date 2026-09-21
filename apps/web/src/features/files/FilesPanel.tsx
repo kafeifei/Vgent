@@ -3,9 +3,10 @@ import { ArrowLeft, ChevronDown, ChevronRight, File, RefreshCw } from "lucide-re
 import type { BundledLanguage } from "shiki";
 import { CodeBlock } from "@/components/ai-elements/code-block";
 import { RichMarkdown } from "@/components/RichMarkdown";
+import type { PreviewRequest } from "@/app/useWorkbench";
 import type { ApiClient } from "@/lib/api";
 import { baseName } from "@/lib/format";
-import { type PreviewKind, previewKindOf } from "@/lib/preview";
+import { type PreviewKind, previewKindOf, svgDataUri } from "@/lib/preview";
 import type { FileContent, FileEntry, FileListing } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { FileAccessProvider, useFilePicture } from "./fileAccess";
@@ -102,6 +103,38 @@ function useViewMode(kind: PreviewKind | undefined): [ViewMode, (mode: ViewMode)
   return [(kind != null ? modes[kind] : undefined) ?? "preview", set];
 }
 
+function BackButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex h-xl flex-none items-center gap-3xs rounded-sm border border-border px-xs text-fg-muted text-xs hover:bg-bg-hover hover:text-fg"
+    >
+      <ArrowLeft className="size-md" />
+      返回
+    </button>
+  );
+}
+
+function ViewModeTabs({ mode, onMode }: { mode: ViewMode; onMode: (mode: ViewMode) => void }) {
+  return (
+    <div role="tablist" className="flex flex-none items-center rounded-sm border border-border p-px text-xs">
+      {(["preview", "source"] as const).map((entry) => (
+        <button
+          key={entry}
+          role="tab"
+          type="button"
+          aria-selected={mode === entry}
+          onClick={() => onMode(entry)}
+          className={cn("h-lg rounded-xs px-xs text-fg-muted hover:text-fg", mode === entry && "bg-bg-active text-fg")}
+        >
+          {entry === "preview" ? "预览" : "源码"}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /** The file as a picture, on a ground that shows a transparent one for what it is. */
 function Picture({ path }: { path: string }) {
   const picture = useFilePicture(path);
@@ -186,7 +219,7 @@ export function FilesPanel({
   /** The thread's `updatedAt`: a new one means the engine wrote to disk. */
   refreshKey: string;
   /** A file the log asked to see, as the log wrote it; `onPreviewTaken` says it has been opened. */
-  preview?: { path: string; nonce: number } | null;
+  preview?: PreviewRequest | null;
   onPreviewTaken?: () => void;
 }) {
   const [listing, setListing] = useState<FileListing | null>(null);
@@ -197,6 +230,8 @@ export function FilesPanel({
   const [selected, setSelected] = useState<string | null>(null);
   const [content, setContent] = useState<FileContent | null>(null);
   const [contentError, setContentError] = useState<string | null>(null);
+  /** A drawing that exists only in a reply, shown here at full size. It is no file, so it has no place in the tree. */
+  const [drawing, setDrawing] = useState<string | null>(null);
   /** Why a file the log asked for is not open. It sits above the tree and goes with the next file opened. */
   const [notice, setNotice] = useState<string | null>(null);
   /** Bumped per load; a stale response never writes state. */
@@ -234,6 +269,7 @@ export function FilesPanel({
   // A thread switch invalidates the open file, not just the listing.
   useEffect(() => {
     setSelected(null);
+    setDrawing(null);
     setFilter("");
     setNotice(null);
   }, [threadId]);
@@ -246,6 +282,13 @@ export function FilesPanel({
   // not. The server says which of this task's files that is.
   useEffect(() => {
     if (preview == null || threadId == null) return;
+    if ("svg" in preview) {
+      onPreviewTaken?.();
+      setSelected(null);
+      setDrawing(preview.svg);
+      return;
+    }
+    setDrawing(null);
     let cancelled = false;
     client.resolveFiles(threadId, [preview.path]).then(
       (found) => {
@@ -270,6 +313,7 @@ export function FilesPanel({
 
   const kind = selected == null ? undefined : previewKindOf(selected);
   const [viewMode, setViewMode] = useViewMode(kind);
+  const [drawingMode, setDrawingMode] = useViewMode("svg");
   const contentGeneration = useRef(0);
 
   useEffect(() => {
@@ -311,37 +355,34 @@ export function FilesPanel({
       return next;
     });
 
+  if (drawing != null) {
+    return (
+      <>
+        <div className="mb-xs flex items-center gap-2xs">
+          <BackButton onClick={() => setDrawing(null)} />
+          <span className="min-w-0 flex-1 truncate font-mono text-code text-fg-faint">SVG</span>
+          <ViewModeTabs mode={drawingMode} onMode={setDrawingMode} />
+        </div>
+        {drawingMode === "preview" ? (
+          <div className="grid place-items-center rounded-lg bg-bg-inset p-sm">
+            <img src={svgDataUri(drawing)} alt="模型画的图" className="max-h-[70vh] max-w-full object-contain" />
+          </div>
+        ) : (
+          <CodeBlock code={drawing} language="xml" showLineNumbers />
+        )}
+      </>
+    );
+  }
+
   if (selected != null) {
     return (
       <>
         <div className="mb-xs flex items-center gap-2xs">
-          <button
-            type="button"
-            onClick={() => setSelected(null)}
-            className="inline-flex h-xl flex-none items-center gap-3xs rounded-sm border border-border px-xs text-fg-muted text-xs hover:bg-bg-hover hover:text-fg"
-          >
-            <ArrowLeft className="size-md" />
-            返回
-          </button>
+          <BackButton onClick={() => setSelected(null)} />
           <span className="min-w-0 flex-1 truncate font-mono text-code text-fg-faint" title={selected}>
             {baseName(selected)}
           </span>
-          {(kind === "svg" || kind === "markdown") && (
-            <div role="tablist" className="flex flex-none items-center rounded-sm border border-border p-px text-xs">
-              {(["preview", "source"] as const).map((mode) => (
-                <button
-                  key={mode}
-                  role="tab"
-                  type="button"
-                  aria-selected={viewMode === mode}
-                  onClick={() => setViewMode(mode)}
-                  className={cn("h-lg rounded-xs px-xs text-fg-muted hover:text-fg", viewMode === mode && "bg-bg-active text-fg")}
-                >
-                  {mode === "preview" ? "预览" : "源码"}
-                </button>
-              ))}
-            </div>
-          )}
+          {(kind === "svg" || kind === "markdown") && <ViewModeTabs mode={viewMode} onMode={setViewMode} />}
         </div>
 
         {/* The previews below read this task's files the same way a reply's pictures do. */}

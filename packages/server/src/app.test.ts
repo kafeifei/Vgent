@@ -691,6 +691,21 @@ describe("createApp", () => {
       { raw: "./out/鹈鹕 图.svg", path: "out/鹈鹕 图.svg" },
     ]);
     expect((await postJson(app, `/api/threads/${thread.id}/files/resolve`, {})).status).toBe(400);
+
+    // 「在浏览器打开」: the client opens an address of its own making, then says what it serves.
+    const ticket = "t".repeat(40);
+    const early = app.app.request(`${ORIGIN}/api/tickets/${ticket}`); // no token: the id is the secret
+    expect((await postJson(app, `/api/threads/${thread.id}/files/ticket`, { ticket, path: "shot.png" })).status).toBe(204);
+    const opened = await early;
+    expect(opened.status).toBe(200);
+    expect(opened.headers.get("content-type")).toBe("image/png");
+    expect(opened.headers.get("content-security-policy")).toContain("sandbox");
+    const drawn = "s".repeat(40);
+    expect((await postJson(app, `/api/threads/${thread.id}/files/ticket`, { ticket: drawn, svg: "<svg/>" })).status).toBe(204);
+    expect(await (await app.app.request(`${ORIGIN}/api/tickets/${drawn}`)).text()).toBe("<svg/>");
+    for (const body of [{ ticket: "x".repeat(40), path: join(outside, "secret.png") }, { ticket: "short", path: "shot.png" }, { ticket: drawn, svg: "<svg/>" }, {}]) {
+      expect((await postJson(app, `/api/threads/${thread.id}/files/ticket`, body)).status).toBe(400);
+    }
   });
 
   it("lists a 无项目 task's directory without git", async () => {

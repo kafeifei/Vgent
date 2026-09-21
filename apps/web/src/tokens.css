@@ -187,6 +187,7 @@
   --spacing-rightpane:    420px;  /* 右栏打开某个工具时的宽 */
   --spacing-rightlist:    260px;  /* 右栏只是一列入口时的宽 */
   --spacing-log-max:      760px;  /* 会话列宽 */
+  --spacing-figure:       320px;  /* 日志里一张图最高这么高：看得清，又不占满一屏 */
   --spacing-row:           30px;  /* 左栏 / 右栏一行 */
   --spacing-row-pad:        7px;  /* 行内左右内距，也是图标和文字的间距 */
   --spacing-row-indent:    30px;  /* 任务行标题的缩进：和上一级的文字对齐 */

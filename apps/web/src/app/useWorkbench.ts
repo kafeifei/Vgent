@@ -27,8 +27,11 @@ export interface RightState {
    * reply's `![](…)`, an output card. `nonce` makes asking twice for the same
    * file open it twice.
    */
-  preview: { path: string; nonce: number } | null;
+  preview: PreviewRequest | null;
 }
+
+/** `path` names one of the task's files; `svg` is a drawing that exists only in a reply. */
+export type PreviewRequest = ({ path: string } | { svg: string }) & { nonce: number };
 
 /** The pane starts as Cursor's does: open, as the short list of what it can show. */
 const RIGHT_INITIAL: RightState = { open: true, tab: "home", file: null, preview: null };
@@ -237,6 +240,8 @@ export function useWorkbench(token: string) {
       /** A picture or a document the log points at: shown as what it is, in the 文件 tab. */
       openPreview: (path: string) =>
         setRight((state) => ({ ...state, open: true, tab: "files", preview: { path, nonce: (state.preview?.nonce ?? 0) + 1 } })),
+      openDrawing: (svg: string) =>
+        setRight((state) => ({ ...state, open: true, tab: "files", preview: { svg, nonce: (state.preview?.nonce ?? 0) + 1 } })),
 
       /** The 文件 tab took the request; a remount must not replay it. */
       clearPreview: () => setRight((state) => (state.preview == null ? state : { ...state, preview: null })),

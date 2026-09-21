@@ -8,6 +8,7 @@ import { PlanDocument } from "@/features/plan/PlanDocument";
 import { PlanPanel } from "@/features/plan/PlanPanel";
 import { TerminalPanel } from "@/features/terminal/TerminalPanel";
 import type { QueueItem } from "@/features/worklog/queue";
+import type { PreviewRequest } from "@/app/useWorkbench";
 import type { ApiClient } from "@/lib/api";
 import type { ThreadSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -71,7 +72,7 @@ export function RightPane({
   /** The thread's `updatedAt`: a new one means the engine wrote to disk. */
   refreshKey: string;
   /** The file the 文件 tab was last asked to show. */
-  preview: { path: string; nonce: number } | null;
+  preview: PreviewRequest | null;
   onPreviewTaken: () => void;
   /** The active thread's messages, for 终端 and 计划. Empty without a live thread. */
   messages: UIMessage[];

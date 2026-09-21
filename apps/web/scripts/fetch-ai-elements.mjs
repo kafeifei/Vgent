@@ -33,7 +33,7 @@ const SHADCN_URL = (name) => `https://ui.shadcn.com/r/styles/new-york-v4/${name}
  * registry item — the streamdown renderer ships inside `message` as
  * `MessageResponse`.
  */
-const ELEMENTS = ["conversation", "message", "reasoning", "tool", "code-block", "shimmer", "confirmation"];
+const ELEMENTS = ["conversation", "message", "reasoning", "tool", "code-block", "shimmer", "confirmation", "artifact"];
 
 const check = process.argv.includes("--check");
 

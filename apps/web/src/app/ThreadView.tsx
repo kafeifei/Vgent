@@ -131,8 +131,8 @@ function ThreadChatView({
   // A running turn rewrites its files many times; what the log shows is refetched once it ends.
   const filesKey = live ? "live" : thread.updatedAt;
   const fileAccess = useMemo(
-    () => ({ client, threadId: thread.id, refreshKey: filesKey, openFile: actions.openPreview, openDrawing: actions.openDrawing }),
-    [actions.openDrawing, actions.openPreview, client, filesKey, thread.id],
+    () => ({ client, threadId: thread.id, refreshKey: filesKey, openFile: actions.openPreview, notify: actions.toast }),
+    [actions.openPreview, actions.toast, client, filesKey, thread.id],
   );
 
   const turnActions: TurnActions = useMemo(

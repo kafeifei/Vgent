@@ -33,7 +33,13 @@ const SHADCN_URL = (name) => `https://ui.shadcn.com/r/styles/new-york-v4/${name}
  * registry item — the streamdown renderer ships inside `message` as
  * `MessageResponse`.
  */
-const ELEMENTS = ["conversation", "message", "reasoning", "tool", "code-block", "shimmer", "confirmation", "artifact"];
+const ELEMENTS = ["conversation", "message", "reasoning", "tool", "code-block", "shimmer", "confirmation", "image"];
+
+/**
+ * shadcn primitives the workbench uses on its own, not through an element:
+ * `dialog` is the overlay a picture in the log opens into.
+ */
+const UI_EXTRA = ["dialog"];
 
 const check = process.argv.includes("--check");
 
@@ -97,7 +103,10 @@ async function main() {
   /** url → { name, kind, url, sha256, dependencies, files } */
   const fetched = new Map();
   const npmDependencies = new Set();
-  const queue = ELEMENTS.map((name) => ({ url: ELEMENTS_URL(name), kind: "ai-elements", name }));
+  const queue = [
+    ...ELEMENTS.map((name) => ({ url: ELEMENTS_URL(name), kind: "ai-elements", name })),
+    ...UI_EXTRA.map((name) => ({ url: SHADCN_URL(name), kind: "shadcn", name })),
+  ];
 
   while (queue.length > 0) {
     const item = queue.shift();

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { FileText } from "lucide-react";
+import { Image } from "@/components/ai-elements/image";
 import { useFileAccess, useFilePicture } from "@/features/files/fileAccess";
 import { baseName } from "@/lib/format";
 import { previewKindOf } from "@/lib/preview";
@@ -9,7 +10,7 @@ import type { Block } from "./turns";
 function Thumbnail({ path }: { path: string }) {
   const picture = useFilePicture(path);
   if (picture.status !== "ready") return <span className="size-3xl flex-none rounded-sm bg-bg-inset" />;
-  return <img src={picture.src} alt="" className="size-3xl flex-none rounded-sm bg-bg-inset object-contain" />;
+  return <Image {...picture.picture} uint8Array={new Uint8Array()} alt="" className="size-3xl flex-none rounded-sm bg-bg-inset object-contain" />;
 }
 
 /**

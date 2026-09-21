@@ -129,6 +129,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   const portRaw = flagValue(argv, "port") ?? process.env.VGENT_PORT;
   const port = portRaw != null ? Number.parseInt(portRaw, 10) : DEFAULT_PORT;
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error(`端口不合法: ${portRaw}`);
+  const downloadsDir = flagValue(argv, "downloads-dir") ?? process.env.VGENT_DOWNLOADS_DIR;
   const webDistRaw = flagValue(argv, "web-dist") ?? process.env.VGENT_WEB_DIST;
   const explicitWebDist = webDistRaw != null && webDistRaw.length > 0 ? resolve(webDistRaw) : undefined;
   const webDist = resolveWebDist(explicitWebDist, defaultWebDist(import.meta.url));
@@ -146,6 +147,8 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       token,
       log: consoleLogger,
       ...(webDist != null ? { webDist } : {}),
+      // 「下载」 goes to the user's Downloads folder unless told otherwise — a scratch instance is told otherwise.
+      ...(downloadsDir != null && downloadsDir.length > 0 ? { downloadsDir: resolve(downloadsDir) } : {}),
       // The engines' CLIs live in one place per user (`~/.vgent/harness`), and
       // only the instance that owns the default data dir can see every task
       // that uses them. A scratch instance (`--data-dir …`) must not upgrade

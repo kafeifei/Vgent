@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isSvgFence, localPathOf, previewKindOf, svgDataUri, taskFileOf, taskFileUrl } from "./preview";
+import { isSvgFence, localPathOf, previewKindOf, svgDataUri, svgForImage, taskFileOf, taskFileUrl, toBase64 } from "./preview";
 
 describe("previewKindOf", () => {
   it("names what a file is shown as", () => {
@@ -29,6 +29,19 @@ describe("svgDataUri", () => {
     expect(decodeURIComponent(uri.split(",")[1] ?? "")).toBe('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><rect/></svg>');
     expect(svgDataUri('<svg xmlns="http://www.w3.org/2000/svg"/>')).toContain(encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg"/>'));
     expect(svgDataUri("not a drawing")).toBe("");
+  });
+});
+
+describe("svgForImage / toBase64", () => {
+  it("leaves the markup alone apart from the namespace", () => {
+    expect(svgForImage("<svg><script>x</script></svg>")).toBe('<svg xmlns="http://www.w3.org/2000/svg"><script>x</script></svg>');
+    expect(svgForImage("nope")).toBeUndefined();
+  });
+
+  it("encodes more bytes than one call stack can spread", () => {
+    const bytes = new Uint8Array(100_000).fill(65);
+    expect(atob(toBase64(bytes))).toBe("A".repeat(100_000));
+    expect(atob(toBase64(new TextEncoder().encode("鹈")))).toBe("\u00e9\u00b9\u0088");
   });
 });
 

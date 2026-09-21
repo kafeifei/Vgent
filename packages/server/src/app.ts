@@ -25,8 +25,8 @@ import type { EngineRegistry } from "./engines/registry.js";
 import { createEngineRegistry, engineDescriptors, engineIds } from "./engines/registry.js";
 import { DEFAULT_VGENT_MODEL } from "./engines/vgent.js";
 import type { Files } from "./files.js";
+import { defaultDownloadsDir, saveDownload } from "./downloads.js";
 import { createFiles } from "./files.js";
-import { createTickets } from "./tickets.js";
 import type { HarnessEngineId, HarnessRuntime } from "./harness-runtime.js";
 import { createHarnessRuntime } from "./harness-runtime.js";
 import type { ChangesResponse, DiffBase, Git } from "./git.js";
@@ -89,6 +89,8 @@ export interface CreateAppOptions {
   integrator?: Integrator;
   /** The working-tree listing backend behind the files routes. */
   files?: Files;
+  /** Where 「下载」 puts its copies. The user's Downloads folder; tests point it elsewhere. */
+  downloadsDir?: string;
   log?: Logger;
   /** A built `apps/web` to serve at `/`; unset leaves the server API-only. */
   webDist?: string;
@@ -401,8 +403,6 @@ export function createApp(options: CreateAppOptions): VgentApp {
       return c.json({ error: { code: "forbidden_host", message: "只接受来自本机的请求" } }, 403);
     }
     if (c.req.path === "/api/health") return next();
-    // A ticket's id is its own secret: see `tickets.ts`.
-    if (c.req.method === "GET" && c.req.path.startsWith("/api/tickets/")) return next();
 
     const header = c.req.header("authorization");
     const bearer = header?.toLowerCase().startsWith("bearer ") === true ? header.slice(7) : undefined;
@@ -717,39 +717,32 @@ export function createApp(options: CreateAppOptions): VgentApp {
     return c.body(new Uint8Array(file.bytes), 200, { "content-type": file.mediaType, ...PICTURE_HEADERS });
   });
 
-  /** What a picture is served with wherever it is served whole: shown, never run, never cached. */
+  /** The client fetches this and hands the bytes to an `<img>`; whoever navigates to it instead gets a picture that runs nothing. */
   const PICTURE_HEADERS = {
     "content-security-policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:",
     "x-content-type-options": "nosniff",
     "cache-control": "no-store",
   };
-  const tickets = createTickets();
   /** A drawing that exists only in a reply is small; a file has `files.bytes`' own cap. */
   const MAX_INLINE_SVG_CHARS = 2_000_000;
 
   /**
-   * 「在浏览器打开」: says what `/api/tickets/<ticket>` — an address the client
-   * made up and has already opened — should serve. `path` names one of the
-   * task's files; `svg` is a drawing that exists only in a reply.
+   * 「下载」: a copy in the Downloads folder — of one of the task's files
+   * (`path`), or of a drawing that exists only in a reply (`svg`). What the
+   * user then opens it with is theirs to decide.
    */
-  app.post("/api/threads/:id/files/ticket", async (c) => {
+  app.post("/api/threads/:id/files/download", async (c) => {
     const { repoPath: root } = await targetOf(c.req.param("id"));
-    const body = (await c.req.json().catch(() => null)) as { ticket?: unknown; path?: unknown; svg?: unknown } | null;
-    const ticket = typeof body?.ticket === "string" ? body.ticket : "";
-    let content: { mediaType: string; bytes: Uint8Array } | undefined;
-    if (typeof body?.path === "string" && body.path.length > 0) content = await files.bytes(root, body.path);
-    else if (typeof body?.svg === "string" && body.svg.length > 0 && body.svg.length <= MAX_INLINE_SVG_CHARS) {
-      content = { mediaType: "image/svg+xml", bytes: new TextEncoder().encode(body.svg) };
+    const body = (await c.req.json().catch(() => null)) as { path?: unknown; svg?: unknown } | null;
+    const dir = options.downloadsDir ?? defaultDownloadsDir();
+    if (typeof body?.path === "string" && body.path.length > 0) {
+      const file = await files.bytes(root, body.path);
+      return c.json({ savedTo: await saveDownload(dir, file.path, file.bytes) });
     }
-    if (content == null) throw new BadRequestError("缺少 path 或 svg", "invalid_path");
-    if (!tickets.register(ticket, content)) throw new BadRequestError("ticket 不合格", "invalid_ticket");
-    return c.body(null, 204);
-  });
-
-  app.get("/api/tickets/:ticket", async (c) => {
-    const content = await tickets.read(c.req.param("ticket"));
-    if (content == null) throw new NotFoundError("这个地址已经失效，回到 Vgent 再点一次", "ticket_expired");
-    return c.body(new Uint8Array(content.bytes), 200, { "content-type": content.mediaType, ...PICTURE_HEADERS });
+    if (typeof body?.svg === "string" && body.svg.length > 0 && body.svg.length <= MAX_INLINE_SVG_CHARS) {
+      return c.json({ savedTo: await saveDownload(dir, "drawing.svg", new TextEncoder().encode(body.svg)) });
+    }
+    throw new BadRequestError("缺少 path 或 svg", "invalid_path");
   });
 
   /** Which of these paths — as tools and replies wrote them — are files of this task, right now. */

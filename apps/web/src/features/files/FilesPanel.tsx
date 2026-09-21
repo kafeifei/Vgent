@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ChevronDown, ChevronRight, File, RefreshCw } from "lucide-react";
+import { ArrowLeft, ChevronDown, ChevronRight, Download, File, RefreshCw } from "lucide-react";
 import type { BundledLanguage } from "shiki";
 import { CodeBlock } from "@/components/ai-elements/code-block";
+import { Image } from "@/components/ai-elements/image";
 import { RichMarkdown } from "@/components/RichMarkdown";
 import type { PreviewRequest } from "@/app/useWorkbench";
 import type { ApiClient } from "@/lib/api";
 import { baseName } from "@/lib/format";
-import { type PreviewKind, previewKindOf, svgDataUri } from "@/lib/preview";
+import { type PreviewKind, previewKindOf } from "@/lib/preview";
 import type { FileContent, FileEntry, FileListing } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { FileAccessProvider, useFilePicture } from "./fileAccess";
@@ -142,7 +143,7 @@ function Picture({ path }: { path: string }) {
   if (picture.status === "unavailable") return <p className="text-fg-faint text-xs">无法显示这张图片</p>;
   return (
     <div className="grid place-items-center rounded-lg bg-bg-inset p-sm">
-      <img src={picture.src} alt={baseName(path)} className="max-h-[70vh] max-w-full object-contain" />
+      <Image {...picture.picture} uint8Array={new Uint8Array()} alt={baseName(path)} className="max-h-[70vh] w-auto rounded-none object-contain" />
     </div>
   );
 }
@@ -230,8 +231,8 @@ export function FilesPanel({
   const [selected, setSelected] = useState<string | null>(null);
   const [content, setContent] = useState<FileContent | null>(null);
   const [contentError, setContentError] = useState<string | null>(null);
-  /** A drawing that exists only in a reply, shown here at full size. It is no file, so it has no place in the tree. */
-  const [drawing, setDrawing] = useState<string | null>(null);
+  /** Where the last 下载 of the open file landed. */
+  const [saved, setSaved] = useState<string | null>(null);
   /** Why a file the log asked for is not open. It sits above the tree and goes with the next file opened. */
   const [notice, setNotice] = useState<string | null>(null);
   /** Bumped per load; a stale response never writes state. */
@@ -269,26 +270,19 @@ export function FilesPanel({
   // A thread switch invalidates the open file, not just the listing.
   useEffect(() => {
     setSelected(null);
-    setDrawing(null);
     setFilter("");
     setNotice(null);
   }, [threadId]);
 
   useEffect(() => {
     if (selected != null) setNotice(null);
+    setSaved(null);
   }, [selected]);
 
   // The log asked for a file, in its own words — an absolute path as often as
   // not. The server says which of this task's files that is.
   useEffect(() => {
     if (preview == null || threadId == null) return;
-    if ("svg" in preview) {
-      onPreviewTaken?.();
-      setSelected(null);
-      setDrawing(preview.svg);
-      return;
-    }
-    setDrawing(null);
     let cancelled = false;
     client.resolveFiles(threadId, [preview.path]).then(
       (found) => {
@@ -313,7 +307,6 @@ export function FilesPanel({
 
   const kind = selected == null ? undefined : previewKindOf(selected);
   const [viewMode, setViewMode] = useViewMode(kind);
-  const [drawingMode, setDrawingMode] = useViewMode("svg");
   const contentGeneration = useRef(0);
 
   useEffect(() => {
@@ -355,25 +348,6 @@ export function FilesPanel({
       return next;
     });
 
-  if (drawing != null) {
-    return (
-      <>
-        <div className="mb-xs flex items-center gap-2xs">
-          <BackButton onClick={() => setDrawing(null)} />
-          <span className="min-w-0 flex-1 truncate font-mono text-code text-fg-faint">SVG</span>
-          <ViewModeTabs mode={drawingMode} onMode={setDrawingMode} />
-        </div>
-        {drawingMode === "preview" ? (
-          <div className="grid place-items-center rounded-lg bg-bg-inset p-sm">
-            <img src={svgDataUri(drawing)} alt="模型画的图" className="max-h-[70vh] max-w-full object-contain" />
-          </div>
-        ) : (
-          <CodeBlock code={drawing} language="xml" showLineNumbers />
-        )}
-      </>
-    );
-  }
-
   if (selected != null) {
     return (
       <>
@@ -383,7 +357,23 @@ export function FilesPanel({
             {baseName(selected)}
           </span>
           {(kind === "svg" || kind === "markdown") && <ViewModeTabs mode={viewMode} onMode={setViewMode} />}
+          <button
+            type="button"
+            aria-label="下载"
+            title="下载"
+            onClick={() => {
+              if (threadId == null) return;
+              client.downloadFile(threadId, { path: selected }).then(
+                ({ savedTo }) => setSaved(`已保存到 ${savedTo}`),
+                (failure: unknown) => setSaved(message(failure)),
+              );
+            }}
+            className="grid size-lg flex-none place-items-center rounded-sm text-fg-faint hover:bg-bg-hover hover:text-fg"
+          >
+            <Download className="size-md" />
+          </button>
         </div>
+        {saved != null && <p className="mb-xs break-all text-fg-muted text-xs">{saved}</p>}
 
         {/* The previews below read this task's files the same way a reply's pictures do. */}
         <FileAccessProvider

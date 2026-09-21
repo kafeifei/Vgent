@@ -80,6 +80,8 @@ function makeApp(dataDir: string, factory?: EngineFactoryOverride, webDist?: str
   const instance = createApp({
     dataDir,
     token: TOKEN,
+    // Never the real Downloads folder.
+    downloadsDir: join(dataDir, "Downloads"),
     // Claude Code's model list reads the provider catalog; tests never go to models.dev for it.
     catalogFetch: async () => {
       throw new Error("offline in tests");
@@ -659,7 +661,9 @@ describe("createApp", () => {
     await writeFile(join(repo, "shot.png"), Buffer.from([0x89, 0x50, 0x00, 0x47]));
     await symlink(join(outside, "secret.png"), join(repo, "leak.png"));
 
-    const app = makeApp(await tempDir());
+    const dataDir = await tempDir();
+    const downloads = join(dataDir, "Downloads");
+    const app = makeApp(dataDir);
     const { thread } = await setupThread(app, repo);
     const root = await realpath(repo);
 
@@ -692,20 +696,13 @@ describe("createApp", () => {
     ]);
     expect((await postJson(app, `/api/threads/${thread.id}/files/resolve`, {})).status).toBe(400);
 
-    // 「在浏览器打开」: the client opens an address of its own making, then says what it serves.
-    const ticket = "t".repeat(40);
-    const early = app.app.request(`${ORIGIN}/api/tickets/${ticket}`); // no token: the id is the secret
-    expect((await postJson(app, `/api/threads/${thread.id}/files/ticket`, { ticket, path: "shot.png" })).status).toBe(204);
-    const opened = await early;
-    expect(opened.status).toBe(200);
-    expect(opened.headers.get("content-type")).toBe("image/png");
-    expect(opened.headers.get("content-security-policy")).toContain("sandbox");
-    const drawn = "s".repeat(40);
-    expect((await postJson(app, `/api/threads/${thread.id}/files/ticket`, { ticket: drawn, svg: "<svg/>" })).status).toBe(204);
-    expect(await (await app.app.request(`${ORIGIN}/api/tickets/${drawn}`)).text()).toBe("<svg/>");
-    for (const body of [{ ticket: "x".repeat(40), path: join(outside, "secret.png") }, { ticket: "short", path: "shot.png" }, { ticket: drawn, svg: "<svg/>" }, {}]) {
-      expect((await postJson(app, `/api/threads/${thread.id}/files/ticket`, body)).status).toBe(400);
-    }
+    // 「下载」 copies into the Downloads folder and never overwrites.
+    const saved = (await (await postJson(app, `/api/threads/${thread.id}/files/download`, { path: join(root, "out", "鹈鹕 图.svg") })).json()) as { savedTo: string };
+    expect(saved.savedTo).toBe(join(downloads, "鹈鹕 图.svg"));
+    const drawn = (await (await postJson(app, `/api/threads/${thread.id}/files/download`, { svg: "<svg/>" })).json()) as { savedTo: string };
+    expect(await readFile(drawn.savedTo, "utf8")).toBe("<svg/>");
+    expect((await postJson(app, `/api/threads/${thread.id}/files/download`, { path: join(outside, "secret.png") })).status).toBe(400);
+    expect((await postJson(app, `/api/threads/${thread.id}/files/download`, {})).status).toBe(400);
   });
 
   it("lists a 无项目 task's directory without git", async () => {

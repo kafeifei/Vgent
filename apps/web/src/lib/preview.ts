@@ -33,14 +33,31 @@ export function isSvgFence(language: string, code: string): boolean {
   return /^\s*(<\?xml[^>]*\?>\s*)?(<!DOCTYPE[^>]*>\s*)?<svg[\s>]/i.test(code);
 }
 
-/** An `<img src>` for SVG source. The namespace is added when the model left it out — an image needs it, inline HTML did not. */
-export function svgDataUri(svg: string): string {
+/**
+ * SVG source as an image can take it, or `undefined` when there is no `<svg`
+ * in it. The namespace is added when the model left it out — an image needs
+ * it, inline HTML did not. Nothing else is touched: an `<img>` runs no script
+ * whatever the markup says, so there is nothing to clean.
+ */
+export function svgForImage(svg: string): string | undefined {
   const open = svg.search(/<svg[\s>]/i);
-  if (open < 0) return "";
+  if (open < 0) return undefined;
   const body = svg.slice(open);
   const tag = body.slice(0, body.indexOf(">") + 1);
-  const source = /\sxmlns\s*=/.test(tag) ? body : body.replace(/^<svg/i, '<svg xmlns="http://www.w3.org/2000/svg"');
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(source)}`;
+  return /\sxmlns\s*=/.test(tag) ? body : body.replace(/^<svg/i, '<svg xmlns="http://www.w3.org/2000/svg"');
+}
+
+/** An `<img src>` for SVG source; empty when it is not SVG. */
+export function svgDataUri(svg: string): string {
+  const source = svgForImage(svg);
+  return source == null ? "" : `data:image/svg+xml;charset=utf-8,${encodeURIComponent(source)}`;
+}
+
+/** Bytes → base64, in slices: spreading a whole file into `fromCharCode` overflows the stack. */
+export function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let at = 0; at < bytes.length; at += 0x8000) binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
+  return btoa(binary);
 }
 
 /**

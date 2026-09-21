@@ -1,6 +1,6 @@
 {
   "note": "Fetched from the official registries by scripts/fetch-ai-elements.mjs. `response` has no registry item of its own — the streamdown renderer ships inside `message` as `MessageResponse`.",
-  "fetchedAt": "2026-09-21T04:03:05.778Z",
+  "fetchedAt": "2026-09-21T06:25:41.153Z",
   "patches": [
     {
       "id": "cn-import",
@@ -50,22 +50,6 @@
           "sha256": "afeb8ee000195794ccffbf82ab1860bf083e61d355cbe1385fc6ad73fdecfae8",
           "patches": [
             "cn-import"
-          ]
-        }
-      ]
-    },
-    {
-      "name": "artifact",
-      "kind": "ai-elements",
-      "url": "https://elements.ai-sdk.dev/api/registry/artifact.json",
-      "sha256": "6df97316a98e33936fc001b6b57bbd0fb45efcec5a52b0bc460836eb08a00c9a",
-      "files": [
-        {
-          "registryPath": "registry/default/ai-elements/artifact.tsx",
-          "localPath": "src/components/ai-elements/artifact.tsx",
-          "sha256": "b1ed83b8ef6f38dd045e33e7e7a0960bef43182f308e1169a9467c293f677917",
-          "patches": [
-            "registry-alias"
           ]
         }
       ]
@@ -182,6 +166,37 @@
             "registry-alias",
             "react-namespace-import"
           ]
+        }
+      ]
+    },
+    {
+      "name": "dialog",
+      "kind": "shadcn",
+      "url": "https://ui.shadcn.com/r/styles/new-york-v4/dialog.json",
+      "sha256": "0115e3a57aa55a978c5fed0d77f7e98edd694215aae3e569def3fff722ba9f26",
+      "files": [
+        {
+          "registryPath": "registry/new-york-v4/ui/dialog.tsx",
+          "localPath": "src/components/ui/dialog.tsx",
+          "sha256": "0a85c31675f8269b3b1308fff0ab10d5cda1a090a550a1a74a8f7f439a92ea06",
+          "patches": [
+            "cn-import",
+            "registry-alias"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "image",
+      "kind": "ai-elements",
+      "url": "https://elements.ai-sdk.dev/api/registry/image.json",
+      "sha256": "2124d2c514e5cb2c6a1aaa3420e6a69ec866de9b5284900f3ddf5d3357ceaf95",
+      "files": [
+        {
+          "registryPath": "registry/default/ai-elements/image.tsx",
+          "localPath": "src/components/ai-elements/image.tsx",
+          "sha256": "9360ca3e8945a64cc8d5c71a9304d7c8371d66f52b535f838bfe3ef3f55291ce",
+          "patches": []
         }
       ]
     },

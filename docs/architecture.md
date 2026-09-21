@@ -450,7 +450,7 @@ docs/
 
 **web**
 
-- `lib/preview.ts`：路径 → 预览种类（image / svg / markdown）、SVG → data URI、markdown 里的地址 → 本地路径。`lib/sanitizeSvg.ts`：DOMPurify 的 svg 配置，禁 `script` 和 `foreignObject`（同 Cursor）；`<img>` 本来就不跑脚本，清洗是为了预览和源码看到的是同一个东西。
+- `lib/preview.ts`：路径 → 预览种类（image / svg / markdown）、SVG → data URI、markdown 里的地址 → 本地路径。（当时还有一个 DOMPurify 清洗，后来按用户意见删了，见下文「日志里的图只有一种样子」。）
 - `features/files/fileAccess.tsx`：`FileAccessProvider` 把「这个任务的文件怎么取、点了在哪打开」交给任务视图里的任何东西；`useFilePicture(path)` 给出能放进 `<img>` 的地址（位图是 blob URL，SVG 是清洗后的 data URI），文件被重写时旧图留到新图到了再换。回合进行中不重取，结束时取一次。
 - `components/RichMarkdown.tsx`：工作日志、计划文档、文件预览共用的 markdown。在 AI Elements 的 `MessageResponse`（Streamdown）外面配了四样：
   - KaTeX 的样式表（之前没引，公式一直是坏的）；`lib/mathDelimiters.ts` 把 `\(…\)`、`\[…\]` 换成 `$$` 形式，代码块和行内代码不动；单个 `$` 保持关闭（同 Cursor）。
@@ -471,14 +471,13 @@ docs/
 
 **没验证的**：双击缩放只能在装好的桌面包里看，我没法自己点；它走的是窗口缩放，系统设置里把「连按标题栏」改成「最小化」的人不会得到最小化（Tauri 的这条命令不读那个偏好）。拖动是在隔离实例里用合成指针事件验的（宽度变化、两侧最小值、最大值、刷新后保留、双击复位），没有用真鼠标拖过。
 
-## 2026-09-21：日志里的图一律用同一个图框
+## 2026-09-21：日志里的图只有一种样子（小图 → 点开叠层放大 → 下载）
 
-用户要的：图有一个固定的显示方式，大小适中，点了在侧边或浏览器打开。并且明确了一条规矩——**SDK 有的优先用 SDK 的**；外部库才需要先跟用户核对。
+用户定的，参照是 Codex 桌面版的截图：回复里就是一张大小适中的圆角图，周围什么都没有；点开变大，仍然是图；给的动作是「下载」，不往浏览器里开。同时立了一条规矩——**SDK 有的优先用 SDK 的**，外部库才需要先核对。中途做过一版带标题栏和三个图标的图框（build 83，AI Elements 的 `Artifact`）、SVG 清洗（DOMPurify）和「在浏览器打开」的一次性地址，都按这个方向删掉了。
 
-- `components/Figure.tsx` 是 AI Elements 的 `Artifact`（标题栏 + 动作 + 内容区，`fetch-ai-elements.mjs` 的 ELEMENTS 里加了 `artifact`）套上我们的 token。回复里的图不管来源——任务的文件、svg 代码块、裸贴的 SVG、网络图片——都走它：标题栏写文件名（没有文件的写 SVG），图最高 `--spacing-figure`（320px）、不放大，点图 = 在右栏打开；右上角三个图标：源码（有源码的才有）、在右栏打开、在浏览器打开。加载中 / 打不开 / 正在画 都是同一个框里的一行字。
-- **在右栏打开**：文件走原来的预览请求；只存在于回复里的 SVG 是 `PreviewRequest` 的另一种（`{ svg }`），「文件」面板把它当一张没有文件的图显示，同样有预览 / 源码。
-- **在浏览器打开**（`tickets.ts`）：系统浏览器带不了 token 请求头，token 也不该进 URL（会留在浏览器历史里）。所以是一次性地址 `/api/tickets/<id>`：id 由前端用 `crypto.getRandomValues` 生成（192 位），**先** `window.open`，**再**带着 token `POST /api/threads/:id/files/ticket {ticket, path | svg}` 告诉 server 这个地址该给什么——顺序不能反，`await` 之后再开窗口会被当成弹窗拦掉；server 的 GET 对还没登记的 id 最多等 3 秒。地址 5 分钟失效，最多同时 20 个，响应头和 `files/raw` 一样带 `sandbox` 的 CSP，SVG 在浏览器里只显示、不执行。这个 GET 是鉴权中间件里除 `/api/health` 外唯一放行的路径，凭的是 id 本身。桌面壳里新窗口本来就会交给系统浏览器（`on_new_window`）。发给浏览器的 SVG 是清洗过的那份。
+- `components/Figure.tsx`：小图是 AI Elements 的 `Image`（`fetch-ai-elements.mjs` 的 ELEMENTS 里加了 `image`；它吃 `{ base64, mediaType }`，所以 `useFilePicture` 给的是字节的 base64，不再是 blob URL），最高 `--spacing-figure`（320px）、不放大。点它开 shadcn 的 `Dialog`（同一个脚本取，`UI_EXTRA`）：同一张图，最大 92vw × 88vh，点外面或 Esc 关。小图悬停时和叠层里，右上角各有一个「下载」。任务的文件、svg 代码块、裸贴的 SVG 都走它；网络图片是同样外观的普通 `<img>`（没有字节可下，也不进叠层）。加载中 / 打不开 / 正在画 是一行灰字。
+- **SVG 不清洗**：`<img>` 里的 SVG 不跑脚本、不触发事件、不取外部资源，没有可清洗的东西；`svgForImage` 只补模型漏写的 `xmlns`。下载下来的就是原样文件，拿什么打开是用户自己的事。
+- **下载**（server `downloads.ts`，`POST /api/threads/:id/files/download {path | svg}`）：server 把文件复制到用户的「下载」文件夹（同名不覆盖，依次 `name (1).svg`…），返回落地路径，前端提示「已保存到 …」。由 server 做而不是页面做，是因为页面一半时候是桌面壳的 WebView，那里 `<a download>` 没有去处；而 server 永远和用户在同一台机器上。`--downloads-dir` / `VGENT_DOWNLOADS_DIR` 可以改目录，隔离实例和测试靠它不碰真的「下载」。右栏「文件」打开任何文件时标题行也有这个下载。
+- 回复里指向本地文件的链接仍然在右栏打开；回合产物卡也是。只有「图」点开是叠层。
 
-**没验证的**：桌面包里点「在浏览器打开」真的弹出系统浏览器这一步没法自己点（隔离实例里验到了：地址生成、登记、无 token 取回、响应头）。
-
-**需要用户知道的外部库**：上一批为了清洗 SVG 把 `dompurify` 加成了 web 的直接依赖（它原本就经 mermaid 间接装着，做法同 Cursor）；`katex` 也成了直接依赖，但它是 `@streamdown/math` 要的样式表，算 SDK 体系内。
+**没验证的**：叠层和悬停下载在桌面包的 WebView 里没法自己点（隔离实例里验到：小图 426×320、叠层出现且更大、下载落到指定目录并提示路径）。

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { UIMessage } from "ai";
-import { ArrowUp, Check, ChevronDown, File, FileText, Folder, ListPlus, Plus, Square, X, Zap } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, File, FileText, Folder, Plus, Square, X, Zap } from "lucide-react";
 import { ModelPicker, effectiveModel } from "@/components/ModelPicker";
 import { ReasoningPicker } from "@/components/ReasoningPicker";
 import { dirName } from "@/features/changes/paths";
@@ -654,23 +654,8 @@ export function Composer({
             )}
           />
           {big && <span className="flex-1" />}
-          {/* 运行中，发送键读「排队」: the same message, one turn later. The round
-              stop button stays where it is, so 停止 never moves under the cursor. */}
-          {live && (
-            <button
-              type="button"
-              aria-label="排队"
-              title="排到队列，这一轮结束后自动发出"
-              onClick={() => {
-                onSubmit();
-                textarea.current?.focus();
-              }}
-              className="inline-flex h-7 flex-none items-center gap-3xs rounded-full border border-border px-sm text-fg-muted text-sm hover:border-border-strong hover:text-fg"
-            >
-              <ListPlus className="size-sm" />
-              <span>排队</span>
-            </button>
-          )}
+          {/* 运行中 this is 停止 and nothing else: Enter queues the message, so a
+              second button for it would only crowd the one that matters. */}
           <button
             type="button"
             aria-label={live ? "停止" : "发送"}

@@ -72,3 +72,56 @@ export function outputCandidates(blocks: readonly Block[]): string[] {
   const candidates = [...pictures, ...linked.filter((path) => previewKindOf(path) != null), ...made];
   return [...new Set(candidates)].slice(0, MAX_OUTPUTS);
 }
+
+const field = (input: Record<string, unknown>, name: string): string | undefined => (typeof input[name] === "string" ? (input[name] as string) : undefined);
+
+/** One `edit` applied to text the way the tool applied it; `undefined` when it does not fit, i.e. we lost track of the file. */
+function applyEdit(text: string, edit: Record<string, unknown>): string | undefined {
+  const from = field(edit, "old_string");
+  const to = field(edit, "new_string");
+  if (from == null || to == null || !text.includes(from)) return undefined;
+  return edit.replace_all === true ? text.split(from).join(to) : text.replace(from, () => to);
+}
+
+/**
+ * What the turn left in each SVG it wrote, replayed from its own calls: the
+ * `write` carries the whole file and every `edit` after it a replacement. A
+ * task told 「再来一次」 writes the same path again, and the file on disk only
+ * remembers the last one — this is how an earlier turn still shows its own
+ * drawing. `before` is what earlier turns left, so a turn that only points at
+ * the file shows it as it was then. Keyed by the path as the call gave it. A file we lose track of (an
+ * edit that does not fit, an engine whose calls carry no content) is left out,
+ * and is shown from disk as before.
+ */
+export function writtenDrawings(blocks: readonly Block[], before?: ReadonlyMap<string, string>): Map<string, string> {
+  const drawings = new Map<string, string>(before);
+  for (const block of blocks) {
+    if (block.kind !== "tool" || block.part.state !== "output-available") continue;
+    const display = describeTool(block.part);
+    const file = display.file;
+    if (file == null || previewKindOf(file) !== "svg") continue;
+    const input = (typeof block.part.input === "object" && block.part.input !== null ? block.part.input : {}) as Record<string, unknown>;
+    if (display.kind === "write") {
+      const content = field(input, "content");
+      if (content != null) drawings.set(file, content);
+      else drawings.delete(file);
+    } else if (display.kind === "edit") {
+      const before = drawings.get(file);
+      if (before == null) continue;
+      const edits = Array.isArray(input.edits) ? (input.edits as Record<string, unknown>[]) : [input];
+      let after: string | undefined = before;
+      for (const edit of edits) after = after == null ? undefined : applyEdit(after, edit);
+      if (after == null) drawings.delete(file);
+      else drawings.set(file, after);
+    }
+  }
+  return drawings;
+}
+
+/** The drawing held for a file the server resolved: calls spell a path absolutely or relative to the task, the server the latter. */
+export function drawingFor(drawings: ReadonlyMap<string, string>, file: { raw: string; path: string }): string | undefined {
+  for (const [written, svg] of drawings) {
+    if (written === file.raw || written === file.path || written.endsWith(`/${file.path}`)) return svg;
+  }
+  return undefined;
+}

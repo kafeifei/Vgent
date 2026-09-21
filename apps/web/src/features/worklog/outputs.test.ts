@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { outputCandidates } from "./outputs";
+import { drawingFor, outputCandidates, writtenDrawings } from "./outputs";
 import type { Block } from "./turns";
 
 const text = (value: string): Block => ({ kind: "text", key: value, part: { type: "text", text: value } });
@@ -33,5 +33,42 @@ describe("outputCandidates", () => {
         text("![logo](https://x.dev/logo.png) 用 `npm run build` 生成\n```md\n`inside.svg`\n```\n另有 `two words.png`"),
       ]),
     ).toEqual([]);
+  });
+});
+
+describe("writtenDrawings", () => {
+  const call = (type: string, input: Record<string, unknown>, state = "output-available"): Block =>
+    ({ kind: "tool", key: JSON.stringify(input), part: { type, toolCallId: "c", state, input, output: "ok" } }) as unknown as Block;
+
+  it("replays a turn's write and the edits after it, so the turn keeps its own drawing", () => {
+    const drawings = writtenDrawings([
+      call("tool-write", { file_path: "pelican.svg", content: "<svg><a/><b/><b/></svg>" }),
+      call("tool-edit", { file_path: "pelican.svg", old_string: "<a/>", new_string: "" }),
+      call("tool-edit", { file_path: "pelican.svg", old_string: "<b/>", new_string: "<c/>", replace_all: true }),
+      call("tool-write", { file_path: "notes.md", content: "# 说明" }),
+      call("tool-write", { file_path: "half.svg", content: "<svg/>" }, "input-available"),
+    ]);
+    expect([...drawings]).toEqual([["pelican.svg", "<svg><c/><c/></svg>"]]);
+  });
+
+  it("carries what earlier turns left, and finds it under whichever spelling the server resolved", () => {
+    const first = writtenDrawings([call("tool-write", { file_path: "/scratch/t1/pelican.svg", content: "<svg>1</svg>" })]);
+    const second = writtenDrawings([], first);
+    const third = writtenDrawings([call("tool-write", { file_path: "/scratch/t1/pelican.svg", content: "<svg>2</svg>" })], second);
+    const asked = { raw: "sandbox-link/pelican.svg", path: "pelican.svg" };
+    expect([first, second, third].map((held) => drawingFor(held, asked))).toEqual(["<svg>1</svg>", "<svg>1</svg>", "<svg>2</svg>"]);
+    expect(first.get("/scratch/t1/pelican.svg")).toBe("<svg>1</svg>");
+    expect(drawingFor(third, { raw: "other.svg", path: "other.svg" })).toBeUndefined();
+  });
+
+  it("lets go of a file it lost track of", () => {
+    expect(
+      writtenDrawings([
+        call("tool-write", { file_path: "a.svg", content: "<svg/>" }),
+        call("tool-edit", { file_path: "a.svg", old_string: "not there", new_string: "x" }),
+      ]).size,
+    ).toBe(0);
+    // An edit with no write before it in this turn: the file on disk is all there is.
+    expect(writtenDrawings([call("tool-edit", { file_path: "b.svg", old_string: "a", new_string: "b" })]).size).toBe(0);
   });
 });

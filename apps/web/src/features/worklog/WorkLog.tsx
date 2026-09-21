@@ -8,7 +8,10 @@ import {
 import type { ThreadSummary } from "@/lib/types";
 import { RestoredBar } from "./RestoredBar";
 import { Turn, type TurnActions } from "./Turn";
+import { writtenDrawings } from "./outputs";
 import { buildTurns } from "./turns";
+
+const NO_DRAWINGS: ReadonlyMap<string, string> = new Map();
 
 /**
  * The scroll container is AI Elements' `Conversation`: it brings the
@@ -32,6 +35,11 @@ export function WorkLog({
   allowlist: readonly string[];
 }) {
   const turns = useMemo(() => buildTurns(messages), [messages]);
+  // What each turn left in the SVGs the task writes, carried forward turn to turn (see `writtenDrawings`).
+  const drawings = useMemo(() => {
+    let held: ReadonlyMap<string, string> = new Map();
+    return turns.map((turn) => (held = writtenDrawings(turn.blocks, held)));
+  }, [turns]);
   /**
    * 恢复后停在哪里: the first turn whose files are no longer on disk. It and
    * everything under it is dimmed, with the bar drawn in at that exact point —
@@ -53,6 +61,7 @@ export function WorkLog({
               dimmed={restoredIndex >= 0 && index >= restoredIndex}
               actions={actions}
               allowlist={allowlist}
+              drawings={drawings[index] ?? NO_DRAWINGS}
             />
           </Fragment>
         ))}

@@ -1,6 +1,7 @@
+import { useMemo } from "react";
 import { Figure } from "@/components/Figure";
 import { baseName } from "@/lib/format";
-import { download, fromBase, useFileAccess, useFilePicture } from "./fileAccess";
+import { download, drawingPicture, fromBase, useFileAccess, useFilePicture } from "./fileAccess";
 
 /**
  * One of the task's own picture files, shown the way every picture in the log
@@ -18,4 +19,12 @@ export function TaskPicture({ path: written, alt }: { path: string; alt: string 
       {...(access != null ? { onDownload: () => download(access, { path }) } : {})}
     />
   );
+}
+
+/** A drawing we hold the source of — what a turn wrote, whatever the file says now. 下载 gives that source. */
+export function DrawnPicture({ svg, alt }: { svg: string; alt: string }) {
+  const access = useFileAccess();
+  const picture = useMemo(() => drawingPicture(svg), [svg]);
+  if (picture == null) return <Figure alt={alt} note={`无法显示 ${alt}`} />;
+  return <Figure picture={picture} alt={alt} {...(access != null ? { onDownload: () => download(access, { svg }) } : {})} />;
 }

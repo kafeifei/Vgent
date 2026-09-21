@@ -48,6 +48,7 @@ export function Turn({
   dimmed,
   actions,
   allowlist,
+  drawings,
 }: {
   turn: TurnModel;
   isLast: boolean;
@@ -56,6 +57,8 @@ export function Turn({
   dimmed: boolean;
   actions: TurnActions;
   allowlist: readonly string[];
+  /** Every SVG the task has written, as it stood when this turn ended. */
+  drawings: ReadonlyMap<string, string>;
 }) {
   const { ref, pinned } = usePinned(isLast);
   // A finished turn folds its process blocks away; the running one stays open.
@@ -133,7 +136,7 @@ export function Turn({
         </div>
       )}
       {folded && turn.answered && turn.blocks.length === 0 && <p className="m-0 px-chat-inset text-fg-faint">这一轮模型没有返回内容</p>}
-      {folded && <TurnOutputs blocks={turn.blocks} />}
+      {folded && <TurnOutputs blocks={turn.blocks} drawings={drawings} />}
       {folded && turn.blocks.length > 0 && <ReplyActions turn={turn} {...(turn.user != null ? { onFork: () => actions.fork(turn.user!.id) } : {})} />}
     </section>
   );

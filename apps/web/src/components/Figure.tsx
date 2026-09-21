@@ -1,7 +1,10 @@
-import { Download } from "lucide-react";
+import type { ReactNode } from "react";
+import { Copy, Download } from "lucide-react";
 import { Image } from "@/components/ai-elements/image";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import type { PictureData } from "@/features/files/fileAccess";
+import { useFileAccess, type PictureData } from "@/features/files/fileAccess";
+import { copyPicture } from "@/lib/copyPicture";
 import { cn } from "@/lib/utils";
 
 const FRAME = "max-h-figure w-auto max-w-full rounded-lg border border-border object-contain shadow-xs";
@@ -10,6 +13,38 @@ const DOWNLOAD =
 
 /** AI Elements' `Image` takes a generated file; the bytes it never reads are left empty. */
 const asFile = (picture: PictureData) => ({ ...picture, uint8Array: new Uint8Array() });
+
+/**
+ * Right click on a picture. The web view's own menu is no use here — its Copy
+ * Image does nothing for an SVG, and its 下载 and 新窗口 go nowhere in the
+ * desktop app — so this one takes its place: the two things that work.
+ */
+function PictureMenu({ picture, onDownload, children }: { picture: PictureData; onDownload?: (() => void) | undefined; children: ReactNode }) {
+  const notify = useFileAccess()?.notify;
+  const copy = () => {
+    copyPicture(picture).then(
+      () => notify?.("已复制图片"),
+      () => notify?.("复制不了这张图"),
+    );
+  };
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onSelect={copy}>
+          <Copy />
+          复制图片
+        </ContextMenuItem>
+        {onDownload != null && (
+          <ContextMenuItem onSelect={onDownload}>
+            <Download />
+            下载
+          </ContextMenuItem>
+        )}
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+}
 
 /**
  * The one way a picture is shown in the log, whatever it came from: small, as
@@ -38,11 +73,13 @@ export function Figure({
   return (
     <Dialog>
       <span className="group/figure relative my-xs inline-block max-w-full align-top">
-        <DialogTrigger asChild>
-          <button type="button" className="block max-w-full cursor-zoom-in">
-            <Image {...asFile(picture)} alt={alt} className={FRAME} />
-          </button>
-        </DialogTrigger>
+        <PictureMenu picture={picture} onDownload={onDownload}>
+          <DialogTrigger asChild>
+            <button type="button" className="block max-w-full cursor-zoom-in">
+              <Image {...asFile(picture)} alt={alt} className={FRAME} />
+            </button>
+          </DialogTrigger>
+        </PictureMenu>
         {download("opacity-0 focus-visible:opacity-100 group-hover/figure:opacity-100")}
       </span>
       <DialogContent
@@ -51,7 +88,9 @@ export function Figure({
       >
         <DialogTitle className="sr-only">{alt === "" ? "图片" : alt}</DialogTitle>
         <DialogDescription className="sr-only">放大查看；点外面或按 Esc 关闭</DialogDescription>
-        <Image {...asFile(picture)} alt={alt} className="max-h-[88vh] w-auto max-w-full rounded-md object-contain" />
+        <PictureMenu picture={picture} onDownload={onDownload}>
+          <Image {...asFile(picture)} alt={alt} className="max-h-[88vh] w-auto max-w-full rounded-md object-contain" />
+        </PictureMenu>
         {download()}
       </DialogContent>
     </Dialog>

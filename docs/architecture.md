@@ -531,3 +531,10 @@ build 84 定的「日志里的图只有一种样子」只覆盖了回复里内�
 - **同一路径反复写**：任务里说「再来一次」，模型写的还是同一个 `pelican-bicycle.svg`。产物图原来按路径读磁盘，于是整屏每一轮都是最新那张。现在 `outputs.ts` 的 `writtenDrawings(blocks, before)` 从回合自己的工具调用里把 SVG 的内容重放出来——`write` 带整份文件，之后的 `edit` / `multiedit` 逐个套上去（套不上就放弃这个文件）——`WorkLog` 按回合顺序累积（`before` 是前面各轮留下的），所以只是**链接到**这个文件的回合，看到的也是当时那一版。`drawingFor` 把调用里的写法（绝对路径 / 相对路径）对到 server 解析出来的路径上。有内容就用 `DrawnPicture`（`Figure` + 这份源码，下载的也是这一版），没有就照旧 `TaskPicture` 读磁盘。
 - **管不到的**：调用里不带内容的（Codex 的 fileChange）、位图、用 shell 生成的文件，仍然读磁盘上的现状；回复里 `![](x.svg)` 内嵌的图和右栏预览也是现状。要彻底解决得靠每轮的文件快照，无项目任务现在没有。
 - **排队条**：「排队 N」不再单独占一行，和第一条消息同一排；后面几条前面留同样宽的空，文字对齐。消息字色提到 `text-fg`，和灰色的标签分得开。
+
+## 2026-09-21：自定义提供商事后加引擎；图片右键菜单
+
+- **事后加引擎**：「Codex 也用它」和「Claude Code 用的地址」原来只在新建自定义提供商那一步有，建好之后「连接设置」只能改已有引擎的地址——用户自己加的提供商就永远只有 Vgent 一列。现在 `EditDialog` 对自定义（没有 `presetId`）且 Vgent 走 openai-compatible 的连接给出同样两项，逻辑在 `providerModels.ts` 的 `withAgentChoices`：打开的引擎从空的模型清单开始（之后去「选模型」里勾），留着的保留已勾的，关掉的连清单一起去掉；Codex 跟着共用地址走，除非它原来就有一个不同的地址。目录里的提供商（有 `presetId`）哪些引擎能用由目录说了算，不给改。
+- **图片右键**：桌面包里 WebView 的系统菜单对我们没用——Copy Image 对 SVG 什么都不做，下载和新窗口在 Tauri 里没有去处。`Figure` 的小图和叠层大图都换成自己的菜单（shadcn `context-menu`，`UI_EXTRA` 里加了它；脚本多一条 `exactOptionalPropertyTypes` 补丁）：「复制图片」和「下载」。复制走 `lib/copyPicture.ts`：画到 canvas 转 PNG（剪贴板只稳定收 PNG；SVG 没有自己的像素，按最长边 2048 渲染），`ClipboardItem` 收的是 promise 而不是 blob——WebKit 只允许在点击那一下里写剪贴板。网络图片（`RemoteFigure`）没动，还是系统菜单。
+
+**没验证的**：复制在 Chromium 里确认写进了剪贴板；WKWebView 里 canvas 画 SVG data URI 和 `clipboard.write` 没有实测，失败时会提示「复制不了这张图」。

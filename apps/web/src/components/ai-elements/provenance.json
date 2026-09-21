@@ -1,6 +1,6 @@
 {
   "note": "Fetched from the official registries by scripts/fetch-ai-elements.mjs. `response` has no registry item of its own — the streamdown renderer ships inside `message` as `MessageResponse`.",
-  "fetchedAt": "2026-09-21T10:17:07.634Z",
+  "fetchedAt": "2026-09-21T14:42:05.364Z",
   "patches": [
     {
       "id": "cn-import",
@@ -21,6 +21,10 @@
     {
       "id": "exact-optional-shimmer",
       "why": "shimmer.tsx casts its style object to React's `CSSProperties`, which motion's `MotionStyle` rejects under `exactOptionalPropertyTypes`."
+    },
+    {
+      "id": "exact-optional-context-menu",
+      "why": "context-menu.tsx passes a destructured, possibly-undefined `checked` back to Radix, whose prop is set-or-absent under `exactOptionalPropertyTypes`."
     }
   ],
   "npmDependencies": [
@@ -148,6 +152,23 @@
           "sha256": "a52e00ccf4704bc20d8f778c06cc47ec7633c1f70bb5877e77562a89f1f180f8",
           "patches": [
             "registry-alias"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "context-menu",
+      "kind": "shadcn",
+      "url": "https://ui.shadcn.com/r/styles/new-york-v4/context-menu.json",
+      "sha256": "e9680a7b71840b7203e1625acab8754d7c18122b66289baf281c3a6e31246ada",
+      "files": [
+        {
+          "registryPath": "registry/new-york-v4/ui/context-menu.tsx",
+          "localPath": "src/components/ui/context-menu.tsx",
+          "sha256": "8077910b97b97f4fa7ebe0b4ef2611d5081758b84fc97781afba10d97bedf1b7",
+          "patches": [
+            "cn-import",
+            "exact-optional-context-menu"
           ]
         }
       ]

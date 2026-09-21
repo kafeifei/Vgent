@@ -37,9 +37,10 @@ const ELEMENTS = ["conversation", "message", "reasoning", "tool", "code-block", 
 
 /**
  * shadcn primitives the workbench uses on its own, not through an element:
- * `dialog` is the overlay a picture in the log opens into.
+ * `dialog` is the overlay a picture in the log opens into, `context-menu` what
+ * a right click on that picture offers.
  */
-const UI_EXTRA = ["dialog"];
+const UI_EXTRA = ["dialog", "context-menu"];
 
 const check = process.argv.includes("--check");
 
@@ -81,6 +82,12 @@ const PATCHES = [
     only: "shimmer.tsx",
     why: "shimmer.tsx casts its style object to React's `CSSProperties`, which motion's `MotionStyle` rejects under `exactOptionalPropertyTypes`.",
     apply: (source) => source.replace("} as CSSProperties\n", '} as NonNullable<MotionProps["style"]>\n'),
+  },
+  {
+    id: "exact-optional-context-menu",
+    only: "context-menu.tsx",
+    why: "context-menu.tsx passes a destructured, possibly-undefined `checked` back to Radix, whose prop is set-or-absent under `exactOptionalPropertyTypes`.",
+    apply: (source) => source.replace("      checked={checked}\n", "      {...(checked === undefined ? {} : { checked })}\n"),
   },
 ];
 

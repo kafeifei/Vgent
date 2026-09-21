@@ -97,6 +97,49 @@ export function customInput(form: CustomForm, usable: readonly ProviderAgent[]):
   return { input: { name, ...(apiKey !== "" ? { apiKey } : {}), agents } };
 }
 
+/** Which agents a custom connection serves besides its own: what 连接设置 lets the user change after the fact. */
+export interface AgentChoices {
+  /** Codex shares the OpenAI-compatible address (it speaks Responses there). */
+  codex: boolean;
+  /** Claude Code's Anthropic-compatible address; empty means it does not use this provider. */
+  claudeBaseURL: string;
+}
+
+/**
+ * A custom provider's agents after 连接设置: the same two choices the 自定义
+ * dialog offers, applied to a connection that already exists. An agent that is
+ * switched on starts with no models ticked; one that stays keeps its list; one
+ * that is switched off is dropped with its list.
+ */
+export function withAgentChoices(
+  agents: RedactedProviderConfig["agents"],
+  choices: AgentChoices,
+  usable: readonly ProviderAgent[],
+  /** The agents as they were before this edit; `agents` may already carry a changed address. */
+  before: RedactedProviderConfig["agents"] = agents,
+): { agents: RedactedProviderConfig["agents"] } | { error: string } {
+  const next = { ...agents };
+  const shared = next.vgent;
+  if (usable.includes("codex") && shared?.protocol === "openai-compatible") {
+    // Codex follows the shared address — unless it was given one of its own, which is not ours to overwrite.
+    const follows = before.codex == null || before.codex.baseURL === before.vgent?.baseURL;
+    if (choices.codex) {
+      next.codex = { protocol: "openai", models: [], ...next.codex, baseURL: follows || next.codex == null ? shared.baseURL : next.codex.baseURL };
+    }
+    else delete next.codex;
+  }
+  if (usable.includes("claude-code") && shared?.protocol === "openai-compatible") {
+    const claudeURL = choices.claudeBaseURL.trim().replace(/\/+$/, "");
+    if (claudeURL === "") delete next["claude-code"];
+    else {
+      const problem = checkURL(claudeURL, "Claude Code 的接入地址");
+      if (problem != null) return { error: problem };
+      next["claude-code"] = { ...(next["claude-code"] ?? { protocol: "anthropic" as const, models: [] }), baseURL: claudeURL };
+    }
+  }
+  return { agents: next };
+}
+
 /** The agents a connected provider has an endpoint for, in column order. */
 export function agentsOf(provider: RedactedProviderConfig): ProviderAgent[] {
   return AGENT_ORDER.filter((agent) => provider.agents[agent] != null);

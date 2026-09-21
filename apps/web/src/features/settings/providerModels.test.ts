@@ -15,8 +15,7 @@ import {
   summarizeEnabled,
   summarizeSubscription,
   withModels,
-  withSubscriptionSwitch,
-} from "./providerModels";
+  withSubscriptionSwitch, withAgentChoices } from "./providerModels";
 
 const deepseek: CatalogProviderSummary = {
   id: "deepseek",
@@ -195,5 +194,36 @@ describe("订阅", () => {
     ]);
     // An agent the login does not serve has no cell to flip.
     expect(withSubscriptionSwitch(codex.models, "claude-code", ["gpt-5.5"], false)).toEqual(codex.models);
+  });
+});
+
+describe("withAgentChoices", () => {
+  const own = { baseURL: "https://gw.example/v1", protocol: "openai-compatible" as const, models: [{ id: "gpt-6-astra" }] };
+  const all = ["vgent", "claude-code", "codex"] as const;
+
+  it("adds Codex on the shared address and Claude Code on its own, starting with nothing ticked", () => {
+    const result = withAgentChoices({ vgent: own }, { codex: true, claudeBaseURL: "https://gw.example/anthropic/" }, all);
+    expect(result).toEqual({
+      agents: {
+        vgent: own,
+        codex: { baseURL: "https://gw.example/v1", protocol: "openai", models: [] },
+        "claude-code": { baseURL: "https://gw.example/anthropic", protocol: "anthropic", models: [] },
+      },
+    });
+  });
+
+  it("keeps an agent's ticked models when it stays, drops it when switched off, and refuses a bad address", () => {
+    const codex = { baseURL: "https://old.example/v1", protocol: "openai" as const, models: [{ id: "gpt-6-astra" }] };
+    expect(withAgentChoices({ vgent: own, codex }, { codex: true, claudeBaseURL: "" }, all)).toEqual({ agents: { vgent: own, codex } });
+    expect(withAgentChoices({ vgent: own, codex }, { codex: false, claudeBaseURL: "" }, all)).toEqual({ agents: { vgent: own } });
+    expect(withAgentChoices({ vgent: own }, { codex: false, claudeBaseURL: "not a url" }, all)).toHaveProperty("error");
+    // The shared address changed in the same edit: a Codex that followed it follows on, one with its own stays put.
+    const moved = { ...own, baseURL: "https://new.example/v1" };
+    expect(withAgentChoices({ vgent: moved, codex: { ...codex, baseURL: own.baseURL } }, { codex: true, claudeBaseURL: "" }, all, { vgent: own, codex: { ...codex, baseURL: own.baseURL } })).toEqual({
+      agents: { vgent: moved, codex: { ...codex, baseURL: moved.baseURL } },
+    });
+    expect(withAgentChoices({ vgent: moved, codex }, { codex: true, claudeBaseURL: "" }, all, { vgent: own, codex })).toEqual({ agents: { vgent: moved, codex } });
+    // An engine this install does not have is not touched.
+    expect(withAgentChoices({ vgent: own }, { codex: true, claudeBaseURL: "" }, ["vgent"])).toEqual({ agents: { vgent: own } });
   });
 });

@@ -6,7 +6,7 @@ import type { CatalogProviderSummary, EngineDescriptor, ProviderAgent, ProviderM
 import { cn } from "@/lib/utils";
 import { BUTTON_GHOST, BUTTON_PRIMARY, BUTTON_SECONDARY, Dialog, LetterAvatar, SettingsEmpty, SettingsGroup, SettingsPage, SettingsRow, Switch, Tag } from "./layout";
 import { ModelTable } from "./ModelTable";
-import { AGENT_ORDER, EMPTY_CUSTOM_FORM, agentsOf, connectInput, customInput, describeSubscription, filterCatalog, isSignedIn, summarizeEnabled, summarizeSubscription, type CustomForm } from "./providerModels";
+import { AGENT_ORDER, EMPTY_CUSTOM_FORM, agentsOf, connectInput, customInput, describeSubscription, filterCatalog, isSignedIn, summarizeEnabled, summarizeSubscription, withAgentChoices, type CustomForm } from "./providerModels";
 import { SubscriptionTable } from "./SubscriptionTable";
 import { INPUT_CLASS, PILL, PILL_SELECTED } from "./styles";
 
@@ -360,12 +360,14 @@ function BrowseDialog({
 function EditDialog({
   client,
   provider,
+  usable,
   agentLabel,
   onSaved,
   onClose,
 }: {
   client: ApiClient;
   provider: RedactedProviderConfig;
+  usable: readonly ProviderAgent[];
   agentLabel: AgentLabel;
   onSaved: (provider: RedactedProviderConfig) => void;
   onClose: () => void;
@@ -375,14 +377,21 @@ function EditDialog({
   const [urls, setUrls] = useState<Partial<Record<ProviderAgent, string>>>(() => Object.fromEntries(agentsOf(provider).map((agent) => [agent, provider.agents[agent]?.baseURL ?? ""])));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  // Which other agents use it is the 自定义 dialog's choice, and stays changeable here. A catalog
+  // provider's agents are the catalog's to say.
+  const choosable = provider.presetId == null && provider.agents.vgent?.protocol === "openai-compatible";
+  const [codex, setCodex] = useState(provider.agents.codex != null);
+  const [claudeBaseURL, setClaudeBaseURL] = useState(provider.agents["claude-code"]?.baseURL ?? "");
+  /** The agents with an address row of their own; the two below are edited through their choice instead. */
+  const addressed = agentsOf(provider).filter((agent) => !choosable || agent === "vgent");
 
   const submit = () => {
     if (name.trim() === "") {
       setError("名字不能空着");
       return;
     }
-    const agents = { ...provider.agents };
-    for (const agent of agentsOf(provider)) {
+    let agents = { ...provider.agents };
+    for (const agent of addressed) {
       const current = agents[agent];
       const baseURL = (urls[agent] ?? "").trim();
       if (current == null) continue;
@@ -391,6 +400,14 @@ function EditDialog({
         return;
       }
       agents[agent] = { ...current, baseURL };
+    }
+    if (choosable) {
+      const chosen = withAgentChoices(agents, { codex, claudeBaseURL }, usable, provider.agents);
+      if ("error" in chosen) {
+        setError(chosen.error);
+        return;
+      }
+      agents = chosen.agents;
     }
     setBusy(true);
     setError(undefined);
@@ -425,11 +442,25 @@ function EditDialog({
         <Field label="API key" hint={provider.hasKey ? "已经存了一个。留空就不改。" : "现在没有 key。"}>
           <input type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={provider.hasKey ? "••••••••" : "粘贴 key"} className={cn(INPUT_CLASS, "font-mono")} />
         </Field>
-        {agentsOf(provider).map((agent) => (
-          <Field key={agent} label={`${agentLabel(agent)} 的接入地址`}>
+        {addressed.map((agent) => (
+          <Field key={agent} label={choosable ? "接入地址" : `${agentLabel(agent)} 的接入地址`}>
             <input value={urls[agent] ?? ""} onChange={(event) => setUrls((current) => ({ ...current, [agent]: event.target.value }))} spellCheck={false} className={cn(INPUT_CLASS, "font-mono")} />
           </Field>
         ))}
+        {choosable && usable.includes("claude-code") && (
+          <Field label={`${agentLabel("claude-code")} 用的地址（可选）`} hint="Claude Code 只说 Anthropic 协议。同一个服务要是也有 Anthropic 兼容的地址，填在这里它就也能用。">
+            <input value={claudeBaseURL} onChange={(event) => setClaudeBaseURL(event.target.value)} placeholder="https://example.com/anthropic" spellCheck={false} className={cn(INPUT_CLASS, "font-mono")} />
+          </Field>
+        )}
+        {choosable && usable.includes("codex") && (
+          <div className="flex items-start gap-sm">
+            <div className="flex min-w-0 flex-1 flex-col gap-2xs">
+              <span className={FIELD_LABEL}>{agentLabel("codex")} 也用它</span>
+              <span className="text-fg-faint text-xs">Codex 只说 OpenAI 的 Responses 协议（上面的地址加 /responses）。这个服务支持才打开；只有聊天补全接口的服务，Codex 用不了。</span>
+            </div>
+            <Switch checked={codex} onChange={setCodex} label={`${agentLabel("codex")} 也用这个提供商`} />
+          </div>
+        )}
         {error != null && <p className="text-danger text-xs">{error}</p>}
         <div className="flex justify-end gap-xs">
           <button type="button" onClick={onClose} className={BUTTON_GHOST}>
@@ -758,7 +789,7 @@ export function ProvidersPage({
       {open?.kind === "browse" && catalog != null && (
         <BrowseDialog catalog={catalog} connectedIds={connectedCatalogIds} usable={usable} agentLabel={agentLabel} onPick={(entry) => setOpen({ kind: "connect", entry })} onClose={close} />
       )}
-      {open?.kind === "edit" && <EditDialog client={client} provider={open.provider} agentLabel={agentLabel} onSaved={put} onClose={close} />}
+      {open?.kind === "edit" && <EditDialog client={client} provider={open.provider} usable={usable} agentLabel={agentLabel} onSaved={put} onClose={close} />}
       {modelsOf != null && (
         <Dialog title={`${modelsOf.name} · 选模型`} onClose={close} wide>
           <div className="min-h-0 flex-1 overflow-y-auto">

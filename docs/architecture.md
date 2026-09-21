@@ -496,3 +496,14 @@ docs/
 - **前端**：`turns.ts` 多一种 block `steer`，永不折叠；`Turn.tsx` 把它画成和回合开头一样的用户消息框，夹在前后两段步骤之间。
 
 **没验证的**：没有用真的 Claude Code 跑一次 `experimental_steer`（测试里是假引擎走真的 run manager、真的流和落盘；适配器那一侧只读了代码）。它名字里带 experimental，上游可能改。自研引擎的 session 文件（CLI 用的那份）不记插话进来的消息；server 每轮从 UI 消息重建历史，不受影响。
+
+## 2026-09-21：build 86 上的一批报错（#185、工具报错、计划行、无项目）
+
+用户在 build 86 上连着遇到「出错了 Minified React error #185」「出错了 File not found: …」，以及计划工具行点开是一坨 JSON。四件事，各是各的原因：
+
+- **#185（嵌套更新超限）**：`useChat` 默认每个 chunk 一次同步提交；`ThreadView` 每次提交后又在 effect 里把 `messages` 往上抛（`onMessages` / `onQueue`），于是每次提交结束时根上都还挂着一个待办更新。chunk 一个个到没事；**打开或刷新一个正在跑的任务时，续流把已有的几百个 chunk 在同一批微任务里重放**，React 连续 50 次「提交完还有同步活」就抛 185。一直盯着任务看复现不出来，跑到一半刷新必现。修法是 SDK 排错文档（`09-troubleshooting/50-react-maximum-update-depth-exceeded`）给的：`useChat({ chat, throttle })`，常量 `CHAT_THROTTLE_MS = 50` 在 `lib/threadChats.ts`，`ThreadView` 和侧栏 `LiveTitle` 两处都用。
+- **工具报错被当成任务报错**：`toUIMessageStream` 的 `onError` 既管 `error` chunk（回合失败），也管 `tool-error`（工具失败，代理读了接着干），而且只给一个 error、分不出是哪种。原来一律记进 `rawStreamError`，回合正常结束也把它写进了 `thread.error`，界面就在一个 `idle` 的任务上亮「出错了」。现在 `runs.ts` 在引擎流进 `toUIMessageStream` 之前过一道 `TransformStream`，把路过的 `tool-error` 的 error 记进一个 Set：`onError` 见到 Set 里的，原样返回工具自己的报错文字（工具行显示它，下一轮 `convertToModelMessages` 喂给模型的也是它，不再是 “An error occurred.”），不碰 `rawStreamError`；`thread.error` 只在真的出过 `error` chunk 时才写。旧记录里已经带着的，前端只在 `status === "error"` 时才显示。
+- **计划**：聊天里的计划工具行不再展开成输入输出 JSON，行下面直接是清单，默认展开，点一下收起；右栏「计划」tab 用同一个 `features/plan/PlanList.tsx`。清单用 AI Elements 的 `queue`（`QueueItem` / `QueueItemIndicator` / `QueueItemContent`，`fetch-ai-elements.mjs` 的 ELEMENTS 加了 `queue`，连带 shadcn 的 `scroll-area`，没有新的 npm 依赖）。它只有「待办 / 完成」两态；进行中的那项字色提亮，只有任务还在跑时（右栏）才转圈——日志里的清单是当时的记录，不转。
+- **无项目任务**：右栏早就不给「改动」tab，但 `useChanges` 照样去问 `/changes`（409）和 `/integration`（500）。现在无项目时给它的 `threadId` 是 `null`，两个请求都不发。
+
+**没验证的**：#185 是在 Chromium 里复现并确认修好的，没在桌面包的 WKWebView 里再跑一遍同样的场景。

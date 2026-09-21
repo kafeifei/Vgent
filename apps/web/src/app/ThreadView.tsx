@@ -17,6 +17,7 @@ import { pendingAutoApprovals } from "@/lib/autoApprove";
 import type { ApiClient } from "@/lib/api";
 import { useDraft } from "@/lib/drafts";
 import { previewKindOf } from "@/lib/preview";
+import { CHAT_THROTTLE_MS } from "@/lib/threadChats";
 import type { EngineDescriptor, EngineId, PermissionMode, ThreadSummary } from "@/lib/types";
 import { isLiveThread, type WorkbenchActions } from "./useWorkbench";
 
@@ -99,7 +100,7 @@ function ThreadChatView({
   // `sendAutomaticallyWhen` lives in `ThreadChats` (see the note there), and so
   // does the resume — `resume: true` here fires on mount, racing the history
   // load, and a replay applied to an empty chat throws on its first chunk.
-  const { messages, status, error, addToolApprovalResponse, addToolOutput } = useChat({ chat });
+  const { messages, status, error, addToolApprovalResponse, addToolOutput } = useChat({ chat, throttle: CHAT_THROTTLE_MS });
 
   const live = isLiveThread(thread) || status === "streaming" || status === "submitted";
   const queue = useMemo(() => pendingQueue(messages), [messages]);
@@ -280,7 +281,8 @@ function ThreadChatView({
           messages={messages}
           thread={thread}
           live={live}
-          error={thread.error ?? error?.message}
+          // Only a task that ended in error has one to show: older builds also left a failed tool call's text here.
+          error={(thread.status === "error" ? thread.error : undefined) ?? error?.message}
           actions={turnActions}
           allowlist={allowlist ?? []}
         />

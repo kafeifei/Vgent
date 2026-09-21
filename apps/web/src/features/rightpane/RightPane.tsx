@@ -204,7 +204,7 @@ export function RightPane({
                 list below is what any engine reports while it works. */}
             <PlanDocument client={client} threadId={threadId} refreshKey={refreshKey} live={live} onBuild={onBuild} />
             <div className="mb-xs text-fg-muted text-xs">待办</div>
-            <PlanPanel messages={messages} />
+            <PlanPanel messages={messages} live={live} />
           </>
         )}
       </div>

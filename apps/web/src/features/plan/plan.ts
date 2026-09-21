@@ -44,6 +44,12 @@ function normalizePlanInput(name: string, input: unknown): PlanItem[] | null {
   return null;
 }
 
+/** The list one plan call carries, once its input has fully arrived; `null` for any other call. */
+export function planItemsOf(part: UIMessage["parts"][number]): PlanItem[] | null {
+  if (!isToolUIPart(part) || part.state === "input-streaming") return null;
+  return normalizePlanInput(getToolName(part).toLowerCase(), part.input);
+}
+
 /**
  * The agent's current plan: the last plan tool call in the conversation whose
  * input has fully arrived (anything but `input-streaming`), from whichever of
@@ -53,9 +59,7 @@ export function latestPlan(messages: readonly UIMessage[]): PlanItem[] | null {
   let latest: PlanItem[] | null = null;
   for (const message of messages) {
     for (const part of message.parts) {
-      if (!isToolUIPart(part)) continue;
-      if (part.state === "input-streaming") continue;
-      const items = normalizePlanInput(getToolName(part).toLowerCase(), part.input);
+      const items = planItemsOf(part);
       if (items != null) latest = items;
     }
   }

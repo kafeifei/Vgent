@@ -10,6 +10,7 @@ import {
   type DynamicToolUIPart,
   type LanguageModelUsage,
   type ModelMessage,
+  type TextStreamPart,
   type ToolSet,
   type ToolUIPart,
   type UIMessage,
@@ -602,14 +603,31 @@ export function createRunManager(options: {
       const result = await runner.stream({ messages: modelMessages, abortSignal: run.abort.signal });
       run.runner = runner;
 
+      // `onError` below is asked about two different things and cannot tell
+      // them apart: an `error` chunk, which ends the turn, and a tool call
+      // that failed, which the agent reads and carries on from. Noting the
+      // tool errors as they pass is what separates them.
+      const toolErrors = new Set<unknown>();
+      const engineStream = result.stream.pipeThrough(
+        new TransformStream<TextStreamPart<ToolSet>, TextStreamPart<ToolSet>>({
+          transform(part, controller) {
+            if (part.type === "tool-error") toolErrors.add(part.error);
+            controller.enqueue(part);
+          },
+        }),
+      );
+
       const uiStream = toUIMessageStream({
-        stream: result.stream,
+        stream: engineStream,
         originalMessages: messages,
         generateMessageId: () => randomUUID(),
-        // Called with the raw error of every `error` chunk the engine stream
-        // produces. The masked text goes to the client; the raw text is kept
-        // for the thread record below.
         onError: (error) => {
+          // A failed tool call is part of the conversation: its text is what
+          // the tool row shows and what the model is given again next turn, so
+          // it stays as the tool wrote it. It is not the turn's error.
+          if (toolErrors.has(error)) return rawErrorText(error);
+          // The turn's own error: masked text to the client, raw text kept for
+          // the thread record below.
           rawStreamError ??= rawErrorText(error);
           return getHarnessErrorMessage(error);
         },
@@ -661,7 +679,7 @@ export function createRunManager(options: {
           .update(thread.id, {
             messages: withAssistant(settled),
             status,
-            error: rawStreamError ?? streamError,
+            error: streamError != null ? (rawStreamError ?? streamError) : undefined,
             ...(stats != null ? { changeStats: stats } : {}),
             // 未读: the turn ended on its own, so whoever sent it has not seen
             // this yet. The client clears it when the task is really on screen.

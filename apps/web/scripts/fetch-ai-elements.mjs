@@ -33,7 +33,7 @@ const SHADCN_URL = (name) => `https://ui.shadcn.com/r/styles/new-york-v4/${name}
  * registry item — the streamdown renderer ships inside `message` as
  * `MessageResponse`.
  */
-const ELEMENTS = ["conversation", "message", "reasoning", "tool", "code-block", "shimmer", "confirmation", "image"];
+const ELEMENTS = ["conversation", "message", "reasoning", "tool", "code-block", "shimmer", "confirmation", "image", "queue"];
 
 /**
  * shadcn primitives the workbench uses on its own, not through an element:

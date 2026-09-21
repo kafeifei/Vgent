@@ -3,6 +3,8 @@ import { useState } from "react";
 import { ChevronDown } from "lucide-react";
 import { CodeBlock } from "@/components/ai-elements/code-block";
 import { baseName } from "@/lib/format";
+import { planItemsOf } from "@/features/plan/plan";
+import { PlanList } from "@/features/plan/PlanList";
 import { cn } from "@/lib/utils";
 import {
   asChildMessage,
@@ -83,8 +85,12 @@ function ChildTranscript({ parts, preliminary }: { parts: UIMessage["parts"]; pr
  * opens an inset body with the raw input and output.
  */
 export function ToolRow({ part, onOpenFile }: { part: ToolPart; onOpenFile: (file: string) => void }) {
-  const [open, setOpen] = useState(false);
+  const [toggled, setToggled] = useState(false);
   const display = describeTool(part);
+  // A plan call's body is the list itself, and it starts open: the plan is
+  // something to read, not a call to inspect.
+  const plan = display.kind === "plan" ? planItemsOf(part) : null;
+  const open = plan != null ? !toggled : toggled;
   const streaming = isToolStreaming(part);
   const exitCode = part.state === "output-available" ? exitCodeOf(part.output) : undefined;
   const stat = part.state === "output-available" ? diffStatOf(part.output) : undefined;
@@ -95,7 +101,7 @@ export function ToolRow({ part, onOpenFile }: { part: ToolPart; onOpenFile: (fil
     <div>
       <button
         type="button"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => setToggled((value) => !value)}
         className="group/tool flex min-h-row-tool w-full items-center gap-xs text-left text-fg-muted text-md leading-chat hover:text-fg"
       >
         {streaming && <Spinner />}
@@ -131,7 +137,9 @@ export function ToolRow({ part, onOpenFile }: { part: ToolPart; onOpenFile: (fil
         </div>
       )}
 
-      {open && (
+      {open && plan != null && <PlanList items={plan} className="mb-2xs" />}
+
+      {open && plan == null && (
         <div className="mt-2xs mb-2xs overflow-hidden rounded-lg bg-bg-inset px-sm py-xs text-fg-muted text-sm">
           <div className="mb-2xs text-2xs text-fg-faint tracking-widest">输入</div>
           <CodeBlock code={JSON.stringify(part.input ?? {}, null, 2)} language="json" />

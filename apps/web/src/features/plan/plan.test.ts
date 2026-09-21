@@ -1,6 +1,6 @@
 import type { UIMessage } from "ai";
 import { describe, expect, it } from "vitest";
-import { latestPlan } from "./plan";
+import { latestPlan, planItemsOf } from "./plan";
 
 type Part = UIMessage["parts"][number];
 const part = (type: string, rest: Record<string, unknown>): Part => ({ type, toolCallId: "c1", ...rest }) as unknown as Part;
@@ -84,5 +84,15 @@ describe("latestPlan", () => {
       msg([part("tool-updatePlan", { state: "input-streaming", input: { items: [{ text: "new", status: "pending" }] } })]),
     ];
     expect(latestPlan(messages)).toEqual([{ text: "new", status: "pending" }]);
+  });
+});
+
+describe("planItemsOf", () => {
+  it("reads one plan call, and nothing from a streaming one or another tool", () => {
+    const input = { items: [{ text: "读代码", status: "pending" }] };
+    expect(planItemsOf(part("tool-updatePlan", { state: "input-available", input }))).toEqual([{ text: "读代码", status: "pending" }]);
+    expect(planItemsOf(part("tool-updatePlan", { state: "input-streaming", input }))).toBeNull();
+    expect(planItemsOf(part("tool-read", { state: "output-available", input: { file_path: "a.ts" } }))).toBeNull();
+    expect(planItemsOf({ type: "text", text: "计划" })).toBeNull();
   });
 });

@@ -6,6 +6,14 @@ import { withResumePrelude } from "./resumeChunks";
 import type { ThreadRecord, ThreadStatus, ThreadSummary } from "./types";
 import { LIVE_STATUSES } from "./types";
 
+/**
+ * How often a streaming chat may re-render, for every `useChat` on a shared
+ * `Chat`. Unthrottled, each chunk is its own synchronous commit; a replay on
+ * opening a running task delivers hundreds in one go, and React gives up past
+ * fifty nested updates (error 185).
+ */
+export const CHAT_THROTTLE_MS = 50;
+
 const isLive = (status: ThreadStatus): boolean => (LIVE_STATUSES as readonly string[]).includes(status);
 
 /**

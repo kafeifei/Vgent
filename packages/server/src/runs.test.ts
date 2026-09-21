@@ -789,6 +789,39 @@ describe("run lifecycle", () => {
     expect(JSON.stringify(record.messages)).toContain("开始");
   });
 
+  it("keeps a failed tool call out of the thread's error, with the tool's own text on the call", async () => {
+    const dir = await tempDir();
+    const factory: EngineFactoryOverride = {
+      async create() {
+        return {
+          hasUnfinishedTurn: () => false,
+          async finish() {},
+          async destroy() {},
+          async stream() {
+            return {
+              stream: toStream([
+                { type: "start" },
+                { type: "tool-call", toolCallId: "c1", toolName: "read", input: { file_path: "nope.svg" } },
+                { type: "tool-error", toolCallId: "c1", toolName: "read", input: { file_path: "nope.svg" }, error: new Error("File not found: nope.svg") },
+                { type: "text-start", id: "t1" },
+                { type: "text-delta", id: "t1", text: "没有这个文件" },
+                { type: "text-end", id: "t1" },
+              ]),
+            };
+          },
+        } satisfies EngineRunner;
+      },
+    };
+    const app = makeApp(dir, factory);
+    const thread = await setupThread(app, dir);
+
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "读一下")] }));
+    const record = await waitForStatus(app, thread.id, "idle");
+    expect(record.error).toBeUndefined();
+    expect(JSON.stringify(record.messages)).toContain("File not found: nope.svg");
+    expect(JSON.stringify(record.messages)).not.toContain("An error occurred.");
+  });
+
   it("releases the slot when a stopped engine ignores its abort signal", async () => {
     const dir = await tempDir();
     let release = () => {};

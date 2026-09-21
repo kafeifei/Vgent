@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FileUIPart } from "ai";
+import { isNoProject } from "@/lib/noProject";
 import { createClient } from "@/lib/api";
 import { pruneDrafts } from "@/lib/drafts";
 import { ThreadChats } from "@/lib/threadChats";
@@ -112,7 +113,8 @@ export function useWorkbench(token: string) {
    */
   const changes = useChanges({
     client,
-    threadId: selectedThreadId,
+    // 无项目 runs in a plain directory: no repo, so no 改动 and nothing to 收口 — and nothing to ask the server for.
+    threadId: isNoProject(thread?.projectId) ? null : selectedThreadId,
     refreshKey: thread?.updatedAt ?? "",
     selected: right.file,
     onSelect: selectChange,

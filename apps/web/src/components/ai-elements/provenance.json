@@ -1,6 +1,6 @@
 {
   "note": "Fetched from the official registries by scripts/fetch-ai-elements.mjs. `response` has no registry item of its own — the streamdown renderer ships inside `message` as `MessageResponse`.",
-  "fetchedAt": "2026-09-21T06:25:41.153Z",
+  "fetchedAt": "2026-09-21T10:17:07.634Z",
   "patches": [
     {
       "id": "cn-import",
@@ -217,6 +217,23 @@
       ]
     },
     {
+      "name": "queue",
+      "kind": "ai-elements",
+      "url": "https://elements.ai-sdk.dev/api/registry/queue.json",
+      "sha256": "edb9b1228e5d9c026c7e705268883cfe109e48032f867e3246dce5daef5ede89",
+      "files": [
+        {
+          "registryPath": "registry/default/ai-elements/queue.tsx",
+          "localPath": "src/components/ai-elements/queue.tsx",
+          "sha256": "edc8a3eb66cfe2fa85d76c5f1a8dcf22795e92e080c1f5fbd0620268124f7a0d",
+          "patches": [
+            "registry-alias",
+            "react-namespace-import"
+          ]
+        }
+      ]
+    },
+    {
       "name": "reasoning",
       "kind": "ai-elements",
       "url": "https://elements.ai-sdk.dev/api/registry/reasoning.json",
@@ -229,6 +246,22 @@
           "patches": [
             "registry-alias",
             "exact-optional-reasoning"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "scroll-area",
+      "kind": "shadcn",
+      "url": "https://ui.shadcn.com/r/styles/new-york-v4/scroll-area.json",
+      "sha256": "a5e2e040b90e584c5282ee7ea758d1af5f5fbd88ecc89f11dddb098462d1e865",
+      "files": [
+        {
+          "registryPath": "registry/new-york-v4/ui/scroll-area.tsx",
+          "localPath": "src/components/ui/scroll-area.tsx",
+          "sha256": "55264573642c8d9182c15434638a3007b6e03e9b929bf05fbb6db8b55d5fcd36",
+          "patches": [
+            "cn-import"
           ]
         }
       ]

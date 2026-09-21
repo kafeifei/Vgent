@@ -7,6 +7,7 @@ import { OutcomeBadge } from "@/components/OutcomeBadge";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { shortTime } from "@/lib/format";
 import { isImeKeyEvent } from "@/lib/ime";
+import { CHAT_THROTTLE_MS } from "@/lib/threadChats";
 import { LIVE_REASON, LIVE_STATUSES, type ThreadStatus, type ThreadSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { describeTool } from "@/features/worklog/toolMeta";
@@ -38,7 +39,7 @@ function currentAction(messages: readonly UIMessage[]): string | undefined {
 
 /** A running task's row: its title, with the current action as the hover text. */
 function LiveTitle({ chat, title }: { chat: Chat<UIMessage>; title: string }) {
-  const { messages } = useChat({ chat });
+  const { messages } = useChat({ chat, throttle: CHAT_THROTTLE_MS });
   return <span title={currentAction(messages) ?? "运行中"}>{title}</span>;
 }
 

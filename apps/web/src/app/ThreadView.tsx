@@ -42,17 +42,23 @@ export function ThreadView(props: {
 }) {
   const { thread, actions } = props;
   const [chat, setChat] = useState<Chat<UIMessage> | null>(null);
+  // `actions` is rebuilt whenever any task changes at all — a toggle on this
+  // one, a token streaming into another. Loading the chat must hang on the
+  // task alone: with `actions` as a dependency every such change tore the
+  // whole view down to 「加载中…」 and scrolled it in again from the top.
+  const latest = useRef(actions);
+  latest.current = actions;
 
   useEffect(() => {
     let cancelled = false;
     setChat(null);
-    void actions.whenReady(thread.id).then(() => {
-      if (!cancelled) setChat(actions.getChat(thread.id));
+    void latest.current.whenReady(thread.id).then(() => {
+      if (!cancelled) setChat(latest.current.getChat(thread.id));
     });
     return () => {
       cancelled = true;
     };
-  }, [actions, thread.id]);
+  }, [thread.id]);
 
   if (chat == null) return <div className="grid place-items-center text-fg-faint text-sm">加载中…</div>;
   return <ThreadChatView key={thread.id} {...props} chat={chat} />;

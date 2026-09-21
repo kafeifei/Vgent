@@ -538,3 +538,8 @@ build 84 定的「日志里的图只有一种样子」只覆盖了回复里内�
 - **图片右键**：桌面包里 WebView 的系统菜单对我们没用——Copy Image 对 SVG 什么都不做，下载和新窗口在 Tauri 里没有去处。`Figure` 的小图和叠层大图都换成自己的菜单（shadcn `context-menu`，`UI_EXTRA` 里加了它；脚本多一条 `exactOptionalPropertyTypes` 补丁）：「复制图片」和「下载」。复制走 `lib/copyPicture.ts`：画到 canvas 转 PNG（剪贴板只稳定收 PNG；SVG 没有自己的像素，按最长边 2048 渲染），`ClipboardItem` 收的是 promise 而不是 blob——WebKit 只允许在点击那一下里写剪贴板。网络图片（`RemoteFigure`）没动，还是系统菜单。
 
 **没验证的**：复制在 Chromium 里确认写进了剪贴板；WKWebView 里 canvas 画 SVG data URI 和 `clipboard.write` 没有实测，失败时会提示「复制不了这张图」。
+
+## 2026-09-21：对话视图被反复重建（「各种滚来滚去」）；断线的报错说人话
+
+- **滚动**：`ThreadView` 加载 `Chat` 的 effect 依赖了整个 `actions`，而 `useWorkbench` 的 `actions` 是一个依赖 `state.threads` / `thread` / `state.projects` 的 `useMemo`——任何任务有任何变化都会重建：在当前任务上点 fast（改了任务记录）、另一个任务在跑（`updatedAt` 不停变）。每重建一次，effect 就 `setChat(null)`，整个对话视图卸载成「加载中…」再重新挂载，`Conversation` 从头滚到底。现在 effect 只依赖 `thread.id`，`actions` 经 ref 读最新值。隔离实例里验证：滚到中间后分别改当前任务和另一个任务，滚动容器是同一个 DOM 节点、`scrollTop` 不变。`actions` 本身仍然不稳定，凡是把它放进 effect 依赖的地方都要当心。
+- **“Failed to process successful response”**：用户把自研引擎换到 Codex 订阅模型后出的错。离线用同一个模型复现：连「只回两个字」也会在几十秒后失败，`cause` 链的底是 `other side closed`——对方在流式输出中途关了连接，是这台机器到 Codex 后端的网络问题，和对话历史、换模型的动作无关。AI SDK 把它包成了一句没信息量的话，`rawErrorText` 现在把 `cause` 链最底下那条消息补在后面（「…（other side closed）」）。流到一半断开没法透明重试，没做重试。

@@ -74,9 +74,16 @@ export const marksUnread = (status: ThreadStatus): boolean => UNREAD_STATUSES.in
  * right for the SSE stream, but the thread record is local single-user data,
  * so it keeps the real message for debugging and later display.
  */
-function rawErrorText(error: unknown): string {
+export function rawErrorText(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
-  return text.trim().slice(0, RAW_ERROR_TEXT_MAX_LEN);
+  // The SDK wraps a dropped connection as "Failed to process successful
+  // response", which says nothing; what happened is at the bottom of the
+  // `cause` chain ("other side closed", "terminated").
+  let root: unknown = error;
+  for (let depth = 0; depth < 5 && root instanceof Error && root.cause != null; depth += 1) root = root.cause;
+  const why = root !== error && root instanceof Error ? root.message.trim() : "";
+  const full = why !== "" && !text.includes(why) ? `${text.trim()}（${why}）` : text.trim();
+  return full.slice(0, RAW_ERROR_TEXT_MAX_LEN);
 }
 
 /**

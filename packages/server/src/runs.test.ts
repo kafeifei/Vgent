@@ -18,6 +18,7 @@ import {
   RESTART_PENDING_TOOL_TEXT,
   RESUME_FAILED_TEXT,
   UNEXECUTED_TOOL_TEXT,
+  rawErrorText,
 } from "./runs.js";
 import { createProjectStore } from "./store/projects.js";
 import { createSettingsStore } from "./store/settings.js";
@@ -747,6 +748,16 @@ describe("approval parking", () => {
     expect(done.messages.map((message) => message.role)).toEqual(["user"]);
   });
 
+});
+
+describe("rawErrorText", () => {
+  it("says what is at the bottom of the cause chain when the message itself does not", () => {
+    const dropped = new Error("Failed to process successful response", { cause: new TypeError("terminated", { cause: new Error("other side closed") }) });
+    expect(rawErrorText(dropped)).toBe("Failed to process successful response（other side closed）");
+    expect(rawErrorText(new Error("HTTP 401"))).toBe("HTTP 401");
+    expect(rawErrorText(new Error("fetch failed: ECONNRESET", { cause: new Error("ECONNRESET") }))).toBe("fetch failed: ECONNRESET");
+    expect(rawErrorText("plain")).toBe("plain");
+  });
 });
 
 describe("run lifecycle", () => {

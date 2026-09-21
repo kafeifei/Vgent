@@ -11,7 +11,8 @@ export function TaskPicture({ path: written, alt }: { path: string; alt: string 
   const access = useFileAccess();
   const path = fromBase(access?.baseDir, written);
   const picture = useFilePicture(path);
-  if (picture.status !== "ready") return <Figure alt={alt} note={picture.status === "loading" ? "图片加载中…" : `无法显示 ${baseName(path)}`} />;
+  if (picture.status === "loading") return <Figure alt={alt} note="图片加载中…" pending />;
+  if (picture.status !== "ready") return <Figure alt={alt} note={`无法显示 ${baseName(path)}`} />;
   return (
     <Figure
       picture={picture.picture}

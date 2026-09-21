@@ -55,14 +55,26 @@ export function Figure({
   picture,
   alt,
   note,
+  pending = false,
   onDownload,
 }: {
   /** Absent while loading or when the picture cannot be shown; `note` says which. */
   picture?: PictureData;
   alt: string;
   note?: string;
+  /** The picture is loading or being drawn, as opposed to not showable at all. */
+  pending?: boolean;
   onDownload?: () => void;
 }) {
+  // A picture still on its way holds its room: the desktop web view has no scroll
+  // anchoring, so a line that later grows into a picture shoves everything under it down.
+  if (picture == null && pending) {
+    return (
+      <span className="my-xs grid h-figure w-[min(100%,calc(var(--spacing-figure)*1.25))] place-items-center rounded-lg bg-bg-inset text-fg-faint text-sm">
+        {note}
+      </span>
+    );
+  }
   if (picture == null) return <span className="my-xs inline-block rounded-md bg-bg-inset px-xs py-3xs text-fg-faint text-sm">{note}</span>;
   const download = (className?: string) =>
     onDownload != null && (

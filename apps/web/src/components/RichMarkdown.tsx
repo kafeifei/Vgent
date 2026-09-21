@@ -32,7 +32,7 @@ function SvgFence({ code: source, language, isIncomplete }: CustomRendererProps)
   const picture = useMemo(() => (drawing && !isIncomplete ? drawingPicture(source) : undefined), [drawing, isIncomplete, source]);
 
   if (!drawing) return <CodeBlock code={source} language={language} isIncomplete={isIncomplete} />;
-  if (isIncomplete) return <Figure alt="" note="正在画…" />;
+  if (isIncomplete) return <Figure alt="" note="正在画…" pending />;
   // Markup that is no drawing after all stays readable as what it is.
   if (picture == null) return <CodeBlock code={source} language="xml" />;
   return (

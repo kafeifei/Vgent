@@ -49,7 +49,10 @@ export function WorkLog({
   const restoredIndex = restoredAt == null ? -1 : turns.findIndex((turn) => turn.user?.id === restoredAt);
 
   return (
-    <Conversation className="min-h-0 flex-1">
+    // A task opens at its end and stays pinned there without a show: the element's
+    // default glides down from the top on every open, and again each time a
+    // picture or an output card lands and the log grows.
+    <Conversation initial="instant" resize="instant" className="min-h-0 flex-1">
       <ConversationContent className="mx-auto flex w-full max-w-[calc(var(--spacing-log-max)+2*var(--spacing-md))] flex-col gap-0 px-md pt-2xs pb-2xl">
         {turns.map((turn, index) => (
           <Fragment key={turn.key}>

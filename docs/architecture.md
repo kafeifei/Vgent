@@ -507,3 +507,11 @@ docs/
 - **无项目任务**：右栏早就不给「改动」tab，但 `useChanges` 照样去问 `/changes`（409）和 `/integration`（500）。现在无项目时给它的 `threadId` 是 `null`，两个请求都不发。
 
 **没验证的**：#185 是在 Chromium 里复现并确认修好的，没在桌面包的 WKWebView 里再跑一遍同样的场景。
+
+## 2026-09-21：回合写出来的图也按图显示
+
+build 84 定的「日志里的图只有一种样子」只覆盖了回复里内嵌的图（markdown 图片、svg 代码块、裸贴的 SVG）。模型更常见的做法是**写一个文件**再回一句 “Created [pelican-bicycle.svg](…)”——三个引擎的真实回合都是这样——这条路当时还是回合末尾一张带小缩略图的卡片。用户问「svg 的处理是不是忘了做」，指的就是它。
+
+- `TaskPicture`（任务自己的图片文件 → `Figure`）从 `RichMarkdown.tsx` 挪到 `features/files/TaskPicture.tsx`，回复里的 `![]()` 和回合产物共用。
+- `TurnOutputs.tsx`：产物里的图片 / SVG 直接是 `Figure`（适中大小、点开叠层、下载），图下面一行文件名，点它在右栏打开；markdown 文档仍是卡片。
+- `outputs.ts` 收紧了候选：回复里**链接**指向的文件照旧算；只在行内代码里**提到**的文件名，要这一轮动过它才算（写 / 改的路径，或 shell 命令里出现过这个文件名）。原来「只发现一个未跟踪文件 `pelican-bicycle.svg`，没有动它」也会出一张产物卡，图变大之后这种误报会很扎眼。

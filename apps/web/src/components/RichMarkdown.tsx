@@ -6,28 +6,13 @@ import { type ComponentProps, type ReactNode, memo, useMemo } from "react";
 import { CodeBlock, type CustomRendererProps, defaultRehypePlugins } from "streamdown";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { Figure, RemoteFigure } from "@/components/Figure";
-import { download, drawingPicture, fromBase, useFileAccess, useFilePicture } from "@/features/files/fileAccess";
-import { baseName } from "@/lib/format";
+import { TaskPicture } from "@/features/files/TaskPicture";
+import { download, drawingPicture, fromBase, useFileAccess } from "@/features/files/fileAccess";
 import { normalizeMathDelimiters } from "@/lib/mathDelimiters";
 import { isSvgFence, taskFileOf } from "@/lib/preview";
 import { TASK_FILE_TAG, rehypeTaskFiles } from "@/lib/rehypeTaskFiles";
 import { fenceBareSvg } from "@/lib/svgFences";
 import "katex/dist/katex.min.css";
-
-/** `![](pelican.svg)` in a reply: one of the task's own files. */
-function TaskPicture({ path: written, alt }: { path: string; alt: string }) {
-  const access = useFileAccess();
-  const path = fromBase(access?.baseDir, written);
-  const picture = useFilePicture(path);
-  if (picture.status !== "ready") return <Figure alt={alt} note={picture.status === "loading" ? "图片加载中…" : `无法显示 ${baseName(path)}`} />;
-  return (
-    <Figure
-      picture={picture.picture}
-      alt={alt}
-      {...(access != null ? { onDownload: () => download(access, { path }) } : {})}
-    />
-  );
-}
 
 function MarkdownImage({ src, alt }: ComponentProps<"img">) {
   const source = typeof src === "string" ? src : "";

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { UIMessage } from "ai";
+import { X } from "lucide-react";
 import { ResizeHandle } from "@/components/ResizeHandle";
 import { TopStrip } from "@/components/TopStrip";
 import { CommandPalette, type Command } from "@/features/cmdk/CommandPalette";
@@ -77,7 +78,7 @@ export function Shell({ token }: { token: string }) {
   );
 
   // The right pane belongs to a task: without one open there is nothing for it to list.
-  const showRight = right.open && !settingsOpen && view === "thread" && thread != null;
+  const showRight = right.open && view === "thread" && thread != null;
 
   // Dragged column widths. The grid is the measure of what a column is *now*
   // — a token, until dragged — so a drag starts from the rendered track.
@@ -155,14 +156,7 @@ export function Shell({ token }: { token: string }) {
         />
 
         <main className="grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto]">
-          {settingsOpen ? (
-            <div className="row-span-3 flex min-h-0 flex-col">
-              <TopStrip leftOpen={left === "on"} onToggleLeft={actions.toggleLeft} />
-              <div className="min-h-0 flex-1 overflow-y-auto">
-                <SettingsView settings={state.settings} engines={engines} client={client} onClose={actions.closeSettings} />
-              </div>
-            </div>
-          ) : view === "thread" && thread != null ? (
+          {view === "thread" && thread != null ? (
             <ThreadView
               thread={thread}
               actions={actions}
@@ -248,6 +242,36 @@ export function Shell({ token }: { token: string }) {
       </div>
 
       {palette && <CommandPalette commands={commands} onClose={actions.closePalette} />}
+      {settingsOpen && (
+        // 设置 floats over the workbench like Cursor's: the columns stay put
+        // underneath, dimmed and softly blurred, and come back untouched on close.
+        <div
+          role="presentation"
+          className="fixed inset-0 z-20 flex items-center justify-center bg-bg-scrim p-xl backdrop-blur-xs"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) actions.closeSettings();
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="设置"
+            className="relative flex h-full max-h-[calc(var(--spacing-3xl)*14)] w-full max-w-[calc(var(--spacing-log-max)+var(--spacing-sidebar))] min-h-0 flex-col overflow-hidden rounded-xl bg-bg shadow-lg ring-1 ring-border"
+          >
+            <button
+              type="button"
+              title="关闭"
+              onClick={actions.closeSettings}
+              className="absolute top-sm right-sm z-10 grid size-lg place-items-center rounded-md text-fg-muted hover:bg-bg-hover hover:text-fg"
+            >
+              <X className="size-md" />
+            </button>
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <SettingsView settings={state.settings} engines={engines} client={client} onClose={actions.closeSettings} />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

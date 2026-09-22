@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { BASH_TOOL, bashEntryCommand, isVoidedBashEntry } from "@vgent/engine/allowlist";
-import { ArrowLeft, Bot, GitBranch, Palette, Pencil, Plug, Plus, Settings2, Trash2, Wrench, X } from "lucide-react";
+import { Bot, GitBranch, Palette, Pencil, Plug, Plus, Settings2, Trash2, Wrench, X } from "lucide-react";
 import { ModelPicker } from "@/components/ModelPicker";
 import { RuntimesSection } from "./RuntimesSection";
 import { ApiError, type ApiClient } from "@/lib/api";
@@ -241,7 +241,8 @@ export function SettingsView({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !isImeKeyEvent(event)) onClose();
+      // A palette or dialog on top takes its own Esc (and marks it handled) before this sees it.
+      if (event.key === "Escape" && !event.defaultPrevented && !isImeKeyEvent(event)) onClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -497,16 +498,8 @@ export function SettingsView({
   };
 
   return (
-    <div className="mx-auto flex w-full max-w-[calc(var(--spacing-log-max)+var(--spacing-sidebar))] gap-xl px-lg py-lg">
+    <div className="mx-auto flex w-full gap-xl px-lg py-lg">
       <nav aria-label="设置" className="sticky top-lg flex h-fit w-[calc(var(--spacing-3xl)*3.5)] flex-none flex-col gap-3xs">
-        <button
-          type="button"
-          onClick={onClose}
-          className="mb-xs inline-flex h-xl w-fit items-center gap-2xs rounded-md px-xs text-fg-muted text-sm hover:bg-bg-hover hover:text-fg"
-        >
-          <ArrowLeft className="size-md" />
-          返回
-        </button>
         {TABS.map((entry) => (
           <button
             key={entry.id}

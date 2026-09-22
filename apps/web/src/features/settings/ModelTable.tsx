@@ -207,7 +207,7 @@ export function ModelTable({
         />
         {note != null && <span className="truncate text-fg-faint text-sm">{note}</span>}
         <button type="button" disabled={busy || endpoint == null} onClick={() => discover(false)} className={BUTTON_GHOST} title="向提供商要一次它现在的模型清单">
-          <RefreshCw className={cn("size-xs", busy && "animate-spin")} />
+          <RefreshCw className={cn("size-md", busy && "animate-spin")} />
           拉取模型
         </button>
       </div>
@@ -249,7 +249,7 @@ export function ModelTable({
           className={cn(INPUT_CLASS, "min-w-0 flex-1 font-mono")}
         />
         <button type="button" disabled={manual.trim() === ""} onClick={addManual} className={BUTTON_GHOST}>
-          <Plus className="size-xs" />
+          <Plus className="size-md" />
           添加
         </button>
       </div>

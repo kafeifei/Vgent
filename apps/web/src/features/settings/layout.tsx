@@ -9,14 +9,11 @@ import { cn } from "@/lib/utils";
  * left, its control on the right.
  */
 
-export function SettingsPage({ title, description, actions, children }: { title: string; description?: ReactNode; actions?: ReactNode; children: ReactNode }) {
+export function SettingsPage({ title, actions, children }: { title: string; actions?: ReactNode; children: ReactNode }) {
   return (
-    <div className="flex flex-col gap-lg">
-      <div className="flex items-start gap-sm">
-        <div className="flex min-w-0 flex-1 flex-col gap-3xs">
-          <h2 className="font-semibold text-fg text-lg">{title}</h2>
-          {description != null && <p className="text-fg-faint text-sm">{description}</p>}
-        </div>
+    <div className="flex flex-col gap-xl">
+      <div className="flex items-center gap-sm">
+        <h2 className="min-w-0 flex-1 font-semibold text-fg text-lg">{title}</h2>
         {actions}
       </div>
       {children}
@@ -26,14 +23,14 @@ export function SettingsPage({ title, description, actions, children }: { title:
 
 export function SettingsGroup({ title, note, actions, children }: { title?: string; note?: ReactNode; actions?: ReactNode; children: ReactNode }) {
   return (
-    <section className="flex flex-col gap-xs">
+    <section className="flex flex-col gap-sm">
       {(title != null || actions != null) && (
-        <div className="flex items-center gap-sm">
-          {title != null && <h3 className="flex-1 font-medium text-fg-muted text-sm">{title}</h3>}
+        <div className="flex min-h-lg items-center gap-sm">
+          {title != null && <h3 className="flex-1 font-medium text-fg-secondary text-sm">{title}</h3>}
           {actions}
         </div>
       )}
-      <div className="flex flex-col divide-y divide-border overflow-hidden rounded-lg border border-border bg-bg-elevated">{children}</div>
+      <div className="flex flex-col divide-y divide-border overflow-hidden rounded-lg border border-border bg-bg">{children}</div>
       {note != null && <p className="text-fg-faint text-sm">{note}</p>}
     </section>
   );
@@ -55,11 +52,11 @@ export function SettingsRow({
   className?: string;
 }) {
   return (
-    <div className={cn("flex min-h-3xl items-center gap-sm px-md py-xs", className)}>
+    <div className={cn("flex min-h-[calc(var(--spacing-row)*1.5)] items-center gap-md px-md py-sm", className)}>
       {leading}
       <div className="flex min-w-0 flex-1 flex-col gap-3xs">
         <div className="flex min-w-0 items-center gap-xs text-fg text-md">{title}</div>
-        {help != null && <div className="text-fg-faint text-sm">{help}</div>}
+        {help != null && <div className="text-fg-muted text-sm">{help}</div>}
       </div>
       {children != null && <div className="flex flex-none items-center gap-xs">{children}</div>}
     </div>
@@ -68,18 +65,18 @@ export function SettingsRow({
 
 /** Shown inside a group's card when it has no rows. */
 export function SettingsEmpty({ children }: { children: ReactNode }) {
-  return <div className="px-md py-sm text-fg-faint text-md">{children}</div>;
+  return <div className="px-md py-md text-fg-faint text-sm">{children}</div>;
 }
 
 export function Tag({ children }: { children: ReactNode }) {
-  return <span className="flex-none rounded-full bg-bg-inset px-xs text-xs text-fg-faint">{children}</span>;
+  return <span className="flex-none rounded-sm border border-border px-2xs text-fg-muted text-xs leading-[calc(var(--spacing-lg)-2px)]">{children}</span>;
 }
 
 /** A provider's avatar: its first letter, since there is no logo set to draw from. */
 export function LetterAvatar({ name }: { name: string }) {
   const letter = [...name.trim()][0]?.toUpperCase() ?? "?";
   return (
-    <span aria-hidden className="grid size-xl flex-none place-items-center rounded-md bg-bg-inset font-medium text-fg-muted text-sm">
+    <span aria-hidden className="grid size-xl flex-none place-items-center rounded-md border border-border bg-bg-elevated font-medium text-fg-secondary text-sm">
       {letter}
     </span>
   );
@@ -111,11 +108,49 @@ export function Switch({ checked, onChange, label, disabled }: { checked: boolea
 }
 
 export const BUTTON_SECONDARY =
-  "inline-flex h-xl flex-none items-center gap-2xs rounded-md border border-border bg-bg-elevated px-sm text-fg text-md hover:border-border-strong hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-40";
+  "inline-flex h-xl flex-none items-center gap-2xs rounded-md border border-border bg-bg-elevated px-sm text-fg text-sm hover:border-border-strong hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-40";
 export const BUTTON_GHOST =
-  "inline-flex h-xl flex-none items-center gap-2xs rounded-md px-sm text-fg-muted text-md hover:bg-bg-hover hover:text-fg disabled:cursor-not-allowed disabled:opacity-40";
+  "inline-flex h-xl flex-none items-center gap-2xs rounded-md px-sm text-fg-muted text-sm hover:bg-bg-hover hover:text-fg disabled:cursor-not-allowed disabled:opacity-40";
 export const BUTTON_PRIMARY =
-  "inline-flex h-xl flex-none items-center gap-2xs rounded-md bg-brand px-md text-brand-fg text-md disabled:cursor-not-allowed disabled:opacity-50";
+  "inline-flex h-xl flex-none items-center gap-2xs rounded-md bg-brand px-md text-brand-fg text-sm disabled:cursor-not-allowed disabled:opacity-50";
+
+/**
+ * A few mutually exclusive choices as one control: a sunken track with the
+ * chosen segment raised — what macOS and Cursor use where a radio would be
+ * too tall and a dropdown would hide the other options.
+ */
+export function Segmented<T extends string>({
+  value,
+  options,
+  onChange,
+  label,
+}: {
+  value: T;
+  options: ReadonlyArray<{ id: T; label: string; title?: string }>;
+  onChange: (next: T) => void;
+  label: string;
+}) {
+  return (
+    <div role="radiogroup" aria-label={label} className="inline-flex h-xl flex-none items-center gap-3xs rounded-md bg-bg-inset p-3xs">
+      {options.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          role="radio"
+          aria-checked={value === option.id}
+          title={option.title}
+          onClick={() => onChange(option.id)}
+          className={cn(
+            "h-full rounded-sm px-sm text-fg-muted text-sm hover:text-fg",
+            value === option.id && "bg-bg-elevated text-fg shadow-sm ring-1 ring-border",
+          )}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 /**
  * A modal over the settings page. Esc closes the dialog and only the dialog:

@@ -14,6 +14,7 @@ import type { QueueItem } from "@/features/worklog/queue";
 import { oneLine } from "@/lib/format";
 import { type PaneKey, type PaneWidths, clampPaneWidth, fitPaneWidths, loadPaneWidths, savePaneWidths } from "@/lib/paneWidths";
 import { usePrefs, usePrefsSync } from "@/lib/prefs";
+import { RightPaneToggle } from "@/features/taskheader/TaskHeader";
 import { ThreadView } from "./ThreadView";
 import { isLiveThread, useWorkbench } from "./useWorkbench";
 
@@ -120,7 +121,7 @@ export function Shell({ token }: { token: string }) {
   return (
     // No window bar of its own: like Cursor's Agents Window the three columns
     // run the full height, and each column's top strip is the title bar.
-    <div className="h-full overflow-hidden">
+    <div className="relative h-full overflow-hidden">
       <div
         ref={grid}
         className={
@@ -198,7 +199,6 @@ export function Shell({ token }: { token: string }) {
             open={right.open}
             tab={right.tab}
             onTab={actions.setRightTab}
-            onClose={actions.toggleRight}
             changes={changes}
             client={client}
             threadId={selectedThreadId}
@@ -241,13 +241,26 @@ export function Shell({ token }: { token: string }) {
         )}
       </div>
 
+      {view === "thread" && thread != null && (
+        // Pinned to the window, not to a column: opening the pane used to leave
+        // this button on the conversation's right edge, short of the window's.
+        <div className="pointer-events-none absolute top-0 right-0 z-10 flex h-topbar items-center pr-sm">
+          <RightPaneToggle
+            open={right.open}
+            pending={thread.pendingApprovals + queue.filter((item) => item.kind === "question").length}
+            onToggle={actions.toggleRight}
+            className="pointer-events-auto"
+          />
+        </div>
+      )}
+
       {palette && <CommandPalette commands={commands} onClose={actions.closePalette} />}
       {settingsOpen && (
         // 设置 floats over the workbench like Cursor's: the columns stay put
         // underneath, dimmed and softly blurred, and come back untouched on close.
         <div
           role="presentation"
-          className="fixed inset-0 z-20 flex items-center justify-center bg-bg-scrim p-xl backdrop-blur-xs"
+          className="fixed inset-0 z-20 flex items-center justify-center bg-bg-scrim p-2xl backdrop-blur-xs"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) actions.closeSettings();
           }}
@@ -256,7 +269,7 @@ export function Shell({ token }: { token: string }) {
             role="dialog"
             aria-modal="true"
             aria-label="设置"
-            className="relative flex h-full max-h-[calc(var(--spacing-3xl)*14)] w-full max-w-[calc(var(--spacing-log-max)+var(--spacing-sidebar))] min-h-0 flex-col overflow-hidden rounded-xl bg-bg shadow-lg ring-1 ring-border"
+            className="relative flex h-full max-h-[calc(var(--spacing-3xl)*15)] w-full max-w-[calc(var(--spacing-log-max)+var(--spacing-3xl)*3)] min-h-0 flex-col overflow-hidden rounded-xl bg-bg-elevated shadow-lg ring-1 ring-border-strong"
           >
             <button
               type="button"
@@ -266,7 +279,7 @@ export function Shell({ token }: { token: string }) {
             >
               <X className="size-md" />
             </button>
-            <div className="min-h-0 flex-1 overflow-y-auto">
+            <div className="min-h-0 flex-1">
               <SettingsView settings={state.settings} engines={engines} client={client} onClose={actions.closeSettings} />
             </div>
           </div>

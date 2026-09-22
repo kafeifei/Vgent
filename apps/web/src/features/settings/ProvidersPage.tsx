@@ -4,15 +4,20 @@ import { ApiError, type ApiClient, type ProviderCatalog } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import type { CatalogProviderSummary, EngineDescriptor, ProviderAgent, ProviderModel, RedactedProviderConfig, SubscriptionAccount, SubscriptionId } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { BUTTON_GHOST, BUTTON_PRIMARY, BUTTON_SECONDARY, Dialog, LetterAvatar, SettingsEmpty, SettingsGroup, SettingsPage, SettingsRow, Switch, Tag } from "./layout";
+import { BUTTON_GHOST, BUTTON_PRIMARY, BUTTON_SECONDARY, Dialog, LetterAvatar, Segmented, SettingsEmpty, SettingsGroup, SettingsPage, SettingsRow, Switch, Tag } from "./layout";
 import { ModelTable } from "./ModelTable";
 import { AGENT_ORDER, EMPTY_CUSTOM_FORM, agentsOf, connectInput, customInput, describeSubscription, filterCatalog, isSignedIn, summarizeEnabled, summarizeSubscription, withAgentChoices, type CustomForm } from "./providerModels";
 import { SubscriptionTable } from "./SubscriptionTable";
-import { INPUT_CLASS, PILL, PILL_SELECTED } from "./styles";
+import { INPUT_CLASS } from "./styles";
 
 type AgentLabel = (agent: ProviderAgent) => string;
 
 const FIELD_LABEL = "text-fg-muted text-sm";
+
+const PROTOCOLS: ReadonlyArray<{ id: CustomForm["protocol"]; label: string }> = [
+  { id: "openai-compatible", label: "OpenAI 兼容" },
+  { id: "anthropic", label: "Anthropic 兼容" },
+];
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
@@ -132,7 +137,7 @@ function ConnectDialog({
               {" · "}
               <a href={entry.docsUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-3xs text-fg-muted underline-offset-2 hover:text-fg hover:underline">
                 文档
-                <ExternalLink className="size-xs" />
+                <ExternalLink className="size-md" />
               </a>
             </>
           )}
@@ -246,18 +251,7 @@ function CustomDialog({
         </Field>
         <div className="flex flex-col gap-2xs">
           <span className={FIELD_LABEL}>协议</span>
-          <div className="flex gap-2xs">
-            {(
-              [
-                ["openai-compatible", "OpenAI 兼容"],
-                ["anthropic", "Anthropic 兼容"],
-              ] as const
-            ).map(([id, label]) => (
-              <button key={id} type="button" aria-pressed={form.protocol === id} onClick={() => set({ protocol: id })} className={cn(PILL, form.protocol === id && PILL_SELECTED)}>
-                {label}
-              </button>
-            ))}
-          </div>
+          <Segmented label="协议" value={form.protocol} options={PROTOCOLS} onChange={(protocol) => set({ protocol })} />
         </div>
         <Field label="接入地址">
           <input
@@ -344,7 +338,7 @@ function BrowseDialog({
               className="px-lg"
             >
               <button type="button" disabled={entry.unsupported != null} onClick={() => onPick(entry)} className={BUTTON_SECONDARY}>
-                <Plus className="size-xs" />
+                <Plus className="size-md" />
                 {connected ? "再连一个" : "连接"}
               </button>
             </SettingsRow>
@@ -510,7 +504,7 @@ function LoginDialog({ account, onRecheck, onClose }: { account: SubscriptionAcc
         <div className="flex items-center gap-xs rounded-md border border-border bg-bg-inset px-sm py-xs">
           <code className="min-w-0 flex-1 truncate font-mono text-fg text-md">{account.loginCommand}</code>
           <button type="button" onClick={copy} className={BUTTON_GHOST}>
-            {copied ? <Check className="size-xs" /> : <Copy className="size-xs" />}
+            {copied ? <Check className="size-md" /> : <Copy className="size-md" />}
             {copied ? "已复制" : "复制"}
           </button>
         </div>
@@ -634,7 +628,7 @@ export function ProvidersPage({
   const close = () => setOpen(undefined);
 
   return (
-    <SettingsPage title="模型提供商" description="Claude 和 Codex 的订阅用它们自己的登录，不用 key；别的填一次 key 接一家。接上之后，点每一家的「模型」决定每个 agent 用它的哪些。">
+    <SettingsPage title="模型提供商">
       <SettingsGroup title="已连接">
         {signedIn.map((account) => (
           <SettingsRow
@@ -713,14 +707,14 @@ export function ProvidersPage({
         {popular.map((entry) => (
           <SettingsRow key={entry.id} leading={<LetterAvatar name={entry.name} />} title={entry.name} help={`${servedAgents(entry, usable, agentLabel)} · ${entry.modelCount} 个模型`}>
             <button type="button" onClick={() => setOpen({ kind: "connect", entry })} className={BUTTON_SECONDARY}>
-              <Plus className="size-xs" />
+              <Plus className="size-md" />
               连接
             </button>
           </SettingsRow>
         ))}
         <SettingsRow leading={<LetterAvatar name="+" />} title={<>自定义<Tag>OpenAI / Anthropic 兼容</Tag></>} help="公司网关、自己搭的服务、目录里没有的厂商。">
           <button type="button" onClick={() => setOpen({ kind: "custom" })} className={BUTTON_SECONDARY}>
-            <Plus className="size-xs" />
+            <Plus className="size-md" />
             连接
           </button>
         </SettingsRow>

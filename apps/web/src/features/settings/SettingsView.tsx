@@ -10,9 +10,9 @@ import { cn } from "@/lib/utils";
 import { AppearanceSection } from "./AppearanceSection";
 import { EMPTY_MCP_FORM, fromForm, toForm, type McpForm } from "./mcpForm";
 import { NotificationsSection } from "./NotificationsSection";
-import { BUTTON_PRIMARY, BUTTON_SECONDARY, SettingsEmpty, SettingsGroup, SettingsPage, SettingsRow, Tag } from "./layout";
+import { BUTTON_PRIMARY, BUTTON_SECONDARY, Segmented, SettingsEmpty, SettingsGroup, SettingsPage, SettingsRow, Tag } from "./layout";
 import { ProvidersPage } from "./ProvidersPage";
-import { INPUT_CLASS, PILL, PILL_SELECTED, TEXTAREA_CLASS } from "./styles";
+import { INPUT_CLASS, PILL, TEXTAREA_CLASS } from "./styles";
 import { isImeKeyEvent } from "@/lib/ime";
 
 /** The pages of 设置, in the order of the left-hand list. */
@@ -32,6 +32,12 @@ const TABS: ReadonlyArray<{ id: SettingsTab; label: string; icon: typeof Bot }> 
  * the harness flag behind it. An engine that cannot ask runs 全自动 whatever is
  * picked here — the composer says so on the task itself.
  */
+const MCP_KINDS: ReadonlyArray<{ id: McpForm["kind"]; label: string }> = [
+  { id: "stdio", label: "stdio" },
+  { id: "http", label: "http" },
+  { id: "sse", label: "sse" },
+];
+
 const RUN_MODES: ReadonlyArray<{ id: PermissionMode; label: string; hint: string }> = [
   { id: "allow-reads", label: "询问", hint: "读文件不问，改文件和跑命令先问" },
   { id: "allow-edits", label: "自动改文件", hint: "改文件不问，跑命令先问" },
@@ -112,19 +118,7 @@ function McpFormPanel({
         </label>
         <div className="flex flex-col gap-2xs">
           <span className="text-fg-faint text-sm">类型</span>
-          <div className="flex gap-2xs">
-            {(["stdio", "http", "sse"] as const).map((kind) => (
-              <button
-                key={kind}
-                type="button"
-                aria-pressed={form.kind === kind}
-                onClick={() => set("kind", kind)}
-                className={cn(PILL, "h-xl px-xs text-sm", form.kind === kind && PILL_SELECTED)}
-              >
-                {kind}
-              </button>
-            ))}
-          </div>
+          <Segmented label="类型" value={form.kind} options={MCP_KINDS} onChange={(kind) => set("kind", kind)} />
         </div>
       </div>
 
@@ -180,7 +174,7 @@ function McpFormPanel({
       {error != null && <p className="text-danger text-sm">{error}</p>}
 
       <div className="flex justify-end gap-2xs">
-        <button type="button" onClick={onCancel} className={cn(PILL, "h-lg px-sm text-sm")}>
+        <button type="button" onClick={onCancel} className={PILL}>
           取消
         </button>
         <button
@@ -340,7 +334,7 @@ export function SettingsView({
     ),
 
     agents: (
-      <SettingsPage title="Agents" description="新任务默认用什么，以及 agent 动手之前问不问你。">
+      <SettingsPage title="Agents">
         <SettingsGroup title="对话">
           <SettingsRow title="默认模型" help="新任务用的模型；选模型也就选了跑它的 agent。">
             <ModelPicker
@@ -368,14 +362,14 @@ export function SettingsView({
               role="radio"
               aria-checked={draft.runMode === mode.id}
               onClick={() => update({ runMode: mode.id })}
-              className="flex min-h-3xl w-full items-center gap-sm px-md py-xs text-left hover:bg-bg-hover"
+              className="flex min-h-[calc(var(--spacing-row)*1.5)] w-full items-center gap-md px-md py-sm text-left hover:bg-bg-hover"
             >
               <span className="flex min-w-0 flex-1 flex-col gap-3xs">
                 <span className="text-fg text-md">{mode.label}</span>
-                <span className="text-fg-faint text-sm">{mode.hint}</span>
+                <span className="text-fg-muted text-sm">{mode.hint}</span>
               </span>
-              <span className={cn("grid size-md flex-none place-items-center rounded-full border border-border-strong", draft.runMode === mode.id && "border-brand")}>
-                {draft.runMode === mode.id && <span className="size-xs rounded-full bg-brand" />}
+              <span className={cn("grid size-lg flex-none place-items-center rounded-full border border-border-strong", draft.runMode === mode.id && "border-brand")}>
+                {draft.runMode === mode.id && <span className="size-sm rounded-full bg-brand" />}
               </span>
             </button>
           ))}
@@ -392,7 +386,7 @@ export function SettingsView({
                   onClick={() => update({ allowlist: allowlist.filter((name) => name !== tool) })}
                   className="grid size-lg flex-none place-items-center rounded-md text-fg-muted hover:bg-danger-bg hover:text-danger"
                 >
-                  <X className="size-xs" />
+                  <X className="size-md" />
                 </button>
               </SettingsRow>
             );
@@ -410,7 +404,7 @@ export function SettingsView({
     providers: <ProvidersPage client={client} engines={engines} onChanged={() => setCatalogVersion((version) => version + 1)} />,
 
     mcp: (
-      <SettingsPage title="工具与 MCP" description="自研引擎每轮启动时连接；修改后下一轮生效。">
+      <SettingsPage title="工具与 MCP">
         <SettingsGroup title="MCP 服务器">
           {servers.map((config, index) => {
             const { kind, detail } = describeServer(config);
@@ -431,7 +425,7 @@ export function SettingsView({
                   title="编辑"
                   className="grid size-lg flex-none place-items-center rounded-md text-fg-muted hover:bg-bg-hover hover:text-fg"
                 >
-                  <Pencil className="size-xs" />
+                  <Pencil className="size-md" />
                 </button>
                 <button
                   type="button"
@@ -439,7 +433,7 @@ export function SettingsView({
                   title="删除"
                   className="grid size-lg flex-none place-items-center rounded-md text-fg-muted hover:bg-danger-bg hover:text-danger"
                 >
-                  <Trash2 className="size-xs" />
+                  <Trash2 className="size-md" />
                 </button>
               </SettingsRow>
             );
@@ -459,7 +453,7 @@ export function SettingsView({
           />
         ) : (
           <button type="button" onClick={openAddForm} className={cn(BUTTON_SECONDARY, "w-fit")}>
-            <Plus className="size-xs" />
+            <Plus className="size-md" />
             添加服务器
           </button>
         )}
@@ -498,8 +492,9 @@ export function SettingsView({
   };
 
   return (
-    <div className="mx-auto flex w-full gap-xl px-lg py-lg">
-      <nav aria-label="设置" className="sticky top-lg flex h-fit w-[calc(var(--spacing-3xl)*3.5)] flex-none flex-col gap-3xs">
+    <div className="flex h-full min-h-0">
+      <nav aria-label="设置" className="flex w-[calc(var(--spacing-3xl)*4)] flex-none flex-col gap-3xs border-border border-r bg-bg-sidebar p-md">
+        <h1 className="mb-sm px-sm font-semibold text-fg text-md leading-[var(--spacing-xl)]">设置</h1>
         {TABS.map((entry) => (
           <button
             key={entry.id}
@@ -507,26 +502,28 @@ export function SettingsView({
             aria-current={tab === entry.id ? "page" : undefined}
             onClick={() => setTab(entry.id)}
             className={cn(
-              "flex h-xl items-center gap-xs rounded-md px-sm text-left text-fg-muted text-md hover:bg-bg-hover hover:text-fg",
+              "flex h-row items-center gap-sm rounded-md px-sm text-left text-fg-secondary text-sm hover:bg-bg-hover hover:text-fg",
               tab === entry.id && "bg-bg-active text-fg",
             )}
           >
-            <entry.icon className="size-md flex-none" />
+            <entry.icon className="size-lg flex-none" />
             {entry.label}
           </button>
         ))}
       </nav>
 
-      <div className="flex min-w-0 flex-1 flex-col gap-md">
-        {pages[tab]}
-        {(dirty || saveError != null) && (
-          <div className="sticky bottom-lg flex items-center gap-sm rounded-lg border border-border bg-bg-elevated px-md py-xs shadow-lg">
-            <span className={cn("min-w-0 flex-1 truncate text-sm", saveError != null ? "text-danger" : "text-fg-muted")}>{saveError ?? "有还没保存的修改"}</span>
-            <button type="button" disabled={!dirty || saving} onClick={save} className={BUTTON_PRIMARY}>
-              {saving ? "保存中…" : "保存"}
-            </button>
-          </div>
-        )}
+      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+        <div className="flex flex-col gap-md px-2xl py-xl">
+          {pages[tab]}
+          {(dirty || saveError != null) && (
+            <div className="sticky bottom-0 flex items-center gap-sm rounded-lg border border-border bg-bg-elevated px-md py-xs shadow-lg">
+              <span className={cn("min-w-0 flex-1 truncate text-sm", saveError != null ? "text-danger" : "text-fg-muted")}>{saveError ?? "有还没保存的修改"}</span>
+              <button type="button" disabled={!dirty || saving} onClick={save} className={BUTTON_PRIMARY}>
+                {saving ? "保存中…" : "保存"}
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

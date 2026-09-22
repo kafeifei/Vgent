@@ -35,7 +35,7 @@ import { pickFile, pickFolder } from "./folder-picker.js";
 import { isNoProject, projectOfThread, scratchDirOf } from "./no-project.js";
 import { planFork } from "./fork.js";
 import { asIntegrateAction, changeStatsOf, createIntegrator, taskTarget, type Integrator, type TaskTarget } from "./integrate.js";
-import { contextOptionsFor, createModelCatalog, type ModelEntry } from "./models.js";
+import { contextOptionsFor, createModelCatalog, type ModelCatalog, type ModelEntry } from "./models.js";
 import { reasoningFor } from "./reasoning.js";
 import { SUBSCRIPTION_IDS, createSubscriptionService, markHidden, withHiddenModels, type ClaudeLoginStatus, type SubscriptionId } from "./subscriptions.js";
 import { createQueueStore, readQueueText } from "./queue.js";
@@ -838,8 +838,9 @@ export function createApp(options: CreateAppOptions): VgentApp {
     if (project == null && body?.workspace === "worktree") throw new BadRequestError("无项目的任务没有仓库，开不了 worktree", "invalid_workspace");
     const defaults = await settings.get();
     const engine = asEngine(body?.engine) ?? defaults.defaultEngine;
-    // `defaultModel` belongs to `defaultEngine`; another engine would not know
-    // that id, so it starts on its own default instead.
+    // `defaultModel` is the last choice, made under `defaultEngine`; another
+    // engine would not know that id, so it starts on its own default instead.
+    // (The composer sends the model its chip shows, so this rarely decides.)
     const model = body?.model ?? (engine === defaults.defaultEngine ? defaults.defaultModel : undefined);
     const reasoningEffort = readReasoningEffort(body?.reasoningEffort);
     const serviceTier = readServiceTier(body?.serviceTier);
@@ -858,6 +859,9 @@ export function createApp(options: CreateAppOptions): VgentApp {
       ...(contextWindow != null ? { contextWindow } : {}),
       mode,
     });
+    // 记住上一次选择: the next task starts on what this one was started with.
+    // Not a setting anyone edits — the composer's chip is the only place it shows.
+    await settings.mutate(() => ({ defaultEngine: engine, defaultModel: typeof model === "string" ? model : undefined }));
     if (body?.workspace !== "worktree" || project == null) return c.json(record);
     // The worktree is named after the thread, so the record has to exist
     // first — and must not survive a worktree that failed to materialize.
@@ -1326,22 +1330,22 @@ export function createApp(options: CreateAppOptions): VgentApp {
     catalogModelOf: async () => createModelIndex((await catalog.get()).providers),
   });
 
-  app.get("/api/engines/:engine/models", async (c) => {
-    const raw = c.req.param("engine");
-    const engine = asEngine(raw);
-    if (engine == null) throw new BadRequestError(`未知引擎: ${JSON.stringify(raw)}`, "unknown_engine");
-    const listing = await modelCatalog.list(engine, { refresh: c.req.query("refresh") === "1" });
-    // The list is cached per engine; the effective default is a setting, so it
-    // is merged in per request instead of baked into the cached catalog. A model
-    // id means something to exactly one engine, so `defaultModel` only answers
-    // for the engine it was picked under; the others fall back to what we know
-    // of their own default — see `DEFAULT_VGENT_MODEL`.
+  /**
+   * One engine's catalog with the user's provider models merged in, and the
+   * model a task with none named would run on. The list is cached per engine;
+   * the default is a setting and the provider list is edited on the settings
+   * page, so both are merged per request instead of baked into the cache.
+   *
+   * `defaultModel` is the last choice while it is still in the list and not
+   * switched off, else the first model that is. A model id means something to
+   * exactly one engine, so the stored one only answers for the engine it was
+   * picked under. A harness that keeps its own default (Claude Code) names
+   * nothing when nothing was ever picked: the server must not invent one.
+   */
+  const listModels = async (engine: EngineId, refresh = false): Promise<ModelCatalog> => {
+    const listing = await modelCatalog.list(engine, { refresh });
     const current = await settings.get();
-    const defaultModel =
-      (engine === current.defaultEngine ? current.defaultModel : undefined) ??
-      (capabilitiesOf(engine).knownDefaultModel ? DEFAULT_VGENT_MODEL : undefined);
-    // Provider models are merged per request for the same reason: the list is
-    // the user's, edited on the settings page, and must not wait out a cache.
+    const remembered = engine === current.defaultEngine ? current.defaultModel : undefined;
     const known = capabilitiesOf(engine).customProviders ? (await catalog.get()).providers : undefined;
     const modelOf = known != null ? createModelIndex(known) : undefined;
     const hasLogo = new Set(known?.map((entry) => entry.id));
@@ -1367,8 +1371,22 @@ export function createApp(options: CreateAppOptions): VgentApp {
         )
       : [];
     // What the 模型 table switched off stays in the list, marked: see `ModelEntry.hidden`.
-    const own = markHidden(listing.models, current.hiddenModels?.[engine]);
-    return c.json({ ...listing, models: [...own, ...fromProviders], ...(defaultModel != null ? { defaultModel } : {}) });
+    const models = [...markHidden(listing.models, current.hiddenModels?.[engine]), ...fromProviders];
+    const usable = models.filter((entry) => entry.hidden !== true);
+    const defaultModel =
+      remembered != null && usable.some((entry) => entry.id === remembered)
+        ? remembered
+        : capabilitiesOf(engine).knownDefaultModel
+          ? (usable[0]?.id ?? DEFAULT_VGENT_MODEL)
+          : remembered;
+    return { ...listing, models, ...(defaultModel != null ? { defaultModel } : {}) };
+  };
+
+  app.get("/api/engines/:engine/models", async (c) => {
+    const raw = c.req.param("engine");
+    const engine = asEngine(raw);
+    if (engine == null) throw new BadRequestError(`未知引擎: ${JSON.stringify(raw)}`, "unknown_engine");
+    return c.json(await listModels(engine, c.req.query("refresh") === "1"));
   });
 
   // --- subscriptions ----------------------------------------------------

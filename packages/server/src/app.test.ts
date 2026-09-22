@@ -299,13 +299,18 @@ describe("createApp", () => {
       body: JSON.stringify({ defaultEngine: "vgent", defaultModel: "openai/gpt-5.5" }),
     });
 
+    const defaulted = (await (await postJson(app, "/api/threads", { projectId: project.id, engine: "vgent" })).json()) as ThreadRecord;
+    expect(defaulted.model).toBe("openai/gpt-5.5");
+
     const picked = (await (
       await postJson(app, "/api/threads", { projectId: project.id, engine: "vgent", model: "codex-subscription:gpt-5.5" })
     ).json()) as ThreadRecord;
     expect(picked.model).toBe("codex-subscription:gpt-5.5");
 
-    const defaulted = (await (await postJson(app, "/api/threads", { projectId: project.id, engine: "vgent" })).json()) as ThreadRecord;
-    expect(defaulted.model).toBe("openai/gpt-5.5");
+    // 记住上一次选择: a task that names nothing starts on what the last one did.
+    const remembered = (await (await postJson(app, "/api/threads", { projectId: project.id, engine: "vgent" })).json()) as ThreadRecord;
+    expect(remembered.model).toBe("codex-subscription:gpt-5.5");
+    expect(await (await request(app, "/api/settings")).json()).toMatchObject({ defaultEngine: "vgent", defaultModel: "codex-subscription:gpt-5.5" });
 
     // A model id only means something to the engine it was picked under, so
     // another engine starts on its own default instead.
@@ -1108,7 +1113,7 @@ describe("createApp", () => {
   it("reads and writes settings", async () => {
     const app = makeApp(await tempDir());
     expect(await (await request(app, "/api/settings")).json()).toMatchObject({
-      defaultEngine: "claude-code",
+      defaultEngine: "vgent",
       runMode: "allow-reads",
       allowlist: [],
     });
@@ -1274,7 +1279,7 @@ describe("createApp", () => {
 
     // `defaultModel` belongs to `defaultEngine` — here Claude Code — so it
     // answers for that engine only; the others keep their own answer.
-    await request(app, "/api/settings", { method: "PUT", body: JSON.stringify({ defaultModel: "sonnet" }) });
+    await request(app, "/api/settings", { method: "PUT", body: JSON.stringify({ defaultEngine: "claude-code", defaultModel: "sonnet" }) });
     expect(await defaultModelOf("claude-code")).toBe("sonnet");
     expect(await defaultModelOf("vgent")).toBe(DEFAULT_VGENT_MODEL);
   });

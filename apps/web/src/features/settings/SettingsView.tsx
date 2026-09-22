@@ -1,7 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { BASH_TOOL, bashEntryCommand, isVoidedBashEntry } from "@vgent/engine/allowlist";
 import { Bot, GitBranch, Palette, Pencil, Plug, Plus, Settings2, Trash2, Wrench, X } from "lucide-react";
-import { ModelPicker } from "@/components/ModelPicker";
 import { RuntimesSection } from "./RuntimesSection";
 import { ApiError, type ApiClient } from "@/lib/api";
 import { useToast } from "@/lib/toast";
@@ -219,7 +218,6 @@ export function SettingsView({
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [pickerAvailable, setPickerAvailable] = useState(true);
-  const [catalogVersion, setCatalogVersion] = useState(0);
   const [tab, setTab] = useState<SettingsTab>("general");
 
   // Re-synced from the server only while the draft has no edits the user would lose.
@@ -248,16 +246,6 @@ export function SettingsView({
 
   const dirty = savedSnapshot != null && settingsKey(draft) !== savedSnapshot;
   const update = (patch: Partial<Settings>) => setDraft((current) => (current == null ? current : { ...current, ...patch }));
-  // 选模型即选引擎, here too: the pair is written together. `defaultModel` is
-  // optional-string under `exactOptionalPropertyTypes`, so clearing it means
-  // dropping the key rather than assigning `undefined` (which `update` cannot express).
-  const setDefaultModel = (defaultEngine: Settings["defaultEngine"], model: string | undefined) =>
-    setDraft((current) => {
-      if (current == null) return current;
-      if (model != null) return { ...current, defaultEngine, defaultModel: model };
-      const { defaultModel: _dropped, ...rest } = current;
-      return { ...rest, defaultEngine };
-    });
   const servers = draft.mcpServers ?? [];
   const allowlist = draft.allowlist ?? [];
 
@@ -335,25 +323,6 @@ export function SettingsView({
 
     agents: (
       <SettingsPage title="Agents">
-        <SettingsGroup title="对话">
-          <SettingsRow title="默认模型" help="新任务用的模型；选模型也就选了跑它的 agent。">
-            <ModelPicker
-              // Remounted when a provider changes: its lists are loaded once per mount.
-              key={catalogVersion}
-              engines={engines}
-              engine={draft.defaultEngine}
-              model={draft.defaultModel}
-              onPick={setDefaultModel}
-              trigger={(props, chip) => (
-                <button type="button" {...props} className={cn(PILL, "w-fit font-mono")}>
-                  {chip.label}
-                  <span className="ml-2xs opacity-60">▾</span>
-                </button>
-              )}
-            />
-          </SettingsRow>
-        </SettingsGroup>
-
         <SettingsGroup title="运行模式">
           {RUN_MODES.map((mode) => (
             <button
@@ -401,7 +370,7 @@ export function SettingsView({
       </SettingsPage>
     ),
 
-    providers: <ProvidersPage client={client} engines={engines} onChanged={() => setCatalogVersion((version) => version + 1)} />,
+    providers: <ProvidersPage client={client} engines={engines} />,
 
     mcp: (
       <SettingsPage title="工具与 MCP">

@@ -547,7 +547,8 @@ export function ProvidersPage({
   /** 引擎能力表: which agents can take a provider at all, and what they are called. */
   engines: EngineDescriptor[];
   /** Something about the models on offer changed; the model pickers reload. */
-  onChanged: () => void;
+  /** After a provider or its models changed, for a caller whose lists were loaded once. */
+  onChanged?: (() => void) | undefined;
 }) {
   const toast = useToast();
   const [providers, setProviders] = useState<RedactedProviderConfig[]>([]);
@@ -578,20 +579,20 @@ export function ProvidersPage({
 
   const putSubscription = (next: SubscriptionAccount) => {
     setSubscriptions((current) => current.map((entry) => (entry.id === next.id ? next : entry)));
-    onChanged();
+    onChanged?.();
   };
 
   /** Reads the logins again; `refresh` also re-asks the vendors for their model lists. */
   const reloadSubscriptions = (refresh: boolean) =>
     client.listSubscriptions(refresh).then((next) => {
       setSubscriptions(next);
-      onChanged();
+      onChanged?.();
       return next;
     });
 
   const put = (next: RedactedProviderConfig) => {
     setProviders((current) => (current.some((entry) => entry.id === next.id) ? current.map((entry) => (entry.id === next.id ? next : entry)) : [...current, next]));
-    onChanged();
+    onChanged?.();
   };
 
   const disconnect = (provider: RedactedProviderConfig) => {
@@ -599,7 +600,7 @@ export function ProvidersPage({
       .deleteProvider(provider.id)
       .then(() => {
         setProviders((current) => current.filter((entry) => entry.id !== provider.id));
-        onChanged();
+        onChanged?.();
         toast(`已断开 ${provider.name}`);
       })
       .catch((cause: Error) => toast(cause.message));

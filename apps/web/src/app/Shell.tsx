@@ -35,6 +35,7 @@ export function Shell({ token }: { token: string }) {
     palette,
     grouping,
     settingsOpen,
+    newTaskSeed,
     actions,
   } = workbench;
   const { toggleTheme, toggleDensity } = usePrefs();
@@ -181,6 +182,7 @@ export function Shell({ token }: { token: string }) {
                 projectId={activeProjectId}
                 engines={engines}
                 settings={state.settings}
+                seed={newTaskSeed}
                 client={client}
                 onSelectProject={actions.selectProject}
                 onAddProject={actions.addProject}

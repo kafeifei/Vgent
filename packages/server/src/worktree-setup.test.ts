@@ -112,7 +112,7 @@ async function settledThread(app: VgentApp, id: string): Promise<ThreadRecord> {
 
 async function worktreeThread(app: VgentApp, repo: string): Promise<ThreadRecord> {
   const project = (await postJson(app, "/api/projects", { repoPath: repo }).then((r) => r.json())) as { id: string };
-  const response = await postJson(app, "/api/threads", { projectId: project.id, workspace: "worktree" });
+  const response = await postJson(app, "/api/threads", { projectId: project.id, engine: "claude-code", workspace: "worktree" });
   expect(response.status).toBe(200);
   return (await response.json()) as ThreadRecord;
 }

@@ -544,3 +544,10 @@ build 84 定的「日志里的图只有一种样子」只覆盖了回复里内�
 - **滚动**：`ThreadView` 加载 `Chat` 的 effect 依赖了整个 `actions`，而 `useWorkbench` 的 `actions` 是一个依赖 `state.threads` / `thread` / `state.projects` 的 `useMemo`——任何任务有任何变化都会重建：在当前任务上点 fast（改了任务记录）、另一个任务在跑（`updatedAt` 不停变）。每重建一次，effect 就 `setChat(null)`，整个对话视图卸载成「加载中…」再重新挂载，`Conversation` 从头滚到底。现在 effect 只依赖 `thread.id`，`actions` 经 ref 读最新值。隔离实例里验证：滚到中间后分别改当前任务和另一个任务，滚动容器是同一个 DOM 节点、`scrollTop` 不变。`actions` 本身仍然不稳定，凡是把它放进 effect 依赖的地方都要当心。
 - **“Failed to process successful response”**：用户把自研引擎换到 Codex 订阅模型后出的错。离线用同一个模型复现：连「只回两个字」也会在几十秒后失败，`cause` 链的底是 `other side closed`——对方在流式输出中途关了连接，是这台机器到 Codex 后端的网络问题，和对话历史、换模型的动作无关。AI SDK 把它包成了一句没信息量的话，`rawErrorText` 现在把 `cause` 链最底下那条消息补在后面（「…（other side closed）」）。流到一半断开没法透明重试，没做重试。
 - **还有两处会「滚」**（build 93）：AI Elements 的 `Conversation` 默认 `initial="smooth"` / `resize="smooth"`——每次打开任务都从顶部带动画滑到底，之后图片、产物卡片每落地一次、日志每长一次又滑一下。`WorkLog` 现在传 `initial="instant" resize="instant"`（没改取来的源码，props 在它的默认值之后展开）：打开就在底部，钉住不动。另外 `Figure` 在图片「还在来」（加载中 / 正在画）时先占住一张图的位置（`pending`）：桌面包的 WebView 没有 scroll anchoring，一行字后来长成一张图会把下面的内容整个往下推；「无法显示」这种不会再变的仍是一行小字。验证：打开任务后 2.5 秒内每 60ms 采样，距底部始终 1–2px。
+
+### 2026-09-22 设置改弹层；默认模型不再是设置
+
+- **设置是弹层**：`Shell` 不再把中栏换成设置页，而是在三栏之上盖一层遮罩（`bg-bg-scrim` + `backdrop-blur-xs`），设置面板居中浮起（`bg-bg-elevated`，左侧 192px 导航栏带「设置」标题，内容区自己滚动）。点遮罩、Esc、右上角的叉都关；面板里再叠命令面板或 `Dialog` 时它们先吃掉 Esc（`defaultPrevented`），设置不会一起关掉。右栏不再因为打开设置而隐藏。
+- **视觉**：`layout.tsx` 加了 `Segmented`（分段切换器：主题 / 密度 / MCP 类型 / 协议），`PILL` 不再是橙色描边药丸；按钮里的图标从 `size-xs`（6px）改成 `size-md`（12px）；行标题 15、说明 13（`fg-muted`）；页面标题下的解释段落去掉。
+- **默认模型那一行从设置里去掉了**（用户：「根本不需要」）。规则变成：`DEFAULT_SETTINGS.defaultEngine` 是 `vgent`；`GET /api/engines/:engine/models` 的 `defaultModel` 是**上一次开任务的选择，还在清单里且没被关掉才算**，否则该引擎清单里第一个能用的（`app.ts` 的 `listModels`；harness 引擎没记过就仍留空）。`POST /api/threads` 建完任务把用的 `engine` + `model` 写回 `settings.defaultEngine / defaultModel`——**记住上一次选择**就是这个，不是用户编辑的设置。`useWorkbench.newTask` 把当时看着的任务的 engine/model 记成 `newTaskSeed`，`EmptyState` 用它当**临时默认值**（排在 `settings.defaultModel` 之前，不落盘）。`ProvidersPage.onChanged` 变成可选：设置页里没有别的清单要重载了。
+

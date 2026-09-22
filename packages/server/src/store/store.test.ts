@@ -259,7 +259,7 @@ describe("createProjectStore / createSettingsStore", () => {
   it("round-trips settings and clears an optional field", async () => {
     const dir = await tempDir();
     const store = createSettingsStore(dir);
-    expect((await store.get()).defaultEngine).toBe("claude-code");
+    expect((await store.get()).defaultEngine).toBe("vgent");
     await store.update({ defaultModel: "sonnet", runMode: "allow-edits" });
     expect(await createSettingsStore(dir).get()).toMatchObject({ defaultModel: "sonnet", runMode: "allow-edits" });
     expect(await store.update({ defaultModel: undefined })).not.toHaveProperty("defaultModel");

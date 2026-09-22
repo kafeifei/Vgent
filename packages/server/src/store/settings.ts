@@ -15,7 +15,7 @@ import { readJsonOrQuarantine, writeJsonAtomic } from "./atomic-file.js";
  * stop it. Until that is closed the default does not opt anyone in.
  */
 export const DEFAULT_SETTINGS: Settings = {
-  defaultEngine: "claude-code",
+  defaultEngine: "vgent",
   runMode: "allow-reads",
   allowlist: [],
 };

@@ -79,6 +79,8 @@ export function useWorkbench(token: string) {
   const [palette, setPalette] = useState(false);
   const [grouping, setGrouping] = useState<Grouping>("project");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /** What 新任务 was pressed on top of: the model the empty state starts from. */
+  const [newTaskSeed, setNewTaskSeed] = useState<NewTaskSeed | null>(null);
   /**
    * 引擎能力表, loaded once. Everything the UI shows per engine — its name, the
    * 「只能全自动」 note, whether 压缩上下文 is on offer — is read from here, so no
@@ -214,6 +216,9 @@ export function useWorkbench(token: string) {
       selectThread,
       selectProject: (id: string) => setProjectId(id),
       newTask: () => {
+        // The task being looked at seeds the new one's model: 临时默认值, not
+        // written anywhere — the last *started* choice is what the server keeps.
+        setNewTaskSeed(thread == null ? null : { engine: thread.engine, ...(thread.model != null ? { model: thread.model } : {}) });
         setView("empty");
         setSelectedThreadId(null);
         writeThreadToUrl(null);
@@ -518,8 +523,15 @@ export function useWorkbench(token: string) {
     palette,
     grouping,
     settingsOpen,
+    newTaskSeed,
     actions,
   };
+}
+
+/** The engine and model a new task is seeded with — see `newTaskSeed`. */
+export interface NewTaskSeed {
+  engine: EngineId;
+  model?: string;
 }
 
 export type Workbench = ReturnType<typeof useWorkbench>;

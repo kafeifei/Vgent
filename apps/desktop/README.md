@@ -29,7 +29,7 @@ pnpm desktop:build          # 仓库根目录执行
 - url 必须是 `http://127.0.0.1:<port>/`（无 userinfo / query / fragment），token 必须是 32–128 位 `[A-Za-z0-9_-]`，否则拒绝启动。
 - 窗口直接导航到 `<url>/#token=<token>`，`apps/web` 自己从 hash 里取 token 存进 sessionStorage 再抹掉 hash，所以**不需要注入任何脚本**。API 调用是同源相对路径。
 - 数据目录跟命令行版完全一致：`VGENT_DATA_DIR` 优先，否则 `~/.vgent`。
-- 退出：关窗口走 `CloseRequested` → `prevent_close` → 后台线程给子进程**进程组**发 SIGTERM（服务端据此停掉所有 run，让引擎落盘 resume state），最多等 20 秒，还不退就 SIGKILL 整组。⌘Q 和 AppleScript `quit` 走的是 `applicationWillTerminate`，`prevent_exit` 和后台线程都拦不住它（回调一返回进程就没了），所以 `RunEvent::Exit` 里**同步**再停一次；`shutdown` 全程持锁，两条路撞上也只会排队。子进程意外退出时看门狗线程弹原生对话框并退出应用。
+- 关窗口（⌘W、红色关闭按钮）不退出：`CloseRequested` → `prevent_close` → `hide()`。进程和内置服务都留着，任务继续跑；点 Dock 图标走 `RunEvent::Reopen` 再把窗口显示出来。真正退出是 ⌘Q、菜单「退出」和 AppleScript `quit`：`ExitRequested` 里后台线程给子进程**进程组**发 SIGTERM（服务端据此停掉所有 run，让引擎落盘 resume state），最多等 20 秒，还不退就 SIGKILL 整组。`applicationWillTerminate` 里 `prevent_exit` 和后台线程都拦不住（回调一返回进程就没了），所以 `RunEvent::Exit` 里**同步**再停一次；`shutdown` 全程持锁，两条路撞上也只会排队。子进程意外退出时看门狗线程弹原生对话框并退出应用。
 - 「添加仓库」的原生文件夹选择器也在服务端（`POST /api/projects/pick` → `osascript ... choose folder`），桌面和浏览器共用一份实现，webview 是远端 origin，不碰 Tauri IPC / capability。
 - 导航策略：只有服务自己的 origin 放行，其它 http(s) 用系统默认浏览器打开，`window.open` 一律拒绝。菜单里有「调试 → 开发者工具」。
 
@@ -58,7 +58,7 @@ pnpm desktop:dev
 
 - **只支持 macOS**（arm64 / x64），`bundle.targets` 只有 `app`，不出 dmg。
 - **只有 ad-hoc 签名**（`signingIdentity: "-"`），没有公证，没有自动更新。从别的机器拷过去的 `.app` 会被 Gatekeeper 拦。
-- 关闭方式只认 macOS 的正常退出（关窗口、⌘Q、AppleScript `quit`）。直接对 `vgent-desktop` 进程 `kill` 不会走清理，内置服务会变成孤儿进程（`kill -TERM -<pid>` 手动收掉）。
+- 退出只认 macOS 的正常退出（⌘Q、菜单退出、AppleScript `quit`）。关窗口不会退出。直接对 `vgent-desktop` 进程 `kill` 不会走清理，内置服务会变成孤儿进程（`kill -TERM -<pid>` 手动收掉）。
 - 单窗口，没有多开；桌面实例和命令行 `pnpm server` 共用 `~/.vgent`，`connection.json` 会互相覆盖（壳自己靠 pid 判断，但命令行那边的文件会被抹掉）。
 - Claude Code / Codex 引擎第一次运行时，官方 harness 会在 `~/.vgent/harness/<harness>/` 里用 `pnpm install` 拉自己的 bootstrap（`@anthropic-ai/claude-code` 等不在 `.app` 里）。所以首次使用需要联网，且机器上要有 `pnpm` —— 这也是上面那段登录 shell PATH 的原因之一。
 - `.app` 约 180MB，主要是内置 Node（112MB）和服务端依赖树。

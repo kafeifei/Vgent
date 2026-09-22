@@ -240,11 +240,13 @@ fn main() {
             }
         })
         .on_window_event(|window, event| {
+            // ⌘W and the red button both ask to close the window. On macOS that
+            // must not quit: hide it, leave the process and the embedded server
+            // running so in-flight tasks keep going. Quit is ⌘Q, the Quit menu
+            // item, or an AppleEvent — those hit `ExitRequested` / `Exit` below.
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                window
-                    .state::<Lifecycle>()
-                    .request_exit(window.app_handle(), 0);
+                let _ = window.hide();
             }
         });
     match builder.build(tauri::generate_context!()) {
@@ -262,6 +264,15 @@ fn main() {
             // synchronously. `shutdown` holds the lock across the whole stop, so a
             // `request_exit` thread already doing it just makes this call wait.
             RunEvent::Exit => handle.state::<Lifecycle>().shutdown(),
+            // Dock-icon click while the window is hidden or minimized.
+            #[cfg(target_os = "macos")]
+            RunEvent::Reopen { .. } => {
+                if let Some(window) = handle.get_webview_window("main") {
+                    let _ = window.unminimize();
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
             _ => {}
         }),
         Err(error) => eprintln!("Vgent 启动失败：{error}"),

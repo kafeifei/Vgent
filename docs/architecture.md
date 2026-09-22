@@ -551,3 +551,4 @@ build 84 定的「日志里的图只有一种样子」只覆盖了回复里内�
 - **视觉**：`layout.tsx` 加了 `Segmented`（分段切换器：主题 / 密度 / MCP 类型 / 协议），`PILL` 不再是橙色描边药丸；按钮里的图标从 `size-xs`（6px）改成 `size-md`（12px）；行标题 15、说明 13（`fg-muted`）；页面标题下的解释段落去掉。
 - **默认模型那一行从设置里去掉了**（用户：「根本不需要」）。规则变成：`DEFAULT_SETTINGS.defaultEngine` 是 `vgent`；`GET /api/engines/:engine/models` 的 `defaultModel` 是**上一次开任务的选择，还在清单里且没被关掉才算**，否则该引擎清单里第一个能用的（`app.ts` 的 `listModels`；harness 引擎没记过就仍留空）。`POST /api/threads` 建完任务把用的 `engine` + `model` 写回 `settings.defaultEngine / defaultModel`——**记住上一次选择**就是这个，不是用户编辑的设置。`useWorkbench.newTask` 把当时看着的任务的 engine/model 记成 `newTaskSeed`，`EmptyState` 用它当**临时默认值**（排在 `settings.defaultModel` 之前，不落盘）。`ProvidersPage.onChanged` 变成可选：设置页里没有别的清单要重载了。
 
+- **Agents 页只剩引擎运行时**（用户：「只需要留升级」）。运行模式三档和「一直允许的工具」从设置里拿掉了；`Settings.runMode / allowlist` 还在、服务端照读（用户机器上是 `allow-all`），只是暂时没有界面改它——下一步是把运行模式放进 composer 的模式菜单按任务切，像 Cursor 审批卡里那样。

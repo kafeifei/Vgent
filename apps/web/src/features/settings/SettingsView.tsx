@@ -1,10 +1,9 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { BASH_TOOL, bashEntryCommand, isVoidedBashEntry } from "@vgent/engine/allowlist";
-import { Bot, GitBranch, Palette, Pencil, Plug, Plus, Settings2, Trash2, Wrench, X } from "lucide-react";
+import { Bot, GitBranch, Palette, Pencil, Plug, Plus, Settings2, Trash2, Wrench } from "lucide-react";
 import { RuntimesSection } from "./RuntimesSection";
 import { ApiError, type ApiClient } from "@/lib/api";
 import { useToast } from "@/lib/toast";
-import type { EngineDescriptor, McpServerConfig, PermissionMode, Settings } from "@/lib/types";
+import type { EngineDescriptor, McpServerConfig, Settings } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { AppearanceSection } from "./AppearanceSection";
 import { EMPTY_MCP_FORM, fromForm, toForm, type McpForm } from "./mcpForm";
@@ -26,42 +25,11 @@ const TABS: ReadonlyArray<{ id: SettingsTab; label: string; icon: typeof Bot }> 
   { id: "worktrees", label: "Worktrees", icon: GitBranch },
 ];
 
-/**
- * 运行模式: three steps, each described by what it does *to you* rather than by
- * the harness flag behind it. An engine that cannot ask runs 全自动 whatever is
- * picked here — the composer says so on the task itself.
- */
 const MCP_KINDS: ReadonlyArray<{ id: McpForm["kind"]; label: string }> = [
   { id: "stdio", label: "stdio" },
   { id: "http", label: "http" },
   { id: "sse", label: "sse" },
 ];
-
-const RUN_MODES: ReadonlyArray<{ id: PermissionMode; label: string; hint: string }> = [
-  { id: "allow-reads", label: "询问", hint: "读文件不问，改文件和跑命令先问" },
-  { id: "allow-edits", label: "自动改文件", hint: "改文件不问，跑命令先问" },
-  { id: "allow-all", label: "全自动", hint: "都不问" },
-];
-
-/**
- * One allowlist entry, in words. `bash(git push)` is a *command*, not a tool,
- * and a legacy bare `bash` is the blank cheque the old UI wrote — both have to
- * be recognisable here, because this list is the only place to take one back.
- *
- * `note` is for an entry that can no longer match anything: `bash(git)` was
- * written when an entry named only the command word. Nothing is migrated (that
- * would grant `git push` off the back of a `git status` click), so the entry is
- * shown as 已失效 with the reason, and removing it is the user's call.
- */
-function describeAllowEntry(entry: string): { label: string; note?: string } {
-  const command = bashEntryCommand(entry);
-  if (command != null) {
-    return isVoidedBashEntry(entry)
-      ? { label: `命令 ${command}`, note: `已失效：${command} 现在要写到子命令（如 ${command} <子命令>），这条不再放行任何命令，可以删掉。` }
-      : { label: `命令 ${command}` };
-  }
-  return { label: entry === BASH_TOOL ? "bash（全部命令）" : entry };
-}
 
 /** Deep-equal via a key-sorted `JSON.stringify`, so field order never causes a false "dirty". */
 const stableStringify = (value: unknown): string =>
@@ -247,7 +215,6 @@ export function SettingsView({
   const dirty = savedSnapshot != null && settingsKey(draft) !== savedSnapshot;
   const update = (patch: Partial<Settings>) => setDraft((current) => (current == null ? current : { ...current, ...patch }));
   const servers = draft.mcpServers ?? [];
-  const allowlist = draft.allowlist ?? [];
 
   const save = () => {
     setSaving(true);
@@ -323,45 +290,6 @@ export function SettingsView({
 
     agents: (
       <SettingsPage title="Agents">
-        <SettingsGroup title="运行模式">
-          {RUN_MODES.map((mode) => (
-            <button
-              key={mode.id}
-              type="button"
-              role="radio"
-              aria-checked={draft.runMode === mode.id}
-              onClick={() => update({ runMode: mode.id })}
-              className="flex min-h-[calc(var(--spacing-row)*1.5)] w-full items-center gap-md px-md py-sm text-left hover:bg-bg-hover"
-            >
-              <span className="flex min-w-0 flex-1 flex-col gap-3xs">
-                <span className="text-fg text-md">{mode.label}</span>
-                <span className="text-fg-muted text-sm">{mode.hint}</span>
-              </span>
-              <span className={cn("grid size-lg flex-none place-items-center rounded-full border border-border-strong", draft.runMode === mode.id && "border-brand")}>
-                {draft.runMode === mode.id && <span className="size-sm rounded-full bg-brand" />}
-              </span>
-            </button>
-          ))}
-        </SettingsGroup>
-
-        <SettingsGroup title="一直允许的工具">
-          {allowlist.map((tool) => {
-            const { label, note } = describeAllowEntry(tool);
-            return (
-              <SettingsRow key={tool} title={<span className="truncate" title={tool}>{label}</span>} help={note}>
-                <button
-                  type="button"
-                  title="撤销"
-                  onClick={() => update({ allowlist: allowlist.filter((name) => name !== tool) })}
-                  className="grid size-lg flex-none place-items-center rounded-md text-fg-muted hover:bg-danger-bg hover:text-danger"
-                >
-                  <X className="size-md" />
-                </button>
-              </SettingsRow>
-            );
-          })}
-          {allowlist.length === 0 && <SettingsEmpty>还没有一直允许的工具。审批卡上点「一直允许」会加到这里。</SettingsEmpty>}
-        </SettingsGroup>
         <RuntimesSection
           client={client}
           autoUpgrade={draft.autoUpgradeRuntimes !== false}

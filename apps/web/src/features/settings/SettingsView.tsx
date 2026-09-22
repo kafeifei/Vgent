@@ -107,11 +107,11 @@ function McpFormPanel({
     <div className="flex flex-col gap-xs rounded-md border border-border bg-bg-elevated p-sm">
       <div className="flex flex-wrap gap-xs">
         <label className="flex min-w-0 flex-1 flex-col gap-2xs">
-          <span className="text-fg-faint text-xs">名称</span>
+          <span className="text-fg-faint text-sm">名称</span>
           <input value={form.name} onChange={(event) => set("name", event.target.value)} className={INPUT_CLASS} />
         </label>
         <div className="flex flex-col gap-2xs">
-          <span className="text-fg-faint text-xs">类型</span>
+          <span className="text-fg-faint text-sm">类型</span>
           <div className="flex gap-2xs">
             {(["stdio", "http", "sse"] as const).map((kind) => (
               <button
@@ -119,7 +119,7 @@ function McpFormPanel({
                 type="button"
                 aria-pressed={form.kind === kind}
                 onClick={() => set("kind", kind)}
-                className={cn(PILL, "h-xl px-xs text-xs", form.kind === kind && PILL_SELECTED)}
+                className={cn(PILL, "h-xl px-xs text-sm", form.kind === kind && PILL_SELECTED)}
               >
                 {kind}
               </button>
@@ -131,7 +131,7 @@ function McpFormPanel({
       {form.kind === "stdio" ? (
         <>
           <label className="flex flex-col gap-2xs">
-            <span className="text-fg-faint text-xs">可执行文件</span>
+            <span className="text-fg-faint text-sm">可执行文件</span>
             <div className="flex gap-2xs">
               <input
                 value={form.command}
@@ -147,7 +147,7 @@ function McpFormPanel({
             </div>
           </label>
           <label className="flex flex-col gap-2xs">
-            <span className="text-fg-faint text-xs">参数（每行一个）</span>
+            <span className="text-fg-faint text-sm">参数（每行一个）</span>
             <textarea
               value={form.argsText}
               onChange={(event) => set("argsText", event.target.value)}
@@ -156,7 +156,7 @@ function McpFormPanel({
             />
           </label>
           <label className="flex flex-col gap-2xs">
-            <span className="text-fg-faint text-xs">环境变量（每行 KEY=VALUE）</span>
+            <span className="text-fg-faint text-sm">环境变量（每行 KEY=VALUE）</span>
             <textarea
               value={form.envText}
               onChange={(event) => set("envText", event.target.value)}
@@ -167,7 +167,7 @@ function McpFormPanel({
         </>
       ) : (
         <label className="flex flex-col gap-2xs">
-          <span className="text-fg-faint text-xs">URL</span>
+          <span className="text-fg-faint text-sm">URL</span>
           <input
             value={form.url}
             onChange={(event) => set("url", event.target.value)}
@@ -177,16 +177,16 @@ function McpFormPanel({
         </label>
       )}
 
-      {error != null && <p className="text-danger text-xs">{error}</p>}
+      {error != null && <p className="text-danger text-sm">{error}</p>}
 
       <div className="flex justify-end gap-2xs">
-        <button type="button" onClick={onCancel} className={cn(PILL, "h-lg px-sm text-xs")}>
+        <button type="button" onClick={onCancel} className={cn(PILL, "h-lg px-sm text-sm")}>
           取消
         </button>
         <button
           type="button"
           onClick={onSubmit}
-          className="inline-flex h-lg items-center rounded-full bg-brand px-sm text-brand-fg text-xs"
+          className="inline-flex h-lg items-center rounded-full bg-brand px-sm text-brand-fg text-sm"
         >
           确定
         </button>
@@ -249,7 +249,7 @@ export function SettingsView({
   }, [onClose]);
 
   if (draft == null) {
-    return <div className="p-md text-fg-faint text-sm">加载中…</div>;
+    return <div className="p-md text-fg-faint text-md">加载中…</div>;
   }
 
   const dirty = savedSnapshot != null && settingsKey(draft) !== savedSnapshot;
@@ -371,8 +371,8 @@ export function SettingsView({
               className="flex min-h-3xl w-full items-center gap-sm px-md py-xs text-left hover:bg-bg-hover"
             >
               <span className="flex min-w-0 flex-1 flex-col gap-3xs">
-                <span className="text-fg text-sm">{mode.label}</span>
-                <span className="text-fg-faint text-xs">{mode.hint}</span>
+                <span className="text-fg text-md">{mode.label}</span>
+                <span className="text-fg-faint text-sm">{mode.hint}</span>
               </span>
               <span className={cn("grid size-md flex-none place-items-center rounded-full border border-border-strong", draft.runMode === mode.id && "border-brand")}>
                 {draft.runMode === mode.id && <span className="size-xs rounded-full bg-brand" />}
@@ -507,7 +507,7 @@ export function SettingsView({
             aria-current={tab === entry.id ? "page" : undefined}
             onClick={() => setTab(entry.id)}
             className={cn(
-              "flex h-xl items-center gap-xs rounded-md px-sm text-left text-fg-muted text-sm hover:bg-bg-hover hover:text-fg",
+              "flex h-xl items-center gap-xs rounded-md px-sm text-left text-fg-muted text-md hover:bg-bg-hover hover:text-fg",
               tab === entry.id && "bg-bg-active text-fg",
             )}
           >
@@ -521,7 +521,7 @@ export function SettingsView({
         {pages[tab]}
         {(dirty || saveError != null) && (
           <div className="sticky bottom-lg flex items-center gap-sm rounded-lg border border-border bg-bg-elevated px-md py-xs shadow-lg">
-            <span className={cn("min-w-0 flex-1 truncate text-xs", saveError != null ? "text-danger" : "text-fg-muted")}>{saveError ?? "有还没保存的修改"}</span>
+            <span className={cn("min-w-0 flex-1 truncate text-sm", saveError != null ? "text-danger" : "text-fg-muted")}>{saveError ?? "有还没保存的修改"}</span>
             <button type="button" disabled={!dirty || saving} onClick={save} className={BUTTON_PRIMARY}>
               {saving ? "保存中…" : "保存"}
             </button>

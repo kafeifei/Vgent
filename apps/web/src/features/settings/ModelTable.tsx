@@ -28,7 +28,7 @@ export function ModelTableHeader<Agent extends string>({
   onToggleAll: (agent: Agent, on: boolean) => void;
 }) {
   return (
-    <div className="flex items-center gap-sm border-border border-b bg-bg-inset px-md py-2xs text-fg-faint text-xs">
+    <div className="flex items-center gap-sm border-border border-b bg-bg-inset px-md py-2xs text-fg-faint text-sm">
       <span className="flex-1">模型</span>
       {agents.map((agent) => {
         const on = count > 0 && allOn(agent);
@@ -68,8 +68,8 @@ export function ModelTableRow<Agent extends string>({
   return (
     <div className="flex items-center gap-sm px-md py-xs">
       <div className="flex min-w-0 flex-1 flex-col">
-        <span className="truncate text-fg text-sm">{label}</span>
-        <span className="truncate font-mono text-2xs text-fg-faint">{detail}</span>
+        <span className="truncate text-fg text-md">{label}</span>
+        <span className="truncate font-mono text-xs text-fg-faint">{detail}</span>
       </div>
       {agents.map((agent) => {
         const on = enabled(agent);
@@ -203,9 +203,9 @@ export function ModelTable({
           onChange={(event) => setQuery(event.target.value)}
           placeholder={`搜索 ${rows.length} 个模型`}
           spellCheck={false}
-          className="h-xl min-w-0 flex-1 bg-transparent text-fg text-sm outline-none placeholder:text-fg-faint"
+          className="h-xl min-w-0 flex-1 bg-transparent text-fg text-md outline-none placeholder:text-fg-faint"
         />
-        {note != null && <span className="truncate text-fg-faint text-xs">{note}</span>}
+        {note != null && <span className="truncate text-fg-faint text-sm">{note}</span>}
         <button type="button" disabled={busy || endpoint == null} onClick={() => discover(false)} className={BUTTON_GHOST} title="向提供商要一次它现在的模型清单">
           <RefreshCw className={cn("size-xs", busy && "animate-spin")} />
           拉取模型
@@ -232,9 +232,9 @@ export function ModelTable({
             onSwitch={(agent, on) => save(agent, [model], on)}
           />
         ))}
-        {rows.length === 0 && <div className="px-md py-sm text-fg-faint text-sm">{busy ? "正在向提供商要模型清单…" : "还没有模型。点「拉取模型」，或者在下面手动加一个。"}</div>}
-        {rows.length > 0 && matching.length === 0 && <div className="px-md py-sm text-fg-faint text-sm">没有匹配「{query}」的模型</div>}
-        {matching.length > shown.length && <div className="px-md py-xs text-fg-faint text-xs">还有 {matching.length - shown.length} 个没列出来，用搜索缩小范围。</div>}
+        {rows.length === 0 && <div className="px-md py-sm text-fg-faint text-md">{busy ? "正在向提供商要模型清单…" : "还没有模型。点「拉取模型」，或者在下面手动加一个。"}</div>}
+        {rows.length > 0 && matching.length === 0 && <div className="px-md py-sm text-fg-faint text-md">没有匹配「{query}」的模型</div>}
+        {matching.length > shown.length && <div className="px-md py-xs text-fg-faint text-sm">还有 {matching.length - shown.length} 个没列出来，用搜索缩小范围。</div>}
       </div>
 
       <div className="flex items-center gap-xs border-border border-t px-md py-xs">
@@ -253,7 +253,7 @@ export function ModelTable({
           添加
         </button>
       </div>
-      {error != null && <p className="border-border border-t px-md py-xs text-danger text-xs">{error}</p>}
+      {error != null && <p className="border-border border-t px-md py-xs text-danger text-sm">{error}</p>}
     </div>
   );
 }

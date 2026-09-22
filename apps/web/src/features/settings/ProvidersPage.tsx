@@ -12,14 +12,14 @@ import { INPUT_CLASS, PILL, PILL_SELECTED } from "./styles";
 
 type AgentLabel = (agent: ProviderAgent) => string;
 
-const FIELD_LABEL = "text-fg-muted text-xs";
+const FIELD_LABEL = "text-fg-muted text-sm";
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <label className="flex flex-col gap-2xs">
       <span className={FIELD_LABEL}>{label}</span>
       {children}
-      {hint != null && <span className="text-fg-faint text-xs">{hint}</span>}
+      {hint != null && <span className="text-fg-faint text-sm">{hint}</span>}
     </label>
   );
 }
@@ -94,7 +94,7 @@ function ConnectDialog({
   if (connected != null) {
     return (
       <Dialog title={`${entry.name} · 选模型`} onClose={onClose} wide>
-        <p className="border-border border-b px-lg py-xs text-fg-faint text-xs">已连接。打开哪个 agent 的开关，模型就出现在它的模型选择器里；之后点这家的「模型」随时能改。</p>
+        <p className="border-border border-b px-lg py-xs text-fg-faint text-sm">已连接。打开哪个 agent 的开关，模型就出现在它的模型选择器里；之后点这家的「模型」随时能改。</p>
         <div className="min-h-0 flex-1 overflow-y-auto">
           <ModelTable
             client={client}
@@ -125,7 +125,7 @@ function ConnectDialog({
           void submit();
         }}
       >
-        <p className="text-fg-faint text-xs">
+        <p className="text-fg-faint text-sm">
           {servedAgents(entry, usable, agentLabel)} 能用 · 目录里有 {entry.modelCount} 个模型 · 通过 <span className="font-mono">{entry.npm}</span> 接入
           {entry.docsUrl != null && (
             <>
@@ -153,7 +153,7 @@ function ConnectDialog({
             className={cn(INPUT_CLASS, "font-mono")}
           />
         </Field>
-        {error != null && <p className="text-danger text-xs">{error}</p>}
+        {error != null && <p className="text-danger text-sm">{error}</p>}
         <div className="flex justify-end gap-xs">
           <button type="button" onClick={onClose} className={BUTTON_GHOST}>
             取消
@@ -210,7 +210,7 @@ function CustomDialog({
   if (connected != null) {
     return (
       <Dialog title={`${connected.name} · 选模型`} onClose={onClose} wide>
-        <p className="border-border border-b px-lg py-xs text-fg-faint text-xs">已连接。模型清单是向这个地址现拉的；拉不到就在底下手动加模型 id。</p>
+        <p className="border-border border-b px-lg py-xs text-fg-faint text-sm">已连接。模型清单是向这个地址现拉的；拉不到就在底下手动加模型 id。</p>
         <div className="min-h-0 flex-1 overflow-y-auto">
           <ModelTable
             client={client}
@@ -240,7 +240,7 @@ function CustomDialog({
           submit();
         }}
       >
-        <p className="text-fg-faint text-xs">公司网关、自己搭的服务、目录里没有的厂商：只要它说 OpenAI 或 Anthropic 的协议就能接。</p>
+        <p className="text-fg-faint text-sm">公司网关、自己搭的服务、目录里没有的厂商：只要它说 OpenAI 或 Anthropic 的协议就能接。</p>
         <Field label="名字">
           <input autoFocus value={form.name} onChange={(event) => set({ name: event.target.value })} placeholder="比如：公司网关" className={INPUT_CLASS} />
         </Field>
@@ -277,7 +277,7 @@ function CustomDialog({
           <div className="flex items-start gap-sm">
             <div className="flex min-w-0 flex-1 flex-col gap-2xs">
               <span className={FIELD_LABEL}>{agentLabel("codex")} 也用它</span>
-              <span className="text-fg-faint text-xs">Codex 只说 OpenAI 的 Responses 协议（上面的地址加 /responses）。这个服务支持才打开；只有聊天补全接口的服务，Codex 用不了。</span>
+              <span className="text-fg-faint text-sm">Codex 只说 OpenAI 的 Responses 协议（上面的地址加 /responses）。这个服务支持才打开；只有聊天补全接口的服务，Codex 用不了。</span>
             </div>
             <Switch checked={form.codexResponses} onChange={(on) => set({ codexResponses: on })} label={`${agentLabel("codex")} 也用这个提供商`} />
           </div>
@@ -285,7 +285,7 @@ function CustomDialog({
         <Field label="API key" hint="没有 key 的本机服务可以留空。">
           <input type="password" autoComplete="off" value={form.apiKey} onChange={(event) => set({ apiKey: event.target.value })} placeholder="粘贴 key" className={cn(INPUT_CLASS, "font-mono")} />
         </Field>
-        {error != null && <p className="text-danger text-xs">{error}</p>}
+        {error != null && <p className="text-danger text-sm">{error}</p>}
         <div className="flex justify-end gap-xs">
           <button type="button" onClick={onClose} className={BUTTON_GHOST}>
             取消
@@ -325,7 +325,7 @@ function BrowseDialog({
     <Dialog title={`全部提供商 · ${catalog.providers.length}`} onClose={onClose} wide>
       <div className="flex items-center gap-xs border-border border-b px-lg py-xs">
         <Search className="size-md flex-none text-fg-faint" />
-        <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索提供商" spellCheck={false} className="h-xl min-w-0 flex-1 bg-transparent text-fg text-sm outline-none placeholder:text-fg-faint" />
+        <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索提供商" spellCheck={false} className="h-xl min-w-0 flex-1 bg-transparent text-fg text-md outline-none placeholder:text-fg-faint" />
       </div>
       <div className="flex min-h-0 flex-1 flex-col divide-y divide-border overflow-y-auto">
         {matching.map((entry) => {
@@ -456,12 +456,12 @@ function EditDialog({
           <div className="flex items-start gap-sm">
             <div className="flex min-w-0 flex-1 flex-col gap-2xs">
               <span className={FIELD_LABEL}>{agentLabel("codex")} 也用它</span>
-              <span className="text-fg-faint text-xs">Codex 只说 OpenAI 的 Responses 协议（上面的地址加 /responses）。这个服务支持才打开；只有聊天补全接口的服务，Codex 用不了。</span>
+              <span className="text-fg-faint text-sm">Codex 只说 OpenAI 的 Responses 协议（上面的地址加 /responses）。这个服务支持才打开；只有聊天补全接口的服务，Codex 用不了。</span>
             </div>
             <Switch checked={codex} onChange={setCodex} label={`${agentLabel("codex")} 也用这个提供商`} />
           </div>
         )}
-        {error != null && <p className="text-danger text-xs">{error}</p>}
+        {error != null && <p className="text-danger text-sm">{error}</p>}
         <div className="flex justify-end gap-xs">
           <button type="button" onClick={onClose} className={BUTTON_GHOST}>
             取消
@@ -506,17 +506,17 @@ function LoginDialog({ account, onRecheck, onClose }: { account: SubscriptionAcc
   return (
     <Dialog title={`登录 ${account.name}`} onClose={onClose}>
       <div className="flex flex-col gap-md px-lg py-md">
-        <p className="text-fg-muted text-sm">订阅不用 key。在终端里跑下面这条命令，按它的提示在浏览器里登录；登录存在它自己那里，Vgent 不保存也看不到。</p>
+        <p className="text-fg-muted text-md">订阅不用 key。在终端里跑下面这条命令，按它的提示在浏览器里登录；登录存在它自己那里，Vgent 不保存也看不到。</p>
         <div className="flex items-center gap-xs rounded-md border border-border bg-bg-inset px-sm py-xs">
-          <code className="min-w-0 flex-1 truncate font-mono text-fg text-sm">{account.loginCommand}</code>
+          <code className="min-w-0 flex-1 truncate font-mono text-fg text-md">{account.loginCommand}</code>
           <button type="button" onClick={copy} className={BUTTON_GHOST}>
             {copied ? <Check className="size-xs" /> : <Copy className="size-xs" />}
             {copied ? "已复制" : "复制"}
           </button>
         </div>
-        {account.loggedIn == null && <p className="text-fg-faint text-xs">这台机器上没找到它的命令行工具，得先装上。</p>}
-        {account.note != null && <p className="text-fg-faint text-xs">{account.note}</p>}
-        {note != null && <p className="text-danger text-xs">{note}</p>}
+        {account.loggedIn == null && <p className="text-fg-faint text-sm">这台机器上没找到它的命令行工具，得先装上。</p>}
+        {account.note != null && <p className="text-fg-faint text-sm">{account.note}</p>}
+        {note != null && <p className="text-danger text-sm">{note}</p>}
         <div className="flex justify-end gap-xs">
           <button type="button" onClick={onClose} className={BUTTON_GHOST}>
             关闭
@@ -726,12 +726,12 @@ export function ProvidersPage({
         </SettingsRow>
       </SettingsGroup>
 
-      <button type="button" disabled={catalog == null} onClick={() => setOpen({ kind: "browse" })} className="w-fit text-brand text-sm hover:underline disabled:opacity-40">
+      <button type="button" disabled={catalog == null} onClick={() => setOpen({ kind: "browse" })} className="w-fit text-brand text-md hover:underline disabled:opacity-40">
         {catalog == null ? "正在读取提供商目录…" : `查看全部 ${catalog.providers.length} 个提供商`}
       </button>
 
-      {unusable.length > 0 && <p className="text-fg-faint text-xs">{unusable.map((engine) => engine.label).join("、")} 只能跑在它自己的订阅上，接不了要 key 的提供商。</p>}
-      {loadError != null && <p className="text-danger text-xs">{loadError}</p>}
+      {unusable.length > 0 && <p className="text-fg-faint text-sm">{unusable.map((engine) => engine.label).join("、")} 只能跑在它自己的订阅上，接不了要 key 的提供商。</p>}
+      {loadError != null && <p className="text-danger text-sm">{loadError}</p>}
 
       {loginOf != null && (
         <LoginDialog

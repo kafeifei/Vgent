@@ -66,7 +66,7 @@ export function SubscriptionTable({
   return (
     <div className="flex flex-col">
       <div className="flex items-center gap-xs border-border border-b px-md py-xs">
-        <span className="min-w-0 flex-1 text-fg-faint text-xs">{account.warning ?? account.note ?? "模型清单来自这个登录；默认全开，不想在选择器里看到的关掉。"}</span>
+        <span className="min-w-0 flex-1 text-fg-faint text-sm">{account.warning ?? account.note ?? "模型清单来自这个登录；默认全开，不想在选择器里看到的关掉。"}</span>
         <button type="button" disabled={reloading} onClick={reload} className={BUTTON_GHOST} title="重新读一次它现在的模型清单">
           <RefreshCw className={cn("size-xs", reloading && "animate-spin")} />
           拉取模型
@@ -91,9 +91,9 @@ export function SubscriptionTable({
             onSwitch={(agent, on) => save(agent, [model], on)}
           />
         ))}
-        {account.models.length === 0 && <div className="px-md py-sm text-fg-faint text-sm">没有读到模型。</div>}
+        {account.models.length === 0 && <div className="px-md py-sm text-fg-faint text-md">没有读到模型。</div>}
       </div>
-      {error != null && <p className="border-border border-t px-md py-xs text-danger text-xs">{error}</p>}
+      {error != null && <p className="border-border border-t px-md py-xs text-danger text-sm">{error}</p>}
     </div>
   );
 }

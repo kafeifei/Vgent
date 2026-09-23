@@ -14,7 +14,6 @@ import type { QueueItem } from "@/features/worklog/queue";
 import { oneLine } from "@/lib/format";
 import { type PaneKey, type PaneWidths, clampPaneWidth, fitPaneWidths, loadPaneWidths, savePaneWidths } from "@/lib/paneWidths";
 import { usePrefs, usePrefsSync } from "@/lib/prefs";
-import { RightPaneToggle } from "@/features/taskheader/TaskHeader";
 import { ThreadView } from "./ThreadView";
 import { isLiveThread, useWorkbench } from "./useWorkbench";
 
@@ -122,7 +121,7 @@ export function Shell({ token }: { token: string }) {
   return (
     // No window bar of its own: like Cursor's Agents Window the three columns
     // run the full height, and each column's top strip is the title bar.
-    <div className="relative h-full overflow-hidden">
+    <div className="h-full overflow-hidden">
       <div
         ref={grid}
         className={
@@ -201,6 +200,7 @@ export function Shell({ token }: { token: string }) {
             open={right.open}
             tab={right.tab}
             onTab={actions.setRightTab}
+            onClose={actions.toggleRight}
             changes={changes}
             client={client}
             threadId={selectedThreadId}
@@ -242,19 +242,6 @@ export function Shell({ token }: { token: string }) {
           />
         )}
       </div>
-
-      {view === "thread" && thread != null && (
-        // Pinned to the window, not to a column: opening the pane used to leave
-        // this button on the conversation's right edge, short of the window's.
-        <div className="pointer-events-none absolute top-0 right-0 z-10 flex h-topbar items-center pr-sm">
-          <RightPaneToggle
-            open={right.open}
-            pending={thread.pendingApprovals + queue.filter((item) => item.kind === "question").length}
-            onToggle={actions.toggleRight}
-            className="pointer-events-auto"
-          />
-        </div>
-      )}
 
       {palette && <CommandPalette commands={commands} onClose={actions.closePalette} />}
       {settingsOpen && (

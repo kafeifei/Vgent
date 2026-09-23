@@ -33,8 +33,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/engines
       ai:
-        specifier: 7.0.105
-        version: 7.0.105(zod@4.6.5)
+        specifier: 7.0.111
+        version: 7.0.111(zod@4.6.5)
 
   apps/desktop:
     devDependencies:
@@ -69,8 +69,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/server
       ai:
-        specifier: 7.0.105
-        version: 7.0.105(zod@4.6.5)
+        specifier: 7.0.111
+        version: 7.0.111(zod@4.6.5)
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
@@ -139,8 +139,8 @@ importers:
         specifier: workspace:*
         version: link:../tools
       ai:
-        specifier: 7.0.105
-        version: 7.0.105(zod@4.6.5)
+        specifier: 7.0.111
+        version: 7.0.111(zod@4.6.5)
       zod:
         specifier: 4.6.5
         version: 4.6.5
@@ -163,8 +163,8 @@ importers:
         specifier: workspace:*
         version: link:../sandbox-local
       ai:
-        specifier: 7.0.105
-        version: 7.0.105(zod@4.6.5)
+        specifier: 7.0.111
+        version: 7.0.111(zod@4.6.5)
 
   packages/providers:
     dependencies:
@@ -208,8 +208,8 @@ importers:
         specifier: 4.0.46
         version: 4.0.46(zod@4.6.5)
       '@ai-sdk/provider-utils':
-        specifier: 5.0.43
-        version: 5.0.43(zod@4.6.5)
+        specifier: 5.0.45
+        version: 5.0.45(zod@4.6.5)
       '@ai-sdk/togetherai':
         specifier: 3.0.52
         version: 3.0.52(zod@4.6.5)
@@ -217,8 +217,8 @@ importers:
         specifier: 5.0.2
         version: 5.0.2(zod@4.6.5)
       ai:
-        specifier: 7.0.105
-        version: 7.0.105(zod@4.6.5)
+        specifier: 7.0.111
+        version: 7.0.111(zod@4.6.5)
 
   packages/sandbox-local:
     dependencies:
@@ -226,8 +226,8 @@ importers:
         specifier: 1.0.121
         version: 1.0.121(ws@8.21.3)(zod@4.6.5)
       '@ai-sdk/provider-utils':
-        specifier: 5.0.43
-        version: 5.0.43(zod@4.6.5)
+        specifier: 5.0.45
+        version: 5.0.45(zod@4.6.5)
 
   packages/server:
     dependencies:
@@ -247,8 +247,8 @@ importers:
         specifier: workspace:*
         version: link:../providers
       ai:
-        specifier: 7.0.105
-        version: 7.0.105(zod@4.6.5)
+        specifier: 7.0.111
+        version: 7.0.111(zod@4.6.5)
       hono:
         specifier: 4.13.8
         version: 4.13.8
@@ -259,11 +259,11 @@ importers:
         specifier: 4.0.17
         version: 4.0.17
       '@ai-sdk/provider-utils':
-        specifier: 5.0.43
-        version: 5.0.43(zod@4.6.5)
+        specifier: 5.0.45
+        version: 5.0.45(zod@4.6.5)
       ai:
-        specifier: 7.0.105
-        version: 7.0.105(zod@4.6.5)
+        specifier: 7.0.111
+        version: 7.0.111(zod@4.6.5)
       zod:
         specifier: 4.6.5
         version: 4.6.5

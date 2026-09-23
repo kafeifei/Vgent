@@ -20,8 +20,8 @@
   },
   "dependencies": {
     "@ai-sdk/provider": "4.0.17",
-    "@ai-sdk/provider-utils": "5.0.43",
-    "ai": "7.0.105",
+    "@ai-sdk/provider-utils": "5.0.45",
+    "ai": "7.0.111",
     "zod": "4.6.5"
   },
   "devDependencies": {

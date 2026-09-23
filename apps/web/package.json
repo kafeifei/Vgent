@@ -19,7 +19,7 @@
     "@streamdown/mermaid": "1.0.2",
     "@vgent/engine": "workspace:*",
     "@vgent/server": "workspace:*",
-    "ai": "7.0.105",
+    "ai": "7.0.111",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "katex": "0.16.47",

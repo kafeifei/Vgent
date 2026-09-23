@@ -20,6 +20,6 @@
   },
   "dependencies": {
     "@ai-sdk/harness": "1.0.121",
-    "@ai-sdk/provider-utils": "5.0.43"
+    "@ai-sdk/provider-utils": "5.0.45"
   }
 }

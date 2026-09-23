@@ -293,7 +293,11 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
           ...("engine" in patch && patch.engine != null ? { engine: patch.engine } : {}),
           ...("status" in patch && patch.status != null ? { status: patch.status } : {}),
           ...("messages" in patch && patch.messages != null ? { messages: patch.messages } : {}),
-          updatedAt: new Date().toISOString(),
+          // Reading a task or reconciling cached Git stats is bookkeeping.
+          // Neither should move the task in the activity-sorted sidebar.
+          updatedAt: Object.keys(patch).every((key) => key === "unread" || key === "changeStats")
+            ? current.updatedAt
+            : new Date().toISOString(),
         };
         // `exactOptionalPropertyTypes`: clearing an optional field means deleting it.
         if ("model" in patch) {

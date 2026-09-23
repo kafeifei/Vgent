@@ -200,10 +200,16 @@ export function EmptyState({
           modelEngines={settings?.modelEngines}
           onRememberEngine={onRememberEngine}
           onPickModel={(nextEngine, nextModel) => {
+            // Settling「没选模型」onto a concrete one is not a change of model:
+            // a 推理强度 the user already set stays. Switching away does reset
+            // both, because a window and an effort belong to the model they
+            // were picked for.
+            const previous = picked?.model ?? (picked == null ? (settings?.defaultModel ?? null) : null);
             setPicked({ engine: nextEngine, model: nextModel ?? null });
-            setReasoningEffort(null);
-            // A window belongs to the model it was picked for.
-            setContextWindow(null);
+            if (previous != null && (previous !== nextModel || picked?.engine !== nextEngine)) {
+              setReasoningEffort(null);
+              setContextWindow(null);
+            }
           }}
           contextWindow={contextWindow ?? undefined}
           onPickContext={setContextWindow}

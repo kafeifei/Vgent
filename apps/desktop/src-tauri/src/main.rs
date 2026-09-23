@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backend;
+mod unfinished;
 
 use backend::{Backend, BackendReady, SpawnError};
 use std::{
@@ -17,13 +18,28 @@ use tauri::{
     webview::NewWindowResponse,
     Manager, RunEvent, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
-use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+use tauri_plugin_dialog::{
+    DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult,
+};
 
 #[derive(Clone, Default)]
 struct Lifecycle {
     backend: Arc<Mutex<Option<Backend>>>,
+    /// Loopback origin and token, kept so a quit can ask which sessions are still open.
+    connection: Arc<Mutex<Option<BackendReady>>>,
     closing: Arc<AtomicBool>,
+    /// A quit confirmation is already on screen. A second ⌘Q must not stack another.
+    confirming: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
+}
+
+/// Clears `confirming` even if the quit check panics, so a later ⌘Q can ask again.
+struct ResetConfirm(Arc<AtomicBool>);
+
+impl Drop for ResetConfirm {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 impl Lifecycle {
@@ -51,6 +67,56 @@ impl Lifecycle {
             app.exit(code);
         });
     }
+
+    /// ⌘Q / Quit menu / AppleEvent. Stop immediately when nothing is mid-turn;
+    /// otherwise ask. The dialog blocks a worker thread — `blocking_show` on the
+    /// UI thread deadlocks, because the plugin hops the alert back onto it.
+    fn confirm_then_exit(&self, app: &tauri::AppHandle, code: i32) {
+        if self.closing.load(Ordering::SeqCst) || self.confirming.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let lifecycle = self.clone();
+        let app = app.clone();
+        thread::spawn(move || {
+            let _reset = ResetConfirm(lifecycle.confirming.clone());
+            let sessions = lifecycle.connection.lock().ok().and_then(|slot| {
+                slot.as_ref()
+                    .map(|ready| unfinished::fetch_open_sessions(&ready.url, &ready.token))
+            });
+            let proceed = match sessions {
+                Some(Ok(open)) if !open.is_empty() => ask_to_quit(&app, &open),
+                Some(Err(error)) => {
+                    eprintln!("[desktop] 退出前没能确认任务状态（{error}），继续退出。");
+                    true
+                }
+                _ => true,
+            };
+            if proceed {
+                lifecycle.request_exit(&app, code);
+            }
+        });
+    }
+}
+
+/// True only when the user explicitly chose 退出. The first button is 取消, so
+/// Return stays in the app; closing the alert any other way does too.
+fn ask_to_quit(app: &tauri::AppHandle, sessions: &[unfinished::OpenSession]) -> bool {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    let result = app
+        .dialog()
+        .message(unfinished::quit_warning(sessions))
+        .title("还有任务没完成")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "取消".into(),
+            "退出".into(),
+        ))
+        .blocking_show_with_result();
+    matches!(result, MessageDialogResult::Custom(label) if label == "退出")
 }
 
 /// Where the bundled runtime and resources live. A dev run has no `.app`, so it
@@ -187,6 +253,10 @@ fn main() {
             match started {
                 Ok((backend, ready)) => {
                     *lifecycle
+                        .connection
+                        .lock()
+                        .map_err(|_| "无法记录内置服务地址")? = Some(ready.clone());
+                    *lifecycle
                         .backend
                         .lock()
                         .map_err(|_| "无法记录内置服务进程")? = Some(backend);
@@ -255,7 +325,7 @@ fn main() {
                 let lifecycle = handle.state::<Lifecycle>();
                 if !lifecycle.stopped.load(Ordering::SeqCst) {
                     api.prevent_exit();
-                    lifecycle.request_exit(handle, code.unwrap_or(0));
+                    lifecycle.confirm_then_exit(handle, code.unwrap_or(0));
                 }
             }
             // `⌘Q` and an AppleEvent quit go through `applicationWillTerminate`,

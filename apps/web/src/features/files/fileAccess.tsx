@@ -12,7 +12,7 @@ export interface FileAccess {
   threadId: string;
   /** The thread's `updatedAt`: a new one means the engine may have rewritten the file. */
   refreshKey: string;
-  /** Show this file in the right pane. */
+  /** Open a task file: pictures over the window, documents in the file pane. */
   openFile: (path: string) => void;
   /** Says where a download landed, or why it did not. */
   notify?: (message: string) => void;

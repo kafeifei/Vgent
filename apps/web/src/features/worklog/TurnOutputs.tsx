@@ -4,21 +4,22 @@ import { useFileAccess } from "@/features/files/fileAccess";
 import { DrawnPicture, TaskPicture } from "@/features/files/TaskPicture";
 import { baseName } from "@/lib/format";
 import { previewKindOf } from "@/lib/preview";
-import { drawingFor, outputCandidates } from "./outputs";
+import { drawingFor, outputCandidates, shownPicturePaths, visibleOutputFiles } from "./outputs";
 import type { Block } from "./turns";
 
 /**
  * What a finished turn made that can be looked at, under the reply. A picture
  * is shown as the picture — the same small figure a reply's own image gets,
  * opening large over the window, with 下载 — and its name under it opens the
- * file in the right pane. A document is a card that does the same. The candidates come from the
+ * same overlay. A document is a card that opens in the file pane. The candidates come from the
  * turn itself; the server says which of them are files of this task right now,
  * so a name the model merely mentioned never becomes a dead card.
  */
 export function TurnOutputs({ blocks, drawings }: { blocks: readonly Block[]; drawings: ReadonlyMap<string, string> }) {
   const access = useFileAccess();
   const candidates = useMemo(() => outputCandidates(blocks), [blocks]);
-  const wanted = candidates.join("\n");
+  const shown = useMemo(() => shownPicturePaths(blocks), [blocks]);
+  const wanted = candidates.length === 0 ? "" : [...new Set([...candidates, ...shown])].join("\n");
   const [found, setFound] = useState<readonly { raw: string; path: string }[]>([]);
   const client = access?.client;
   const threadId = access?.threadId;
@@ -40,16 +41,17 @@ export function TurnOutputs({ blocks, drawings }: { blocks: readonly Block[]; dr
     };
   }, [client, threadId, wanted]);
 
-  const paths = useMemo(() => [...new Set(found.map((file) => file.path))], [found]);
+  const visible = useMemo(() => visibleOutputFiles(found, shown), [found, shown]);
+  const paths = useMemo(() => [...new Set(visible.map((file) => file.path))], [visible]);
   // The drawing as this turn left it, not as the file is now: 「再来一次」 writes the same path again.
   const drawn = useMemo(() => {
     const byPath = new Map<string, string>();
-    for (const file of found) {
+    for (const file of visible) {
       const svg = drawingFor(drawings, file);
       if (svg != null) byPath.set(file.path, svg);
     }
     return byPath;
-  }, [drawings, found]);
+  }, [drawings, visible]);
 
   if (access == null || paths.length === 0) return null;
   const pictures = paths.filter((path) => previewKindOf(path) !== "markdown");

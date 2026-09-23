@@ -1,13 +1,13 @@
 import type { UIMessage } from "ai";
 import { describe, expect, it } from "vitest";
-import { buildTurns, compactedOf, runsOf } from "./turns";
+import { buildTurns, compactedOf } from "./turns";
 
 const user = (id: string, text: string): UIMessage => ({ id, role: "user", parts: [{ type: "text", text }] });
 
 const assistant = (id: string, parts: UIMessage["parts"]): UIMessage => ({ id, role: "assistant", parts });
 
-const toolPart = (toolCallId: string, state: string) =>
-  ({ type: "tool-bash", toolCallId, state, input: { command: "ls" }, ...(state === "approval-requested" ? { approval: { id: `ap-${toolCallId}` } } : {}) }) as unknown as UIMessage["parts"][number];
+const toolPart = (toolCallId: string, state: string, name = "bash") =>
+  ({ type: `tool-${name}`, toolCallId, state, input: { command: "ls", file_path: "a.ts", pattern: "x" }, ...(state === "approval-requested" ? { approval: { id: `ap-${toolCallId}` } } : {}) }) as unknown as UIMessage["parts"][number];
 
 const stepStart = { type: "step-start" } as UIMessage["parts"][number];
 
@@ -78,41 +78,32 @@ describe("a reply with nothing in it", () => {
   });
 });
 
-describe("runsOf", () => {
-  it("keeps order: text splits the foldable runs around it", () => {
-    const turns = buildTurns([
-      user("u1", "做点事"),
-      assistant("a1", [
-        toolPart("c1", "output-available"),
-        { type: "text", text: "中间说明" },
-        toolPart("c2", "output-available"),
-      ]),
-    ]);
-    const runs = runsOf(turns[0]?.blocks ?? []);
-    expect(runs.map((run) => run.kind)).toEqual(["foldable", "open", "foldable"]);
-  });
-
-  it("never folds a call that is waiting on the human", () => {
-    const turns = buildTurns([
-      user("u1", "跑个命令"),
-      assistant("a1", [toolPart("c1", "output-available"), toolPart("c2", "approval-requested")]),
-    ]);
-    const runs = runsOf(turns[0]?.blocks ?? []);
-    expect(runs.map((run) => run.kind)).toEqual(["foldable", "open"]);
-  });
-});
-
 describe("插话", () => {
   const steer = (text: string) => ({ type: "data-steer", id: text, data: { text } }) as unknown as UIMessage["parts"][number];
 
   it("stays inside the turn it went into, where it went in, and is never folded", () => {
     const turns = buildTurns([
       user("u1", "重构 a.ts"),
-      assistant("a1", [stepStart, toolPart("c1", "output-available"), steer("顺便改 b.ts"), stepStart, toolPart("c2", "output-available"), { type: "text", text: "都改好了" }]),
+      assistant("a1", [
+        stepStart,
+        toolPart("c1", "output-available", "read"),
+        toolPart("c2", "output-available", "read"),
+        steer("顺便改 b.ts"),
+        stepStart,
+        toolPart("c3", "output-available", "bash"),
+        toolPart("c4", "output-available", "bash"),
+        { type: "text", text: "都改好了" },
+      ]),
     ]);
     expect(turns).toHaveLength(1);
-    expect(turns[0]?.blocks.map((block) => (block.kind === "steer" ? `steer:${block.text}` : block.kind))).toEqual(["tool", "steer:顺便改 b.ts", "tool", "text"]);
-    expect(runsOf(turns[0]?.blocks ?? []).map((run) => `${run.kind}:${run.blocks.length}`)).toEqual(["foldable:1", "open:1", "foldable:1", "open:1"]);
+    expect(turns[0]?.blocks.map((block) => (block.kind === "steer" ? `steer:${block.text}` : block.kind))).toEqual([
+      "tool",
+      "tool",
+      "steer:顺便改 b.ts",
+      "tool",
+      "tool",
+      "text",
+    ]);
   });
 
   it("ignores a data part that is not one", () => {

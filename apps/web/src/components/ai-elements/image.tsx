@@ -1,9 +1,14 @@
+import type { CSSProperties } from "react";
 import { cn } from "@/lib/utils";
 import type { Experimental_GeneratedImage } from "ai";
 
 export type ImageProps = Experimental_GeneratedImage & {
   className?: string;
   alt?: string;
+  /** The drawing's own aspect, so an SVG reserves its box before it decodes. */
+  width?: number;
+  height?: number;
+  style?: CSSProperties;
 };
 
 export const Image = ({

@@ -10,21 +10,36 @@ const INLINE_CODE = /`([^`\n]+)`/g;
 const FENCE = /```[\s\S]*?(?:```|$)/g;
 
 /** The files a reply points at with a link, and the ones it only mentions in `inline code`. */
-function namedIn(text: string): { linked: string[]; mentioned: string[] } {
+function namedIn(text: string): { linked: string[]; mentioned: string[]; shownPictures: string[] } {
   const prose = text.replace(FENCE, "");
   const linked: string[] = [];
   const mentioned: string[] = [];
+  const shownPictures: string[] = [];
   for (const match of prose.matchAll(LINK)) {
-    // An image is already on screen where the reply put it.
-    if (match[0].startsWith("!")) continue;
     const path = localPathOf(match[1] ?? "");
-    if (path != null) linked.push(path);
+    if (path == null) continue;
+    // A markdown image is already on screen where the reply put it.
+    if (match[0].startsWith("!")) {
+      if (previewKindOf(path) === "image" || previewKindOf(path) === "svg") shownPictures.push(path);
+    } else linked.push(path);
   }
   for (const match of prose.matchAll(INLINE_CODE)) {
     const span = (match[1] ?? "").trim();
     if (!/\s/.test(span) && previewKindOf(span) != null) mentioned.push(span);
   }
-  return { linked, mentioned };
+  return { linked, mentioned, shownPictures };
+}
+
+/** Local pictures the reply already rendered inline, in that turn alone. */
+export function shownPicturePaths(blocks: readonly Block[]): string[] {
+  return [...new Set(blocks.flatMap((block) => block.kind === "text" ? namedIn(block.part.text).shownPictures : []))];
+}
+
+/** Compare resolved task paths, since tools may write an absolute path while the reply uses a relative one. */
+export function visibleOutputFiles(files: readonly { raw: string; path: string }[], shown: readonly string[]): { raw: string; path: string }[] {
+  const names = new Set(shown);
+  const alreadyShown = new Set(files.filter((file) => names.has(file.raw)).map((file) => file.path));
+  return files.filter((file) => !alreadyShown.has(file.path));
 }
 
 const fileName = (path: string): string => path.slice(path.lastIndexOf("/") + 1);

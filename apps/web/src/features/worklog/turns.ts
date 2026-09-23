@@ -63,10 +63,6 @@ export const isOpenQuestion = (part: ToolPart): boolean =>
 
 export const isOpenApproval = (part: ToolPart): boolean => part.state === "approval-requested";
 
-/** A block the fold must never hide: it is waiting on the human. */
-export const needsHuman = (block: Block): boolean =>
-  block.kind === "tool" && (isOpenApproval(block.part) || isOpenQuestion(block.part));
-
 function blocksOf(message: UIMessage): Block[] {
   const blocks: Block[] = [];
   message.parts.forEach((part, index) => {
@@ -124,25 +120,4 @@ export function buildTurns(messages: readonly UIMessage[]): Turn[] {
     turn.blocks.push(...blocksOf(message));
   }
   return turns;
-}
-
-/** A run of blocks that the turn fold collapses together. */
-export type Run = { kind: "foldable"; key: string; blocks: Block[] } | { kind: "open"; key: string; blocks: Block[] };
-
-/**
- * Groups a turn's blocks into runs so folding never reorders them: contiguous
- * non-text blocks fold together, text stays visible, and anything waiting on
- * the human stays out of the fold.
- */
-export function runsOf(blocks: readonly Block[]): Run[] {
-  const runs: Run[] = [];
-  for (const block of blocks) {
-    // 插话 is the user speaking: it is never folded away with the steps around it.
-    const foldable = block.kind !== "text" && block.kind !== "steer" && !needsHuman(block);
-    const kind = foldable ? "foldable" : "open";
-    const last = runs.at(-1);
-    if (last?.kind === kind) last.blocks.push(block);
-    else runs.push({ kind, key: block.key, blocks: [block] });
-  }
-  return runs;
 }

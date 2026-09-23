@@ -545,13 +545,43 @@ build 84 定的「日志里的图只有一种样子」只覆盖了回复里内�
 - **“Failed to process successful response”**：用户把自研引擎换到 Codex 订阅模型后出的错。离线用同一个模型复现：连「只回两个字」也会在几十秒后失败，`cause` 链的底是 `other side closed`——对方在流式输出中途关了连接，是这台机器到 Codex 后端的网络问题，和对话历史、换模型的动作无关。AI SDK 把它包成了一句没信息量的话，`rawErrorText` 现在把 `cause` 链最底下那条消息补在后面（「…（other side closed）」）。流到一半断开没法透明重试，没做重试。
 - **还有两处会「滚」**（build 93）：AI Elements 的 `Conversation` 默认 `initial="smooth"` / `resize="smooth"`——每次打开任务都从顶部带动画滑到底，之后图片、产物卡片每落地一次、日志每长一次又滑一下。`WorkLog` 现在传 `initial="instant" resize="instant"`（没改取来的源码，props 在它的默认值之后展开）：打开就在底部，钉住不动。另外 `Figure` 在图片「还在来」（加载中 / 正在画）时先占住一张图的位置（`pending`）：桌面包的 WebView 没有 scroll anchoring，一行字后来长成一张图会把下面的内容整个往下推；「无法显示」这种不会再变的仍是一行小字。验证：打开任务后 2.5 秒内每 60ms 采样，距底部始终 1–2px。
 
+## 2026-09-22：模型菜单的层级反过来（选项在上，模型列表收进「模型」一行）
+
+用户给了一张 Cursor 的图，要求照它的层级。和 09-20 那版正好相反：**第一级是这个模型怎么跑**——Fast（开关）/ 上下文 / 推理强度 / 引擎，各自右边就是当前值；一条分隔线之下最后一行是**模型**，它的子菜单才是清单。想法是「改设置」比「换模型」频繁得多，常用的那些不该藏在模型行的子菜单里，而几十上百行的清单不该是一打开就撞上的东西。
+
+- **模型清单**（`ModelPicker.tsx` 的 `ModelList`）：分组标题是来源名（`Codex`、`XD Gateway（心动）`、`Claude`…，09-20 那版只有图标和一条空隙），顶上一个搜索框，按模型名和 id 过滤，分组标题跟着一起消失。点一行＝连引擎一起选中（`preferredRoute`，规则没变），不再有第三级——引擎回到第一级去改。每行右边灰色写它会跑在哪一档推理强度，清单本身就读得出「点下去会怎样」。
+- **没指定模型就选中清单里的第一个**（用户 2026-09-22：「别用 Claude 默认这种」）。`resolveModel`：任务自己的选择，否则目录的 `defaultModel`，否则该引擎清单里第一个没被关掉的模型。聊天框在不忙的时候把这个选择写回去（`commitDefault`），所以 chip 上是一个真模型，不再出现「Claude Code 默认」。运行中不写，免得 toast「运行中不能改」。设置页只显示这个名字，不自动改草稿。
+- **底下的名字带推理档位和 Fast**（照 Cursor 的 `Grok 4.7 Extra High Fast`）。chip 是 `模型名 推理强度 Fast`，Fast 只在开着的时候缀上；`none` / `disabled` 不算思考，不写进去。菜单里「模型」那一行的灰色值仍只是模型名。
+- **除了换模型，菜单不关**。上下文、推理强度、引擎选完都留在原地，开关本来就不关；只有在模型清单里点了一个模型才 `close()`。
+- **聊天框旁边的两个 chip 撤了**（用户定的）：独立的推理强度 chip 和 Fast 闪电按钮删掉，`ReasoningPicker.tsx` 整个文件删掉（它的 `agreedLevels` 兜底也不需要了：`effectiveModel` 已经在做同一件事）。`useModelCatalog` 跟着删——只有它用。Composer 里剩 `+` · （模式）· 模型 · 发送。
+- **`CascadeMenu` 加了三样**：`section`（行上方的分组标题，相邻同名只画一次）、`toggle`（画一个开关，点行就翻；Fast 翻完**不关菜单**）、`content`（子菜单不是行列表而是任意内容，模型清单连它的搜索框就是这么进去的）。`separated` 从「上方留空隙」改成「上方画一条线」。开关是个 `span` 而不是 `button`：行本身是按钮，点击必须落在它身上。
+- 搜索框 `autoFocus`：`Popover` 的按键快捷逻辑本来就跳过面板里的可编辑元素，打字不会被菜单吃掉。子菜单是弹层的 DOM 后代，所以「点外面关闭」也不会误伤。
+
+浏览器核对（Playwright 连本机 server，Cursor 内置浏览器连不上 localhost）：默认态两行（引擎 / 模型）→ 清单里选 GPT-5.5 → 第一级变成 `Fast(关) / 上下文 272K / 推理强度 高 / 引擎 Codex / —— / 模型 GPT-5.5`；推理强度子菜单 低·中·高✓·极高，上下文 272K✓·1M；点 Fast 开关翻成开且菜单不关；选「低」菜单也不关，推理强度行变成「低」。搜「gpt」只剩三组。设置页（不传 `options`）是引擎 + 模型两行，清单向左弹。无 console 报错。
+
 ### 2026-09-22 设置改弹层；默认模型不再是设置
 
 - **设置是弹层**：`Shell` 不再把中栏换成设置页，而是在三栏之上盖一层遮罩（`bg-bg-scrim` + `backdrop-blur-xs`），设置面板居中浮起（`bg-bg-elevated`，左侧 192px 导航栏带「设置」标题，内容区自己滚动）。点遮罩、Esc、右上角的叉都关；面板里再叠命令面板或 `Dialog` 时它们先吃掉 Esc（`defaultPrevented`），设置不会一起关掉。右栏不再因为打开设置而隐藏。
 - **视觉**：`layout.tsx` 加了 `Segmented`（分段切换器：主题 / 密度 / MCP 类型 / 协议），`PILL` 不再是橙色描边药丸；按钮里的图标从 `size-xs`（6px）改成 `size-md`（12px）；行标题 15、说明 13（`fg-muted`）；页面标题下的解释段落去掉。
 - **默认模型那一行从设置里去掉了**（用户：「根本不需要」）。规则变成：`DEFAULT_SETTINGS.defaultEngine` 是 `vgent`；`GET /api/engines/:engine/models` 的 `defaultModel` 是**上一次开任务的选择，还在清单里且没被关掉才算**，否则该引擎清单里第一个能用的（`app.ts` 的 `listModels`；harness 引擎没记过就仍留空）。`POST /api/threads` 建完任务把用的 `engine` + `model` 写回 `settings.defaultEngine / defaultModel`——**记住上一次选择**就是这个，不是用户编辑的设置。`useWorkbench.newTask` 把当时看着的任务的 engine/model 记成 `newTaskSeed`，`EmptyState` 用它当**临时默认值**（排在 `settings.defaultModel` 之前，不落盘）。`ProvidersPage.onChanged` 变成可选：设置页里没有别的清单要重载了。
-
 - **Agents 页只剩引擎运行时**（用户：「只需要留升级」）。运行模式三档和「一直允许的工具」从设置里拿掉了；`Settings.runMode / allowlist` 还在、服务端照读（用户机器上是 `allow-all`），只是暂时没有界面改它——下一步是把运行模式放进 composer 的模式菜单按任务切，像 Cursor 审批卡里那样。
+
+## 2026-09-22：退出时提醒没完成的任务
+
+落在任务一生第 3 步（执行）。⌘Q、菜单「退出」、AppleScript `quit` 都会停掉还在跑的回合，之前是直接停。现在 `ExitRequested` 先拦住，后台线程用启动时记下的地址和 token `GET /api/threads`，只看 `running` / `awaiting-approval` / `awaiting-input`。有的话弹原生对话框「还有任务没完成」，一个任务点名，多个列到 6 个；第一个按钮是「取消」（回车留下），只有点「退出」才走原来的 SIGTERM。问不到列表（服务已死、超时、非 200）照旧退出。关窗口仍是藏起来，不走这条确认。对话框在工作线程上 `blocking_show`——在 UI 线程上调会死锁，插件会把 alert 再投回 UI 线程。
 - **上下文大小交给 Claude Code 自己压**（用户：「上下文选择应该让 agent 知道，从而触发自动压缩」）。模型菜单里选的上下文（200K / 1M）以前只决定模型名带不带 `[1m]`；现在 `engines/claude-code.ts` 还把它作为 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 送进 CLI 的环境（`ClaudeCodeEngineOptions.env`），CLI 的自动压缩阈值就是它减去摘要缓冲，和聊天框的环一致。Codex 一直是自己压（`codex exec` 没有手动压缩）。
 - **手动压缩对 Claude Code 打开**。能力表 `claude-code.compact = true`；`POST /threads/:id/compact` 按 `EngineFactory.statelessTurns` 分流：自研引擎照旧把存的历史换成一条摘要；harness 引擎的记录在它自己那边，改我们存的会脱节，所以起一轮对话把 `/compact` 原样送进去（CLI 认这个命令），那条用户消息带 `compacted` 标记，`Turn.tsx` 只画「上下文已压缩」不画 `/compact` 文本，web 的 toast 看到 `status: running` 就不报「N 条 → 摘要」。Codex 仍返回 `compact_unsupported`，文案改成「它会自己压」。
 - **适配器升到 `@ai-sdk/harness-claude-code` 1.0.125 / `-codex` 1.0.123 / `harness` 1.0.121**。钉着的 1.0.119 有个会把压缩弄崩的 bug：压缩后 CLI 发来的用户消息 `content` 是字符串，桥接进程按数组 `.filter` 直接 TypeError，整轮报错（1.0.122 修的：「ignore non-array user messages」）——也就是说升级之前 Claude Code 的**自动**压缩在 Vgent 里同样会崩。真机核对（haiku，`/tmp` 里的小仓库）：`/compact` 那轮只有 `start` / `finish` 两个事件，CLI 的 transcript 里有 `compact_boundary` + `isCompactSummary`，下一轮的回复明确引用了摘要。harness 1.0.125 还**没有**把 `compaction` 事件冒到 `HarnessAgent.stream` 里（bridge 里有 latch，adapter 没接），所以 `runs.ts` 把它转成 `data-compaction`、`turns.ts` 画成一行的那套先备着（有单测），自动压缩暂时没有标记，手动压缩的标记来自那条 `/compact` 消息。
+
+
+## 2026-09-23：工作日志的折叠——运行中也折，只读命令算读取
+
+用户：「之前折叠的修改不见了？……我要你知道逻辑，然后自己重新实现。」经过是：09-22 下午按 Koma 把连续工具收成一句摘要（build 104），晚上因为摘要和露在外面的命令对不上被整个拿掉（109），再按 Codex 的样子把思考提到活动块标题上（112）——112 只做了标题行，**运行中一律平铺**，折叠这一层丢了。且 Claude Code 引擎读文件多半是 `Bash` 里的 `sed -n` / `cat` / `grep` / `ls`，一直被当成「命令」，永远合不进「读取」。
+
+现在的规则，三层，都在 `features/worklog/`：
+
+1. **活动块**（`activity.ts` 的 `segmentsOf`，112 那版不变）：连续的工具调用加中间的思考是一段；正文、插话、计划、子代理、审批、提问把它切开。思考不是行，是标题：还是活边（live edge）时，标题行是正在跑的工具，没有工具在跑就是「正在思考」或这段思考自己的短标题；回复一落，整段收成一句类别摘要（`已读取文件搜索了运行了命令`），点开是逐条工具行。
+2. **探索组**（新，`explore.ts` 的 `exploreItemsOf`，只用于活边）：活动块里**两条及以上连续的读取 / 搜索 / 列目录**收成一行 `已探索 3 次读取 · 1 次搜索`（Koma 的 `ContextToolGroup`，措辞照它的 zh 文案），组里有调用在跑时标题是「正在探索」（Shimmer，不再画第二个转圈，转圈在活动块标题上）；默认收起，点开才是逐条。单独一条读取保持自己那一行（`读取 a.ts` 比 `1 次读取` 信息多）；命令和写 / 编辑各占一行，把前后的探索拆开。
+3. **只读命令算探索**（`explore.ts` 的 `shellExploreKind`，Codex `parse_command` 的思路）：把命令按 `|` `;` `&&` `||` 拆成阶段，`cd` / `export` / 变量赋值跳过，每一段的首词归类——`cat head tail sed(无 -i) nl wc stat jq` 等是读取，`grep rg ag`、`git grep` 是搜索，`ls find(无 -delete/-exec) tree fd`、`git branch -a` 是列目录，`sort uniq cut awk(无 -i) echo` 等是过滤（不单独成立）；`git status/log/diff/show/blame/ls-files` 等是读取。出现 `$(…)`、反引号、heredoc、`for/if`、括号、除 `/dev/null` 与 `2>&1` 之外的重定向，或任何认不出的词，整条就是命令。一条命令只记一种：搜索 > 读取 > 列目录。**收尾的那句摘要也按这个分类**，所以 Claude Code 一轮全是 `sed -n` 时是「已读取文件」而不是「运行了命令」；终端 tab 不受影响，它按工具名挑 shell 调用。
+
+`describeTool` 的显示没动：探索组展开后每一行仍是 `$ 命令本身`，标题和行是同一批东西，不会再出现 109 那种「摘要盖住了另一批」。测试：`explore.test.ts`（分类、分组）、`Turn.activity.test.tsx`（活边折叠、正在探索）。

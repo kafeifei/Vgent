@@ -1,5 +1,6 @@
 import { useMemo } from "react";
-import { Figure } from "@/components/Figure";
+import { Figure, PictureDialogContent } from "@/components/Figure";
+import { Dialog } from "@/components/ui/dialog";
 import { baseName } from "@/lib/format";
 import { download, drawingPicture, fromBase, useFileAccess, useFilePicture } from "./fileAccess";
 
@@ -28,4 +29,20 @@ export function DrawnPicture({ svg, alt }: { svg: string; alt: string }) {
   const picture = useMemo(() => drawingPicture(svg), [svg]);
   if (picture == null) return <Figure alt={alt} note={`无法显示 ${alt}`} />;
   return <Figure picture={picture} alt={alt} {...(access != null ? { onDownload: () => download(access, { svg }) } : {})} />;
+}
+
+/** Opens a task file over the whole window, including paths clicked in prose or tool rows. */
+export function FilePictureDialog({ path, onClose }: { path: string; onClose: () => void }) {
+  const access = useFileAccess();
+  const picture = useFilePicture(path);
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <PictureDialogContent
+        {...(picture.status === "ready" ? { picture: picture.picture } : {})}
+        alt={baseName(path)}
+        note={picture.status === "loading" ? "图片加载中…" : `无法显示 ${baseName(path)}`}
+        {...(access != null ? { onDownload: () => download(access, { path }) } : {})}
+      />
+    </Dialog>
+  );
 }

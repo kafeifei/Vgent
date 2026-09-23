@@ -93,6 +93,7 @@ export function ModelTable({
   provider,
   agentLabel,
   initialDiscovered,
+  availableAgents,
   onProvider,
 }: {
   client: ApiClient;
@@ -100,6 +101,8 @@ export function ModelTable({
   agentLabel: (agent: ProviderAgent) => string;
   /** A listing the caller already has (connecting checks the key with one), so it is not fetched twice. */
   initialDiscovered?: readonly ProviderModel[];
+  /** Engines that may be force-enabled for this provider, including unconfigured ones. */
+  availableAgents?: readonly ProviderAgent[];
   onProvider: (next: RedactedProviderConfig) => void;
 }) {
   const [catalog, setCatalog] = useState<CatalogProvider>();
@@ -110,8 +113,9 @@ export function ModelTable({
   const [note, setNote] = useState<string>();
   const [error, setError] = useState<string>();
 
-  const agents = agentsOf(provider);
+  const agents = agentsOf(provider, availableAgents);
   const endpoint = provider.agents.vgent ?? provider.agents["claude-code"] ?? provider.agents.codex;
+  const forcedAgents = agents.filter((agent) => provider.agents[agent] == null);
 
   const discover = useCallback(
     (quiet: boolean) => {
@@ -196,6 +200,11 @@ export function ModelTable({
 
   return (
     <div className="flex flex-col">
+      {forcedAgents.length > 0 && (
+        <p className="border-border border-b bg-bg-inset px-md py-xs text-fg-faint text-sm">
+          {forcedAgents.map(agentLabel).join("、")} 目前没有单独配置。打开它的模型开关会复用现有接入地址，可能存在协议不兼容；允许强制启用，实际能否运行由服务端返回结果决定。
+        </p>
+      )}
       <div className="flex items-center gap-xs border-border border-b px-md py-xs">
         <Search className="size-md flex-none text-fg-faint" />
         <input

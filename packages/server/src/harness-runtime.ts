@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
-import { appendFile, copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { renameSync } from "node:fs";
+import { appendFile, copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { DEFAULT_CLAUDE_CODE_DATA_DIR, DEFAULT_CODEX_DATA_DIR } from "@vgent/engines";
 import { ConflictError, VgentServerError } from "./errors.js";
@@ -25,19 +26,18 @@ import { silentLogger } from "./types.js";
  *
  *   1. never while a task of that engine is live (a bridge process would end up
  *      loading half of each version);
- *   2. `package.json` and the lockfile are copied aside first;
- *   3. `pnpm add --save-exact` moves the pair, then the CLI has to answer
- *      `--version` with the expected number — otherwise the copies go back and
- *      `pnpm install --frozen-lockfile` restores the old tree;
+ *   2. download and verify in a temporary project while the installed CLI
+ *      remains usable; only then copy the project files aside;
+ *   3. swap the verified `node_modules` into place with filesystem renames;
+ *      keep the old tree as a rollback point until a turn succeeds;
  *   4. the new version stays 未验证 until a turn of that engine ends well. A
  *      turn that dies before producing anything rolls it back and remembers the
  *      version as bad, so an automatic upgrade does not walk into it again.
  *
- * An install can also be cut off half way — the app is quit while pnpm is still
- * downloading — which leaves the top-level links gone and nothing recorded.
- * So the intent is written down *before* the first file is touched
- * (`upgrading`), and whoever next finds that note with its writer dead puts
- * the copies back and reinstalls (`recover`, run at start-up and before every
+ * A commit can still be cut off half way — the app is quit during the short
+ * swap — which leaves the top-level links gone. The intent is written down before the live tree is touched
+ * (`upgrading`), and whoever next finds that note with its writer dead restores
+ * the previous tree (`recover`, run at start-up and before every
  * other operation). Everything that happens is appended to
  * `<harness dir>/.vgent-runtime.log`, pnpm's own output included on a failure:
  * the desktop shell keeps no server log, and this is the one place that has to
@@ -156,7 +156,7 @@ export interface HarnessRuntimeStatus {
 
 interface RuntimeState {
   /** Written before an install touches anything, removed when it is over either way. */
-  upgrading?: { from: VersionSet; to: VersionSet; pid: number; startedAt: string };
+  upgrading?: { from: VersionSet; to: VersionSet; pid: number; startedAt: string; stage?: string };
   /** How often an install of a version was cut off. Twice, and only a click installs it. */
   interrupted?: Record<string, number>;
   previous?: VersionSet;
@@ -325,7 +325,7 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
       ...(latest != null ? { latest } : {}),
       updateAvailable: current != null && latest != null && compareVersions(current, latest) < 0,
       unverified: state.unverified === true,
-      ...(state.previous?.[spec.primary] != null ? { previous: state.previous[spec.primary] as string } : {}),
+      ...(state.unverified === true && state.previous?.[spec.primary] != null ? { previous: state.previous[spec.primary] as string } : {}),
       bad: state.bad ?? [],
       busy,
       working: working.has(spec.engine),
@@ -354,12 +354,12 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
   };
 
   /** pnpm, against the directory's own store — the one the adapter's install uses. */
-  const pnpm = (spec: RuntimeSpec, args: readonly string[]): Promise<string> =>
-    run("pnpm", [...args, "--store-dir", ".pnpm-store"], dirOf(spec));
+  const pnpm = (spec: RuntimeSpec, args: readonly string[], cwd = dirOf(spec)): Promise<string> =>
+    run("pnpm", [...args, "--store-dir", join(dirOf(spec), ".pnpm-store")], cwd);
 
-  const verify = async (spec: RuntimeSpec, expected: string): Promise<void> => {
+  const verify = async (spec: RuntimeSpec, expected: string, cwd = dirOf(spec)): Promise<void> => {
     const [command, ...args] = spec.versionCommand;
-    const output = await run(command as string, args, dirOf(spec));
+    const output = await run(command as string, args, cwd);
     if (!output.includes(expected)) {
       throw new Error(`${spec.label} 装完后报告的版本不是 ${expected}：${output.trim().slice(0, 200)}`);
     }
@@ -379,18 +379,42 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
       // Codex's recipe has no workspace file; a missing one is not an error.
       await copyFile(join(from, name), join(to, name)).catch((error: NodeJS.ErrnoException) => {
         if (error.code !== "ENOENT") throw error;
+        return rm(join(to, name), { force: true });
       });
     }
   };
 
   const restoreBackup = async (spec: RuntimeSpec): Promise<void> => {
+    const previousModules = join(backupDir(spec), "node_modules");
+    if (await stat(previousModules).catch(() => undefined)) {
+      const discard = await mkdtemp(join(dataDirOf(spec), ".vgent-discard-"));
+      const currentModules = join(dirOf(spec), "node_modules");
+      const displaced = join(discard, "node_modules");
+      let movedCurrent = false;
+      try {
+        if (await stat(currentModules).catch(() => undefined)) {
+          renameSync(currentModules, displaced);
+          movedCurrent = true;
+        }
+        renameSync(previousModules, currentModules);
+        await copyProjectFiles(backupDir(spec), dirOf(spec));
+      } catch (error) {
+        if (movedCurrent && !(await stat(currentModules).catch(() => undefined))) renameSync(displaced, currentModules);
+        throw error;
+      } finally {
+        await rm(discard, { recursive: true, force: true }).catch((error) => log.warn(`清理 ${spec.label} 临时文件失败`, error));
+      }
+      return;
+    }
+    // Older installations only backed up project files. Repair those using
+    // their store; new upgrades always keep the entire working tree above.
     await copyProjectFiles(backupDir(spec), dirOf(spec));
     await pnpm(spec, ["install", "--frozen-lockfile"]);
   };
 
   /** Moves every `name@oldVersion` in the workspace file to the version being installed. */
-  const retargetWorkspace = async (spec: RuntimeSpec, from: VersionSet, to: VersionSet): Promise<void> => {
-    const path = join(dirOf(spec), "pnpm-workspace.yaml");
+  const retargetWorkspace = async (dir: string, from: VersionSet, to: VersionSet): Promise<void> => {
+    const path = join(dir, "pnpm-workspace.yaml");
     const text = await readFile(path, "utf8").catch(() => undefined);
     if (text == null) return;
     let next = text;
@@ -401,10 +425,38 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
     if (next !== text) await writeFile(path, next);
   };
 
-  const guard = async <T>(spec: RuntimeSpec, action: string, body: () => Promise<T>): Promise<T> => {
-    if (working.has(spec.engine)) throw new ConflictError(`${spec.label} 正在安装，稍等`, "runtime_working");
+  /** pnpm's generated bin shims and metadata embed the installation's absolute path. */
+  const relocateCandidate = async (stage: string, destination: string): Promise<void> => {
+    const pending = [join(stage, "node_modules")];
+    const needle = Buffer.from(stage);
+    while (pending.length > 0) {
+      const dir = pending.pop() as string;
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          pending.push(path);
+        } else if (entry.isFile() && (await stat(path)).size <= 2 * 1024 * 1024) {
+          const bytes = await readFile(path);
+          if (!bytes.includes(needle)) continue;
+          const text = bytes.toString("utf8");
+          if (!Buffer.from(text).equals(bytes)) throw new Error(`pnpm 产物包含无法安全改写的路径：${path}`);
+          await writeFile(path, text.replaceAll(stage, destination));
+        }
+      }
+    }
+  };
+
+  const guard = async <T>(spec: RuntimeSpec, action: string, body: () => Promise<T>, exclusive = false): Promise<T> => {
+    if (working.has(spec.engine) || (exclusive && working.size > 0)) {
+      throw new ConflictError("有引擎正在安装，等它完成再试", "runtime_working");
+    }
     if (await options.isBusy(spec.engine)) {
       throw new ConflictError(`有 ${spec.label} 的任务在运行，等它结束再${action}`, "runtime_busy");
+    }
+    // isBusy reads the task store asynchronously; another request may have
+    // entered the guard while that read was pending.
+    if (working.has(spec.engine) || (exclusive && working.size > 0)) {
+      throw new ConflictError("有引擎正在安装，等它完成再试", "runtime_working");
     }
     working.add(spec.engine);
     try {
@@ -426,48 +478,112 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
       const wanted = target?.[spec.primary];
       if (target == null || wanted == null) throw new VgentServerError({ message: state.lastError ?? "查不到最新版本", status: 502, code: "runtime_no_latest" });
       if (compareVersions(installed[spec.primary] as string, wanted) >= 0) return;
-
-      await copyProjectFiles(dirOf(spec), backupDir(spec));
-      // From here on the tree may be half of each version. The note is what
-      // lets the next start repair it if this process does not live to.
-      await updateState(spec, (current) => ({
-        ...current,
-        upgrading: { from: installed, to: target, pid: process.pid, startedAt: now().toISOString() },
-      }));
-      log.info(`升级 ${spec.label}：${installed[spec.primary]} → ${wanted}`);
-      await record(spec, `upgrade ${spec.label} ${installed[spec.primary]} -> ${wanted}: started`);
-      try {
-        await retargetWorkspace(spec, installed, target);
-        await pnpm(spec, ["add", "--save-exact", ...Object.entries(target).map(([name, version]) => `${name}@${version}`)]);
-        await verify(spec, wanted);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        log.error(`升级 ${spec.label} 到 ${wanted} 失败，退回 ${installed[spec.primary]}`, error);
-        await record(spec, `upgrade ${spec.label} -> ${wanted}: FAILED, restoring ${installed[spec.primary]}`, errorDetail(error));
-        await restoreBackup(spec).catch(async (restoreError) => {
-          log.error(`退回 ${spec.label} 失败`, restoreError);
-          await record(spec, `restore ${spec.label}: FAILED`, errorDetail(restoreError));
-        });
-        await updateState(spec, ({ upgrading: _over, ...current }) => ({
-          ...current,
-          bad: [...new Set([...(current.bad ?? []), wanted])],
-          lastError: `升级到 ${wanted} 失败，已退回 ${installed[spec.primary]}：${message.slice(0, 300)}`,
-        }));
-        throw new VgentServerError({ message: `升级到 ${wanted} 失败，已退回 ${installed[spec.primary]}`, status: 500, code: "runtime_upgrade_failed" });
+      if (state.unverified === true) {
+        throw new ConflictError(`${spec.label} 的 ${installed[spec.primary]} 还没通过第一轮验证，暂不覆盖可回退的版本`, "runtime_unverified");
       }
-      await updateState(spec, ({ upgrading: _over, lastError: _cleared, ...current }) => ({
-        ...current,
-        previous: installed,
-        unverified: true,
-      }));
-      await record(spec, `upgrade ${spec.label} -> ${wanted}: installed, awaiting a good turn`);
-    });
+
+      // A slow or failing registry must never unlink the CLI a new task needs.
+      // Staging beside the bootstrap also guarantees same-volume renames.
+      const stage = await mkdtemp(join(dataDirOf(spec), ".vgent-candidate-"));
+      const packages = Object.entries(target).map(([name, version]) => `${name}@${version}`);
+      let retainStage = false;
+      try {
+        await copyProjectFiles(dirOf(spec), stage);
+        await retargetWorkspace(stage, installed, target);
+        try {
+          await pnpm(spec, ["add", "--save-exact", ...packages], stage);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          await record(spec, `upgrade ${spec.label} -> ${wanted}: download FAILED, keeping ${installed[spec.primary]}`, errorDetail(error));
+          await updateState(spec, (current) => ({ ...current, lastError: `下载 ${wanted} 失败，现有 ${installed[spec.primary]} 未受影响：${message.slice(0, 300)}` }));
+          throw new VgentServerError({ message: `下载 ${wanted} 失败，现有 ${installed[spec.primary]} 未受影响`, status: 500, code: "runtime_upgrade_failed" });
+        }
+        try {
+          await verify(spec, wanted, stage);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          await record(spec, `upgrade ${spec.label} -> ${wanted}: verification FAILED, keeping ${installed[spec.primary]}`, errorDetail(error));
+          await updateState(spec, (current) => ({
+            ...current,
+            bad: [...new Set([...(current.bad ?? []), wanted])],
+            lastError: `${wanted} 装好后无法启动，现有 ${installed[spec.primary]} 未受影响：${message.slice(0, 300)}`,
+          }));
+          throw new VgentServerError({ message: `${wanted} 装好后无法启动，现有 ${installed[spec.primary]} 未受影响`, status: 500, code: "runtime_upgrade_failed" });
+        }
+
+        if (await options.isBusy(spec.engine)) {
+          throw new ConflictError(`${spec.label} 已有任务开始运行，等它结束再升级`, "runtime_busy");
+        }
+
+        // Generated .bin scripts carry the staging path in NODE_PATH. Rewrite
+        // them while the old installation is still untouched, before the swap.
+        try {
+          await relocateCandidate(stage, dirOf(spec));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          await record(spec, `upgrade ${spec.label} -> ${wanted}: relocation FAILED, keeping ${installed[spec.primary]}`, errorDetail(error));
+          await updateState(spec, (current) => ({ ...current, lastError: `准备 ${wanted} 失败，现有 ${installed[spec.primary]} 未受影响：${message.slice(0, 300)}` }));
+          throw new VgentServerError({ message: `准备 ${wanted} 失败，现有 ${installed[spec.primary]} 未受影响`, status: 500, code: "runtime_upgrade_failed" });
+        }
+        if (await options.isBusy(spec.engine)) {
+          throw new ConflictError(`${spec.label} 已有任务开始运行，等它结束再升级`, "runtime_busy");
+        }
+
+        await rm(join(backupDir(spec), "node_modules"), { recursive: true, force: true });
+        await copyProjectFiles(dirOf(spec), backupDir(spec));
+        // Only this short swap can change the live tree. A note lets
+        // the next app start repair an interruption in that window.
+        await updateState(spec, (current) => ({
+          ...current,
+          upgrading: { from: installed, to: target, pid: process.pid, startedAt: now().toISOString(), stage },
+        }));
+        log.info(`升级 ${spec.label}：${installed[spec.primary]} → ${wanted}`);
+        await record(spec, `upgrade ${spec.label} ${installed[spec.primary]} -> ${wanted}: committing`);
+        if (await options.isBusy(spec.engine)) {
+          await updateState(spec, ({ upgrading: _over, ...current }) => current);
+          throw new ConflictError(`${spec.label} 已有任务开始运行，等它结束再升级`, "runtime_busy");
+        }
+        try {
+          renameSync(join(dirOf(spec), "node_modules"), join(backupDir(spec), "node_modules"));
+          renameSync(join(stage, "node_modules"), join(dirOf(spec), "node_modules"));
+          await copyProjectFiles(stage, dirOf(spec));
+          await verify(spec, wanted);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          log.error(`升级 ${spec.label} 到 ${wanted} 失败，退回 ${installed[spec.primary]}`, error);
+          await record(spec, `upgrade ${spec.label} -> ${wanted}: commit FAILED, restoring ${installed[spec.primary]}`, errorDetail(error));
+          let restored = false;
+          await restoreBackup(spec).then(() => { restored = true; }, async (restoreError) => {
+            log.error(`退回 ${spec.label} 失败`, restoreError);
+            await record(spec, `restore ${spec.label}: FAILED`, errorDetail(restoreError));
+          });
+          await updateState(spec, ({ upgrading: _over, ...current }) => ({
+            ...current,
+            ...(!restored ? { upgrading: { from: installed, to: target, pid: process.pid, startedAt: now().toISOString(), stage } } : {}),
+            ...(restored ? { bad: [...new Set([...(current.bad ?? []), wanted])] } : {}),
+            lastError: restored
+              ? `升级到 ${wanted} 失败，已退回 ${installed[spec.primary]}：${message.slice(0, 300)}`
+              : `升级到 ${wanted} 失败，恢复 ${installed[spec.primary]} 也失败：${message.slice(0, 300)}`,
+          }));
+          retainStage = !restored;
+          throw new VgentServerError({ message: restored ? `升级到 ${wanted} 失败，已退回 ${installed[spec.primary]}` : `升级到 ${wanted} 失败，恢复旧版也失败`, status: 500, code: "runtime_upgrade_failed" });
+        }
+        await updateState(spec, ({ upgrading: _over, lastError: _cleared, ...current }) => ({
+          ...current,
+          previous: installed,
+          unverified: true,
+        }));
+        await record(spec, `upgrade ${spec.label} -> ${wanted}: installed, awaiting a good turn`);
+      } finally {
+        if (!retainStage) await rm(stage, { recursive: true, force: true }).catch((error) => log.warn(`清理 ${spec.label} 候选运行时失败`, error));
+      }
+    }, true);
 
   const rollbackOne = (spec: RuntimeSpec, reason?: string): Promise<void> =>
     guard(spec, "回退", async () => {
       const state = await readState(spec);
       const installed = await installedSet(spec);
-      if (state.previous == null) throw new VgentServerError({ message: "没有可以回退的上一版", status: 409, code: "runtime_no_previous" });
+      if (state.previous == null || state.unverified !== true) throw new VgentServerError({ message: "没有可以回退的上一版", status: 409, code: "runtime_no_previous" });
       log.info(`回退 ${spec.label}：${installed?.[spec.primary] ?? "?"} → ${state.previous[spec.primary]}`);
       await restoreBackup(spec);
       await record(spec, `rollback ${spec.label} ${installed?.[spec.primary] ?? "?"} -> ${state.previous[spec.primary]}${reason != null ? `: ${reason}` : ""}`);
@@ -482,28 +598,36 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
     });
 
   /**
-   * An `upgrading` note whose writer is gone means the tree was left half way.
-   * The copies go back and the lockfile is installed again — from the local
-   * store, so this needs no network. The target is not marked bad: being
-   * interrupted says nothing about the version.
+   * An `upgrading` note whose writer is gone means the swap was left half way.
+   * New upgrades put the saved module tree back directly; older installations
+   * only have project-file backups and still need pnpm. Being interrupted
+   * says nothing about the target version, so it is not marked bad.
    */
   const recoverOne = async (spec: RuntimeSpec): Promise<void> => {
     const state = await readState(spec);
     const note = state.upgrading;
     if (note == null || working.has(spec.engine)) return;
     if (note.pid !== process.pid && isAlive(note.pid)) return;
+    const stage = typeof note.stage === "string" && dirname(resolve(note.stage)) === resolve(dataDirOf(spec)) && basename(note.stage).startsWith(".vgent-candidate-")
+      ? note.stage
+      : undefined;
     const from = note.from[spec.primary] ?? "上一版";
     working.add(spec.engine);
     try {
       log.warn(`${spec.label} 上次升级被打断，恢复到 ${from}`);
       await record(spec, `recover ${spec.label}: upgrade to ${note.to[spec.primary]} was interrupted, restoring ${from}`);
-      await restoreBackup(spec);
+      if (stage != null && (await installedSet(spec))?.[spec.primary] === from) {
+        await copyProjectFiles(backupDir(spec), dirOf(spec));
+      } else {
+        await restoreBackup(spec);
+      }
       const target = note.to[spec.primary] ?? "";
       await updateState(spec, ({ upgrading: _done, ...current }) => ({
         ...current,
         interrupted: { ...current.interrupted, [target]: (current.interrupted?.[target] ?? 0) + 1 },
         lastError: `上次升级到 ${note.to[spec.primary]} 时被打断（多半是安装途中退出了 app），已恢复到 ${from}`,
       }));
+      if (stage != null) await rm(stage, { recursive: true, force: true }).catch((error) => log.warn(`清理 ${spec.label} 候选运行时失败`, error));
     } catch (error) {
       log.error(`恢复 ${spec.label} 失败`, error);
       await record(spec, `recover ${spec.label}: FAILED`, errorDetail(error));
@@ -555,8 +679,9 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
       const state = await readState(spec);
       if (state.unverified !== true) return;
       if (outcome.ok) {
-        await updateState(spec, ({ unverified: _flag, ...current }) => current);
+        await updateState(spec, ({ unverified: _flag, previous: _previous, ...current }) => current);
         // The old version is no longer needed for a rollback that will not come.
+        await rm(backupDir(spec), { recursive: true, force: true }).catch((error) => log.warn(`清理 ${spec.label} 旧版失败`, error));
         await pnpm(spec, ["store", "prune"]).catch((error) => log.warn(`清理 ${spec.label} 的旧版本缓存失败`, error));
         return;
       }

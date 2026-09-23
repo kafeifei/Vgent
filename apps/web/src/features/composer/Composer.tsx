@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { UIMessage } from "ai";
-import { ArrowUp, Check, ChevronDown, File, FileText, Folder, Plus, Square, X, Zap } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, File, FileText, Folder, Plus, Square, X } from "lucide-react";
+import { UrlFigure } from "@/components/Figure";
 import { ModelPicker, effectiveModel } from "@/components/ModelPicker";
-import { ReasoningPicker } from "@/components/ReasoningPicker";
 import { dirName } from "@/features/changes/paths";
 import { baseName } from "@/lib/format";
 import { useToast } from "@/lib/toast";
@@ -32,8 +32,9 @@ const MAX_ROWS = 12;
  * The composer, shared by the thread view and the empty state.
  *
  * Inside the box: 「+」 (pick files to attach — pasting and dropping them works
- * too), the 模式 chip (only when the mode is not the default Agent), 模型, 推理
- * 强度, and 发送 / 停止. 模式 itself is switched from the `/` menu or with ⇧Tab,
+ * too), the 模式 chip (only when the mode is not the default Agent), 模型, and
+ * 发送 / 停止. 推理强度, 上下文 and Fast are rows of the 模型 menu rather than chips
+ * of their own — one control for「跑什么、怎么跑」. 模式 itself is switched from the `/` menu or with ⇧Tab,
  * the way Cursor does it; `/` is also where the caller's own commands show up. Under the box, `ComposerStatusBar` carries
  * the task's ground — 分支, 运行位置, 审查 pill, and the context ring — because
  * 「在哪跑」 has to be readable in every task, not only while creating one. Above
@@ -169,11 +170,10 @@ export function Composer({
   // A window the model does not offer (it was picked for another) is not what runs.
   const contextWindow =
     chosenWindow != null && runningEntry?.contextOptions?.includes(chosenWindow) === true ? chosenWindow : runningEntry?.contextWindow;
-  // Fast and its kin: only what the running model's own catalog entry declares.
-  const tiers = runningEntry?.serviceTiers ?? [];
   // A tier picked for another model does not follow the task onto one that
-  // does not offer it: it would be sent, and the toggle to undo it is gone.
-  const staleTier = !live && runningEntry != null && serviceTier != null && !tiers.some((tier) => tier.id === serviceTier);
+  // does not offer it: it would be sent, and the switch to undo it is gone.
+  const staleTier =
+    !live && runningEntry != null && serviceTier != null && runningEntry.serviceTiers?.some((tier) => tier.id === serviceTier) !== true;
   useEffect(() => {
     if (staleTier) onPickServiceTier(null);
   }, [onPickServiceTier, staleTier]);
@@ -422,7 +422,12 @@ export function Composer({
                 className="group/tile relative flex h-12 max-w-[24ch] flex-none items-center overflow-hidden rounded-lg border border-border bg-bg-inset"
               >
                 {isImage(entry.mediaType) ? (
-                  <img src={entry.url} alt={entry.name} className="size-12 object-cover" />
+                  <UrlFigure
+                    src={entry.url}
+                    alt={entry.name}
+                    wrapperClassName="my-0 size-12"
+                    thumbnailClassName="size-12 rounded-none border-0 object-cover shadow-none"
+                  />
                 ) : (
                   <span className="flex min-w-0 items-center gap-xs px-sm text-fg-secondary text-sm">
                     <FileText className="size-lg flex-none text-fg-muted" />
@@ -603,6 +608,7 @@ export function Composer({
             {...(modelEngines != null ? { modelEngines } : {})}
             {...(onRememberEngine != null ? { onRememberEngine } : {})}
             onCatalog={setCatalog}
+            commitDefault={!live}
             side="top"
             trigger={(props, chip) => (
               <button
@@ -611,44 +617,7 @@ export function Composer({
                 {...props}
                 className="inline-flex h-7 flex-none items-center gap-3xs rounded-full px-xs text-fg-muted text-sm hover:bg-bg-hover hover:text-fg"
               >
-                <span className="max-w-[22ch] truncate">{chip.label}</span>
-                <ChevronDown className="size-sm flex-none text-fg-faint" />
-              </button>
-            )}
-          />
-          {tiers.map((tier) => {
-            const on = serviceTier === tier.id;
-            return (
-              <button
-                key={tier.id}
-                type="button"
-                aria-pressed={on}
-                title={tier.description ?? tier.name}
-                onClick={() => onPickServiceTier(on ? null : tier.id)}
-                className={cn(
-                  "inline-flex h-7 flex-none items-center gap-3xs rounded-full px-xs text-sm hover:bg-bg-hover hover:text-fg",
-                  on ? "bg-bg-active text-fg" : "text-fg-muted",
-                )}
-              >
-                <Zap className={cn("size-sm flex-none", on && "fill-current")} />
-                <span>{tier.name}</span>
-              </button>
-            );
-          })}
-          <ReasoningPicker
-            engine={engine}
-            model={model}
-            level={reasoningEffort}
-            onPick={onPickReasoning}
-            side="top"
-            trigger={(props, current) => (
-              <button
-                type="button"
-                {...props}
-                title="推理强度"
-                className="inline-flex h-7 flex-none items-center gap-3xs rounded-full px-xs text-fg-muted text-sm hover:bg-bg-hover hover:text-fg"
-              >
-                <span>{current}</span>
+                <span className="max-w-[36ch] truncate">{chip.label}</span>
                 <ChevronDown className="size-sm flex-none text-fg-faint" />
               </button>
             )}

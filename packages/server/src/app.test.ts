@@ -999,15 +999,16 @@ describe("createApp", () => {
     const workspacePath = thread.workspace?.path ?? "";
     const record = async () => (await (await request(app, `/api/threads/${thread.id}`)).json()) as ThreadRecord;
 
-    expect((await record()).changeStats).toBeUndefined();
+    const beforeViewing = await record();
+    expect(beforeViewing.changeStats).toBeUndefined();
     await writeFile(join(workspacePath, "tracked.txt"), "line1\nline2\n加一行\n");
     await request(app, `/api/threads/${thread.id}/changes`);
-    expect((await record()).changeStats).toEqual({ files: 1, additions: 1, deletions: 0 });
+    expect(await record()).toMatchObject({ changeStats: { files: 1, additions: 1, deletions: 0 }, updatedAt: beforeViewing.updatedAt });
 
     // Undone outside Vgent: the panel counts zero, so the record must say zero.
     await writeFile(join(workspacePath, "tracked.txt"), "line1\nline2\n");
     await request(app, `/api/threads/${thread.id}/changes`);
-    expect((await record()).changeStats).toEqual({ files: 0, additions: 0, deletions: 0 });
+    expect(await record()).toMatchObject({ changeStats: { files: 0, additions: 0, deletions: 0 }, updatedAt: beforeViewing.updatedAt });
   });
 
   it("启动时给没有统计的老任务补算改动", async () => {
@@ -1027,6 +1028,8 @@ describe("createApp", () => {
       const record = (await (await request(second, `/api/threads/${thread.id}`)).json()) as ThreadRecord;
       if (record.changeStats != null) {
         expect(record.changeStats).toEqual({ files: 1, additions: 1, deletions: 0 });
+        expect(record.unread).toBeUndefined();
+        expect(record.updatedAt).toBe(thread.updatedAt);
         return;
       }
       await sleep(20);

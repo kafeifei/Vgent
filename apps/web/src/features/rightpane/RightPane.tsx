@@ -1,6 +1,6 @@
 import { isNoProject } from "@/lib/noProject";
 import type { UIMessage } from "ai";
-import { ChevronLeft, FileDiff, FolderTree, ListChecks, ListTodo, Terminal, X } from "lucide-react";
+import { ChevronLeft, FileDiff, FolderTree, ListChecks, ListTodo, Terminal } from "lucide-react";
 import { ChangesPanel } from "@/features/changes/ChangesPanel";
 import type { ChangesView } from "@/features/changes/useChanges";
 import { FilesPanel } from "@/features/files/FilesPanel";
@@ -47,7 +47,6 @@ export function RightPane({
   open,
   tab,
   onTab,
-  onClose,
   changes,
   client,
   threadId,
@@ -59,12 +58,12 @@ export function RightPane({
   place,
   live,
   onBuild,
+  onOpenPicture,
 }: {
   queue: QueueItem[];
   open: boolean;
   tab: RightTab;
   onTab: (tab: RightTab) => void;
-  onClose: () => void;
   changes: ChangesView;
   client: ApiClient;
   /** The task whose directory the 文件 tab lists; nothing to show without one. */
@@ -84,6 +83,7 @@ export function RightPane({
   live: boolean;
   /** 「Build」 in the 计划 tab: back to Agent mode, with the document as the message. */
   onBuild: (threadId: string, content: string) => Promise<void>;
+  onOpenPicture: (path: string) => void;
 }) {
   const changeCount = changes.snapshot?.files.length ?? 0;
   // 无项目 has no repository, so there is no diff to open: 变更 is not offered rather than opened onto an error.
@@ -117,7 +117,7 @@ export function RightPane({
 
   return (
     <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-border border-l bg-bg">
-      <div role="tablist" data-tauri-drag-region="deep" className="flex h-topbar flex-none items-center gap-3xs border-border border-b px-xs">
+      <div role="tablist" data-tauri-drag-region="deep" className="flex h-topbar flex-none items-center gap-3xs border-border border-b pl-xs pr-sm">
         <button
           type="button"
           aria-label="回到列表"
@@ -149,14 +149,8 @@ export function RightPane({
             </button>
           );
         })}
-        <button
-          type="button"
-          aria-label="收起 ⌘J"
-          onClick={onClose}
-          className="ml-auto grid size-xl flex-none place-items-center rounded-md text-fg-muted hover:bg-bg-hover hover:text-fg"
-        >
-          <X className="size-lg" />
-        </button>
+        {/* The pane's toggle is pinned to the window's right edge, over this spot. */}
+        <span aria-hidden className="ml-auto size-xl flex-none" />
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-sm">
@@ -195,7 +189,7 @@ export function RightPane({
             {...(thread?.pr != null ? { pr: thread.pr } : { pr: undefined })}
           />
         ) : tab === "files" ? (
-          <FilesPanel client={client} threadId={threadId} active={open} refreshKey={refreshKey} preview={preview} onPreviewTaken={onPreviewTaken} />
+          <FilesPanel client={client} threadId={threadId} active={open} refreshKey={refreshKey} preview={preview} onPreviewTaken={onPreviewTaken} onOpenPicture={onOpenPicture} />
         ) : tab === "term" ? (
           <TerminalPanel messages={messages} client={client} threadId={threadId} refreshKey={refreshKey} />
         ) : (

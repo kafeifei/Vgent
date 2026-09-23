@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { getToolName } from "ai";
 import { Check, ChevronDown, Copy, FileText, Split } from "lucide-react";
-import { RichMarkdown } from "@/components/RichMarkdown";
-import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
+import { UrlFigure } from "@/components/Figure";
+import { RichMarkdown, TurnDrawingProvider } from "@/components/RichMarkdown";
 import { type AskUserQuestionsInput, type AskUserQuestionsOutput } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { ApprovalCard } from "./ApprovalCard";
@@ -10,9 +10,12 @@ import { QuestionCard } from "./QuestionCard";
 import { Spinner, ToolRow } from "./ToolRow";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { TurnOutputs } from "./TurnOutputs";
-import type { Block, Run, Turn as TurnModel } from "./turns";
+import { activityMode, segmentsOf, summaryLabel, thinkingLabel, type ActivityRun } from "./activity";
+import { exploreCounts, exploreItemsOf, exploreLabel } from "./explore";
+import { describeTool, isToolStreaming } from "./toolMeta";
+import type { Block, Turn as TurnModel } from "./turns";
 import { formatTokens } from "@/features/composer/contextUsage";
-import { approvalAnchor, compactedOf, isOpenApproval, isOpenQuestion, questionAnchor, runsOf } from "./turns";
+import { approvalAnchor, compactedOf, isOpenApproval, isOpenQuestion, questionAnchor } from "./turns";
 
 export interface TurnActions {
   respondToApproval: (approvalId: string, approved: boolean) => void;
@@ -62,11 +65,14 @@ export function Turn({
   drawings: ReadonlyMap<string, string>;
 }) {
   const { ref, pinned } = usePinned(isLast);
-  // A finished turn folds its process blocks away; the running one stays open.
-  const folded = !(isLast && live);
+  // The reply, its actions and the output cards wait until the turn has settled.
+  const settled = !(isLast && live);
+  const lastKey = turn.blocks.at(-1)?.key;
+  const segments = segmentsOf(turn.blocks);
   // A `/compact` summary is an ordinary user message apart from this marker.
   const compacted = turn.user == null ? undefined : compactedOf(turn.user);
   return (
+    <TurnDrawingProvider drawings={drawings}>
     <section className={cn("flex flex-col gap-block-gap pb-xl text-md leading-chat", dimmed && "opacity-45")}>
       {turn.user != null && (
         <div
@@ -83,13 +89,13 @@ export function Turn({
             <div className="mb-xs flex flex-wrap gap-xs">
               {turn.user.parts.map((part, index) =>
                 part.type !== "file" ? null : part.mediaType.startsWith("image/") ? (
-                  <a key={index} href={part.url} target="_blank" rel="noreferrer" title={part.filename}>
-                    <img
-                      src={part.url}
-                      alt={part.filename ?? "图片"}
-                      className="max-h-[calc(var(--spacing-3xl)*3)] max-w-full rounded-lg border border-border object-contain"
-                    />
-                  </a>
+                  <UrlFigure
+                    key={index}
+                    src={part.url}
+                    alt={part.filename ?? "图片"}
+                    wrapperClassName="my-0"
+                    thumbnailClassName="max-h-[calc(var(--spacing-3xl)*3)] max-w-full rounded-lg border border-border object-contain shadow-none"
+                  />
                 ) : (
                   <span
                     key={index}
@@ -114,33 +120,51 @@ export function Turn({
         </div>
       )}
 
-      {runsOf(turn.blocks).map((run) =>
-        run.kind === "foldable" && folded ? (
-          <Fold key={run.key} run={run} actions={actions} allowlist={allowlist} />
-        ) : (
-          <div key={run.key} className="flex flex-col gap-block-gap px-chat-inset">
-            {run.blocks.map((block, index) => (
+      {segments.map((segment, index) => {
+        const liveEdge = live && isLast && index === segments.length - 1;
+        if (segment.kind === "block") {
+          if (segment.block.kind === "reasoning") return null;
+          return (
+            <div key={segment.block.key} className="px-chat-inset">
               <BlockView
-                key={block.key}
-                block={block}
+                block={segment.block}
                 actions={actions}
                 allowlist={allowlist}
-                running={live && isLast && index === run.blocks.length - 1}
+                running={liveEdge && segment.block.key === lastKey}
               />
-            ))}
+            </div>
+          );
+        }
+        const mode = activityMode(segment.tools.length, liveEdge);
+        if (mode === "omit") return null;
+        if (mode === "plain") {
+          return segment.tools.map((block) => (
+            <div key={block.key} className="px-chat-inset">
+              <BlockView block={block} actions={actions} allowlist={allowlist} running={live && isLast && block.key === lastKey} />
+            </div>
+          ));
+        }
+        return (
+          <div key={segment.key} className="px-chat-inset">
+            {mode === "summary" ? (
+              <SummaryActivity run={segment} onOpenFile={actions.openFile} />
+            ) : (
+              <LiveActivity run={segment} onOpenFile={actions.openFile} />
+            )}
           </div>
-        ),
-      )}
+        );
+      })}
       {/* Until the first block lands there is nothing else on screen to say the turn is alive. */}
-      {!folded && turn.blocks.length === 0 && (
+      {!settled && turn.blocks.length === 0 && (
         <div className="px-chat-inset text-fg-muted">
           <Shimmer>思考中…</Shimmer>
         </div>
       )}
-      {folded && turn.answered && turn.blocks.length === 0 && <p className="m-0 px-chat-inset text-fg-faint">这一轮模型没有返回内容</p>}
-      {folded && <TurnOutputs blocks={turn.blocks} drawings={drawings} />}
-      {folded && turn.blocks.length > 0 && <ReplyActions turn={turn} {...(turn.user != null ? { onFork: () => actions.fork(turn.user!.id) } : {})} />}
+      {settled && turn.answered && turn.blocks.length === 0 && <p className="m-0 px-chat-inset text-fg-faint">这一轮模型没有返回内容</p>}
+      {settled && <TurnOutputs blocks={turn.blocks} drawings={drawings} />}
+      {settled && turn.blocks.length > 0 && <ReplyActions turn={turn} {...(turn.user != null ? { onFork: () => actions.fork(turn.user!.id) } : {})} />}
     </section>
+    </TurnDrawingProvider>
   );
 }
 
@@ -185,27 +209,115 @@ function ReplyActions({ turn, onFork }: { turn: TurnModel; onFork?: () => void }
   );
 }
 
-/** `查看 N 步 ▸` — a finished turn's process, collapsed. No timings available. */
-function Fold({ run, actions, allowlist }: { run: Run; actions: TurnActions; allowlist: readonly string[] }) {
-  const [open, setOpen] = useState(false);
+/** The title line of a run that is still the live edge: the current tool, or the thought in the gap before the next one. */
+function LiveActivity({ run, onOpenFile }: { run: ActivityRun; onOpenFile: (file: string) => void }) {
+  const [thoughtOpen, setThoughtOpen] = useState(false);
+  const running = run.tools.findLast((block) => isToolStreaming(block.part));
+  const thinking = thinkingLabel(run.thought);
   return (
-    <div className="px-chat-inset">
+    <div>
+      {running != null ? (
+        <ToolStatus part={running.part} />
+      ) : (
+        <div className="flex min-h-row-tool items-center gap-xs text-fg-muted text-md">
+          {thinking.streaming ? <Shimmer as="span">{thinking.label}</Shimmer> : <span>{thinking.label}</span>}
+          {thinking.body != null && (
+            <button
+              type="button"
+              aria-label={thoughtOpen ? "收起思考" : "展开思考"}
+              onClick={() => setThoughtOpen((value) => !value)}
+              className="grid size-xl place-items-center rounded-md text-fg-faint hover:text-fg"
+            >
+              <ChevronDown className={cn("size-md", thoughtOpen ? "" : "-rotate-90")} />
+            </button>
+          )}
+        </div>
+      )}
+      {thoughtOpen && thinking.body != null && running == null && (
+        <div className="mb-2xs border-border border-l pl-md text-fg-faint text-sm">
+          <RichMarkdown className="text-sm">{thinking.body}</RichMarkdown>
+        </div>
+      )}
+      {exploreItemsOf(run.tools).map((item) =>
+        item.kind === "explore" ? (
+          <ExploreGroup key={item.key} tools={item.tools} onOpenFile={onOpenFile} />
+        ) : (
+          <ToolRow key={item.block.key} part={item.block.part} onOpenFile={onOpenFile} />
+        ),
+      )}
+    </div>
+  );
+}
+
+/**
+ * Two or more consecutive looks (reads, searches, listings) folded into one
+ * line while the run is live, the way Koma's 「已探索」 group does it: the
+ * counts tick up as calls land, and the rows are behind the title.
+ */
+function ExploreGroup({ tools, onOpenFile }: { tools: ActivityRun["tools"]; onOpenFile: (file: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const busy = tools.some((block) => isToolStreaming(block.part));
+  const label = exploreLabel(exploreCounts(tools));
+  return (
+    <div>
       <button
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
-        className="inline-flex min-h-row-tool items-center gap-xs text-fg-muted hover:text-fg"
+        className="group/explore flex min-h-row-tool w-full items-center gap-xs text-left text-fg-muted text-md leading-chat hover:text-fg"
       >
-        <span>共 {run.blocks.length} 步</span>
-        <ChevronDown className={cn("size-md text-fg-faint transition-transform duration-[var(--duration-fast)]", !open && "-rotate-90")} />
+        {busy ? <Shimmer as="span" className="flex-none">正在探索</Shimmer> : <span className="flex-none">已探索</span>}
+        <span className="min-w-0 truncate text-fg-faint group-hover/explore:text-fg-muted">{label}</span>
+        <ChevronDown
+          className={cn(
+            "size-md flex-none text-fg-faint opacity-0 transition-transform duration-[var(--duration-fast)] group-hover/explore:opacity-100",
+            open ? "opacity-100" : "-rotate-90",
+          )}
+        />
       </button>
       {open && (
-        <div className="mt-xs flex flex-col gap-xs">
-          {run.blocks.map((block) => (
-            <BlockView key={block.key} block={block} actions={actions} allowlist={allowlist} running={false} />
+        <div className="pl-md">
+          {tools.map((block) => (
+            <ToolRow key={block.key} part={block.part} onOpenFile={onOpenFile} />
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/** A finished run of several tools, collapsed to one category sentence. The rows are still there, behind the title. */
+function SummaryActivity({ run, onOpenFile }: { run: ActivityRun; onOpenFile: (file: string) => void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className="flex min-h-row-tool w-full items-center gap-xs text-left text-fg-muted text-md leading-chat hover:text-fg"
+      >
+        <span className="min-w-0 truncate">{summaryLabel(run.tools)}</span>
+        <ChevronDown className={cn("ml-auto size-md flex-none text-fg-faint", open ? "" : "-rotate-90")} />
+      </button>
+      {open && (
+        <div className="pl-md">
+          {run.tools.map((block) => (
+            <ToolRow key={block.key} part={block.part} onOpenFile={onOpenFile} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ToolStatus({ part }: { part: ActivityRun["tools"][number]["part"] }) {
+  const display = describeTool(part);
+  return (
+    <div className="flex min-h-row-tool items-center gap-xs text-fg-muted text-md">
+      <Spinner />
+      <span className={cn("flex-none", display.kind === "bash" && "font-mono text-code")}>{display.verb}</span>
+      <span className={cn("min-w-0 truncate text-fg-faint", display.kind === "bash" && "font-mono text-code")}>{display.target}</span>
     </div>
   );
 }
@@ -215,22 +327,7 @@ function BlockView({
   actions,
   allowlist,
   running,
-}: { block: Block; actions: TurnActions; allowlist: readonly string[]; running: boolean }): ReactNode {
-  if (block.kind === "reasoning") {
-    return (
-      <Reasoning className="mb-0" defaultOpen={false} isStreaming={block.part.state === "streaming"}>
-        {/* No duration rides on the part, so the label stays generic. */}
-        <ReasoningTrigger
-          className="text-fg-muted text-md hover:text-fg"
-          getThinkingMessage={(isStreaming) => <span>{isStreaming ? "思考中…" : "思考"}</span>}
-        />
-        <ReasoningContent className="mt-2xs border-border border-l pl-md text-fg-faint text-sm">
-          {block.part.text}
-        </ReasoningContent>
-      </Reasoning>
-    );
-  }
-
+}: { block: Exclude<Block, { kind: "reasoning" }>; actions: TurnActions; allowlist: readonly string[]; running: boolean }): ReactNode {
   if (block.kind === "compaction") {
     const { tokensBefore, tokensAfter } = block.data;
     const tokens = tokensBefore != null && tokensAfter != null ? `（${formatTokens(tokensBefore)} → ${formatTokens(tokensAfter)}）` : "";

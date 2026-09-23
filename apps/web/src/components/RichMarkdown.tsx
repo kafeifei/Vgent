@@ -2,21 +2,32 @@ import { cjk } from "@streamdown/cjk";
 import { code } from "@streamdown/code";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
-import { type ComponentProps, type ReactNode, memo, useMemo } from "react";
+import { createContext, type ComponentProps, type ReactNode, memo, useContext, useMemo, useState } from "react";
 import { CodeBlock, type CustomRendererProps, defaultRehypePlugins } from "streamdown";
 import { MessageResponse } from "@/components/ai-elements/message";
-import { Figure, RemoteFigure } from "@/components/Figure";
-import { TaskPicture } from "@/features/files/TaskPicture";
+import { Figure, PictureDialogContent, RemoteFigure } from "@/components/Figure";
+import { Dialog } from "@/components/ui/dialog";
+import { DrawnPicture, TaskPicture } from "@/features/files/TaskPicture";
 import { download, drawingPicture, fromBase, useFileAccess } from "@/features/files/fileAccess";
 import { normalizeMathDelimiters } from "@/lib/mathDelimiters";
-import { isSvgFence, taskFileOf } from "@/lib/preview";
+import { isSvgFence, previewKindOf, taskFileOf } from "@/lib/preview";
 import { TASK_FILE_TAG, rehypeTaskFiles } from "@/lib/rehypeTaskFiles";
 import { fenceBareSvg } from "@/lib/svgFences";
+import { drawingFor } from "@/features/worklog/outputs";
 import "katex/dist/katex.min.css";
+
+const TurnDrawings = createContext<ReadonlyMap<string, string> | null>(null);
+
+export function TurnDrawingProvider({ drawings, children }: { drawings: ReadonlyMap<string, string>; children: ReactNode }) {
+  return <TurnDrawings.Provider value={drawings}>{children}</TurnDrawings.Provider>;
+}
 
 function MarkdownImage({ src, alt }: ComponentProps<"img">) {
   const source = typeof src === "string" ? src : "";
   const path = taskFileOf(source);
+  const drawings = useContext(TurnDrawings);
+  const svg = path != null && previewKindOf(path) === "svg" && drawings != null ? drawingFor(drawings, { raw: path, path }) : undefined;
+  if (svg != null) return <DrawnPicture svg={svg} alt={alt ?? ""} />;
   if (path != null) return <TaskPicture path={path} alt={alt ?? ""} />;
   return source === "" ? null : <RemoteFigure src={source} alt={alt ?? ""} />;
 }
@@ -46,19 +57,30 @@ function SvgFence({ code: source, language, isIncomplete }: CustomRendererProps)
 
 const PLUGINS = { cjk, code, math, mermaid, renderers: [{ language: ["svg", "xml", "html"], component: SvgFence }] };
 
-/** `[guide](docs/guide.md)` in a reply: opens the file in the right pane rather than a browser. */
+/** A local file link goes through the task's file action: pictures enlarge, documents open in the file pane. */
 function TaskFileLink({ path, children }: { path?: string; children?: ReactNode }) {
   const access = useFileAccess();
+  const drawings = useContext(TurnDrawings);
+  const [open, setOpen] = useState(false);
+  const svg = path != null && previewKindOf(path) === "svg" && drawings != null ? drawingFor(drawings, { raw: path, path }) : undefined;
+  const picture = useMemo(() => svg == null ? undefined : drawingPicture(svg), [svg]);
   if (path == null) return <>{children}</>;
   return (
-    <button
-      type="button"
-      title={path}
-      onClick={() => access?.openFile(fromBase(access.baseDir, path))}
-      className="wrap-anywhere appearance-none text-left font-medium text-primary underline"
-    >
-      {children}
-    </button>
+    <>
+      <button
+        type="button"
+        title={path}
+        onClick={() => picture != null ? setOpen(true) : access?.openFile(fromBase(access.baseDir, path))}
+        className="wrap-anywhere appearance-none text-left font-medium text-primary underline"
+      >
+        {children}
+      </button>
+      {picture != null && (
+        <Dialog open={open} onOpenChange={setOpen}>
+          <PictureDialogContent picture={picture} alt={path} {...(access != null && svg != null ? { onDownload: () => download(access, { svg }) } : {})} />
+        </Dialog>
+      )}
+    </>
   );
 }
 

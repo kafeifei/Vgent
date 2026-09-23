@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { drawingFor, outputCandidates, writtenDrawings } from "./outputs";
+import { drawingFor, outputCandidates, shownPicturePaths, visibleOutputFiles, writtenDrawings } from "./outputs";
 import type { Block } from "./turns";
 
 const text = (value: string): Block => ({ kind: "text", key: value, part: { type: "text", text: value } });
@@ -34,6 +34,18 @@ describe("outputCandidates", () => {
       ]),
     ).toEqual([]);
   });
+});
+
+it("shows a file only once when the reply embeds what the tool wrote", () => {
+  const blocks = [write("/scratch/pelican.svg"), text("![鹈鹕](pelican.svg) [下载](pelican.svg) 另见 [chart](chart.png)")];
+  expect(outputCandidates(blocks)).toEqual(["/scratch/pelican.svg", "pelican.svg", "chart.png"]);
+  const shown = shownPicturePaths(blocks);
+  expect(shown).toEqual(["pelican.svg"]);
+  expect(visibleOutputFiles([
+    { raw: "/scratch/pelican.svg", path: "pelican.svg" },
+    { raw: "pelican.svg", path: "pelican.svg" },
+    { raw: "chart.png", path: "chart.png" },
+  ], shown)).toEqual([{ raw: "chart.png", path: "chart.png" }]);
 });
 
 describe("writtenDrawings", () => {

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Check, Copy, ExternalLink, Plus, Search } from "lucide-react";
 import { ApiError, type ApiClient, type ProviderCatalog } from "@/lib/api";
 import { useToast } from "@/lib/toast";
-import type { CatalogProviderSummary, EngineDescriptor, ProviderAgent, ProviderModel, RedactedProviderConfig, SubscriptionAccount, SubscriptionId } from "@/lib/types";
+import type { CatalogProviderSummary, ClaudeLoginAttempt, EngineDescriptor, ProviderAgent, ProviderModel, RedactedProviderConfig, SubscriptionAccount, SubscriptionId } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { BUTTON_GHOST, BUTTON_PRIMARY, BUTTON_SECONDARY, Dialog, LetterAvatar, Segmented, SettingsEmpty, SettingsGroup, SettingsPage, SettingsRow, Switch, Tag } from "./layout";
 import { ModelTable } from "./ModelTable";
@@ -105,6 +105,7 @@ function ConnectDialog({
             client={client}
             provider={connected.provider}
             agentLabel={agentLabel}
+            availableAgents={usable}
             {...(connected.discovered != null ? { initialDiscovered: connected.discovered } : {})}
             onProvider={(next) => {
               setConnected((current) => (current == null ? current : { ...current, provider: next }));
@@ -221,6 +222,7 @@ function CustomDialog({
             client={client}
             provider={connected}
             agentLabel={agentLabel}
+            availableAgents={usable}
             onProvider={(next) => {
               setConnected(next);
               onProvider(next);
@@ -524,6 +526,53 @@ function LoginDialog({ account, onRecheck, onClose }: { account: SubscriptionAcc
   );
 }
 
+/** The official CLI owns OAuth and opens the browser; the app watches completion. */
+function ClaudeLoginDialog({ client, onRecheck, onClose }: { client: ApiClient; onRecheck: () => Promise<boolean>; onClose: () => void }) {
+  const [attempt, setAttempt] = useState<ClaudeLoginAttempt>({ state: "running" });
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async (start: boolean) => {
+      try {
+        const next = await (start ? client.startClaudeLogin() : client.getClaudeLogin());
+        if (disposed) return;
+        setAttempt(next);
+        if (next.state === "succeeded") {
+          const signedIn = await onRecheck();
+          if (!disposed && !signedIn) setAttempt({ state: "failed", error: "授权已结束，但尚未确认登录，请重试。" });
+        } else if (next.state === "running") {
+          timer = setTimeout(() => void poll(false), 1000);
+        } else if (next.state === "idle") {
+          setAttempt({ state: "failed", error: "登录已取消，请重试。" });
+        }
+      } catch (error) {
+        if (!disposed) setAttempt({ state: "failed", error: error instanceof Error ? error.message : "登录失败，请重试。" });
+      }
+    };
+    void poll(true);
+    return () => { disposed = true; clearTimeout(timer); };
+  }, [client, retry]);
+  const close = () => {
+    void client.cancelClaudeLogin().catch(() => undefined);
+    onClose();
+  };
+  return (
+    <Dialog title="登录 Claude 订阅" onClose={close}>
+      <div className="flex flex-col gap-md px-lg py-md">
+        <p className="text-fg-muted text-md">在浏览器中完成 Claude 授权，完成后这里会自动更新。</p>
+        {attempt.state === "running" && <p className="text-fg-faint text-sm">等待浏览器授权…</p>}
+        {attempt.url != null && <a href={attempt.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-xs text-brand text-md hover:underline">打开授权页面<ExternalLink className="size-md" /></a>}
+        {attempt.error != null && <p className="text-danger text-sm">{attempt.error}</p>}
+        <div className="flex justify-end gap-xs">
+          <button type="button" onClick={close} className={BUTTON_GHOST}>取消</button>
+          {attempt.state === "failed" && <button type="button" onClick={() => { setAttempt({ state: "running" }); setRetry((value) => value + 1); }} className={BUTTON_PRIMARY}>重新登录</button>}
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
 type Open =
   | { kind: "login"; id: SubscriptionId }
   | { kind: "subscription-models"; id: SubscriptionId }
@@ -621,8 +670,6 @@ export function ProvidersPage({
     [catalog, connectedCatalogIds],
   );
   const modelsOf = open?.kind === "models" ? providers.find((provider) => provider.id === open.providerId) : undefined;
-  const signedIn = subscriptions.filter(isSignedIn);
-  const signedOut = subscriptions.filter((account) => !isSignedIn(account));
   const subscriptionOf = (id: SubscriptionId) => subscriptions.find((account) => account.id === id);
   const loginOf = open?.kind === "login" ? subscriptionOf(open.id) : undefined;
   const subscriptionModelsOf = open?.kind === "subscription-models" ? subscriptionOf(open.id) : undefined;
@@ -630,8 +677,8 @@ export function ProvidersPage({
 
   return (
     <SettingsPage title="模型提供商">
-      <SettingsGroup title="已连接">
-        {signedIn.map((account) => (
+      <SettingsGroup title="已添加">
+        {subscriptions.map((account) => (
           <SettingsRow
             key={account.id}
             leading={<LetterAvatar name={account.name} />}
@@ -641,10 +688,10 @@ export function ProvidersPage({
                 <Tag>订阅</Tag>
               </>
             }
-            help={`${describeSubscription(account, agentLabel)} · 已打开的模型：${summarizeSubscription(account, agentLabel)}`}
+            help={isSignedIn(account) ? `${describeSubscription(account, agentLabel)} · 已打开的模型：${summarizeSubscription(account, agentLabel)}` : describeSubscription(account, agentLabel)}
           >
-            <button type="button" onClick={() => setOpen({ kind: "subscription-models", id: account.id })} className={BUTTON_SECONDARY}>
-              选模型
+            <button type="button" onClick={() => setOpen({ kind: isSignedIn(account) ? "subscription-models" : "login", id: account.id })} className={BUTTON_SECONDARY}>
+              {isSignedIn(account) ? "选模型" : "登录"}
             </button>
           </SettingsRow>
         ))}
@@ -672,7 +719,7 @@ export function ProvidersPage({
             </button>
           </SettingsRow>
         ))}
-        {providers.length === 0 && signedIn.length === 0 && <SettingsEmpty>还没有连接任何提供商。</SettingsEmpty>}
+        {providers.length === 0 && subscriptions.length === 0 && <SettingsEmpty>还没有连接任何提供商。</SettingsEmpty>}
       </SettingsGroup>
 
       <SettingsGroup
@@ -688,23 +735,6 @@ export function ProvidersPage({
           ) : undefined
         }
       >
-        {signedOut.map((account) => (
-          <SettingsRow
-            key={account.id}
-            leading={<LetterAvatar name={account.name} />}
-            title={
-              <>
-                <span className="truncate">{account.name}</span>
-                <Tag>订阅</Tag>
-              </>
-            }
-            help={describeSubscription(account, agentLabel)}
-          >
-            <button type="button" onClick={() => setOpen({ kind: "login", id: account.id })} className={BUTTON_SECONDARY}>
-              登录
-            </button>
-          </SettingsRow>
-        ))}
         {popular.map((entry) => (
           <SettingsRow key={entry.id} leading={<LetterAvatar name={entry.name} />} title={entry.name} help={`${servedAgents(entry, usable, agentLabel)} · ${entry.modelCount} 个模型`}>
             <button type="button" onClick={() => setOpen({ kind: "connect", entry })} className={BUTTON_SECONDARY}>
@@ -728,7 +758,14 @@ export function ProvidersPage({
       {unusable.length > 0 && <p className="text-fg-faint text-sm">{unusable.map((engine) => engine.label).join("、")} 只能跑在它自己的订阅上，接不了要 key 的提供商。</p>}
       {loadError != null && <p className="text-danger text-sm">{loadError}</p>}
 
-      {loginOf != null && (
+      {loginOf?.id === "claude-subscription" && (
+        <ClaudeLoginDialog client={client} onClose={close} onRecheck={() => reloadSubscriptions(true).then((next) => {
+          const signedIn = next.some((account) => account.id === "claude-subscription" && isSignedIn(account));
+          if (signedIn) { toast("已登录 Claude 订阅"); close(); }
+          return signedIn;
+        })} />
+      )}
+      {loginOf != null && loginOf.id !== "claude-subscription" && (
         <LoginDialog
           account={loginOf}
           onRecheck={() =>
@@ -788,7 +825,7 @@ export function ProvidersPage({
       {modelsOf != null && (
         <Dialog title={`${modelsOf.name} · 选模型`} onClose={close} wide>
           <div className="min-h-0 flex-1 overflow-y-auto">
-            <ModelTable client={client} provider={modelsOf} agentLabel={agentLabel} onProvider={put} />
+            <ModelTable client={client} provider={modelsOf} agentLabel={agentLabel} availableAgents={usable} onProvider={put} />
           </div>
           <div className="flex justify-end border-border border-t px-lg py-sm">
             <button type="button" onClick={close} className={BUTTON_PRIMARY}>

@@ -29,7 +29,7 @@ export function TopStrip({
       // anywhere on it zooms. Buttons and fields still take their own clicks.
       data-tauri-drag-region="deep"
       className={cn(
-        "flex h-topbar flex-none select-none items-center gap-2xs pr-sm",
+        "flex h-topbar min-w-0 flex-none select-none items-center gap-2xs overflow-hidden pr-sm",
         leftOpen ? "pl-[calc(var(--spacing-md)-var(--spacing-2xs))]" : hasTrafficLights() ? "pl-traffic" : "pl-sm",
       )}
     >

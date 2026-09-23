@@ -9,14 +9,13 @@ import { BUTTON_GHOST, BUTTON_SECONDARY, SettingsGroup, SettingsRow, Switch, Tag
 
 /** The one line under an engine's name: what is installed, and what that means right now. */
 export function runtimeSummary(runtime: HarnessRuntimeStatus): string {
-  // Mid-install the packages are briefly not there at all; that is not「还没安装」.
-  if (runtime.working) return runtime.installed != null ? `${runtime.installed} · 正在安装…` : "正在安装…别退出 Vgent";
+  if (runtime.working) return runtime.installed != null ? `${runtime.installed} · 正在准备新版` : "正在恢复运行时…";
   if (runtime.broken) return "安装不完整（上次安装被打断）：重新打开这一页会自动修复";
   if (runtime.installed == null) return "还没安装：第一次用这个引擎时自动装好";
   if (runtime.unverified) return `${runtime.installed} · 刚升级，等第一轮跑通；跑不起来会自动退回 ${runtime.previous ?? "上一版"}`;
   if (runtime.updateAvailable) {
     const skipped = runtime.latest != null && runtime.bad.includes(runtime.latest);
-    return `${runtime.installed} · 最新 ${runtime.latest}${skipped ? "（上次装它没跑起来，不会自动再装）" : ""}`;
+    return `${runtime.installed} · 最新 ${runtime.latest}${skipped ? "（上次升级失败，不会自动再装）" : ""}`;
   }
   return runtime.latest != null ? `${runtime.installed} · 已是最新` : runtime.installed;
 }
@@ -126,7 +125,7 @@ export function RuntimesSection({
                 onClick={() => act(runtime.engine, "upgrade")}
                 className={BUTTON_SECONDARY}
               >
-                {busy ? "安装中，别退出…" : `升级到 ${runtime.latest}`}
+                {busy ? "准备中…" : `升级到 ${runtime.latest}`}
               </button>
             )}
           </SettingsRow>

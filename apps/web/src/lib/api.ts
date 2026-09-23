@@ -24,6 +24,7 @@ import type {
   ProviderModel,
   ProviderProtocol,
   RedactedProviderConfig,
+  ClaudeLoginAttempt,
   SubscriptionAccount,
   SubscriptionId,
   SubscriptionModel,
@@ -392,6 +393,9 @@ export function createClient(token: string) {
     deleteProvider: (id: string) => api<void>(`/providers/${encodeURIComponent(id)}`, token, { method: "DELETE" }),
     /** 拉模型清单. With `providerId` and no `apiKey`, the server uses the key it has stored. */
     /** 订阅: the Claude and Codex logins, with whether each is signed in. `refresh` re-asks the vendors for their model lists. */
+    startClaudeLogin: () => api<ClaudeLoginAttempt>("/subscriptions/claude-subscription/login", token, { method: "POST" }),
+    getClaudeLogin: () => api<ClaudeLoginAttempt>("/subscriptions/claude-subscription/login", token),
+    cancelClaudeLogin: () => api<ClaudeLoginAttempt>("/subscriptions/claude-subscription/login", token, { method: "DELETE" }),
     listSubscriptions: (refresh = false) =>
       api<{ subscriptions: SubscriptionAccount[] }>(`/subscriptions${refresh ? "?refresh=1" : ""}`, token).then((body) => body.subscriptions),
     /** One switch of a subscription's model table, or a column of them. Answers with the table as it now stands. */

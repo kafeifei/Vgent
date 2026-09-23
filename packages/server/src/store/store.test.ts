@@ -3,7 +3,7 @@ import { mkdtemp, readdir, realpath, rm, stat, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HarnessState, ThreadRecord } from "../types.js";
 import { readJsonOrQuarantine, writeJsonAtomic } from "./atomic-file.js";
 import { createProjectStore } from "./projects.js";
@@ -114,6 +114,35 @@ describe("createThreadStore", () => {
     // The chain preserves call order, so the last update is the one on disk.
     expect(record.title).toBe("标题-7");
     expect((await readdir(join(dir, "threads"))).filter((entry) => entry.includes(".tmp-"))).toEqual([]);
+  });
+
+  it("keeps the last activity time for Git stats and read state, but advances it for a new message", async () => {
+    const dir = await tempDir();
+    const store = seed(dir);
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-09-17T12:00:00.000Z"));
+      const thread = await store.create({ projectId: "p1", engine: "claude-code" });
+      vi.setSystemTime(new Date("2026-09-18T12:00:00.000Z"));
+
+      const statted = await store.update(thread.id, { changeStats: { files: 1, additions: 2, deletions: 0 } });
+      expect(statted.updatedAt).toBe(thread.updatedAt);
+      expect((await store.list())[0]?.updatedAt).toBe(thread.updatedAt);
+
+      const marked = await store.update(thread.id, { unread: true });
+      expect(marked.updatedAt).toBe(thread.updatedAt);
+      vi.setSystemTime(new Date("2026-09-19T12:00:00.000Z"));
+      const read = await store.update(thread.id, { unread: false });
+      expect(read.unread).toBeUndefined();
+      expect(read.updatedAt).toBe(thread.updatedAt);
+      expect((await store.list())[0]?.updatedAt).toBe(read.updatedAt);
+
+      vi.setSystemTime(new Date("2026-09-20T12:00:00.000Z"));
+      const replied = await store.update(thread.id, { messages: [{ id: "m1", role: "user", parts: [{ type: "text", text: "继续" }] }] });
+      expect(replied.updatedAt).toBe("2026-09-20T12:00:00.000Z");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("writes the harness state file 0600 and reads it back", async () => {

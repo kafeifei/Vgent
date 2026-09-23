@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ChevronDown, ChevronRight, Download, File, RefreshCw } from "lucide-react";
 import type { BundledLanguage } from "shiki";
 import { CodeBlock } from "@/components/ai-elements/code-block";
-import { Image } from "@/components/ai-elements/image";
 import { RichMarkdown } from "@/components/RichMarkdown";
 import type { PreviewRequest } from "@/app/useWorkbench";
 import type { ApiClient } from "@/lib/api";
@@ -10,7 +9,7 @@ import { baseName } from "@/lib/format";
 import { type PreviewKind, previewKindOf } from "@/lib/preview";
 import type { FileContent, FileEntry, FileListing } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { FileAccessProvider, useFilePicture } from "./fileAccess";
+import { FileAccessProvider } from "./fileAccess";
 
 /** Up to this many entries, the tree opens fully — collapsing would hide everything. */
 const EXPAND_ALL_MAX = 8;
@@ -136,18 +135,6 @@ function ViewModeTabs({ mode, onMode }: { mode: ViewMode; onMode: (mode: ViewMod
   );
 }
 
-/** The file as a picture, on a ground that shows a transparent one for what it is. */
-function Picture({ path }: { path: string }) {
-  const picture = useFilePicture(path);
-  if (picture.status === "loading") return <p className="text-fg-faint text-xs">加载中…</p>;
-  if (picture.status === "unavailable") return <p className="text-fg-faint text-xs">无法显示这张图片</p>;
-  return (
-    <div className="grid place-items-center rounded-lg bg-bg-inset p-sm">
-      <Image {...picture.picture} uint8Array={new Uint8Array()} alt={baseName(path)} className="max-h-[70vh] w-auto rounded-none object-contain" />
-    </div>
-  );
-}
-
 /** One row, plus its children when it is an open directory. */
 function Rows({
   nodes,
@@ -202,8 +189,8 @@ function Rows({
  * 文件 tab: the task's working tree, read-only.
  *
  * The server decides which directory that is — the task's own worktree, or the
- * project — exactly as it does for 变更. Selecting a file swaps the tree for
- * its content; there is no editing here.
+ * project — exactly as it does for 变更. Pictures open over the window;
+ * selecting another file swaps the tree for its content. There is no editing here.
  */
 export function FilesPanel({
   client,
@@ -212,6 +199,7 @@ export function FilesPanel({
   refreshKey,
   preview,
   onPreviewTaken,
+  onOpenPicture,
 }: {
   client: ApiClient;
   threadId: string | null;
@@ -222,6 +210,7 @@ export function FilesPanel({
   /** A file the log asked to see, as the log wrote it; `onPreviewTaken` says it has been opened. */
   preview?: PreviewRequest | null;
   onPreviewTaken?: () => void;
+  onOpenPicture: (path: string) => void;
 }) {
   const [listing, setListing] = useState<FileListing | null>(null);
   const [loading, setLoading] = useState(false);
@@ -238,6 +227,13 @@ export function FilesPanel({
   /** Bumped per load; a stale response never writes state. */
   const generation = useRef(0);
   const [reload, setReload] = useState(0);
+  const openEntry = (path: string): void => {
+    const kind = previewKindOf(path);
+    if (kind === "image" || kind === "svg") {
+      setSelected(null);
+      onOpenPicture(path);
+    } else setSelected(path);
+  };
 
   useEffect(() => {
     const mine = ++generation.current;
@@ -290,7 +286,7 @@ export function FilesPanel({
         onPreviewTaken?.();
         const path = found[0]?.path;
         setNotice(path == null ? `文件不在任务目录里，或已经不在了：${preview.path}` : null);
-        if (path != null) setSelected(path);
+        if (path != null) openEntry(path);
       },
       (failure: unknown) => {
         if (cancelled) return;
@@ -311,8 +307,7 @@ export function FilesPanel({
 
   useEffect(() => {
     const mine = ++contentGeneration.current;
-    // A picture is fetched as bytes by whatever draws it; there is no text to ask for.
-    if (threadId == null || selected == null || kind === "image") {
+    if (threadId == null || selected == null) {
       setContent(null);
       setContentError(null);
       return;
@@ -375,13 +370,11 @@ export function FilesPanel({
         </div>
         {saved != null && <p className="mb-xs break-all text-fg-muted text-xs">{saved}</p>}
 
-        {/* The previews below read this task's files the same way a reply's pictures do. */}
+        {/* Document links resolve relative to the open file and use the task's file action. */}
         <FileAccessProvider
-          value={threadId == null ? null : { client, threadId, refreshKey, openFile: setSelected, baseDir: dirName(selected) }}
+          value={threadId == null ? null : { client, threadId, refreshKey, openFile: openEntry, baseDir: dirName(selected) }}
         >
-          {kind === "image" || (kind === "svg" && viewMode === "preview") ? (
-            <Picture path={selected} />
-          ) : contentError != null ? (
+          {contentError != null ? (
             <p className="text-danger text-xs">{contentError}</p>
           ) : content == null ? (
             <p className="text-fg-faint text-xs">加载中…</p>
@@ -436,7 +429,7 @@ export function FilesPanel({
                 key={entry.path}
                 type="button"
                 title={entry.path}
-                onClick={() => setSelected(entry.path)}
+                onClick={() => openEntry(entry.path)}
                 className="flex h-row-file w-full items-center gap-2xs rounded-sm px-2xs text-left hover:bg-bg-hover"
               >
                 <File className="size-md flex-none text-fg-faint" />
@@ -446,7 +439,7 @@ export function FilesPanel({
           )}
         </>
       ) : (
-        <Rows nodes={tree} expanded={expanded} onToggle={toggle} onOpen={setSelected} />
+        <Rows nodes={tree} expanded={expanded} onToggle={toggle} onOpen={openEntry} />
       )}
 
       {listing?.truncated === true && <p className="mt-md text-2xs text-fg-faint">文件太多，列表已截断。</p>}

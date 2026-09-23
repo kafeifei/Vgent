@@ -47,6 +47,39 @@ export function svgForImage(svg: string): string | undefined {
   return /\sxmlns\s*=/.test(tag) ? body : body.replace(/^<svg/i, '<svg xmlns="http://www.w3.org/2000/svg"');
 }
 
+/**
+ * The drawing's own aspect, so the log can reserve its box before the image
+ * decodes. An `<img>` of an SVG that declares no size is 300×150 in WebKit —
+ * or nothing — and the scroll position measured then is wrong for that task.
+ * `viewBox` wins; otherwise a pair of absolute `width`/`height`. Percentages
+ * are not a size.
+ */
+export function svgFrame(svg: string): { width: number; height: number } | undefined {
+  const open = svg.match(/<svg\b[^>]*>/i);
+  if (open == null) return undefined;
+  const tag = open[0];
+  const viewBox = tag.match(/\bviewBox\s*=\s*["']([^"']+)["']/i)?.[1];
+  if (viewBox != null) {
+    const parts = viewBox.trim().split(/[\s,]+/).map(Number);
+    const width = parts[2];
+    const height = parts[3];
+    if (parts.length === 4 && width != null && height != null && width > 0 && height > 0 && parts.every((part) => Number.isFinite(part))) {
+      return { width, height };
+    }
+  }
+  const width = svgLength(tag, "width");
+  const height = svgLength(tag, "height");
+  if (width != null && height != null) return { width, height };
+  return undefined;
+}
+
+function svgLength(tag: string, name: string): number | undefined {
+  const raw = tag.match(new RegExp(`\\b${name}\\s*=\\s*["']([^"']+)["']`, "i"))?.[1];
+  if (raw == null || raw.endsWith("%")) return undefined;
+  const value = Number.parseFloat(raw);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
 /** An `<img src>` for SVG source; empty when it is not SVG. */
 export function svgDataUri(svg: string): string {
   const source = svgForImage(svg);

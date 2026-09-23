@@ -39,6 +39,7 @@ export function ThreadView(props: {
   allowlist: readonly string[] | undefined;
   onQueue: (queue: QueueItem[]) => void;
   onMessages: (messages: UIMessage[]) => void;
+  onOpenPicture: (path: string) => void;
 }) {
   const { thread, actions } = props;
   const [chat, setChat] = useState<Chat<UIMessage> | null>(null);
@@ -60,7 +61,11 @@ export function ThreadView(props: {
     };
   }, [thread.id]);
 
-  if (chat == null) return <div className="grid place-items-center text-fg-faint text-sm">加载中…</div>;
+  // The effect clears `chat` one paint later. Until then the state still holds
+  // the task just left — mounting that log under the new id records the scroll
+  // place on the wrong task, so the next click opens neither where it was nor
+  // at the end.
+  if (chat == null || chat.id !== thread.id) return <div className="grid place-items-center text-fg-faint text-sm">加载中…</div>;
   return <ThreadChatView key={thread.id} {...props} chat={chat} />;
 }
 
@@ -77,6 +82,7 @@ function ThreadChatView({
   allowlist,
   onQueue,
   onMessages,
+  onOpenPicture,
   chat,
 }: {
   thread: ThreadSummary;
@@ -92,6 +98,7 @@ function ThreadChatView({
   allowlist: readonly string[] | undefined;
   onQueue: (queue: QueueItem[]) => void;
   onMessages: (messages: UIMessage[]) => void;
+  onOpenPicture: (path: string) => void;
   chat: Chat<UIMessage>;
 }) {
   /**
@@ -137,9 +144,15 @@ function ThreadChatView({
 
   // A running turn rewrites its files many times; what the log shows is refetched once it ends.
   const filesKey = live ? "live" : thread.updatedAt;
+  const openFile = useCallback((file: string) => {
+    const kind = previewKindOf(file);
+    if (kind === "image" || kind === "svg") onOpenPicture(file);
+    else if (kind === "markdown") actions.openPreview(file);
+    else actions.openChanges(file);
+  }, [actions, onOpenPicture]);
   const fileAccess = useMemo(
-    () => ({ client, threadId: thread.id, refreshKey: filesKey, openFile: actions.openPreview, notify: actions.toast }),
-    [actions.openPreview, actions.toast, client, filesKey, thread.id],
+    () => ({ client, threadId: thread.id, refreshKey: filesKey, openFile, notify: actions.toast }),
+    [actions.toast, client, filesKey, openFile, thread.id],
   );
 
   const turnActions: TurnActions = useMemo(
@@ -150,12 +163,11 @@ function ThreadChatView({
         void addToolApprovalResponse({ id, approved: true });
       },
       answerQuestions: (toolCallId, output) => void addToolOutput({ tool: "askUserQuestions", toolCallId, output }),
-      // A picture or a document is opened as what it is; code is opened as its diff.
-      openFile: (file) => (previewKindOf(file) != null ? actions.openPreview(file) : actions.openChanges(file)),
+      openFile,
       fork: (messageId) => actions.forkThread(thread.id, messageId),
       restoreLatest: () => restoreCheckpoint({ latest: true }),
     }),
-    [actions, addToolApprovalResponse, addToolOutput, restoreCheckpoint, thread.id],
+    [actions, addToolApprovalResponse, addToolOutput, openFile, restoreCheckpoint, thread.id],
   );
 
   // Every approval the global allowlist already answers, answered once. The
@@ -262,16 +274,14 @@ function ThreadChatView({
   return (
     <>
       {/* One grid row: the header, plus the setup line when there is one. */}
-      <div>
+      <div className="min-w-0">
         <TaskHeader
           thread={thread}
-          pending={thread.pendingApprovals + queue.filter((item) => item.kind === "question").length}
           leftOpen={leftOpen}
           rightOpen={rightOpen}
           onReclaimWorkspace={() => actions.reclaimWorkspace(thread.id)}
           onRestoreWorkspace={() => actions.restoreWorkspace(thread.id)}
           onToggleLeft={actions.toggleLeft}
-          onToggleRight={actions.toggleRight}
         />
         <SetupNotice
           setup={thread.workspace?.setup}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isSvgFence, localPathOf, previewKindOf, svgDataUri, svgForImage, taskFileOf, taskFileUrl, toBase64 } from "./preview";
+import { isSvgFence, localPathOf, previewKindOf, svgDataUri, svgForImage, svgFrame, taskFileOf, taskFileUrl, toBase64 } from "./preview";
 
 describe("previewKindOf", () => {
   it("names what a file is shown as", () => {
@@ -29,6 +29,19 @@ describe("svgDataUri", () => {
     expect(decodeURIComponent(uri.split(",")[1] ?? "")).toBe('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><rect/></svg>');
     expect(svgDataUri('<svg xmlns="http://www.w3.org/2000/svg"/>')).toContain(encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg"/>'));
     expect(svgDataUri("not a drawing")).toBe("");
+  });
+});
+
+describe("svgFrame", () => {
+  it("takes the viewBox, not a percentage size", () => {
+    expect(svgFrame('<svg width="100%" height="100%" viewBox="0 0 800 600"><rect/></svg>')).toEqual({ width: 800, height: 600 });
+    expect(svgFrame('<svg\n  viewBox="0,0,120,40"\n></svg>')).toEqual({ width: 120, height: 40 });
+  });
+
+  it("falls back to absolute width and height, and gives up when neither is a size", () => {
+    expect(svgFrame('<svg width="640px" height="480"><rect/></svg>')).toEqual({ width: 640, height: 480 });
+    expect(svgFrame('<svg width="100%" height="100%"><rect/></svg>')).toBeUndefined();
+    expect(svgFrame("<div/>")).toBeUndefined();
   });
 });
 

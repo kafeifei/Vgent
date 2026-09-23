@@ -5,6 +5,8 @@ import { ResizeHandle } from "@/components/ResizeHandle";
 import { TopStrip } from "@/components/TopStrip";
 import { CommandPalette, type Command } from "@/features/cmdk/CommandPalette";
 import { EmptyState } from "@/features/empty/EmptyState";
+import { FileAccessProvider } from "@/features/files/fileAccess";
+import { FilePictureDialog } from "@/features/files/TaskPicture";
 import { RightPane } from "@/features/rightpane/RightPane";
 import { NO_PROJECT_NAME, isNoProject } from "@/lib/noProject";
 import { SettingsView } from "@/features/settings/SettingsView";
@@ -14,6 +16,7 @@ import type { QueueItem } from "@/features/worklog/queue";
 import { oneLine } from "@/lib/format";
 import { type PaneKey, type PaneWidths, clampPaneWidth, fitPaneWidths, loadPaneWidths, savePaneWidths } from "@/lib/paneWidths";
 import { usePrefs, usePrefsSync } from "@/lib/prefs";
+import { RightPaneToggle } from "@/features/taskheader/TaskHeader";
 import { ThreadView } from "./ThreadView";
 import { isLiveThread, useWorkbench } from "./useWorkbench";
 
@@ -45,6 +48,11 @@ export function Shell({ token }: { token: string }) {
   );
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [messages, setMessages] = useState<UIMessage[]>([]);
+  const [picture, setPicture] = useState<{ threadId: string; path: string } | null>(null);
+  const openPicture = useCallback((path: string) => {
+    if (selectedThreadId != null) setPicture({ threadId: selectedThreadId, path });
+  }, [selectedThreadId]);
+  useEffect(() => setPicture(null), [selectedThreadId]);
 
   const onQueue = useCallback((next: QueueItem[]) => setQueue(next), []);
   const onMessages = useCallback((next: UIMessage[]) => setMessages(next), []);
@@ -121,7 +129,7 @@ export function Shell({ token }: { token: string }) {
   return (
     // No window bar of its own: like Cursor's Agents Window the three columns
     // run the full height, and each column's top strip is the title bar.
-    <div className="h-full overflow-hidden">
+    <div className="relative h-full overflow-hidden">
       <div
         ref={grid}
         className={
@@ -171,6 +179,7 @@ export function Shell({ token }: { token: string }) {
               allowlist={state.settings?.allowlist}
               onQueue={onQueue}
               onMessages={onMessages}
+              onOpenPicture={openPicture}
             />
           ) : (
             <div className="row-span-3 flex min-h-0 flex-col">
@@ -200,7 +209,6 @@ export function Shell({ token }: { token: string }) {
             open={right.open}
             tab={right.tab}
             onTab={actions.setRightTab}
-            onClose={actions.toggleRight}
             changes={changes}
             client={client}
             threadId={selectedThreadId}
@@ -212,6 +220,7 @@ export function Shell({ token }: { token: string }) {
             place={isNoProject(thread?.projectId) ? NO_PROJECT_NAME : state.projects.find((entry) => entry.id === thread?.projectId)?.name}
             live={isLiveThread(thread)}
             onBuild={actions.buildFromPlan}
+            onOpenPicture={openPicture}
           />
         )}
 
@@ -243,7 +252,25 @@ export function Shell({ token }: { token: string }) {
         )}
       </div>
 
+      {view === "thread" && thread != null && (
+        // Pinned to the window, not to a column: opening the pane used to leave
+        // this button on the conversation's right edge, short of the window's.
+        <div className="pointer-events-none absolute top-0 right-0 z-10 flex h-topbar items-center pr-sm">
+          <RightPaneToggle
+            open={right.open}
+            pending={thread.pendingApprovals + queue.filter((item) => item.kind === "question").length}
+            onToggle={actions.toggleRight}
+            className="pointer-events-auto"
+          />
+        </div>
+      )}
+
       {palette && <CommandPalette commands={commands} onClose={actions.closePalette} />}
+      {picture != null && picture.threadId === selectedThreadId && (
+        <FileAccessProvider value={{ client, threadId: picture.threadId, refreshKey: thread?.updatedAt ?? "", openFile: openPicture, notify: actions.toast }}>
+          <FilePictureDialog key={`${picture.threadId}:${picture.path}`} path={picture.path} onClose={() => setPicture(null)} />
+        </FileAccessProvider>
+      )}
       {settingsOpen && (
         // 设置 floats over the workbench like Cursor's: the columns stay put
         // underneath, dimmed and softly blurred, and come back untouched on close.

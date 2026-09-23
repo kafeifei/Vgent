@@ -57,6 +57,7 @@ export type {
   ProviderModel,
   ProviderProtocol,
   RedactedProviderConfig,
+  ClaudeLoginAttempt,
   SubscriptionAccount,
   SubscriptionId,
   SubscriptionModel,

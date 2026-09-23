@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createClient, getToken } from "@/lib/api";
-import type { EngineDescriptor, EngineId, ModelCatalog } from "@/lib/types";
+import type { EngineDescriptor, EngineId, ModelCatalog, ModelEntry } from "@/lib/types";
 import { CascadeLevel, type CascadeNode } from "./CascadeMenu";
 import { buildModelChoices, currentChoice, formatContext, preferredRoute, type EngineRoute, type ModelChoice } from "./modelChoices";
 import { Popover } from "./Popover";
@@ -10,16 +10,31 @@ import { SourceIcon } from "./SourceIcon";
 export const modelLabel = (model: string | undefined): string => model ?? "默认";
 
 /**
- * The model the engine will actually run with: the task's own choice, or the
- * default the server names on the catalog. Undefined while the catalog is still
- * loading, or when only the harness knows its own default — the chip then falls
- * back to「默认」.
+ * The model that actually runs: the task's own choice, else the default the
+ * server names, else the first model the catalog lists. A harness that keeps
+ * its own default (Claude Code) names nothing, and「Claude Code 默认」is not a
+ * model — the first listed one is selected instead. Undefined only while the
+ * catalog is still loading or empty.
  */
-export const effectiveModel = (model: string | undefined, catalog: ModelCatalog | null | undefined): string | undefined =>
-  model ?? catalog?.defaultModel;
+export function resolveModel(model: string | undefined, catalog: ModelCatalog | null | undefined): string | undefined {
+  if (model != null) return model;
+  if (catalog == null) return undefined;
+  const visible = catalog.models.filter((entry) => entry.hidden !== true);
+  if (catalog.defaultModel != null && (visible.length === 0 || visible.some((entry) => entry.id === catalog.defaultModel))) {
+    return catalog.defaultModel;
+  }
+  return visible[0]?.id;
+}
 
-/** The chip's tooltip when the name shown is the default rather than the task's pick. */
-const DEFAULT_MODEL_TITLE = "默认模型（在设置里改）";
+export const effectiveModel = resolveModel;
+
+/** The composer's chip: the model, then how hard it thinks, then Fast when that is on. */
+export function modelChipLabel(name: string, effort: string | undefined, fast: string | undefined): string {
+  return [name, effort, fast].filter((part) => part != null && part !== "").join(" ");
+}
+
+/** A level that means thinking is off, so it does not belong in the chip. */
+const EFFORT_OFF = new Set(["none", "disabled"]);
 
 /** What a `ModelPicker` trigger shows: the effective model, and why. */
 export type ModelChip = { label: string; title?: string };
@@ -30,52 +45,16 @@ export type CatalogState =
   | { status: "error"; message: string };
 
 /**
- * One load per engine, shared by the model picker and the 思考 picker beside
- * it. The server caches each catalog for ten minutes, so remounting a picker
- * costs nothing worth debouncing.
- *
- * `onCatalog` hands the loaded list up so a sibling can read a model's metadata
- * (the composer's context ring wants `contextWindow`) off the list this hook
- * has already fetched instead of fetching it again. It is held in a ref rather
- * than depended on: it is an output, and refetching whenever the caller hands
- * down a new closure is exactly what this effect must not do.
- */
-export function useModelCatalog(engine: EngineId, onCatalog?: (catalog: ModelCatalog) => void): CatalogState {
-  const [state, setState] = useState<CatalogState>({ status: "loading" });
-  const notify = useRef(onCatalog);
-  notify.current = onCatalog;
-
-  useEffect(() => {
-    const token = getToken();
-    if (token == null) return;
-    let cancelled = false;
-    setState({ status: "loading" });
-    createClient(token)
-      .listModels(engine)
-      .then(
-        (catalog) => {
-          if (cancelled) return;
-          setState({ status: "ready", catalog });
-          notify.current?.(catalog);
-        },
-        (error: unknown) => {
-          if (!cancelled) setState({ status: "error", message: error instanceof Error ? error.message : String(error) });
-        },
-      );
-    return () => {
-      cancelled = true;
-    };
-  }, [engine]);
-
-  return state;
-}
-
-/**
  * Every engine's catalog at once, loaded in parallel. One engine failing is its
- * own group's warning line and never keeps the others from rendering.
+ * own warning line and never keeps the others from rendering. The server caches
+ * each catalog for ten minutes, so remounting a picker costs nothing worth
+ * debouncing.
  *
- * `onCatalog` still reports the *selected* engine's list — that is what the
- * composer's context ring and the 思考 picker measure against.
+ * `onCatalog` hands the *selected* engine's list up so a sibling can read a
+ * model's metadata off what this hook already fetched instead of fetching it
+ * again — the composer's context ring wants `contextWindow`. It is held in a ref
+ * rather than depended on: it is an output, and refetching whenever the caller
+ * hands down a new closure is exactly what this effect must not do.
  */
 function useAllCatalogs(
   engines: readonly EngineDescriptor[],
@@ -115,120 +94,195 @@ function useAllCatalogs(
   return states;
 }
 
-/** What the task runs with besides the model itself — the third level of the menu. */
+/** What the task runs with besides the model itself — the rows above 模型. */
 export interface ModelOptions {
   reasoningEffort: string | undefined;
   serviceTier: string | undefined;
   contextWindow: number | undefined;
 }
 
+/** A change to those, `null` handing a choice back to the model's own default. */
+export type OptionsPatch = Partial<{ reasoningEffort: string; serviceTier: string | null; contextWindow: number | null }>;
+
+/** The level a model runs at: the task's own pick where the model offers it, else the model's default. */
+const levelOf = (entry: ModelEntry, chosen: string | undefined): string | undefined =>
+  chosen != null && entry.reasoningLevels?.includes(chosen) === true ? chosen : entry.defaultReasoningLevel;
+
 /**
- * The second level under one model: 引擎 / 上下文 / 推理强度 / Fast, each opening
- * its values. They are read off `route` — the engine this row would run on —
- * because the same model offers different levels and windows under different
- * engines. A section the model has nothing to choose in is simply not there.
- *
- * `mine` is whether the task is on this very model and engine: only then do the
- * task's own choices tick a value; for any other row the ticks are that model's
- * defaults, since picking the row is what would apply.
+ * The rows above 模型: Fast / 上下文 / 推理强度 / 引擎 — what the model the task is
+ * already on runs with. They are read off `route`, the engine it runs on, since
+ * the same model offers different levels and windows under different engines. A
+ * knob the model does not have is simply not a row.
  */
 export function optionNodes({
   choice,
   route,
-  mine,
   options,
   engineLocked,
-  pick,
+  onOptions,
+  onEngine,
 }: {
   choice: ModelChoice;
   route: EngineRoute;
-  mine: boolean;
-  /** Absent: only the engine is offered. */
+  /** Absent — the settings page — leaves the menu at 引擎 and 模型. */
   options: ModelOptions | undefined;
   engineLocked: boolean;
-  /** `chosen`: the engine itself was picked — 引擎 submenu — which is what gets remembered for this model. */
-  pick: (
-    route: EngineRoute,
-    patch?: Partial<{ reasoningEffort: string; serviceTier: string | null; contextWindow: number | null }>,
-    chosen?: boolean,
-  ) => void;
+  onOptions: (patch: OptionsPatch) => void;
+  onEngine: (route: EngineRoute) => void;
 }): CascadeNode[] {
   const { entry } = route;
-  const engineNode: CascadeNode[] = [
-    {
-      key: "engine",
-      label: "引擎",
-      hint: route.label,
-      children: choice.routes.map((candidate) => ({
-        key: candidate.engine,
-        label: candidate.label,
-        selected: candidate.engine === route.engine,
-        disabled: engineLocked && candidate.engine !== route.engine,
-        ...(engineLocked && candidate.engine !== route.engine ? { title: "已有对话的任务不能换引擎" } : {}),
-        onPick: () => pick(candidate, undefined, true),
-      })),
-    },
-  ];
+  const nodes: CascadeNode[] = [];
+
   // The settings page picks a default *model*; what a task runs it with is the task's.
-  if (options == null) return engineNode;
-  const nodes = engineNode;
+  if (options != null) {
+    // Fast is the one tier on offer today; a model that declared several would want a submenu instead.
+    const fast = entry.serviceTiers?.[0];
+    if (fast != null) {
+      const on = options.serviceTier === fast.id;
+      nodes.push({
+        key: "fast",
+        label: fast.name,
+        toggle: on,
+        ...(fast.description != null ? { title: fast.description } : {}),
+        // A switch is flipped where it stands: the menu stays open.
+        onPick: () => onOptions({ serviceTier: on ? null : fast.id }),
+      });
+    }
 
-  const windows = entry.contextOptions ?? [];
-  if (windows.length > 0) {
-    const chosen = mine && options.contextWindow != null && windows.includes(options.contextWindow) ? options.contextWindow : (entry.contextWindow ?? windows[0]);
-    nodes.push({
-      key: "context",
-      label: "上下文",
-      ...(chosen != null ? { hint: formatContext(chosen) } : {}),
-      children: windows.map((window) => ({
-        key: String(window),
-        label: formatContext(window),
-        selected: window === chosen,
-        // The engine's own window is the absence of a choice.
-        onPick: () => pick(route, { contextWindow: window === (entry.contextWindow ?? windows[0]) ? null : window }),
-      })),
-    });
+    const windows = entry.contextOptions ?? [];
+    if (windows.length > 0) {
+      const own = entry.contextWindow ?? windows[0];
+      const chosen = options.contextWindow != null && windows.includes(options.contextWindow) ? options.contextWindow : own;
+      nodes.push({
+        key: "context",
+        label: "上下文",
+        ...(chosen != null ? { hint: formatContext(chosen) } : {}),
+        children: windows.map((window) => ({
+          key: String(window),
+          label: formatContext(window),
+          selected: window === chosen,
+          // The menu stays open: only switching models closes it.
+          onPick: () => onOptions({ contextWindow: window === own ? null : window }),
+        })),
+      });
+    }
+
+    const levels = entry.reasoningLevels ?? [];
+    if (levels.length > 0) {
+      const level = levelOf(entry, options.reasoningEffort);
+      nodes.push({
+        key: "effort",
+        label: "推理强度",
+        ...(level != null ? { hint: reasoningLabel(level) } : {}),
+        children: levels.map((option) => ({
+          key: option,
+          label: reasoningLabel(option),
+          selected: option === level,
+          onPick: () => onOptions({ reasoningEffort: option }),
+        })),
+      });
+    }
   }
 
-  const levels = entry.reasoningLevels ?? [];
-  if (levels.length > 0) {
-    const level = mine && options.reasoningEffort != null && levels.includes(options.reasoningEffort) ? options.reasoningEffort : entry.defaultReasoningLevel;
-    nodes.push({
-      key: "effort",
-      label: "推理强度",
-      ...(level != null ? { hint: reasoningLabel(level) } : {}),
-      children: levels.map((option) => ({
-        key: option,
-        label: reasoningLabel(option),
-        selected: option === level,
-        onPick: () => pick(route, { reasoningEffort: option }),
-      })),
-    });
-  }
-
-  // Fast is the one tier on offer today; a model that declares several would want a list here instead.
-  const fast = entry.serviceTiers?.[0];
-  if (fast != null) {
-    const on = mine && options.serviceTier === fast.id;
-    nodes.push({
-      key: "fast",
-      label: fast.name,
-      hint: on ? "开" : "关",
-      ...(fast.description != null ? { title: fast.description } : {}),
-      children: [
-        { key: "on", label: "开", selected: on, onPick: () => pick(route, { serviceTier: fast.id }) },
-        { key: "off", label: "关", selected: !on, onPick: () => pick(route, { serviceTier: null }) },
-      ],
-    });
-  }
+  nodes.push({
+    key: "engine",
+    label: "引擎",
+    hint: route.label,
+    children: choice.routes.map((candidate) => ({
+      key: candidate.engine,
+      label: candidate.label,
+      selected: candidate.engine === route.engine,
+      disabled: engineLocked && candidate.engine !== route.engine,
+      ...(engineLocked && candidate.engine !== route.engine ? { title: "已有对话的任务不能换引擎" } : {}),
+      onPick: () => onEngine(candidate),
+    })),
+  });
   return nodes;
 }
 
 /**
- * 「选模型」: one menu, a row per model with its source's icon — a model that
- * several engines can run is one row, not one per engine. Clicking a row picks
- * it as it stands; its submenu is where the engine, the context window, the
- * 推理强度 and Fast are chosen, each a third level (用户画的层级，2026-09-20).
+ * 模型 的子菜单: a row per model — a model several engines can run is one row,
+ * not one per engine — captioned by its source and searchable, because a gateway
+ * brings hundreds. Clicking a row runs that model on whichever engine it would
+ * get; 引擎 back on the first level is where that is overridden.
+ */
+function ModelList({
+  choices,
+  mine,
+  engine,
+  engineLocked,
+  modelEngines,
+  options,
+  loading,
+  failures,
+  onPick,
+}: {
+  choices: readonly ModelChoice[];
+  mine: ModelChoice | undefined;
+  engine: EngineId;
+  engineLocked: boolean;
+  modelEngines: Readonly<Record<string, EngineId>> | undefined;
+  options: ModelOptions | undefined;
+  loading: boolean;
+  failures: readonly string[];
+  onPick: (route: EngineRoute) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
+
+  const nodes: CascadeNode[] = choices.flatMap((choice) => {
+    const isMine = mine?.key === choice.key;
+    // The task's own row shows the engine it is really on; any other, the one it would get.
+    const route =
+      (isMine ? choice.routes.find((candidate) => candidate.engine === engine) : undefined) ??
+      preferredRoute(choice, engine, engineLocked, modelEngines);
+    if (route == null) return [];
+    if (needle !== "" && !`${choice.label} ${route.entry.id}`.toLowerCase().includes(needle)) return [];
+    // The level beside a name is what that row would run at, so the list reads as what it does.
+    const level = levelOf(route.entry, isMine ? options?.reasoningEffort : undefined);
+    return [
+      {
+        key: choice.key,
+        label: choice.label,
+        icon: <SourceIcon source={choice.source} />,
+        ...(choice.source.name !== "" ? { section: choice.source.name } : {}),
+        ...(level != null ? { hint: reasoningLabel(level) } : {}),
+        selected: isMine,
+        onPick: () => onPick(route),
+      },
+    ];
+  });
+
+  return (
+    <div className="w-[calc(var(--spacing-3xl)*5)]">
+      <input
+        autoFocus
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="搜索模型"
+        aria-label="搜索模型"
+        className="block w-full border-border border-b bg-transparent px-xs py-2xs text-fg text-sm outline-none placeholder:text-fg-faint"
+      />
+      {/* Every model of every source in one list; it has to be able to scroll. */}
+      <CascadeLevel nodes={nodes} className="max-h-[calc(var(--spacing-xl)*14)] overflow-y-auto pt-2xs" />
+      {nodes.length === 0 && (
+        <div className="px-xs py-2xs text-fg-faint text-sm">{loading ? "加载中…" : needle === "" ? "没有可用的模型" : "没有匹配的模型"}</div>
+      )}
+      {failures.map((message) => (
+        <div key={message} className="px-xs py-2xs text-2xs text-fg-faint">
+          模型列表加载失败：{message}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * 「选模型」: the knobs first — Fast / 上下文 / 推理强度 / 引擎, each reading as its
+ * current value — and 模型 last, its own submenu being the list of them
+ * (用户画的层级，2026-09-22，照 Cursor). What the task is on is therefore one
+ * click away from any of its settings, and the long list is behind the one row
+ * that needs it.
  */
 export function ModelPicker({
   engines,
@@ -241,6 +295,8 @@ export function ModelPicker({
   modelEngines,
   onRememberEngine,
   onCatalog,
+  /** When nothing is chosen yet, write the resolved model back so the chip is a real selection. */
+  commitDefault = false,
   trigger,
   align = "start",
   side = "bottom",
@@ -255,14 +311,15 @@ export function ModelPicker({
   engineLocked?: boolean;
   /** The engine always travels with the model. */
   onPick: (engine: EngineId, model: string | undefined) => void;
-  /** `null` hands a choice back to the model's own default. Called after `onPick` when the row was not the current one. */
-  onPickOptions?: (patch: Partial<{ reasoningEffort: string; serviceTier: string | null; contextWindow: number | null }>) => void;
+  /** `null` hands a choice back to the model's own default. */
+  onPickOptions?: (patch: OptionsPatch) => void;
   /** 记住上次选择: the engine last chosen per `modelKey` (`Settings.modelEngines`), and how a new choice is kept. */
   modelEngines?: Readonly<Record<string, EngineId>>;
   onRememberEngine?: (modelKey: string, engine: EngineId) => void;
-  /** See `useModelCatalog`: the *selected* engine's list, handed up for a sibling to read. */
+  /** See `useAllCatalogs`: the *selected* engine's list, handed up for a sibling to read. */
   onCatalog?: (catalog: ModelCatalog) => void;
-  /** `chip` is the effective model — a task that named none still shows what will run. */
+  commitDefault?: boolean;
+  /** `chip` is the model plus, in the composer, its 推理强度 and Fast. */
   trigger: (props: Parameters<Parameters<typeof Popover>[0]["trigger"]>[0], chip: ModelChip) => ReactNode;
   align?: "start" | "end";
   side?: "bottom" | "top";
@@ -272,65 +329,108 @@ export function ModelPicker({
   const catalog = selected?.status === "ready" ? selected.catalog : undefined;
   const label = engines.find((entry) => entry.id === engine)?.label ?? engine;
 
-  const effective = effectiveModel(model, catalog);
+  const resolved = resolveModel(model, catalog);
   /** What the catalog calls a model; its raw id until the list is loaded. */
   const nameOf = (id: string): string => catalog?.models.find((entry) => entry.id === id)?.label ?? id;
-  // What runs is shown, what the task persists is unchanged. When nobody knows
-  // the default, the engine's own name keeps the chip from reading as「哪个引擎的默认？」.
-  const chip: ModelChip =
-    model != null
-      ? { label: nameOf(model) }
-      : effective != null
-        ? { label: nameOf(effective), title: DEFAULT_MODEL_TITLE }
-        : { label: `${label} 默认`, title: label };
+  const modelName = resolved != null ? nameOf(resolved) : undefined;
+  const entry = resolved != null ? catalog?.models.find((item) => item.id === resolved) : undefined;
+  const level = options != null && entry != null ? levelOf(entry, options.reasoningEffort) : undefined;
+  const fast = entry?.serviceTiers?.[0];
+  const fastName = fast != null && options?.serviceTier === fast.id ? fast.name : undefined;
+  // The composer chip carries 推理强度 and Fast; the settings page names the model alone.
+  const chip: ModelChip = {
+    label:
+      modelName == null
+        ? "…"
+        : options == null
+          ? modelName
+          : modelChipLabel(modelName, level != null && !EFFORT_OFF.has(level) ? reasoningLabel(level) : undefined, fastName),
+  };
+
+  const pickRef = useRef(onPick);
+  pickRef.current = onPick;
+  const committed = useRef<string | null>(null);
+  useEffect(() => {
+    if (!commitDefault || model != null || resolved == null) return;
+    const key = `${engine}/${resolved}`;
+    if (committed.current === key) return;
+    committed.current = key;
+    pickRef.current(engine, resolved);
+  }, [commitDefault, engine, model, resolved]);
 
   const lists = Object.fromEntries(
     Object.entries(states).flatMap(([id, state]) => (state.status === "ready" ? [[id, state.catalog.models]] : [])),
   ) as Partial<Record<EngineId, ModelCatalog["models"]>>;
-  const choices = buildModelChoices(engines, lists, { engine, model });
-  const mine = currentChoice(choices, engine, effective);
+  const choices = buildModelChoices(engines, lists, { engine, model: model ?? resolved });
+  const mine = currentChoice(choices, engine, resolved);
   const loading = Object.values(states).some((state) => state.status === "loading");
   const failures = Object.values(states).flatMap((state) => (state.status === "error" ? [state.message] : []));
 
+  // The row whose knobs the first level shows: the resolved model, on the engine it runs on.
+  const route = mine == null ? undefined : (mine.routes.find((candidate) => candidate.engine === engine) ?? preferredRoute(mine, engine, engineLocked, modelEngines));
+
   return (
-    <Popover align={align} side={side} trigger={(props) => trigger(props, chip)}>
+    <Popover align={align} side={side} className="min-w-[calc(var(--spacing-3xl)*4)]" trigger={(props) => trigger(props, chip)}>
       {(close) => {
-        const pick = (choice: ModelChoice): Parameters<typeof optionNodes>[0]["pick"] => (route, patch, chosen) => {
-          if (chosen === true) onRememberEngine?.(choice.key, route.engine);
-          if (route.engine !== engine || route.entry.id !== model) onPick(route.engine, route.entry.id);
-          if (patch != null) onPickOptions?.(patch);
-          close();
+        const run = (next: EngineRoute): void => {
+          if (next.engine !== engine || next.entry.id !== model) onPick(next.engine, next.entry.id);
         };
-        const nodes: CascadeNode[] = choices.flatMap((choice, at) => {
-          const isMine = mine?.key === choice.key;
-          // The task's own row shows the engine it is really on; any other, the one it would get.
-          const route = (isMine ? choice.routes.find((candidate) => candidate.engine === engine) : undefined) ?? preferredRoute(choice, engine, engineLocked, modelEngines);
-          if (route == null) return [];
-          const previous = choices[at - 1];
-          return [
-            {
-              key: choice.key,
-              label: choice.label,
-              icon: <SourceIcon source={choice.source} />,
-              selected: isMine,
-              separated: previous != null && (previous.source.kind !== choice.source.kind || previous.source.id !== choice.source.id),
-              onPick: () => pick(choice)(route),
-              children: optionNodes({ choice, route, mine: isMine, options, engineLocked, pick: pick(choice) }),
-            },
-          ];
+        const nodes: CascadeNode[] =
+          mine != null && route != null
+            ? optionNodes({
+                choice: mine,
+                route,
+                options,
+                engineLocked,
+                onOptions: (patch) => onPickOptions?.(patch),
+                onEngine: (next) => {
+                  // 记住上次选择: an engine picked by hand is this model's from now on.
+                  // The menu stays open — only picking a different model closes it.
+                  onRememberEngine?.(mine.key, next.engine);
+                  run(next);
+                },
+              })
+            : // The catalog has not named a model yet. 引擎 can still be changed.
+              [
+                {
+                  key: "engine",
+                  label: "引擎",
+                  hint: label,
+                  children: engines.map((candidate) => ({
+                    key: candidate.id,
+                    label: candidate.label,
+                    selected: candidate.id === engine,
+                    disabled: engineLocked && candidate.id !== engine,
+                    ...(engineLocked && candidate.id !== engine ? { title: "已有对话的任务不能换引擎" } : {}),
+                    onPick: () => {
+                      if (candidate.id !== engine) onPick(candidate.id, undefined);
+                    },
+                  })),
+                },
+              ];
+        nodes.push({
+          key: "model",
+          label: "模型",
+          hint: modelName ?? "…",
+          separated: true,
+          content: (
+            <ModelList
+              choices={choices}
+              mine={mine}
+              engine={engine}
+              engineLocked={engineLocked}
+              modelEngines={modelEngines}
+              options={options}
+              loading={loading}
+              failures={failures}
+              onPick={(next) => {
+                run(next);
+                close();
+              }}
+            />
+          ),
         });
-        return (
-          <>
-            {/* Every model of every source in one list; it has to be able to scroll. */}
-            <CascadeLevel nodes={nodes} className="max-h-[calc(var(--spacing-xl)*14)] overflow-y-auto" />
-            {loading && nodes.length === 0 && <div className="px-xs py-2xs text-fg-faint text-sm">加载中…</div>}
-            {failures.map((message) => (
-              <div key={message} className="px-xs py-2xs text-2xs text-fg-faint">
-                模型列表加载失败：{message}
-              </div>
-            ))}
-          </>
-        );
+        return <CascadeLevel nodes={nodes} />;
       }}
     </Popover>
   );

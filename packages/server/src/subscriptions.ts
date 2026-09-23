@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { claudeCommand, claudeLoginEnv } from "./claude-login.js";
 import { CODEX_SUBSCRIPTION_PREFIX } from "@vgent/engine";
 import { describeSubscriptionAuth } from "@vgent/providers";
 import type { ModelCatalogService, ModelEntry } from "./models.js";
@@ -75,13 +76,14 @@ export function parseClaudeLoginStatus(stdout: string): ClaudeLoginStatus {
 }
 
 /**
- * Asks the `claude` CLI on PATH. That is the same login the Claude Code harness
+ * Asks the harness CLI, falling back to `claude` on PATH. That is the same login the Claude Code harness
  * runs on (its bridge reads `~/.claude` and the keychain the way the CLI does),
  * and asking the CLI keeps this process out of Anthropic's credentials entirely.
  */
-export function probeClaudeLogin(env: NodeJS.ProcessEnv = process.env): Promise<ClaudeLoginStatus> {
+export async function probeClaudeLogin(env: NodeJS.ProcessEnv = process.env): Promise<ClaudeLoginStatus> {
+  const command = await claudeCommand();
   return new Promise((resolve) => {
-    execFile("claude", ["auth", "status", "--json"], { env, timeout: 8_000, encoding: "utf8" }, (_error, stdout) => {
+    execFile(command, ["auth", "status", "--json"], { env: claudeLoginEnv(env), timeout: 8_000, encoding: "utf8" }, (_error, stdout) => {
       resolve(parseClaudeLoginStatus(typeof stdout === "string" ? stdout : ""));
     });
   });

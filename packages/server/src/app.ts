@@ -1,3 +1,4 @@
+import { createClaudeLogin } from "./claude-login.js";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID, timingSafeEqual } from "node:crypto";
@@ -58,8 +59,8 @@ import type {
   PermissionMode,
   Project,
   ThreadMode,
-  ThreadRecord,
   ThreadMessageMetadata,
+  ThreadRecord,
   ThreadRestorePoint,
   ThreadWorkspace,
   UiDensity,
@@ -1111,7 +1112,6 @@ export function createApp(options: CreateAppOptions): VgentApp {
     }
     if (thread.messages.length < 2) throw new BadRequestError("没有可压缩的对话", "compact_empty");
 
-    const model = options.compactModel ?? resolveModel(thread.model ?? DEFAULT_VGENT_MODEL, await providers.list());
     // A harness keeps the transcript the model sees; rewriting ours would only
     // desynchronise the two. `/compact` is a prompt its runtime understands, so
     // it goes in as a turn — marked, so the log draws it as the marker and
@@ -1127,6 +1127,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
       return c.json(await threadOf(id));
     }
 
+    const model = options.compactModel ?? resolveModel(thread.model ?? DEFAULT_VGENT_MODEL, await providers.list());
     const { messages } = await compactThread({ thread, model }).catch((error: unknown) => {
       throw new UpstreamModelError(`压缩失败: ${error instanceof Error ? error.message : String(error)}`);
     });
@@ -1421,6 +1422,14 @@ export function createApp(options: CreateAppOptions): VgentApp {
     c.json({ subscriptions: await subscriptions.list(await settings.get(), { refresh: c.req.query("refresh") === "1" }) }),
   );
 
+  const claudeLogin = createClaudeLogin();
+  app.post("/api/subscriptions/claude-subscription/login", async (c) => c.json(await claudeLogin.start()));
+  app.get("/api/subscriptions/claude-subscription/login", (c) => c.json(claudeLogin.status()));
+  app.delete("/api/subscriptions/claude-subscription/login", (c) => {
+    claudeLogin.cancel();
+    return c.json(claudeLogin.status());
+  });
+
   // One switch, or a whole column of them. Addressed by the table's row ids; the
   // per-agent model id behind each is ours to know, not the client's.
   app.put("/api/subscriptions/:id/models", async (c) => {
@@ -1524,6 +1533,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     app,
     projects,
     async shutdown() {
+      claudeLogin.cancel();
       if (debounce != null) clearTimeout(debounce);
       for (const timer of runtimeTimers) clearTimeout(timer);
       for (const unsubscribe of unsubscribes) unsubscribe();

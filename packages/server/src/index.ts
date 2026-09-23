@@ -196,3 +196,5 @@ export type {
 } from "@vgent/providers";
 export { createCatalogStore, type CatalogSnapshot, type CatalogSource, type CatalogStore } from "./store/catalog.js";
 export type { HarnessEngineId, HarnessRuntimeStatus } from "./harness-runtime.js";
+
+export type { ClaudeLoginAttempt } from "./claude-login.js";

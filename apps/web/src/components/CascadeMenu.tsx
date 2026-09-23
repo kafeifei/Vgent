@@ -1,21 +1,30 @@
 import { ChevronRight } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
-/** One row of a cascading menu. A row with `children` opens the next level; one with `onPick` is a choice. */
+/**
+ * One row of a cascading menu. A row with `children` or `content` opens the next
+ * level; one with `onPick` is a choice; one with `toggle` is a switch it flips.
+ */
 export interface CascadeNode {
   key: string;
   label: ReactNode;
   icon?: ReactNode;
   /** The current value, shown dimmed on the right of a row that opens a submenu. */
   hint?: string;
+  /** A caption above this row; rows sharing one are captioned once, at the first. */
+  section?: string;
   selected?: boolean;
   disabled?: boolean;
   title?: string;
-  /** A gap above this row: the start of a new group. */
+  /** A rule above this row: the start of a new group. */
   separated?: boolean;
+  /** Draws a switch in this state on the right; clicking the row flips it. */
+  toggle?: boolean;
   onPick?: () => void;
   children?: CascadeNode[];
+  /** A submenu that is not rows — the model list, which brings its own search box. */
+  content?: ReactNode;
 }
 
 /** Long enough that crossing a neighbour on the way into a submenu does not switch it. */
@@ -38,9 +47,11 @@ export function CascadeLevel({ nodes, className }: { nodes: readonly CascadeNode
   };
   useEffect(() => cancel, []);
 
+  const submenu = (node: CascadeNode): boolean => node.children != null || node.content != null;
+
   const activate = (node: CascadeNode, element: HTMLElement, now: boolean) => {
     cancel();
-    const apply = () => setActive(node.children != null && node.disabled !== true ? { key: node.key, rect: element.getBoundingClientRect() } : null);
+    const apply = () => setActive(submenu(node) && node.disabled !== true ? { key: node.key, rect: element.getBoundingClientRect() } : null);
     if (now) apply();
     else timer.current = setTimeout(apply, HOVER_INTENT_MS);
   };
@@ -51,41 +62,68 @@ export function CascadeLevel({ nodes, className }: { nodes: readonly CascadeNode
     <>
       {/* The anchor rect is taken once, so a list that scrolls lets go of its submenu rather than leave it floating. */}
       <div className={className} onScroll={() => setActive(null)}>
-        {nodes.map((node) => (
-          <button
-            key={node.key}
-            type="button"
-            role="menuitem"
-            disabled={node.disabled === true}
-            aria-haspopup={node.children != null ? "menu" : undefined}
-            aria-expanded={node.children != null ? active?.key === node.key : undefined}
-            {...(node.title != null ? { title: node.title } : {})}
-            onMouseEnter={(event) => activate(node, event.currentTarget, false)}
-            onMouseLeave={cancel}
-            onClick={(event) => {
-              if (node.onPick != null) node.onPick();
-              else activate(node, event.currentTarget, true);
-            }}
-            className={cn(
-              "flex w-full items-center gap-xs rounded-sm px-xs py-2xs text-left text-fg-muted text-sm hover:bg-bg-active hover:text-fg disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-fg-muted",
-              active?.key === node.key && "bg-bg-active text-fg",
-              node.separated === true && "mt-xs",
+        {nodes.map((node, at) => (
+          <Fragment key={node.key}>
+            {node.separated === true && at > 0 && <div aria-hidden className="my-2xs h-px bg-border" />}
+            {node.section != null && node.section !== nodes[at - 1]?.section && (
+              <div className="px-xs pt-xs pb-3xs text-fg-faint text-xs">{node.section}</div>
             )}
-          >
-            {node.icon}
-            <span className="min-w-0 flex-1 truncate">{node.label}</span>
-            {node.hint != null && <span className="flex-none text-fg-faint text-xs">{node.hint}</span>}
-            {node.selected === true && <span className="flex-none text-brand">✓</span>}
-            {node.children != null && <ChevronRight aria-hidden className="size-sm flex-none text-fg-faint" />}
-          </button>
+            <button
+              type="button"
+              role={node.toggle != null ? "menuitemcheckbox" : "menuitem"}
+              {...(node.toggle != null ? { "aria-checked": node.toggle } : {})}
+              disabled={node.disabled === true}
+              aria-haspopup={submenu(node) ? "menu" : undefined}
+              aria-expanded={submenu(node) ? active?.key === node.key : undefined}
+              {...(node.title != null ? { title: node.title } : {})}
+              onMouseEnter={(event) => activate(node, event.currentTarget, false)}
+              onMouseLeave={cancel}
+              onClick={(event) => {
+                if (node.onPick != null) node.onPick();
+                else activate(node, event.currentTarget, true);
+              }}
+              className={cn(
+                "flex w-full items-center gap-xs rounded-sm px-xs py-2xs text-left text-fg-muted text-sm hover:bg-bg-active hover:text-fg disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-fg-muted",
+                active?.key === node.key && "bg-bg-active text-fg",
+              )}
+            >
+              {node.icon}
+              <span className="min-w-0 flex-1 truncate">{node.label}</span>
+              {node.hint != null && <span className="max-w-[18ch] flex-none truncate text-fg-faint text-xs">{node.hint}</span>}
+              {node.toggle != null && <Toggle on={node.toggle} />}
+              {node.selected === true && <span className="flex-none text-brand">✓</span>}
+              {submenu(node) && <ChevronRight aria-hidden className="size-sm flex-none text-fg-faint" />}
+            </button>
+          </Fragment>
         ))}
       </div>
-      {open?.children != null && active != null && (
-        <Flyout anchor={active.rect}>
-          <CascadeLevel nodes={open.children} />
-        </Flyout>
+      {open != null && active != null && (open.content != null || open.children != null) && (
+        <Flyout anchor={active.rect}>{open.content ?? <CascadeLevel nodes={open.children ?? []} />}</Flyout>
       )}
     </>
+  );
+}
+
+/**
+ * The switch on a toggle row. A span rather than a button — the row it sits in
+ * is the button, and it is what the click has to reach.
+ */
+function Toggle({ on }: { on: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "relative h-md w-[calc(var(--spacing-md)*1.75)] flex-none rounded-full border border-border bg-bg-inset transition-colors",
+        on && "border-brand bg-brand",
+      )}
+    >
+      <span
+        className={cn(
+          "absolute top-1/2 left-px size-[calc(var(--spacing-md)-4px)] -translate-y-1/2 rounded-full bg-fg-muted transition-transform",
+          on && "translate-x-[calc(var(--spacing-md)*0.75)] bg-brand-fg",
+        )}
+      />
+    </span>
   );
 }
 

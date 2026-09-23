@@ -1,0 +1,135 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 560" width="800" height="560" role="img" aria-label="A pelican riding a bicycle">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#9fd4ee"/>
+      <stop offset="55%" stop-color="#d7eef8"/>
+      <stop offset="100%" stop-color="#f4e9c8"/>
+    </linearGradient>
+    <linearGradient id="road" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#8aa07a"/>
+      <stop offset="100%" stop-color="#6e8a62"/>
+    </linearGradient>
+    <linearGradient id="pouch" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f4c14a"/>
+      <stop offset="100%" stop-color="#e08a2a"/>
+    </linearGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#fffdf8"/>
+      <stop offset="100%" stop-color="#e6e0d4"/>
+    </linearGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="6" flood-color="#3a4a2a" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+
+  <rect width="800" height="560" fill="url(#sky)"/>
+
+  <!-- distant hills -->
+  <path d="M0 390 C120 340 210 360 320 350 C430 340 500 300 620 320 C700 334 760 318 800 330 L800 420 L0 420 Z" fill="#b7d3a8"/>
+  <path d="M0 430 C180 400 280 440 420 418 C560 396 680 430 800 410 L800 560 L0 560 Z" fill="url(#road)"/>
+
+  <!-- sun -->
+  <circle cx="670" cy="92" r="42" fill="#ffe08a"/>
+  <circle cx="670" cy="92" r="58" fill="#ffe08a" opacity="0.28"/>
+
+  <!-- clouds -->
+  <g fill="#ffffff" opacity="0.85">
+    <ellipse cx="140" cy="88" rx="46" ry="22"/>
+    <ellipse cx="178" cy="80" rx="34" ry="20"/>
+    <ellipse cx="110" cy="84" rx="28" ry="16"/>
+    <ellipse cx="520" cy="70" rx="40" ry="18"/>
+    <ellipse cx="552" cy="64" rx="26" ry="14"/>
+  </g>
+
+  <!-- bicycle shadow -->
+  <ellipse cx="400" cy="478" rx="210" ry="16" fill="#4d623f" opacity="0.22"/>
+
+  <g transform="translate(70,40)" filter="url(#soft)">
+    <!-- rear wheel -->
+    <g transform="translate(150,360)">
+      <circle r="78" fill="none" stroke="#2b2b2b" stroke-width="10"/>
+      <circle r="12" fill="#2b2b2b"/>
+      <g stroke="#2b2b2b" stroke-width="3" opacity="0.7">
+        <line x1="0" y1="-70" x2="0" y2="70"/>
+        <line x1="-70" y1="0" x2="70" y2="0"/>
+        <line x1="-49" y1="-49" x2="49" y2="49"/>
+        <line x1="49" y1="-49" x2="-49" y2="49"/>
+      </g>
+      <circle r="70" fill="none" stroke="#6a6a6a" stroke-width="2"/>
+    </g>
+
+    <!-- front wheel -->
+    <g transform="translate(470,360)">
+      <circle r="78" fill="none" stroke="#2b2b2b" stroke-width="10"/>
+      <circle r="12" fill="#2b2b2b"/>
+      <g stroke="#2b2b2b" stroke-width="3" opacity="0.7">
+        <line x1="0" y1="-70" x2="0" y2="70"/>
+        <line x1="-70" y1="0" x2="70" y2="0"/>
+        <line x1="-49" y1="-49" x2="49" y2="49"/>
+        <line x1="49" y1="-49" x2="-49" y2="49"/>
+      </g>
+      <circle r="70" fill="none" stroke="#6a6a6a" stroke-width="2"/>
+    </g>
+
+    <!-- frame -->
+    <g fill="none" stroke="#c23b2b" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M150 360 L270 230 L430 230 L470 360"/>
+      <path d="M270 230 L230 360"/>
+      <path d="M270 230 L360 360"/>
+      <path d="M430 230 L410 175"/>
+    </g>
+    <path d="M410 175 L455 168" fill="none" stroke="#2b2b2b" stroke-width="10" stroke-linecap="round"/>
+    <path d="M448 150 Q470 168 448 186" fill="none" stroke="#2b2b2b" stroke-width="8" stroke-linecap="round"/>
+    <path d="M230 360 Q210 348 198 360 Q210 372 230 360" fill="#2b2b2b"/>
+    <circle cx="230" cy="360" r="10" fill="#2b2b2b"/>
+    <!-- pedals -->
+    <g stroke="#2b2b2b" stroke-width="6" stroke-linecap="round">
+      <line x1="230" y1="360" x2="198" y2="400"/>
+      <line x1="230" y1="360" x2="262" y2="320"/>
+      <rect x="184" y="396" width="28" height="8" rx="3" fill="#2b2b2b"/>
+      <rect x="248" y="316" width="28" height="8" rx="3" fill="#2b2b2b"/>
+    </g>
+    <!-- seat -->
+    <ellipse cx="268" cy="218" rx="28" ry="10" fill="#3a2a22"/>
+  </g>
+
+  <!-- pelican -->
+  <g transform="translate(70,40)">
+    <!-- tail -->
+    <path d="M150 210 Q110 200 95 230 Q130 228 160 236 Z" fill="#d8d2c6"/>
+    <!-- body -->
+    <ellipse cx="250" cy="200" rx="95" ry="62" fill="url(#body)"/>
+    <!-- wing -->
+    <path d="M200 185 Q250 120 330 155 Q300 195 230 210 Z" fill="#cfc8bb"/>
+    <path d="M215 175 Q255 140 310 160" fill="none" stroke="#b7b0a3" stroke-width="3"/>
+    <path d="M220 188 Q258 158 305 175" fill="none" stroke="#b7b0a3" stroke-width="3"/>
+    <!-- neck -->
+    <path d="M330 175 C360 155 375 120 355 95 C340 78 310 88 312 112 C314 132 338 145 350 168" fill="url(#body)"/>
+    <!-- head -->
+    <ellipse cx="338" cy="86" rx="38" ry="30" fill="url(#body)"/>
+    <!-- pouch / beak -->
+    <path d="M360 78 L470 92 Q485 110 455 128 L368 108 Q350 102 352 90 Z" fill="url(#pouch)"/>
+    <path d="M360 78 L478 90" fill="none" stroke="#d9a03a" stroke-width="6" stroke-linecap="round"/>
+    <!-- eye -->
+    <circle cx="328" cy="80" r="7" fill="#1c1c1c"/>
+    <circle cx="330" cy="78" r="2.2" fill="#fff"/>
+    <!-- crest -->
+    <path d="M310 70 Q300 48 322 58" fill="none" stroke="#cfc8bb" stroke-width="6" stroke-linecap="round"/>
+    <!-- legs to pedals -->
+    <path d="M230 245 Q210 300 198 400" fill="none" stroke="#f0c36a" stroke-width="10" stroke-linecap="round"/>
+    <path d="M270 248 Q280 300 262 324" fill="none" stroke="#f0c36a" stroke-width="10" stroke-linecap="round"/>
+    <!-- webbed feet -->
+    <path d="M186 400 Q198 412 214 402 Q204 396 186 400 Z" fill="#e2a84a"/>
+    <path d="M250 322 Q262 334 278 324 Q268 318 250 322 Z" fill="#e2a84a"/>
+    <!-- wing on handlebar -->
+    <path d="M320 175 Q390 150 450 168 Q400 190 330 198 Z" fill="#d9d3c7"/>
+    <circle cx="448" cy="168" r="8" fill="#f0c36a"/>
+  </g>
+
+  <!-- motion lines -->
+  <g stroke="#5a6d80" stroke-width="3" stroke-linecap="round" opacity="0.35">
+    <line x1="40" y1="420" x2="90" y2="420"/>
+    <line x1="30" y1="436" x2="70" y2="436"/>
+    <line x1="50" y1="452" x2="95" y2="452"/>
+  </g>
+</svg>

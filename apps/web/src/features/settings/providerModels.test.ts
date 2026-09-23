@@ -131,6 +131,17 @@ describe("the model table", () => {
     expect(off.agents.vgent?.models).toEqual([]);
   });
 
+  it("force-enables an unconfigured agent by reusing an existing endpoint", () => {
+    const input = withModels(connected, "codex", [{ id: "v4-pro", label: "V4 Pro" }], true);
+    expect(input.agents.codex).toEqual({
+      baseURL: "https://api.deepseek.com",
+      protocol: "openai-compatible",
+      models: [{ id: "v4-pro", label: "V4 Pro" }],
+    });
+    expect(input.agents.vgent?.models).toEqual([{ id: "v4-pro", label: "V4 Pro" }]);
+    expect(input.agents["claude-code"]?.models).toEqual([]);
+  });
+
   it("reads a switch, filters rows, and sums a provider up", () => {
     expect(isEnabled(connected, "vgent", "v4-pro")).toBe(true);
     expect(isEnabled(connected, "claude-code", "v4-pro")).toBe(false);
@@ -176,7 +187,7 @@ describe("订阅", () => {
     expect(describeSubscription(bare, labelOf)).toBe("已登录");
     expect(describeSubscription({ ...codex, loggedIn: false }, labelOf)).toBe("自研 · Codex 能用 · 还没登录 · 不用 key");
     const { loggedIn: _unknown, ...unknown } = codex;
-    expect(describeSubscription(unknown, labelOf)).toContain("查不到登录状态");
+    expect(describeSubscription(unknown, labelOf)).toContain("暂时无法确认登录状态");
     expect(describeSubscription({ ...codex, method: "api_key" }, labelOf)).toContain("登录方式：api_key");
   });
 

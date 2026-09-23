@@ -23,6 +23,7 @@ struct ConnectionFile {
 /// Change both together.
 const INSTANCE_LOCKED_EXIT_CODE: i32 = 75;
 
+#[derive(Clone)]
 pub struct BackendReady {
     pub url: Url,
     pub token: String,
@@ -141,7 +142,9 @@ fn path_with(node_dir: Option<&Path>) -> Option<std::ffi::OsString> {
         .map(std::ffi::OsString::from)
         .or_else(|| std::env::var_os("PATH"))
         .unwrap_or_default();
-    let mut entries: Vec<PathBuf> = node_dir.map(|dir| vec![dir.to_path_buf()]).unwrap_or_default();
+    let mut entries: Vec<PathBuf> = node_dir
+        .map(|dir| vec![dir.to_path_buf()])
+        .unwrap_or_default();
     entries.extend(std::env::split_paths(&base));
     std::env::join_paths(entries).ok()
 }

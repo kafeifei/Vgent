@@ -1,0 +1,17 @@
+---
+description: 改完代码就发 Vgent debug，不要自动重启正在运行的应用
+alwaysApply: true
+---
+
+# 改完发 debug
+
+用户要求的代码改动落地后，立刻打一版 debug 并装上，不要等用户再说「发 debug」。
+
+1. `node apps/desktop/scripts/bump-build.mjs` 把版本加成 `0.1.<n>`。
+2. 在仓库根目录跑 `pnpm desktop:build`。
+3. 装到 `/Applications/Vgent.app`。
+
+不要自动重启。禁止 `open`、AppleScript `quit`、`kill`、`pkill`、`killall`。
+
+- 应用正在跑：不要退出它。把正在用的包挪成 `/Applications/Vgent.app.old`，新包装到 `/Applications/Vgent.app`。告诉用户新版本号，并说明当前进程仍是旧包，要他们自己退出再打开。
+- 应用没在跑：直接换上新包，不要替用户启动。告诉用户版本号，请他们自己打开。

@@ -85,6 +85,8 @@ async function smokeTest(bundledNode) {
     env,
     stdio: ["ignore", "pipe", "pipe"],
   });
+  // Attach before polling: if startup fails, its exit may arrive before finally.
+  const exited = new Promise((resolve) => child.once("exit", resolve));
   const log = [];
   child.stdout.on("data", (chunk) => log.push(String(chunk)));
   child.stderr.on("data", (chunk) => log.push(String(chunk)));
@@ -98,8 +100,8 @@ async function smokeTest(bundledNode) {
     }
     throw new Error(`内置服务 30 秒内没有写出 connection.json：\n${log.join("")}`);
   } finally {
-    child.kill("SIGTERM");
-    await new Promise((r) => child.once("exit", r));
+    if (child.exitCode == null && child.signalCode == null) child.kill("SIGTERM");
+    await exited;
     await rm(dataDir, { recursive: true, force: true });
   }
 }

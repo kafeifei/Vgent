@@ -141,8 +141,10 @@ export function withAgentChoices(
 }
 
 /** The agents a connected provider has an endpoint for, in column order. */
-export function agentsOf(provider: RedactedProviderConfig): ProviderAgent[] {
-  return AGENT_ORDER.filter((agent) => provider.agents[agent] != null);
+export function agentsOf(provider: RedactedProviderConfig, available?: readonly ProviderAgent[]): ProviderAgent[] {
+  const configured = AGENT_ORDER.filter((agent) => provider.agents[agent] != null);
+  if (available == null) return configured;
+  return AGENT_ORDER.filter((agent) => configured.includes(agent) || available.includes(agent));
 }
 
 /**
@@ -192,6 +194,11 @@ export function withModels(provider: RedactedProviderConfig, agent: ProviderAgen
       ? [...current.models, ...models.filter((model) => !current.models.some((entry) => entry.id === model.id))]
       : current.models.filter((model) => !ids.has(model.id));
     agents[agent] = { ...current, models: next };
+  } else if (on && models.length > 0) {
+    // Force-enabling another engine reuses the first configured endpoint. The
+    // server normalizes Claude Code/Codex to their required protocol.
+    const fallback = AGENT_ORDER.map((candidate) => provider.agents[candidate]).find((entry) => entry != null);
+    if (fallback != null) agents[agent] = { ...fallback, models: [...models] };
   }
   return { name: provider.name, ...(provider.presetId != null ? { presetId: provider.presetId } : {}), agents };
 }
@@ -218,7 +225,7 @@ export function formatContext(tokens: number | undefined): string {
 
 // --- 订阅 ---------------------------------------------------------------
 
-/** A subscription counts as connected once its login is there; signed out or unknown, it is one more thing to connect. */
+/** Login state controls the available action, never the subscription’s position. */
 export function isSignedIn(account: SubscriptionAccount): boolean {
   return account.loggedIn === true;
 }
@@ -226,7 +233,7 @@ export function isSignedIn(account: SubscriptionAccount): boolean {
 /** The line under a subscription's name: whose login, which plan, who can use it. */
 export function describeSubscription(account: SubscriptionAccount, label: (agent: ProviderAgent) => string): string {
   const served = `${account.agents.map(label).join(" · ")} 能用`;
-  if (account.loggedIn == null) return `${served} · 查不到登录状态（没找到它的命令行工具）`;
+  if (account.loggedIn == null) return `${served} · 暂时无法确认登录状态`;
   if (!account.loggedIn) return `${served} · 还没登录 · 不用 key`;
   // Signed in, who can use it is said by the model counts that follow; the account is what is worth the room.
   const parts = [account.email, account.plan != null ? planLabel(account.plan) : undefined, account.method != null ? `登录方式：${account.method}` : undefined].filter((part) => part != null);

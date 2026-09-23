@@ -35,6 +35,7 @@ import type {
   ThreadSummary,
   WorkspaceMode,
 } from "./types";
+import type { DraftPayload, DraftValue } from "./drafts";
 import { pickNativePath } from "./nativePicker";
 
 /** What the provider form sends. The key travels up only; nothing the server answers carries one. */
@@ -356,16 +357,18 @@ export function createClient(token: string) {
     getSetupLog: (id: string) => api<SetupLog>(`/threads/${id}/workspace/setup-log`, token),
 
     /**
-     * 草稿: the composer's half-typed text, per task (`NEW_TASK_DRAFT` for the
-     * empty state). It lives on the server because the desktop shell's WebView
-     * gets a new origin — and an empty `localStorage` — on every launch.
-     * `keepalive` lets the last write go out from a page that is already leaving.
+     * 草稿: the composer's half-typed text and the files waiting with it, per
+     * task (`NEW_TASK_DRAFT` for the empty state). It lives on the server because
+     * the desktop shell's WebView gets a new origin — and an empty `localStorage`
+     * — on every launch. A file's bytes travel once, as a `data:` URL; later
+     * writes name it by id. `keepalive` lets the last write go out from a page
+     * that is already leaving.
      */
-    getDraft: (key: string) => api<{ text: string }>(`/drafts/${encodeURIComponent(key)}`, token).then((body) => body.text),
-    putDraft: (key: string, text: string, options?: { keepalive?: boolean }) =>
-      api<{ text: string }>(`/drafts/${encodeURIComponent(key)}`, token, {
+    getDraft: (key: string) => api<DraftValue>(`/drafts/${encodeURIComponent(key)}`, token),
+    putDraft: (key: string, draft: DraftPayload, options?: { keepalive?: boolean }) =>
+      api<DraftValue>(`/drafts/${encodeURIComponent(key)}`, token, {
         method: "PUT",
-        json: { text },
+        json: draft,
         ...(options?.keepalive === true ? { keepalive: true } : {}),
       }).then(() => undefined),
 

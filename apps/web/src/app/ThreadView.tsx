@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import type { Chat } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
-import { toFileParts, type Attachment } from "@/features/composer/attachments";
+import { toFileParts } from "@/features/composer/attachments";
 import type { SlashCommand } from "@/features/composer/slash";
 import type { ChangesView } from "@/features/changes/useChanges";
 import { Composer } from "@/features/composer/Composer";
@@ -221,9 +221,9 @@ function ThreadChatView({
 
   /** One in-flight submit at a time: the text now stays until the server answers. */
   const sending = useRef(false);
-  // 附件 belong to the message being written, like the text; unlike the text
-  // they are not saved as a draft — they are large and cheap to pick again.
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // 附件 belong to the message being written, like the text, and are kept in
+  // the same draft — a file dropped in before a task switch is still there.
+  const { attachments, setAttachments } = draft;
   const submit = () => {
     const text = draft.value.trim();
     if ((text === "" && attachments.length === 0) || sending.current) return;
@@ -245,7 +245,8 @@ function ThreadChatView({
     // The one command the composer understands; everything else is a message.
     if (text === "/compact") {
       void actions.compactThread(thread.id);
-      draft.clear();
+      // The command leaves; a file waiting with it is not what was consumed.
+      draft.edit("");
       return;
     }
     // 发送失败不吞草稿: the text only leaves the composer once the server took
@@ -253,9 +254,7 @@ function ThreadChatView({
     sending.current = true;
     void actions.send(thread.id, text, toFileParts(attachments)).then((accepted) => {
       sending.current = false;
-      if (!accepted) return;
-      draft.clear();
-      setAttachments([]);
+      if (accepted) draft.clear();
     });
   };
 

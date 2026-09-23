@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import type { FileUIPart } from "ai";
 import { ChevronDown } from "lucide-react";
-import { toFileParts, type Attachment } from "@/features/composer/attachments";
+import type { Attachment } from "@/features/composer/attachments";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ProjectPicker } from "@/components/ProjectPicker";
 import { Composer } from "@/features/composer/Composer";
@@ -72,7 +71,7 @@ export function EmptyState({
     model: string | null,
     reasoningEffort: string | null,
     mode: ThreadMode,
-    files: FileUIPart[],
+    attachments: readonly Attachment[],
     serviceTier: string | null,
     contextWindow: number | null,
   ) => Promise<boolean>;
@@ -128,9 +127,9 @@ export function EmptyState({
 
   /** One in-flight start at a time: the text stays until the task really exists. */
   const starting = useRef(false);
-  // 附件 are not part of the saved draft: they are large, and a file picked for
-  // a task that was never started is not worth keeping on the server.
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // 附件 are part of the draft too: a file dropped here is on the server under
+  // `new` until it becomes the first message's, or the tile is removed.
+  const { attachments, setAttachments } = draft;
   const submit = () => {
     if (engine == null || starting.current) return;
     const text = draft.value.trim();
@@ -141,11 +140,9 @@ export function EmptyState({
     }
     starting.current = true;
     // A worktree is cut from a repository; 无项目 has none.
-    void onStart(text, engine, noProject ? "project" : workspace, model, reasoningEffort, mode, toFileParts(attachments), serviceTier, contextWindow).then((started) => {
+    void onStart(text, engine, noProject ? "project" : workspace, model, reasoningEffort, mode, attachments, serviceTier, contextWindow).then((started) => {
       starting.current = false;
-      if (!started) return;
-      draft.clear();
-      setAttachments([]);
+      if (started) draft.clear();
     });
   };
 

@@ -1,14 +1,12 @@
 import type { FileUIPart } from "ai";
+import type { DraftAttachment } from "@/lib/drafts";
 
-/** A file the user picked, pasted or dropped, waiting in the composer to go out with the next message. */
-export interface Attachment {
-  id: string;
-  name: string;
-  mediaType: string;
-  /** A `data:` URL: what the message carries, and what the thumbnail draws. */
-  url: string;
-  size: number;
-}
+/**
+ * A file the user picked, pasted or dropped, waiting in the composer to go out
+ * with the next message. It is part of the draft, so it survives a task switch
+ * and a relaunch like the text does.
+ */
+export type Attachment = DraftAttachment;
 
 /**
  * Per file. The message travels as JSON and is stored in the thread's file, so

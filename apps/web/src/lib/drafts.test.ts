@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DraftSync, NEW_TASK_DRAFT, pruneDrafts } from "./drafts";
+import { DraftSync, NEW_TASK_DRAFT, pruneDrafts, type DraftAttachment, type DraftPayload, type DraftValue } from "./drafts";
 
 const KEY = "t1";
+
+const PNG: DraftAttachment = { id: "a1", name: "截图.png", mediaType: "image/png", url: "data:image/png;base64,AAEC", size: 3 };
+const { url: _pngUrl, ...PNG_META } = PNG;
+
+const value = (text: string, attachments: DraftAttachment[] = []): DraftValue => ({ text, attachments });
 
 /** `localStorage`, as the cache layer uses it: node has none. */
 function fakeStorage() {
@@ -20,21 +25,25 @@ function fakeStorage() {
 }
 
 /** The two draft routes, recorded. `remote` is what the server answers a `GET` with. */
-function fakeTransport(remote: string | Promise<string> = "") {
+function fakeTransport(remote: string | DraftValue = "") {
   const puts: Array<{ key: string; text: string; keepalive: boolean }> = [];
+  /** The whole payload, for the tests that care about what rode along. */
+  const payloads: DraftPayload[] = [];
   let fail = false;
   return {
     puts,
+    payloads,
     failNext: () => {
       fail = true;
     },
-    getDraft: () => Promise.resolve(remote),
-    putDraft: (key: string, text: string, options?: { keepalive?: boolean }) => {
+    getDraft: () => Promise.resolve(typeof remote === "string" ? value(remote) : remote),
+    putDraft: (key: string, draft: DraftPayload, options?: { keepalive?: boolean }) => {
       if (fail) {
         fail = false;
         return Promise.reject(new Error("离线"));
       }
-      puts.push({ key, text, keepalive: options?.keepalive === true });
+      puts.push({ key, text: draft.text, keepalive: options?.keepalive === true });
+      payloads.push(draft);
       return Promise.resolve();
     },
   };
@@ -56,26 +65,51 @@ describe("DraftSync 打开任务", () => {
   it("paints the cached text first and then lets the server's copy win", async () => {
     cache.set("vgent.draft.t1", "本地缓存的一半");
     const transport = fakeTransport("服务端存的那份");
-    const seen: string[] = [];
-    const sync = new DraftSync(KEY, transport, (text) => seen.push(text));
+    const seen: DraftValue[] = [];
+    const sync = new DraftSync(KEY, transport, (draft) => seen.push(draft));
 
-    expect(sync.current).toBe("本地缓存的一半");
+    expect(sync.current).toEqual(value("本地缓存的一半"));
     await sync.start();
-    expect(seen).toEqual(["服务端存的那份"]);
-    expect(sync.current).toBe("服务端存的那份");
+    expect(seen).toEqual([value("服务端存的那份")]);
+    expect(sync.current).toEqual(value("服务端存的那份"));
     // The cache now matches, so the next launch paints the right thing at once.
     expect(cache.get("vgent.draft.t1")).toBe("服务端存的那份");
   });
 
   it("keeps what the user has typed since mount, whatever the server says", async () => {
     const transport = fakeTransport("服务端存的那份");
-    const seen: string[] = [];
-    const sync = new DraftSync(KEY, transport, (text) => seen.push(text));
+    const seen: DraftValue[] = [];
+    const sync = new DraftSync(KEY, transport, (draft) => seen.push(draft));
 
     sync.edit("我刚敲的");
     await sync.start();
     expect(seen).toEqual([]);
-    expect(sync.current).toBe("我刚敲的");
+    expect(sync.current).toEqual(value("我刚敲的"));
+  });
+
+  it("brings the server's files in even when the user has already typed, and never sends their bytes back", async () => {
+    const transport = fakeTransport(value("服务端的字", [PNG]));
+    const seen: DraftValue[] = [];
+    const sync = new DraftSync(KEY, transport, (draft) => seen.push(draft));
+
+    sync.edit("我刚敲的");
+    await sync.start();
+    // The text the user typed stays; the files were not touched, so they arrive.
+    expect(seen).toEqual([value("我刚敲的", [PNG])]);
+
+    sync.edit("我刚敲的，再来");
+    vi.advanceTimersByTime(300);
+    expect(transport.payloads.at(-1)).toEqual({ text: "我刚敲的，再来", attachments: [PNG_META] });
+  });
+
+  it("keeps the files the user changed since mount over the server's", async () => {
+    const other: DraftAttachment = { ...PNG, id: "z9", name: "另一张.png" };
+    const transport = fakeTransport(value("", [PNG]));
+    const sync = new DraftSync(KEY, transport, () => expect.unreachable("本地已经动过附件，服务端那份不该盖过来"));
+
+    sync.setAttachments([other]);
+    await sync.start();
+    expect(sync.current.attachments).toEqual([other]);
   });
 
   it("leaves the cached text alone when the server cannot answer", async () => {
@@ -83,7 +117,7 @@ describe("DraftSync 打开任务", () => {
     const transport = { getDraft: () => Promise.reject(new Error("断线")), putDraft: () => Promise.resolve() };
     const sync = new DraftSync(KEY, transport, () => expect.unreachable("没有远端值就不该重画"));
     await sync.start();
-    expect(sync.current).toBe("只有本地有");
+    expect(sync.current).toEqual(value("只有本地有"));
   });
 });
 
@@ -146,6 +180,48 @@ describe("DraftSync 写回", () => {
 
     vi.advanceTimersByTime(5000);
     expect(transport.puts).toHaveLength(1);
+  });
+
+  it("sends a new file at once with its bytes, then names it by id, and clears it with the text", async () => {
+    const transport = fakeTransport();
+    const sync = new DraftSync(KEY, transport, () => {});
+
+    sync.edit("看这张");
+    sync.setAttachments([PNG]);
+    // Not on the debounce: the file is on the server before the timer would fire.
+    expect(transport.payloads).toEqual([{ text: "看这张", attachments: [PNG] }]);
+    await Promise.resolve();
+
+    sync.edit("看这张图");
+    vi.advanceTimersByTime(300);
+    expect(transport.payloads.at(-1)).toEqual({ text: "看这张图", attachments: [PNG_META] });
+
+    sync.clear();
+    expect(transport.payloads.at(-1)).toEqual({ text: "", attachments: [] });
+    expect(sync.current).toEqual(value(""));
+  });
+
+  it("sends the bytes again after a failed write, since it is unknown how far it got", async () => {
+    const transport = fakeTransport();
+    const sync = new DraftSync(KEY, transport, () => {});
+
+    transport.failNext();
+    sync.setAttachments([PNG]);
+    await Promise.resolve();
+    expect(transport.payloads).toEqual([]);
+
+    sync.edit("再试");
+    vi.advanceTimersByTime(300);
+    expect(transport.payloads).toEqual([{ text: "再试", attachments: [PNG] }]);
+  });
+
+  it("removing a tile writes the shorter list right away", async () => {
+    const transport = fakeTransport(value("", [PNG]));
+    const sync = new DraftSync(KEY, transport, () => {});
+    await sync.start();
+
+    sync.setAttachments([]);
+    expect(transport.payloads).toEqual([{ text: "", attachments: [] }]);
   });
 
   it("retries on the next keystroke when a write fails", async () => {

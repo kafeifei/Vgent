@@ -128,7 +128,18 @@ export {
 export { createQueueStore, QUEUE_ITEM_MAX_BYTES, QUEUE_MAX_ITEMS, readQueueText, type QueueStore } from "./queue.js";
 export { AUTO_TITLE_MAX_LEN, createRunManager, deriveThreadTitle, recoverInterruptedThreads, type RunManager } from "./runs.js";
 export { readJsonOrQuarantine, writeFileAtomic, writeJsonAtomic } from "./store/atomic-file.js";
-export { createDraftStore, isDraftKey, MAX_DRAFT_BYTES, NEW_TASK_DRAFT, type DraftStore } from "./store/drafts.js";
+export {
+  createDraftStore,
+  isDraftKey,
+  MAX_DRAFT_ATTACHMENT_BYTES,
+  MAX_DRAFT_ATTACHMENTS,
+  MAX_DRAFT_BYTES,
+  NEW_TASK_DRAFT,
+  type Draft,
+  type DraftAttachment,
+  type DraftAttachmentInput,
+  type DraftStore,
+} from "./store/drafts.js";
 export { createPlanStore, MAX_PLAN_BYTES, type PlanDocument, type PlanStore } from "./store/plans.js";
 export { createProjectStore, type ProjectStore } from "./store/projects.js";
 export { createSettingsStore, DEFAULT_SETTINGS, migrateSettings, type SettingsPatch, type SettingsStore } from "./store/settings.js";

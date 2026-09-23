@@ -1,18 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
- * 草稿任何情况下不丢: what is half-typed in the composer, per task.
+ * 草稿任何情况下不丢: what is half-typed in the composer, per task — the text
+ * and the files waiting to go out with it.
  *
  * The server owns it (`GET` / `PUT /api/drafts/:key`); `localStorage` is only
- * an instant cache. It has to be the server: the desktop shell starts the
- * backend on a random port, the port is part of the WebView's origin, and
- * per-origin storage is therefore empty on every launch — drafts written in the
- * last session would be unreachable.
+ * an instant cache of the text. It has to be the server: the desktop shell
+ * starts the backend on a random port, the port is part of the WebView's
+ * origin, and per-origin storage is therefore empty on every launch — drafts
+ * written in the last session would be unreachable. The attachments are not
+ * cached at all: a `data:` URL of a 10 MB file does not fit in `localStorage`,
+ * and the server is local, so they arrive a moment after the text.
  *
  * Opening a task paints the cached text at once and then reconciles: the server
- * wins, unless the user has already typed since this view mounted. Writes are
- * debounced 300 ms with a 2 s ceiling and flushed on task switch, unmount and
- * `pagehide` / `visibilitychange`.
+ * wins, unless the user has already typed (or touched the files) since this
+ * view mounted. Text writes are debounced 300 ms with a 2 s ceiling and flushed
+ * on task switch, unmount and `pagehide` / `visibilitychange`; a change to the
+ * attachments goes up at once, with the bytes of any file the server has not
+ * been sent yet — every later write names that file by id alone.
  */
 
 const PREFIX = "vgent.draft.";
@@ -68,10 +73,33 @@ export function pruneDrafts(liveThreadIds: Iterable<string>): void {
   }
 }
 
+/** A file waiting in the composer: what the draft keeps, and what the message carries. */
+export interface DraftAttachment {
+  id: string;
+  name: string;
+  mediaType: string;
+  /** A `data:` URL: what the message carries, and what the thumbnail draws. */
+  url: string;
+  size: number;
+}
+
+/** One attachment on the wire; `url` only the first time the server hears of it. */
+export type DraftAttachmentUpload = Omit<DraftAttachment, "url"> & { url?: string };
+
+export interface DraftValue {
+  text: string;
+  attachments: DraftAttachment[];
+}
+
+export interface DraftPayload {
+  text: string;
+  attachments: DraftAttachmentUpload[];
+}
+
 /** The two draft routes, as `ApiClient` implements them. */
 export interface DraftTransport {
-  getDraft(key: string): Promise<string>;
-  putDraft(key: string, text: string, options?: { keepalive?: boolean }): Promise<void>;
+  getDraft(key: string): Promise<DraftValue>;
+  putDraft(key: string, draft: DraftPayload, options?: { keepalive?: boolean }): Promise<void>;
 }
 
 /**
@@ -81,8 +109,13 @@ export interface DraftTransport {
  */
 export class DraftSync {
   private text: string;
-  /** Set by the first edit; from then on the server's copy is the stale one. */
+  private attachments: DraftAttachment[] = [];
+  /** Set by the first edit; from then on the server's copy of the text is the stale one. */
   private typed = false;
+  /** Set by the first change to the files; from then on the server's copy of them is the stale one. */
+  private touchedFiles = false;
+  /** Attachments the server has the bytes of; every other one goes up with its `url`. */
+  private readonly uploaded = new Set<string>();
   /** There is a change the server has not been told about yet. */
   private dirty = false;
   private timer: ReturnType<typeof setTimeout> | undefined;
@@ -92,24 +125,37 @@ export class DraftSync {
   constructor(
     private readonly key: string,
     private readonly transport: DraftTransport,
-    private readonly onRemote: (text: string) => void,
+    private readonly onRemote: (draft: DraftValue) => void,
   ) {
     this.text = readCache(key);
   }
 
-  /** What to paint right now: the cache, before the server has answered. */
-  get current(): string {
-    return this.text;
+  /** What to paint right now: the cached text, before the server has answered; no files yet. */
+  get current(): DraftValue {
+    return { text: this.text, attachments: this.attachments };
   }
 
-  /** Reconcile with the server. Its copy wins unless the user has typed since mount. */
+  /**
+   * Reconcile with the server. Its text wins unless the user has typed since
+   * mount; its files win unless the user has added or removed one since.
+   */
   async start(): Promise<void> {
     const remote = await this.transport.getDraft(this.key).catch(() => undefined);
     // A server that could not answer leaves the cached text exactly as it is.
-    if (remote === undefined || this.disposed || this.typed || remote === this.text) return;
-    this.text = remote;
-    writeCache(this.key, remote);
-    this.onRemote(remote);
+    if (remote === undefined || this.disposed) return;
+    let changed = false;
+    if (!this.typed && remote.text !== this.text) {
+      this.text = remote.text;
+      writeCache(this.key, remote.text);
+      changed = true;
+    }
+    if (!this.touchedFiles && remote.attachments.length > 0) {
+      this.attachments = remote.attachments;
+      changed = true;
+    }
+    // Whatever the server holds it already has the bytes of.
+    for (const entry of remote.attachments) this.uploaded.add(entry.id);
+    if (changed) this.onRemote(this.current);
   }
 
   /** A keystroke: cached at once, sent to the server on the debounce. */
@@ -123,13 +169,27 @@ export class DraftSync {
   }
 
   /**
+   * A file added or a tile removed. Not debounced: this is not a keystroke,
+   * and a file the user just dropped in should be on the server before the
+   * window can be closed on it.
+   */
+  setAttachments(attachments: DraftAttachment[]): void {
+    this.attachments = attachments;
+    this.touchedFiles = true;
+    this.dirty = true;
+    this.flush();
+  }
+
+  /**
    * The message really went out, so the draft goes now rather than on the next
    * timer — a pending write would otherwise put the sent text back.
    */
   clear(): void {
     this.typed = true;
-    if (this.text !== "") {
+    this.touchedFiles = true;
+    if (this.text !== "" || this.attachments.length > 0) {
       this.text = "";
+      this.attachments = [];
       this.dirty = true;
       writeCache(this.key, "");
     }
@@ -141,10 +201,22 @@ export class DraftSync {
     this.cancel();
     if (!this.dirty) return;
     this.dirty = false;
-    void this.transport.putDraft(this.key, this.text, options).catch(() => {
-      // The cache still holds it, and the next keystroke retries.
-      this.dirty = true;
-    });
+    const sent = this.attachments;
+    const payload: DraftPayload = {
+      text: this.text,
+      attachments: sent.map(({ url, ...meta }) => (this.uploaded.has(meta.id) ? meta : { ...meta, url })),
+    };
+    void this.transport.putDraft(this.key, payload, options).then(
+      () => {
+        for (const entry of sent) this.uploaded.add(entry.id);
+      },
+      () => {
+        // The cache still holds the text, and the next keystroke retries — with
+        // the bytes again, since it is unknown how far this write got.
+        this.dirty = true;
+        this.uploaded.clear();
+      },
+    );
   }
 
   /** Task switch or unmount: one last write, then this instance is inert. */
@@ -171,9 +243,12 @@ export class DraftSync {
 
 export interface Draft {
   value: string;
+  attachments: DraftAttachment[];
   /** Every keystroke. */
   edit: (text: string) => void;
-  /** The text went out: drop it here and on the server, right now. */
+  /** A file added or a tile removed. */
+  setAttachments: (attachments: DraftAttachment[]) => void;
+  /** The message went out: drop text and files here and on the server, right now. */
   clear: () => void;
 }
 
@@ -183,12 +258,17 @@ export interface Draft {
  */
 export function useDraft(key: string, transport: DraftTransport): Draft {
   const [value, setValue] = useState(() => readCache(key));
+  const [attachments, setAttachmentsState] = useState<DraftAttachment[]>([]);
   const sync = useRef<DraftSync | null>(null);
 
   useEffect(() => {
-    const instance = new DraftSync(key, transport, setValue);
+    const paint = (draft: DraftValue) => {
+      setValue(draft.text);
+      setAttachmentsState(draft.attachments);
+    };
+    const instance = new DraftSync(key, transport, paint);
     sync.current = instance;
-    setValue(instance.current);
+    paint(instance.current);
     void instance.start();
     // A tab being hidden or torn down is the one moment a debounced write would
     // be lost, so it goes out with `keepalive`.
@@ -211,10 +291,16 @@ export function useDraft(key: string, transport: DraftTransport): Draft {
     sync.current?.edit(text);
   }, []);
 
+  const setAttachments = useCallback((next: DraftAttachment[]) => {
+    setAttachmentsState(next);
+    sync.current?.setAttachments(next);
+  }, []);
+
   const clear = useCallback(() => {
     setValue("");
+    setAttachmentsState([]);
     sync.current?.clear();
   }, []);
 
-  return { value, edit, clear };
+  return { value, attachments, edit, setAttachments, clear };
 }

@@ -43,7 +43,16 @@ import { createQueueStore, readQueueText } from "./queue.js";
 import { asRestoreTarget, lastTurnPair, planRestore, type RestoreTarget } from "./restore.js";
 import { createRunManager, recoverInterruptedThreads } from "./runs.js";
 import { registerStatic } from "./static.js";
-import { createDraftStore, isDraftKey, MAX_DRAFT_BYTES } from "./store/drafts.js";
+import {
+  createDraftStore,
+  isDraftKey,
+  isDraftMediaType,
+  MAX_DRAFT_ATTACHMENT_BYTES,
+  MAX_DRAFT_ATTACHMENTS,
+  MAX_DRAFT_BYTES,
+  UnknownDraftAttachmentError,
+  type DraftAttachmentInput,
+} from "./store/drafts.js";
 import { createPlanStore, MAX_PLAN_BYTES } from "./store/plans.js";
 import { createProjectStore, type ProjectStore } from "./store/projects.js";
 import { createCatalogStore } from "./store/catalog.js";
@@ -182,13 +191,49 @@ function readDraftKey(value: unknown): string {
   return value;
 }
 
-/** The 草稿 text from a `PUT` body. `""` deletes it, which is how a sent message clears it. */
+/** The 草稿 text from a `PUT` body. `""` with no attachments deletes it, which is how a sent message clears it. */
 function readDraftText(value: unknown): string {
   if (typeof value !== "string") throw new BadRequestError("text 必须是字符串", "invalid_draft");
   if (Buffer.byteLength(value, "utf8") > MAX_DRAFT_BYTES) {
     throw new VgentServerError({ message: `草稿超过 ${MAX_DRAFT_BYTES / 1024} KB`, status: 413, code: "draft_too_large" });
   }
   return value;
+}
+
+/**
+ * The 草稿 attachments from a `PUT` body: the files waiting in the composer.
+ * Each names itself by id; the first mention carries a `data:` URL, later ones
+ * only the id. Omitted means none — a text-only client clears the files.
+ */
+function readDraftAttachments(value: unknown): DraftAttachmentInput[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new BadRequestError("attachments 必须是数组", "invalid_draft");
+  if (value.length > MAX_DRAFT_ATTACHMENTS) {
+    throw new VgentServerError({ message: `草稿最多 ${MAX_DRAFT_ATTACHMENTS} 个附件`, status: 413, code: "draft_too_large" });
+  }
+  const seen = new Set<string>();
+  return value.map((entry: unknown): DraftAttachmentInput => {
+    const item = entry as Record<string, unknown> | null;
+    if (item == null || typeof item !== "object") throw new BadRequestError("附件必须是对象", "invalid_draft");
+    const { id, name, mediaType, size, url } = item;
+    if (!isDraftKey(id) || seen.has(id)) throw new BadRequestError("附件 id 不合法或重复", "invalid_draft");
+    seen.add(id);
+    if (typeof name !== "string" || name === "" || name.length > 255) throw new BadRequestError("附件 name 不合法", "invalid_draft");
+    if (!isDraftMediaType(mediaType)) throw new BadRequestError("附件 mediaType 不合法", "invalid_draft");
+    if (typeof size !== "number" || !Number.isFinite(size) || size < 0) throw new BadRequestError("附件 size 不合法", "invalid_draft");
+    if (url !== undefined) {
+      if (typeof url !== "string" || !url.startsWith("data:")) throw new BadRequestError("附件 url 必须是 data URL", "invalid_draft");
+      // base64 is 4/3 of the bytes; checking the string spares decoding a file that will be refused anyway.
+      if (url.length > Math.ceil((MAX_DRAFT_ATTACHMENT_BYTES * 4) / 3) + 256) {
+        throw new VgentServerError({
+          message: `附件 ${name} 超过 ${MAX_DRAFT_ATTACHMENT_BYTES / 1024 / 1024} MB`,
+          status: 413,
+          code: "draft_too_large",
+        });
+      }
+    }
+    return { id, name, mediaType, size, ...(url === undefined ? {} : { url }) };
+  });
 }
 
 /** 界面偏好 from a settings body. `null` puts the default back; anything unknown is a 400. */
@@ -1085,14 +1130,20 @@ export function createApp(options: CreateAppOptions): VgentApp {
   // the empty state). It lives here rather than in the browser because the
   // desktop shell's WebView gets a new origin — and so an empty `localStorage` —
   // on every launch. The client still caches it locally for the first paint.
-  app.get("/api/drafts/:key", async (c) => c.json({ text: await drafts.get(readDraftKey(c.req.param("key"))) }));
+  // The text is cached in the browser too; the attachments only live here, so a
+  // `GET` hands back their bytes as `data:` URLs — the same shape they take in
+  // the message when it goes out.
+  app.get("/api/drafts/:key", async (c) => c.json(await drafts.get(readDraftKey(c.req.param("key")))));
 
   app.put("/api/drafts/:key", async (c) => {
     const key = readDraftKey(c.req.param("key"));
-    const body = (await c.req.json().catch(() => undefined)) as { text?: unknown } | undefined;
+    const body = (await c.req.json().catch(() => undefined)) as { text?: unknown; attachments?: unknown } | undefined;
     const text = readDraftText(body?.text);
-    await drafts.put(key, text);
-    return c.json({ text });
+    const attachments = await drafts.put(key, text, readDraftAttachments(body?.attachments)).catch((error: unknown) => {
+      if (error instanceof UnknownDraftAttachmentError) throw new BadRequestError(error.message, "unknown_draft_attachment");
+      throw error;
+    });
+    return c.json({ text, attachments });
   });
 
   /**

@@ -9,6 +9,7 @@ import { useToast } from "@/lib/toast";
 import type { EngineDescriptor, EngineId, ThreadMessageMetadata, ThreadMode, ThreadStatus, ThreadSummary, WorkspaceMode } from "@/lib/types";
 import { LIVE_STATUSES } from "@/lib/types";
 import { repoRelative } from "@/features/changes/paths";
+import { toFileParts, type Attachment } from "@/features/composer/attachments";
 import { useChanges } from "@/features/changes/useChanges";
 import { notificationsEnabled, pendingApprovalLabel } from "@/features/notify/notify";
 import { useNotifications } from "@/features/notify/useNotifications";
@@ -285,8 +286,8 @@ export function useWorkbench(token: string) {
        * Empty state: create the thread, send the first message, open it.
        * Resolves `false` when the task could not even be created — the empty
        * state keeps its draft then. A task that exists but whose first message
-       * the server refused keeps the text too, as *that task's* draft, so it
-       * travels with the task the user is now looking at.
+       * the server refused keeps the text and the files too, as *that task's*
+       * draft, so they travel with the task the user is now looking at.
        */
       startThread: async (
         text: string,
@@ -295,7 +296,7 @@ export function useWorkbench(token: string) {
         model: string | null,
         reasoningEffort: string | null,
         mode: ThreadMode,
-        files: FileUIPart[] = [],
+        attachments: readonly Attachment[] = [],
         serviceTier: string | null = null,
         contextWindow: number | null = null,
       ): Promise<boolean> => {
@@ -320,12 +321,13 @@ export function useWorkbench(token: string) {
             return null;
           });
         if (record == null) return false;
-        const accepted = await chats.send(record.id, text, files).then(
+        const accepted = await chats.send(record.id, text, toFileParts(attachments)).then(
           () => true,
           () => false,
         );
         // Written before the task is opened, so its composer reads it on mount.
-        if (!accepted) await client.putDraft(record.id, text).catch(() => undefined);
+        // The files go with their bytes: the new task's draft has never seen them.
+        if (!accepted) await client.putDraft(record.id, { text, attachments: [...attachments] }).catch(() => undefined);
         selectThread(record.id);
         return true;
       },

@@ -12,7 +12,7 @@ import { Shimmer } from "@/components/ai-elements/shimmer";
 import { TurnOutputs } from "./TurnOutputs";
 import { activityMode, runningLabel, segmentsOf, summaryLabel, thinkingLabel, type ActivityRun } from "./activity";
 import { exploreCounts, exploreItemsOf, exploreLabel } from "./explore";
-import { isToolStreaming } from "./toolMeta";
+import { isToolStreaming, type ToolPart } from "./toolMeta";
 import type { Block, Turn as TurnModel } from "./turns";
 import { formatTokens } from "@/features/composer/contextUsage";
 import { approvalAnchor, compactedOf, isOpenApproval, isOpenQuestion, questionAnchor } from "./turns";
@@ -23,6 +23,8 @@ export interface TurnActions {
   alwaysAllow: (approvalId: string, entries: string[]) => void;
   answerQuestions: (toolCallId: string, output: AskUserQuestionsOutput) => void;
   openFile: (file: string) => void;
+  /** A click on a tool row: the call opened where it belongs (终端, 文件, or a detail view). */
+  inspect: (part: ToolPart) => void;
   /** 分叉: a new task with the conversation up to the end of the turn this user message started. */
   fork: (messageId: string) => void;
   /** 回到最新, for a task an older build left standing at an earlier checkpoint. */
@@ -147,9 +149,9 @@ export function Turn({
         return (
           <div key={segment.key} className="px-chat-inset">
             {mode === "summary" ? (
-              <SummaryActivity run={segment} onOpenFile={actions.openFile} />
+              <SummaryActivity run={segment} actions={actions} />
             ) : (
-              <LiveActivity run={segment} onOpenFile={actions.openFile} />
+              <LiveActivity run={segment} actions={actions} />
             )}
           </div>
         );
@@ -210,7 +212,7 @@ function ReplyActions({ turn, onFork }: { turn: TurnModel; onFork?: () => void }
 }
 
 /** The title line of a run that is still the live edge: the current tool, or the thought in the gap before the next one. */
-function LiveActivity({ run, onOpenFile }: { run: ActivityRun; onOpenFile: (file: string) => void }) {
+function LiveActivity({ run, actions }: { run: ActivityRun; actions: TurnActions }) {
   const [thoughtOpen, setThoughtOpen] = useState(false);
   const running = run.tools.findLast((block) => isToolStreaming(block.part));
   const thinking = thinkingLabel(run.thought);
@@ -242,9 +244,9 @@ function LiveActivity({ run, onOpenFile }: { run: ActivityRun; onOpenFile: (file
       )}
       {exploreItemsOf(run.tools).map((item) =>
         item.kind === "explore" ? (
-          <ExploreGroup key={item.key} tools={item.tools} onOpenFile={onOpenFile} />
+          <ExploreGroup key={item.key} tools={item.tools} actions={actions} />
         ) : (
-          <ToolRow key={item.block.key} part={item.block.part} onOpenFile={onOpenFile} />
+          <ToolRow key={item.block.key} part={item.block.part} onOpenFile={actions.openFile} onInspect={actions.inspect} />
         ),
       )}
     </div>
@@ -256,7 +258,7 @@ function LiveActivity({ run, onOpenFile }: { run: ActivityRun; onOpenFile: (file
  * line while the run is live, the way Koma's 「已探索」 group does it: the
  * counts tick up as calls land, and the rows are behind the title.
  */
-function ExploreGroup({ tools, onOpenFile }: { tools: ActivityRun["tools"]; onOpenFile: (file: string) => void }) {
+function ExploreGroup({ tools, actions }: { tools: ActivityRun["tools"]; actions: TurnActions }) {
   const [open, setOpen] = useState(false);
   const busy = tools.some((block) => isToolStreaming(block.part));
   const label = exploreLabel(exploreCounts(tools));
@@ -280,7 +282,7 @@ function ExploreGroup({ tools, onOpenFile }: { tools: ActivityRun["tools"]; onOp
       {open && (
         <div className="pl-md">
           {tools.map((block) => (
-            <ToolRow key={block.key} part={block.part} onOpenFile={onOpenFile} />
+            <ToolRow key={block.key} part={block.part} onOpenFile={actions.openFile} onInspect={actions.inspect} />
           ))}
         </div>
       )}
@@ -289,7 +291,7 @@ function ExploreGroup({ tools, onOpenFile }: { tools: ActivityRun["tools"]; onOp
 }
 
 /** A finished run of several tools, collapsed to one category sentence. The rows are still there, behind the title. */
-function SummaryActivity({ run, onOpenFile }: { run: ActivityRun; onOpenFile: (file: string) => void }) {
+function SummaryActivity({ run, actions }: { run: ActivityRun; actions: TurnActions }) {
   const [open, setOpen] = useState(false);
   return (
     <div>
@@ -305,7 +307,7 @@ function SummaryActivity({ run, onOpenFile }: { run: ActivityRun; onOpenFile: (f
       {open && (
         <div className="pl-md">
           {run.tools.map((block) => (
-            <ToolRow key={block.key} part={block.part} onOpenFile={onOpenFile} />
+            <ToolRow key={block.key} part={block.part} onOpenFile={actions.openFile} onInspect={actions.inspect} />
           ))}
         </div>
       )}
@@ -378,7 +380,7 @@ function BlockView({
   return (
     <div className="flex items-start gap-xs">
       <div className="min-w-0 flex-1">
-        <ToolRow part={part} onOpenFile={actions.openFile} />
+        <ToolRow part={part} onOpenFile={actions.openFile} onInspect={actions.inspect} />
       </div>
       {running && (
         <span className="flex h-row-tool flex-none items-center">

@@ -587,3 +587,5 @@ build 84 定的「日志里的图只有一种样子」只覆盖了回复里内�
 `describeTool` 的显示没动：探索组展开后每一行仍是 `$ 命令本身`，标题和行是同一批东西，不会再出现 109 那种「摘要盖住了另一批」。测试：`explore.test.ts`（分类、分组）、`Turn.activity.test.tsx`（活边折叠、正在探索）。
 
 - **补（同日）：标题行不再复制命令**。用户截图：同一条 `git worktree …` 出现两次，上面那条挂着转圈——112 的标题行在有工具跑时把整条命令又画了一遍，行里还有它。现在标题行是状态短语（`activity.ts` 的 `runningLabel`：「正在运行命令」「正在读取文件」「正在搜索」「正在编辑文件」…，Shimmer，同「正在思考」一个样子），命令只在自己那一行出现。另外 `describeTool` 显示 Bash 时去掉开头的 `cd <目录>;` / `&&`（`withoutCd`，Codex 的摘要也这么做），行不再被 `cd /Users/…/Vgent;` 占一半；完整命令仍在行展开后的输入里，终端 tab 不变。
+
+- **补（同日）：工具行点开在右栏，不在行内**（用户：「折叠展开，应该是列出调用过哪些命令，点这些命令右侧栏打开详情」）。`ToolRow` 不再在行内展开输入 / 输出的盒子（计划行例外，它的清单就是内容，仍在原地开合）；点一行走 `TurnActions.inspect`，`ThreadView` 按种类分流：命令 → 右栏「终端」tab 并滚到那条、闪一下（`RightState.inspect` 带 `toolCallId` + `nonce`，`TerminalPanel` 的行有 `id="term-<toolCallId>"`，定位后停止跟底）；读取 → 「文件」tab 预览那个路径（`openPreview`）；写 / 编辑 → 和文件 chip 一样开「变更」；其余（搜索、子代理、MCP 等）→ 右栏新的 `tool` 视图（`rightpane/ToolDetail.tsx`：动词 + 目标、状态、输入 JSON、输出或子代理记录），它不在 tab 条里，只由点击进入。折叠（探索组、收尾摘要）展开后就是这份清单，每条都这么点。

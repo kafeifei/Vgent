@@ -1,7 +1,6 @@
 import type { UIMessage } from "ai";
 import { useState } from "react";
 import { ChevronDown } from "lucide-react";
-import { CodeBlock } from "@/components/ai-elements/code-block";
 import { baseName } from "@/lib/format";
 import { planItemsOf } from "@/features/plan/plan";
 import { PlanList } from "@/features/plan/PlanList";
@@ -13,7 +12,6 @@ import {
   diffStatOf,
   exitCodeOf,
   isToolStreaming,
-  outputText,
   type ToolPart,
 } from "./toolMeta";
 
@@ -52,7 +50,7 @@ export function FileChip({
  * because it is the only place the child's work is ever visible — the parent
  * model itself receives nothing but the closing summary.
  */
-function ChildTranscript({ parts, preliminary }: { parts: UIMessage["parts"]; preliminary: boolean }) {
+export function ChildTranscript({ parts, preliminary }: { parts: UIMessage["parts"]; preliminary: boolean }) {
   return (
     <div className="mt-2xs ml-lg border-border border-l pl-sm">
       {parts.map((part, index) => {
@@ -81,27 +79,33 @@ function ChildTranscript({ parts, preliminary }: { parts: UIMessage["parts"]; pr
 }
 
 /**
- * One tool call as one muted line (the prototype's "去卡片化" rule). Clicking it
- * opens an inset body with the raw input and output.
+ * One tool call as one muted line (the prototype's "去卡片化" rule). Clicking
+ * it opens the call where it belongs — a command in 终端, a file in 文件, the
+ * rest as a detail view — never a box inside the log. A plan is the one
+ * exception: its list is the content, and it toggles in place.
  */
-export function ToolRow({ part, onOpenFile }: { part: ToolPart; onOpenFile: (file: string) => void }) {
-  const [toggled, setToggled] = useState(false);
+export function ToolRow({
+  part,
+  onOpenFile,
+  onInspect,
+}: {
+  part: ToolPart;
+  onOpenFile: (file: string) => void;
+  onInspect: (part: ToolPart) => void;
+}) {
+  const [planOpen, setPlanOpen] = useState(true);
   const display = describeTool(part);
-  // A plan call's body is the list itself, and it starts open: the plan is
-  // something to read, not a call to inspect.
   const plan = display.kind === "plan" ? planItemsOf(part) : null;
-  const open = plan != null ? !toggled : toggled;
   const streaming = isToolStreaming(part);
   const exitCode = part.state === "output-available" ? exitCodeOf(part.output) : undefined;
   const stat = part.state === "output-available" ? diffStatOf(part.output) : undefined;
   const child = part.state === "output-available" ? asChildMessage(part.output) : undefined;
-  const body = part.state === "output-available" && child == null ? outputText(part.output) : undefined;
 
   return (
     <div>
       <button
         type="button"
-        onClick={() => setToggled((value) => !value)}
+        onClick={() => (plan != null ? setPlanOpen((value) => !value) : onInspect(part))}
         className="group/tool flex min-h-row-tool w-full items-center gap-xs text-left text-fg-muted text-md leading-chat hover:text-fg"
       >
         {streaming && <Spinner />}
@@ -109,13 +113,14 @@ export function ToolRow({ part, onOpenFile }: { part: ToolPart; onOpenFile: (fil
         <span className={cn("min-w-0 truncate text-fg-faint group-hover/tool:text-fg-muted", display.kind === "bash" && "font-mono text-code")}>
           {display.target}
         </span>
-        {/* The chevron trails the line and only shows up when it is of use. */}
-        <ChevronDown
-          className={cn(
-            "size-md flex-none text-fg-faint opacity-0 transition-transform duration-[var(--duration-fast)] group-hover/tool:opacity-100",
-            open ? "opacity-100" : "-rotate-90",
-          )}
-        />
+        {plan != null && (
+          <ChevronDown
+            className={cn(
+              "size-md flex-none text-fg-faint opacity-0 transition-transform duration-[var(--duration-fast)] group-hover/tool:opacity-100",
+              planOpen ? "opacity-100" : "-rotate-90",
+            )}
+          />
+        )}
         <span className="ml-auto flex-none text-fg-faint text-xs">
           {part.state === "output-error" ? (
             <span className="text-danger">失败</span>
@@ -137,32 +142,7 @@ export function ToolRow({ part, onOpenFile }: { part: ToolPart; onOpenFile: (fil
         </div>
       )}
 
-      {open && plan != null && <PlanList items={plan} className="mb-2xs" />}
-
-      {open && plan == null && (
-        <div className="mt-2xs mb-2xs overflow-hidden rounded-lg bg-bg-inset px-sm py-xs text-fg-muted text-sm">
-          <div className="mb-2xs text-2xs text-fg-faint tracking-widest">输入</div>
-          <CodeBlock code={JSON.stringify(part.input ?? {}, null, 2)} language="json" />
-          {part.state === "output-error" && (
-            <>
-              <div className="mt-xs mb-2xs text-2xs text-fg-faint tracking-widest">错误</div>
-              <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-code text-danger leading-code">{part.errorText}</pre>
-            </>
-          )}
-          {part.state === "output-available" && (
-            <>
-              <div className="mt-xs mb-2xs text-2xs text-fg-faint tracking-widest">输出</div>
-              {body != null ? (
-                <pre className="max-h-[calc(var(--spacing-3xl)*6)] overflow-auto whitespace-pre-wrap font-mono text-code leading-code">
-                  {body}
-                </pre>
-              ) : (
-                <CodeBlock code={JSON.stringify(part.output ?? null, null, 2)} language="json" />
-              )}
-            </>
-          )}
-        </div>
-      )}
+      {planOpen && plan != null && <PlanList items={plan} className="mb-2xs" />}
     </div>
   );
 }

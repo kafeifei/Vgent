@@ -14,6 +14,7 @@ import { Sidebar } from "@/features/sidebar/Sidebar";
 import { GROUPING_LABELS } from "@/features/sidebar/grouping";
 import type { QueueItem } from "@/features/worklog/queue";
 import { oneLine } from "@/lib/format";
+import { previewKindOf } from "@/lib/preview";
 import { type PaneKey, type PaneWidths, clampPaneWidth, fitPaneWidths, loadPaneWidths, savePaneWidths } from "@/lib/paneWidths";
 import { usePrefs, usePrefsSync } from "@/lib/prefs";
 import { RightPaneToggle } from "@/features/taskheader/TaskHeader";
@@ -215,12 +216,19 @@ export function Shell({ token }: { token: string }) {
             refreshKey={thread?.updatedAt ?? ""}
             preview={right.preview}
             onPreviewTaken={actions.clearPreview}
+            inspect={right.inspect}
             messages={messages}
             thread={thread}
             place={isNoProject(thread?.projectId) ? NO_PROJECT_NAME : state.projects.find((entry) => entry.id === thread?.projectId)?.name}
             live={isLiveThread(thread)}
             onBuild={actions.buildFromPlan}
             onOpenPicture={openPicture}
+            onOpenFile={(file) => {
+              const kind = previewKindOf(file);
+              if (kind === "image" || kind === "svg") openPicture(file);
+              else if (kind === "markdown") actions.openPreview(file);
+              else actions.openChanges(file);
+            }}
           />
         )}
 

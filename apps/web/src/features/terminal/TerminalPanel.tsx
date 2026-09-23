@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { UIMessage } from "ai";
+import type { InspectRequest } from "@/app/useWorkbench";
 import { Spinner } from "@/features/worklog/ToolRow";
 import type { ApiClient } from "@/lib/api";
 import type { SetupLog } from "@/lib/types";
@@ -11,7 +12,7 @@ const BOTTOM_SLOP = 24;
 /** One command the agent ran: its invocation, then whatever it printed. */
 function TerminalRow({ entry }: { entry: TerminalEntry }) {
   return (
-    <div className="mb-xs">
+    <div id={`term-${entry.id}`} className="mb-xs rounded-sm">
       <div className="flex items-center gap-xs text-fg-muted text-sm">
         {entry.state === "running" && <Spinner />}
         <span className="min-w-0 flex-1 truncate font-mono text-code text-fg">$ {entry.command}</span>
@@ -42,12 +43,15 @@ export function TerminalPanel({
   client,
   threadId,
   refreshKey,
+  focus,
 }: {
   messages: UIMessage[];
   client: ApiClient;
   threadId: string | null;
   /** The thread's `updatedAt`: setup finishing moves it, which re-fetches the log. */
   refreshKey: string;
+  /** A command row in the log was clicked: scroll to that command and flash it. */
+  focus?: InspectRequest | null;
 }) {
   // The worktree setup ran before the engine did, so it is the first entry —
   // and it never went through the messages, so it is fetched on its own.
@@ -101,6 +105,20 @@ export function TerminalPanel({
     if (el == null || !atBottomRef.current) return;
     el.scrollTop = el.scrollHeight;
   }, [entries]);
+
+  // The row asked for is brought into view and flashed; following the bottom
+  // stops, or the next line of output would pull it away again.
+  useEffect(() => {
+    if (focus == null) return;
+    const element = document.getElementById(`term-${focus.toolCallId}`);
+    if (element == null) return;
+    atBottomRef.current = false;
+    element.scrollIntoView({ behavior: "smooth", block: "center" });
+    element.classList.add("ring-2", "ring-focus-ring");
+    const timer = setTimeout(() => element.classList.remove("ring-2", "ring-focus-ring"), 1200);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus?.nonce]);
 
   if (entries.length === 0) {
     return <p className="text-fg-faint text-xs">本任务还没有运行过命令</p>;

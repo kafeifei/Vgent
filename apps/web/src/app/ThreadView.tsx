@@ -13,6 +13,7 @@ import { FileAccessProvider } from "@/features/files/fileAccess";
 import { WorkLog } from "@/features/worklog/WorkLog";
 import { pendingQueue, type QueueItem } from "@/features/worklog/queue";
 import type { TurnActions } from "@/features/worklog/Turn";
+import { describeTool } from "@/features/worklog/toolMeta";
 import { pendingAutoApprovals } from "@/lib/autoApprove";
 import type { ApiClient } from "@/lib/api";
 import { useDraft } from "@/lib/drafts";
@@ -164,6 +165,13 @@ function ThreadChatView({
       },
       answerQuestions: (toolCallId, output) => void addToolOutput({ tool: "askUserQuestions", toolCallId, output }),
       openFile,
+      inspect: (part) => {
+        const display = describeTool(part);
+        if (display.kind === "bash") actions.focusTerminal(part.toolCallId);
+        else if (display.kind === "read" && display.target !== "") actions.openPreview(display.target);
+        else if (display.file != null) openFile(display.file);
+        else actions.inspectTool(part.toolCallId);
+      },
       fork: (messageId) => actions.forkThread(thread.id, messageId),
       restoreLatest: () => restoreCheckpoint({ latest: true }),
     }),

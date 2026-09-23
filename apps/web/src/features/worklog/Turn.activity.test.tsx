@@ -10,6 +10,7 @@ const actions: TurnActions = {
   alwaysAllow: () => {},
   answerQuestions: () => {},
   openFile: () => {},
+  inspect: () => {},
   fork: () => {},
   restoreLatest: () => {},
 };

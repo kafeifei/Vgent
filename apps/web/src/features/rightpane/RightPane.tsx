@@ -8,15 +8,16 @@ import { PlanDocument } from "@/features/plan/PlanDocument";
 import { PlanPanel } from "@/features/plan/PlanPanel";
 import { TerminalPanel } from "@/features/terminal/TerminalPanel";
 import type { QueueItem } from "@/features/worklog/queue";
-import type { PreviewRequest } from "@/app/useWorkbench";
+import type { InspectRequest, PreviewRequest } from "@/app/useWorkbench";
+import { findToolPart, ToolDetail } from "./ToolDetail";
 import type { ApiClient } from "@/lib/api";
 import type { ThreadSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** 「home」 is the pane before anything is opened in it: a plain list of what it can show. */
-export type RightTab = "home" | "changes" | "files" | "term" | "plan" | "queue";
+export type RightTab = "home" | "changes" | "files" | "term" | "plan" | "queue" | "tool";
 
-const TABS: ReadonlyArray<{ id: Exclude<RightTab, "home">; label: string; Icon: typeof FileDiff }> = [
+const TABS: ReadonlyArray<{ id: Exclude<RightTab, "home" | "tool">; label: string; Icon: typeof FileDiff }> = [
   { id: "changes", label: "变更", Icon: FileDiff },
   { id: "files", label: "文件", Icon: FolderTree },
   { id: "term", label: "终端", Icon: Terminal },
@@ -53,12 +54,14 @@ export function RightPane({
   refreshKey,
   preview,
   onPreviewTaken,
+  inspect,
   messages,
   thread,
   place,
   live,
   onBuild,
   onOpenPicture,
+  onOpenFile,
 }: {
   queue: QueueItem[];
   open: boolean;
@@ -73,6 +76,8 @@ export function RightPane({
   /** The file the 文件 tab was last asked to show. */
   preview: PreviewRequest | null;
   onPreviewTaken: () => void;
+  /** The tool call a log row was clicked for. */
+  inspect: InspectRequest | null;
   /** The active thread's messages, for 终端 and 计划. Empty without a live thread. */
   messages: UIMessage[];
   /** The project the task runs on, named at the top of the list. */
@@ -84,6 +89,7 @@ export function RightPane({
   /** 「Build」 in the 计划 tab: back to Agent mode, with the document as the message. */
   onBuild: (threadId: string, content: string) => Promise<void>;
   onOpenPicture: (path: string) => void;
+  onOpenFile: (file: string) => void;
 }) {
   const changeCount = changes.snapshot?.files.length ?? 0;
   // 无项目 has no repository, so there is no diff to open: 变更 is not offered rather than opened onto an error.
@@ -190,8 +196,10 @@ export function RightPane({
           />
         ) : tab === "files" ? (
           <FilesPanel client={client} threadId={threadId} active={open} refreshKey={refreshKey} preview={preview} onPreviewTaken={onPreviewTaken} onOpenPicture={onOpenPicture} />
+        ) : tab === "tool" ? (
+          <ToolDetail part={findToolPart(messages, inspect?.toolCallId)} onOpenFile={onOpenFile} />
         ) : tab === "term" ? (
-          <TerminalPanel messages={messages} client={client} threadId={threadId} refreshKey={refreshKey} />
+          <TerminalPanel messages={messages} client={client} threadId={threadId} refreshKey={refreshKey} focus={inspect} />
         ) : (
           <>
             {/* The document first — it is what Plan mode produces; the todo

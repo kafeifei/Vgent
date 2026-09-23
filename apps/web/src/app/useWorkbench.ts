@@ -29,6 +29,13 @@ export interface RightState {
    * file open it twice.
    */
   preview: PreviewRequest | null;
+  /** The tool call a log row asked to see: 终端 scrolls to it, the detail view shows it. */
+  inspect: InspectRequest | null;
+}
+
+export interface InspectRequest {
+  toolCallId: string;
+  nonce: number;
 }
 
 export interface PreviewRequest {
@@ -37,7 +44,7 @@ export interface PreviewRequest {
 }
 
 /** The pane starts as Cursor's does: open, as the short list of what it can show. */
-const RIGHT_INITIAL: RightState = { open: true, tab: "home", file: null, preview: null };
+const RIGHT_INITIAL: RightState = { open: true, tab: "home", file: null, preview: null, inspect: null };
 
 const readThreadFromUrl = (): string | null => new URLSearchParams(window.location.search).get("thread");
 
@@ -250,6 +257,14 @@ export function useWorkbench(token: string) {
       /** A picture or a document the log points at: shown as what it is, in the 文件 tab. */
       openPreview: (path: string) =>
         setRight((state) => ({ ...state, open: true, tab: "files", preview: { path, nonce: (state.preview?.nonce ?? 0) + 1 } })),
+
+      /** A command row in the log: 终端, scrolled to that command. */
+      focusTerminal: (toolCallId: string) =>
+        setRight((state) => ({ ...state, open: true, tab: "term", inspect: { toolCallId, nonce: (state.inspect?.nonce ?? 0) + 1 } })),
+
+      /** Any other tool row: the call's input and output, in full. */
+      inspectTool: (toolCallId: string) =>
+        setRight((state) => ({ ...state, open: true, tab: "tool", inspect: { toolCallId, nonce: (state.inspect?.nonce ?? 0) + 1 } })),
 
       /** The 文件 tab took the request; a remount must not replay it. */
       clearPreview: () => setRight((state) => (state.preview == null ? state : { ...state, preview: null })),

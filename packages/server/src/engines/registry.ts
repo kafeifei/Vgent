@@ -22,13 +22,13 @@ export interface EngineRunner {
    */
   tools?: ToolSet;
   /**
-   * 插话, pushed: hand the running turn another user message. Resolves once the
-   * runtime has taken it for its next safe input boundary; rejects when there
-   * is no turn to take it. Present on the engines whose runtime accepts input
+   * 引导, pushed: hand the running turn another user message. Resolves once the
+   * runtime has accepted it; actual insertion may follow a running tool.
+   * Rejects when there is no turn to take it. Present on engines whose runtime accepts input
    * mid-turn. An engine that instead *pulls* at its own step boundaries reads
    * `EngineContext.takeSteers` and leaves this undefined.
    */
-  steer?(text: string): Promise<void>;
+  steer?(text: string, messageId: string): Promise<void>;
   /** End the turn: stop the runtime and persist whatever resume state it hands back. */
   finish(): Promise<void>;
   /**
@@ -94,6 +94,8 @@ export interface EngineContext {
    * Whatever it never asks for stays queued and runs as the next turn.
    */
   takeSteers(): Promise<string[]>;
+  /** Native runtimes report when a submitted steer enters the active turn. */
+  steerApplied(messageId: string): Promise<void>;
   /** Where `finish()` writes the resume state. Injected so the factory never reaches for the store. */
   saveHarnessState(state: HarnessState): Promise<void>;
   log: Logger;

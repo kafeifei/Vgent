@@ -153,6 +153,10 @@ interface LiveRun {
   stopped: boolean;
   /** Set while the engine is streaming, so a 插话 has someone to go to. */
   runner?: EngineRunner;
+  acceptedSteers: Set<string>;
+  deliveringSteers: Set<string>;
+  steerCalls: Set<Promise<void>>;
+  completedNormally: boolean;
 }
 
 /** A runner kept alive between requests because its turn is waiting on the human. */
@@ -175,11 +179,11 @@ export interface RunManager {
    */
   dispatchQueue(threadId: string): Promise<void>;
   /**
-   * 插话: hand a message to the turn that is running right now. `false` means it
-   * did not go in — nothing is running, the engine cannot take one, or the turn
-   * was over by the time it got there — and the caller queues it instead.
+   * Push one already-persisted steer toward the active runtime. `false` means
+   * it has not accepted it yet; the durable item remains available for a later
+   * input boundary or the next turn.
    */
-  steer(threadId: string, text: string): Promise<boolean>;
+  steer(threadId: string, text: string, itemId: string): Promise<boolean>;
   stop(threadId: string): Promise<void>;
   subscribe(threadId: string, signal?: AbortSignal): ReadableStream<UIMessageChunk> | undefined;
   isRunning(threadId: string): boolean;
@@ -247,6 +251,28 @@ export function createRunManager(options: {
       release();
       if (locks.get(threadId) === current) locks.delete(threadId);
     }
+  };
+  /** Submit one durable steer at most once while this run is live. */
+  const deliverSteer = async (threadId: string, text: string, itemId: string): Promise<boolean> => {
+    const run = runs.get(threadId);
+    const runner = run?.runner;
+    if (run == null || run.stopped || run.hub.closed || runner?.steer == null || run.deliveringSteers.has(itemId)) return false;
+    run.deliveringSteers.add(itemId);
+    const call = (async () => {
+      try {
+        await runner.steer!(text, itemId);
+        await options.queue?.markAccepted(threadId, itemId, true);
+        run.acceptedSteers.add(itemId);
+        run.hub.publish(steerChunk(text));
+      } catch (error) {
+        log.warn(`线程 ${threadId} 的引导没能送进当前回合，保留待发送消息`, error);
+      } finally {
+        run.deliveringSteers.delete(itemId);
+      }
+    })();
+    run.steerCalls.add(call);
+    await call.finally(() => run.steerCalls.delete(call));
+    return run.acceptedSteers.has(itemId);
   };
   /**
    * A finished run releases its slot before it stops its engine, so a crash in
@@ -604,13 +630,15 @@ export function createRunManager(options: {
           // 插话, pulled: the engine drains the queue between its steps. Each
           // message shows up in the log at the point it went in.
           takeSteers: async () => {
-            const taken: string[] = [];
-            if (options.queue == null || run.stopped) return taken;
-            for (let item = await options.queue.take(thread.id); item != null; item = await options.queue.take(thread.id)) {
-              taken.push(item.text);
+            if (options.queue == null || run.stopped) return [];
+            const items = await options.queue.takeSteers(thread.id);
+            for (const item of items) {
               run.hub.publish(steerChunk(item.text));
             }
-            return taken;
+            return items.map((item) => item.text);
+          },
+          steerApplied: async (messageId) => {
+            await options.queue?.markApplied(thread.id, messageId).catch(() => {});
           },
           saveHarnessState: (state) => threads.saveHarnessState(thread.id, state),
           log,
@@ -626,6 +654,12 @@ export function createRunManager(options: {
 
       const result = await runner.stream({ messages: modelMessages, abortSignal: run.abort.signal });
       run.runner = runner;
+      // Messages submitted while the engine was still starting belong to this
+      // turn. Explicit queue items never pass through this path.
+      if (runner.steer != null && options.queue != null) {
+        const pending = (await threads.get(thread.id))?.queue?.filter((item) => item.mode === "steer" && item.accepted !== true) ?? [];
+        for (const item of pending) await deliverSteer(thread.id, item.text, item.id);
+      }
 
       // `onError` below is asked about two different things and cannot tell
       // them apart: an `error` chunk, which ends the turn, and a tool call
@@ -691,6 +725,7 @@ export function createRunManager(options: {
       await reader;
 
       const status = streamError != null ? "error" : deriveStatus(assistant);
+      run.completedNormally = status === "idle";
       if (!run.stopped) reportTurn(thread.engine, status !== "error", assistant);
       park = !run.stopped && (status === "awaiting-approval" || status === "awaiting-input");
       // A turn that is over has nothing left that could finish a half-streamed
@@ -756,6 +791,17 @@ export function createRunManager(options: {
         })
         .catch((updateError) => log.error(`记录线程 ${thread.id} 的错误状态失败`, updateError));
     } finally {
+      await Promise.allSettled([...run.steerCalls]);
+      if (options.queue != null && run.acceptedSteers.size > 0) {
+        const ids = [...run.acceptedSteers];
+        if (!run.completedNormally || run.stopped) {
+          await Promise.allSettled(ids.map(async (id) => {
+            await options.queue!.markAccepted(thread.id, id, false);
+          }));
+        } else {
+          await options.queue.removeAccepted(thread.id, ids).catch((error) => log.warn(`清理已接收的引导失败 (thread ${thread.id})`, error));
+        }
+      }
       // Release the slot first: whatever happens to the engine, the thread must
       // be startable again.
       delete run.runner;
@@ -861,7 +907,10 @@ export function createRunManager(options: {
       ...(title != null ? { title } : {}),
     });
 
-    const run: LiveRun = { hub: createChunkHub(), abort: new AbortController(), done: Promise.resolve(), stopped: false };
+    const run: LiveRun = {
+      hub: createChunkHub(), abort: new AbortController(), done: Promise.resolve(), stopped: false,
+      acceptedSteers: new Set(), deliveringSteers: new Set(), steerCalls: new Set(), completedNormally: false,
+    };
     runs.set(threadId, run);
     // Detached on purpose: an HTTP client disconnecting must not cancel the turn.
     run.done = runTurn(updated, messages, run, note);
@@ -938,20 +987,7 @@ export function createRunManager(options: {
 
     dispatchQueue,
 
-    async steer(threadId, text) {
-      const run = runs.get(threadId);
-      const runner = run?.runner;
-      if (run == null || run.stopped || run.hub.closed || runner?.steer == null) return false;
-      try {
-        await runner.steer(text);
-      } catch (error) {
-        // Most often the turn ended a moment ago. Either way the message is not lost: it is queued.
-        log.warn(`线程 ${threadId} 的插话没能送进当前回合，改为排队`, error);
-        return false;
-      }
-      run.hub.publish(steerChunk(text));
-      return true;
-    },
+    steer: deliverSteer,
 
     async stop(threadId) {
       await releaseParked(threadId, STOP_INTERRUPT_TEXT);
@@ -1076,6 +1112,17 @@ export async function recoverInterruptedThreads(threads: ThreadStore, registry: 
   const stateless = statelessEngines(registry);
   const summaries = await threads.list();
   for (const summary of summaries) {
+    const accepted = summary.queue?.filter((item) => item.accepted === true) ?? [];
+    if (accepted.length > 0 && !UNFINISHED_STATUSES.includes(summary.status)) {
+      const record = await threads.get(summary.id);
+      if (record != null) {
+        await threads.update(summary.id, {
+          queue: summary.status === "idle"
+            ? record.queue?.filter((item) => item.accepted !== true)
+            : record.queue?.map((item) => item.accepted === true ? { ...item, accepted: false, applied: false } : item),
+        }).catch((error) => log.warn(`恢复线程 ${summary.id} 的待处理引导失败`, error));
+      }
+    }
     if (!UNFINISHED_STATUSES.includes(summary.status)) continue;
     if (summary.status !== "running" && stateless.has(summary.engine)) continue;
     if (summary.status !== "running" && (await threads.loadHarnessState(summary.id).catch(() => undefined))?.continueFrom != null) {
@@ -1087,6 +1134,7 @@ export async function recoverInterruptedThreads(threads: ThreadStore, registry: 
     await threads
       .update(summary.id, {
         messages: closePendingToolParts(record.messages, RESTART_PENDING_TOOL_TEXT),
+        queue: record.queue?.map((item) => item.accepted === true ? { ...item, accepted: false, applied: false } : item),
         status: "interrupted",
         error: RESTART_INTERRUPT_TEXT,
       })

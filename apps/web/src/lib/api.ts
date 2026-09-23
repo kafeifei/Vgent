@@ -332,13 +332,13 @@ export function createClient(token: string) {
     forkThread: (threadId: string, messageId: string) =>
       api<ThreadRecord>(`/threads/${threadId}/fork`, token, { method: "POST", json: { messageId } }),
 
-    /**
-     * 排队: what Enter does while a turn is live. The item lives on the server,
-     * so it goes out even with no browser open. Every call answers with the
-     * whole record, which is what carries the new `queue` back.
-     */
-    queueMessage: (threadId: string, text: string) =>
-      api<ThreadRecord>(`/threads/${threadId}/queue`, token, { method: "POST", json: { text } }),
+    /** Durable follow-up; mode chooses current-turn steer or next-turn queue. */
+    queueMessage: (threadId: string, text: string, mode: "steer" | "queue" = "steer") =>
+      api<ThreadRecord>(`/threads/${threadId}/queue`, token, { method: "POST", json: { text, mode } }),
+    reorderQueue: (threadId: string, ids: readonly string[]) =>
+      api<ThreadRecord>(`/threads/${threadId}/queue/order`, token, { method: "PUT", json: { ids } }),
+    steerQueued: (threadId: string, itemId: string) =>
+      api<ThreadRecord>(`/threads/${threadId}/queue/${itemId}/steer`, token, { method: "POST" }),
     editQueued: (threadId: string, itemId: string, text: string) =>
       api<ThreadRecord>(`/threads/${threadId}/queue/${itemId}`, token, { method: "PATCH", json: { text } }),
     deleteQueued: (threadId: string, itemId: string) =>

@@ -330,6 +330,7 @@ function BlockView({
     // pulled out to the log's full width like that one is.
     return (
       <div className="-mx-chat-inset rounded-xl border border-border bg-bg-elevated px-chat-inset py-sm shadow-xs">
+        <p className="mb-2xs text-fg-faint text-xs">引导消息</p>
         <p className="m-0 whitespace-pre-wrap">{block.text}</p>
       </div>
     );

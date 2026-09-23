@@ -1,19 +1,12 @@
 import { useState } from "react";
-import { Pencil, Send, X } from "lucide-react";
+import { ArrowDown, ArrowUp, CornerUpRight, Pencil, Send, X } from "lucide-react";
 import type { QueuedMessage } from "@/lib/types";
 import { isImeKeyEvent } from "@/lib/ime";
 import { cn } from "@/lib/utils";
 
 /**
- * 排队条, right above the textarea and inside the composer's frame — the queue
- * belongs to what you are about to say, not to the right column.
- *
- * `note` is why the queue is not moving: a stopped or failed turn leaves it
- * parked until the user decides, and a turn waiting on an approval is not over
- * either. When there is no live turn the head item also gets 「发送」, which is
- * how a paused queue is resumed by hand. While a turn is live the same spot is
- * 「打断并发送」: stop this turn and send the head item now, for when waiting
- * for the turn to end would waste it.
+ * Pending steer and next-turn queue items stay visible above the composer.
+ * A steer can be interrupted and resent until the current turn finishes.
  */
 export function QueueStrip({
   items,
@@ -22,15 +15,19 @@ export function QueueStrip({
   onInterrupt,
   onEdit,
   onDelete,
+  onReorder,
+  onSteer,
 }: {
   items: readonly QueuedMessage[];
   note?: string | undefined;
   /** Absent while the task is live: nothing may jump the running turn. */
   onSend?: ((itemId: string) => void) | undefined;
-  /** Present only while the task is live: stop the turn, then send this item. */
+  /** Present while live: stop the turn, then send the chosen item. */
   onInterrupt?: ((itemId: string) => void) | undefined;
   onEdit: (itemId: string, text: string) => void;
   onDelete: (itemId: string) => void;
+  onReorder?: ((ids: readonly string[]) => void) | undefined;
+  onSteer?: ((itemId: string) => void) | undefined;
 }) {
   /** The item being edited in place, with its unsaved text. */
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
@@ -45,13 +42,20 @@ export function QueueStrip({
     setEditing(null);
   };
 
+  const move = (index: number, offset: number): void => {
+    const ids = items.map((item) => item.id);
+    const other = index + offset;
+    if (other < 0 || other >= ids.length) return;
+    [ids[index], ids[other]] = [ids[other]!, ids[index]!];
+    onReorder?.(ids);
+  };
+
   return (
     <div className="border-border border-b px-xs py-3xs">
       {items.map((item, index) => (
         <div key={item.id} className="group flex h-row-file items-center gap-2xs rounded-sm px-3xs hover:bg-bg-hover">
-          {/* One row: the label leads the head item, and keeps its width on the rows under it so the texts line up. */}
-          <span aria-hidden={index > 0} className={cn("flex-none text-fg-muted text-xs", index > 0 && "invisible")}>
-            排队 {items.length}
+          <span className={cn("w-24 flex-none truncate text-xs", item.mode === "steer" ? "text-brand" : "text-fg-muted")}>
+            {item.mode === "steer" ? (item.applied === true ? "引导已送入" : item.accepted === true ? "引导已接收" : "引导待送入") : `排队 ${items.filter((entry) => entry.mode !== "steer").length}`}
           </span>
           {index === 0 && note != null && <span className="max-w-[40%] flex-none truncate text-fg-faint text-xs">{note}</span>}
           {editing?.id === item.id ? (
@@ -78,7 +82,7 @@ export function QueueStrip({
             </span>
           )}
           {/* 发送 only on the head item, and only when nothing is running. */}
-          {index === 0 && onSend != null && editing?.id !== item.id && (
+          {index === 0 && onSend != null && editing?.id !== item.id && item.accepted !== true && (
             <button
               type="button"
               title="现在发送这条"
@@ -89,18 +93,29 @@ export function QueueStrip({
               <span>发送</span>
             </button>
           )}
-          {index === 0 && onSend == null && onInterrupt != null && editing?.id !== item.id && (
+          {onInterrupt != null && editing?.id !== item.id && (item.mode === "steer" || index === 0) && (
             <button
               type="button"
               title="停下当前这一轮，马上发这条"
               onClick={() => onInterrupt(item.id)}
-              className="inline-flex h-lg flex-none items-center gap-3xs rounded-sm px-2xs text-fg-muted text-xs opacity-0 hover:bg-bg-active hover:text-fg focus-visible:opacity-100 group-hover:opacity-100"
+              className="inline-flex h-lg flex-none items-center gap-3xs rounded-sm px-2xs text-fg-muted text-xs hover:bg-bg-active hover:text-fg"
             >
               <Send className="size-sm" />
-              <span>打断并发送</span>
+              <span>{item.applied === true ? "打断并重发" : "打断并发送"}</span>
             </button>
           )}
-          {editing?.id !== item.id && (
+          {item.mode !== "steer" && onSteer != null && onInterrupt != null && (
+            <button type="button" title="把这条消息引导进当前回合" onClick={() => onSteer(item.id)} className="inline-flex h-lg flex-none items-center gap-3xs rounded-sm px-2xs text-fg-muted text-xs hover:bg-bg-active hover:text-fg">
+              <CornerUpRight className="size-sm" />引导
+            </button>
+          )}
+          {item.accepted !== true && onReorder != null && (
+            <>
+              <button type="button" aria-label="上移" title="上移" disabled={index === 0 || items[index - 1]?.accepted === true} onClick={() => move(index, -1)} className="grid size-lg flex-none place-items-center rounded-sm text-fg-faint hover:bg-bg-active hover:text-fg disabled:opacity-25"><ArrowUp className="size-sm" /></button>
+              <button type="button" aria-label="下移" title="下移" disabled={index === items.length - 1 || items[index + 1]?.accepted === true} onClick={() => move(index, 1)} className="grid size-lg flex-none place-items-center rounded-sm text-fg-faint hover:bg-bg-active hover:text-fg disabled:opacity-25"><ArrowDown className="size-sm" /></button>
+            </>
+          )}
+          {editing?.id !== item.id && item.accepted !== true && (
             <>
               <button
                 type="button"

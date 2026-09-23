@@ -218,6 +218,12 @@ export interface QueuedMessage {
   id: string;
   text: string;
   createdAt: string;
+  /** Missing on older records: a normal next-turn queue item. */
+  mode?: "queue" | "steer";
+  /** A push engine acknowledged receipt, but has not confirmed model consumption. */
+  accepted?: boolean;
+  /** The runtime reported this message entered the active turn. */
+  applied?: boolean;
 }
 
 /** The task's diff against its baseline, in three numbers, for the sidebar. */
@@ -388,6 +394,8 @@ export interface HarnessState {
   sessionId: string;
   /** The last *finished* turn's session, written by the engine runner's `finish()`. */
   resumeFrom?: HarnessAgentResumeSessionState;
+  /** Native Codex app-server session; older harness sessions use resumeFrom.data.threadId. */
+  codexThreadId?: string;
   /**
    * An *unfinished* turn frozen by `EngineRunner.suspend()` on graceful
    * shutdown. Its bridge is still running, so this is only ever valid while

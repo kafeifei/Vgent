@@ -368,6 +368,8 @@ function ThreadChatView({
               : { onSendQueued: (itemId: string) => actions.sendQueued(thread.id, itemId) })}
             onEditQueued={(itemId, text) => actions.editQueued(thread.id, itemId, text)}
             onDeleteQueued={(itemId) => actions.deleteQueued(thread.id, itemId)}
+            onReorderQueued={(ids) => actions.reorderQueue(thread.id, ids)}
+            onSteerQueued={(itemId) => actions.steerQueued(thread.id, itemId)}
             {...(branch != null ? { branch } : {})}
             branchTitle={
               thread.workspace == null ? "主目录当前分支，任务直接改这里的文件" : "这个任务自己的分支"

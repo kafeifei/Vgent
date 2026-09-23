@@ -234,7 +234,50 @@ const steersIn = (message: UIMessage | undefined): string[] =>
   (message?.parts ?? []).flatMap((part) => (part.type === "data-steer" ? [(part as { data: { text: string } }).data.text] : []));
 
 describe.skipIf(!hasGit)("插话", () => {
-  it("推：运行中发的消息直接进当前回合，不进队列，也不另起一轮", async () => {
+  it("明确排队不会被 push 引擎当作引导，队列可排序并转引导", async () => {
+    const engine = createGatedEngine({ steer: "push" });
+    const app = makeApp(await tempDir(), engine.factory);
+    const thread = await setupThread(app, await repoWithHistory());
+    const first = postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "先做原任务")] });
+    await waitFor("第一轮开始", () => engine.prompts.length === 1);
+
+    await postJson(app, `/api/threads/${thread.id}/queue`, { text: "稍后 A", mode: "queue" });
+    const queued = (await (await postJson(app, `/api/threads/${thread.id}/queue`, { text: "稍后 B", mode: "queue" })).json()) as ThreadRecord;
+    expect(engine.steered).toEqual([]);
+    const [a, b] = queued.queue!;
+    const reordered = (await (await request(app, `/api/threads/${thread.id}/queue/order`, {
+      method: "PUT", body: JSON.stringify({ ids: [b!.id, a!.id] }),
+    })).json()) as ThreadRecord;
+    expect(reordered.queue?.map((item) => item.text)).toEqual(["稍后 B", "稍后 A"]);
+
+    const converted = (await (await postJson(app, `/api/threads/${thread.id}/queue/${b!.id}/steer`, {})).json()) as ThreadRecord;
+    expect(converted.queue?.[0]).toMatchObject({ id: b!.id, mode: "steer", accepted: true });
+    expect(engine.steered).toEqual(["稍后 B"]);
+    await engine.releaseTurn(1);
+    await (await first).text();
+    await waitFor("引导已处理", async () => !(await getThread(app, thread.id)).queue?.some((item) => item.id === b!.id));
+    await engine.releaseTurn(2);
+    await waitFor("队列发出", () => engine.prompts.some((text) => text.endsWith("稍后 A")));
+    expect(engine.prompts).toHaveLength(2);
+  });
+
+  it("引导已接收但仍在等待时可以打断并作为下一回合发送", async () => {
+    const engine = createGatedEngine({ steer: "push" });
+    const app = makeApp(await tempDir(), engine.factory);
+    const thread = await setupThread(app, await repoWithHistory());
+    const first = postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "慢活")] });
+    await waitFor("第一轮开始", () => engine.prompts.length === 1);
+    const pending = (await (await postJson(app, `/api/threads/${thread.id}/queue`, { text: "立刻改方向" })).json()) as ThreadRecord;
+    const item = pending.queue![0]!;
+    expect(item.accepted).toBe(true);
+    expect((await postJson(app, `/api/threads/${thread.id}/queue/${item.id}/send`, { interrupt: true })).status).toBe(200);
+    await (await first).text();
+    await engine.releaseTurn(2);
+    await waitFor("新回合发出", () => engine.prompts.some((text) => text.endsWith("立刻改方向")));
+    expect(engine.prompts).toHaveLength(2);
+  });
+
+  it("推：引导被接收后保留可打断项，回合完成后清除且不另起一轮", async () => {
     const engine = createGatedEngine({ steer: "push" });
     const app = makeApp(await tempDir(), engine.factory);
     const thread = await setupThread(app, await repoWithHistory());
@@ -242,14 +285,16 @@ describe.skipIf(!hasGit)("插话", () => {
     const first = postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "重构 a.ts")] });
     await waitFor("第一轮开始", () => engine.prompts.length === 1);
     const answered = (await (await postJson(app, `/api/threads/${thread.id}/queue`, { text: "顺便改 b.ts" })).json()) as ThreadRecord;
-    expect(answered.queue ?? []).toHaveLength(0);
+    expect(answered.queue).toMatchObject([{ text: "顺便改 b.ts", mode: "steer", accepted: true }]);
     expect(engine.steered).toEqual(["顺便改 b.ts"]);
 
     await engine.releaseTurn(1);
     await (await first).text();
     await waitForStatus(app, thread.id, "idle");
+    await waitFor("引导项清除", async () => ((await getThread(app, thread.id)).queue ?? []).length === 0);
 
     const record = await getThread(app, thread.id);
+    expect(record.queue ?? []).toHaveLength(0);
     expect(record.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
     expect(steersIn(record.messages[1])).toEqual(["顺便改 b.ts"]);
     expect(engine.prompts).toHaveLength(1);
@@ -280,6 +325,22 @@ describe.skipIf(!hasGit)("插话", () => {
     expect(record.queue ?? []).toHaveLength(0);
     expect(steersIn(record.messages[1])).toEqual(["顺便改 b.ts"]);
     expect(engine.prompts).toHaveLength(1);
+  });
+
+  it("拉：明确排队的消息留到下一回合，只取引导", async () => {
+    const engine = createGatedEngine({ steer: "pull" });
+    const app = makeApp(await tempDir(), engine.factory);
+    const thread = await setupThread(app, await repoWithHistory());
+    const first = postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "第一条")] });
+    await waitFor("第一轮开始", () => engine.prompts.length === 1);
+    await postJson(app, `/api/threads/${thread.id}/queue`, { text: "下一轮", mode: "queue" });
+    await postJson(app, `/api/threads/${thread.id}/queue`, { text: "现在引导", mode: "steer" });
+    await engine.releaseTurn(1);
+    await (await first).text();
+    expect(engine.steered).toEqual(["现在引导"]);
+    await engine.releaseTurn(2);
+    await waitFor("队列发出", () => engine.prompts.some((text) => text.endsWith("下一轮")));
+    expect(engine.prompts).toHaveLength(2);
   });
 
   it("送不进去就排队：回合已经结束的、引擎不收的，都照旧等下一轮", async () => {

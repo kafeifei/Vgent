@@ -71,6 +71,8 @@ export function Composer({
   onInterruptWithQueued,
   onEditQueued,
   onDeleteQueued,
+  onReorderQueued,
+  onSteerQueued,
   branch,
   branchTitle,
   location,
@@ -86,7 +88,7 @@ export function Composer({
 }: {
   value: string;
   onChange: (value: string) => void;
-  onSubmit: () => void;
+  onSubmit: (delivery?: "steer" | "queue") => void;
   onStop?: () => void;
   live: boolean;
   /** 引擎能力表, for the grouped model picker and the 「不支持审批」 notice. */
@@ -113,7 +115,7 @@ export function Composer({
   /** 模式 of the next message. The chip and ⇧Tab both write it. */
   mode: ThreadMode;
   onPickMode: (mode: ThreadMode) => void;
-  /** 排队的消息, oldest first. Empty or absent hides the strip. */
+  /** Pending steer and queue items, in their current order. */
   queue?: readonly QueuedMessage[];
   /** Why the queue is not moving — 已停止 / 出错 / 等审批. Absent while a turn runs. */
   queueNote?: string | undefined;
@@ -123,6 +125,8 @@ export function Composer({
   onInterruptWithQueued?: ((itemId: string) => void) | undefined;
   onEditQueued?: (itemId: string, text: string) => void;
   onDeleteQueued?: (itemId: string) => void;
+  onReorderQueued?: (ids: readonly string[]) => void;
+  onSteerQueued?: (itemId: string) => void;
   /** 分支 for the row under the box; absent on a detached HEAD or a non-repo. */
   branch?: string | undefined;
   branchTitle?: string | undefined;
@@ -413,6 +417,8 @@ export function Composer({
             onInterrupt={onInterruptWithQueued}
             onEdit={onEditQueued}
             onDelete={onDeleteQueued}
+            onReorder={onReorderQueued}
+            onSteer={onSteerQueued}
           />
         )}
 
@@ -564,11 +570,7 @@ export function Composer({
                 }
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
-                  // 运行中按 Enter = 排队。Which of the two it is, is the caller's
-                  // business: `onSubmit` sends or queues by itself, and only it
-                  // knows whether the request went through — the draft is cleared
-                  // there, never here.
-                  onSubmit();
+                  onSubmit(event.metaKey ? "queue" : "steer");
                 }
               }}
               className={cn(
@@ -626,12 +628,13 @@ export function Composer({
             )}
           />
           {big && <span className="flex-1" />}
+          {/* A typed follow-up is sent as guidance. An empty composer keeps Stop. */}
           <button
             type="button"
-            aria-label={showSend ? (live ? "追加发送" : "发送") : "停止"}
-            title={showSend && live ? "追加发送（排队）" : undefined}
+            aria-label={showSend ? (live ? "发送引导" : "发送") : "停止"}
+            title={showSend && live ? "发送引导（⌘↵ 排队）" : undefined}
             onClick={() => {
-              if (showSend) onSubmit();
+              if (showSend) onSubmit("steer");
               else onStop?.();
               // The click took the focus; the next message is typed without reaching for the mouse.
               textarea.current?.focus();

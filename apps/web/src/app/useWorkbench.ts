@@ -351,19 +351,23 @@ export function useWorkbench(token: string) {
           () => false,
         ),
 
-      /**
-       * 运行中按 Enter：the message goes onto the task's queue on the *server*,
-       * which starts it itself once the turn settles idle. Resolves `true` only
-       * when it really landed — the composer keeps the draft otherwise.
-       */
-      queueMessage: (threadId: string, text: string): Promise<boolean> =>
-        client.queueMessage(threadId, text).then(
+      /** Persist a steer or a next-turn item before clearing the composer. */
+      queueMessage: (threadId: string, text: string, mode: "steer" | "queue" = "steer"): Promise<boolean> =>
+        client.queueMessage(threadId, text, mode).then(
           () => true,
           (error: Error) => {
             toast(error.message);
             return false;
           },
         ),
+
+      reorderQueue: (threadId: string, ids: readonly string[]) => {
+        void client.reorderQueue(threadId, ids).catch((error: Error) => toast(error.message));
+      },
+
+      steerQueued: (threadId: string, itemId: string) => {
+        void client.steerQueued(threadId, itemId).catch((error: Error) => toast(error.message));
+      },
 
       editQueued: (threadId: string, itemId: string, text: string) => {
         void client.editQueued(threadId, itemId, text).catch((error: Error) => toast(error.message));

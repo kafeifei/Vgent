@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { BadRequestError, NotFoundError } from "./errors.js";
+import { BadRequestError, ConflictError, NotFoundError } from "./errors.js";
 import type { ThreadStore } from "./store/threads.js";
 import type { QueuedMessage, ThreadRecord } from "./types.js";
 
@@ -33,9 +33,17 @@ export function readQueueText(value: unknown): string {
 export interface QueueStore {
   /** Runs `work` with exclusive access to this thread's queue. */
   locked<T>(threadId: string, work: () => Promise<T>): Promise<T>;
-  append(threadId: string, text: string): Promise<ThreadRecord>;
+  append(threadId: string, text: string, mode?: "queue" | "steer"): Promise<ThreadRecord>;
   edit(threadId: string, itemId: string, text: string): Promise<ThreadRecord>;
   remove(threadId: string, itemId: string): Promise<ThreadRecord>;
+  reorder(threadId: string, ids: readonly string[]): Promise<ThreadRecord>;
+  setMode(threadId: string, itemId: string, mode: "queue" | "steer"): Promise<ThreadRecord>;
+  markAccepted(threadId: string, itemId: string, accepted: boolean): Promise<void>;
+  markApplied(threadId: string, itemId: string): Promise<void>;
+  /** Remove only the acknowledgements belonging to a completed turn. */
+  removeAccepted(threadId: string, ids: readonly string[]): Promise<void>;
+  /** Pull only steer items; explicit queue items stay for the next turn. */
+  takeSteers(threadId: string): Promise<QueuedMessage[]>;
   /**
    * Lift one item out — the named one, or the head. `undefined` means there was
    * nothing to take, which is the normal answer for a dispatcher that lost a
@@ -71,14 +79,14 @@ export function createQueueStore(threads: ThreadStore): QueueStore {
   return {
     locked,
 
-    append: (threadId, text) =>
+    append: (threadId, text, mode = "queue") =>
       locked(threadId, async () => {
         const thread = await load(threadId);
         const queue = thread.queue ?? [];
         if (queue.length >= QUEUE_MAX_ITEMS) {
           throw new BadRequestError(`排队最多 ${QUEUE_MAX_ITEMS} 条，先发出或删掉一些`, "queue_full");
         }
-        return write(threadId, [...queue, { id: randomUUID(), text, createdAt: new Date().toISOString() }]);
+        return write(threadId, [...queue, { id: randomUUID(), text, createdAt: new Date().toISOString(), mode }]);
       }),
 
     edit: (threadId, itemId, text) =>
@@ -86,6 +94,7 @@ export function createQueueStore(threads: ThreadStore): QueueStore {
         const thread = await load(threadId);
         const queue = thread.queue ?? [];
         if (!queue.some((item) => item.id === itemId)) throw new NotFoundError("这条排队消息不存在", "queue_item_not_found");
+        if (queue.some((item) => item.id === itemId && item.accepted === true)) throw new ConflictError("引导已送达，不能再编辑", "steer_already_accepted");
         return write(
           threadId,
           queue.map((item) => (item.id === itemId ? { ...item, text } : item)),
@@ -97,10 +106,63 @@ export function createQueueStore(threads: ThreadStore): QueueStore {
         const thread = await load(threadId);
         const queue = thread.queue ?? [];
         if (!queue.some((item) => item.id === itemId)) throw new NotFoundError("这条排队消息不存在", "queue_item_not_found");
+        if (queue.some((item) => item.id === itemId && item.accepted === true)) throw new ConflictError("引导已送达，不能直接删除", "steer_already_accepted");
         return write(
           threadId,
           queue.filter((item) => item.id !== itemId),
         );
+      }),
+
+    reorder: (threadId, ids) =>
+      locked(threadId, async () => {
+        const queue = (await load(threadId)).queue ?? [];
+        if (ids.length !== queue.length || new Set(ids).size !== ids.length || ids.some((id) => !queue.some((item) => item.id === id))) {
+          throw new BadRequestError("队列顺序与当前消息不一致，请刷新后重试", "queue_order_changed");
+        }
+        if (queue.some((item, index) => item.accepted === true && ids[index] !== item.id)) {
+          throw new ConflictError("已送达的引导不能移动", "steer_already_accepted");
+        }
+        const byId = new Map(queue.map((item) => [item.id, item]));
+        return write(threadId, ids.map((id) => byId.get(id)!));
+      }),
+
+    setMode: (threadId, itemId, mode) =>
+      locked(threadId, async () => {
+        const queue = (await load(threadId)).queue ?? [];
+        if (!queue.some((item) => item.id === itemId)) throw new NotFoundError("这条排队消息不存在", "queue_item_not_found");
+        if (queue.some((item) => item.id === itemId && item.accepted === true)) throw new ConflictError("引导已送达", "steer_already_accepted");
+        return write(threadId, queue.map((item) => (item.id === itemId ? { ...item, mode, accepted: false } : item)));
+      }),
+
+    markAccepted: (threadId, itemId, accepted) =>
+      locked(threadId, async () => {
+        const queue = (await load(threadId)).queue ?? [];
+        if (!queue.some((item) => item.id === itemId)) return;
+        await write(threadId, queue.map((item) => (item.id === itemId ? { ...item, accepted, applied: accepted && item.applied === true } : item)));
+      }),
+
+    markApplied: (threadId, itemId) =>
+      locked(threadId, async () => {
+        const queue = (await load(threadId)).queue ?? [];
+        if (queue.some((item) => item.id === itemId && item.mode === "steer")) {
+          await write(threadId, queue.map((item) => item.id === itemId ? { ...item, applied: true } : item));
+        }
+      }),
+
+    removeAccepted: (threadId, ids) =>
+      locked(threadId, async () => {
+        const queue = (await load(threadId)).queue ?? [];
+        const selected = new Set(ids);
+        const remaining = queue.filter((item) => !selected.has(item.id) || item.accepted !== true);
+        if (remaining.length !== queue.length) await write(threadId, remaining);
+      }),
+
+    takeSteers: (threadId) =>
+      locked(threadId, async () => {
+        const queue = (await load(threadId)).queue ?? [];
+        const taken = queue.filter((item) => item.mode === "steer" && item.accepted !== true);
+        if (taken.length > 0) await write(threadId, queue.filter((item) => !taken.includes(item)));
+        return taken;
       }),
 
     async take(threadId, options) {

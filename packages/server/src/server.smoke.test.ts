@@ -386,6 +386,54 @@ describe("@vgent/server (smoke)", () => {
   );
 
   codexSmoke(
+    "steers a native Codex turn while a shell command is running",
+    async () => {
+      const dataDir = await mkdtemp(join(tmpdir(), "vgent-server-smoke-codex-steer-"));
+      const repoPath = await tempRepo();
+      const app = createApp({ dataDir, token: TOKEN, log: consoleLogger });
+      try {
+        const project = (await (await postJson(app, "/api/projects", { repoPath })).json()) as Project;
+        const created = await postJson(app, "/api/threads", { projectId: project.id, engine: "codex", model: "gpt-5.5" });
+        expect(created.status).toBe(200);
+        const threadId = ((await created.json()) as ThreadRecord).id;
+        const response = await postJson(app, `/api/chat/${threadId}`, {
+          id: threadId,
+          messages: [{ id: "u1", role: "user", parts: [{ type: "text", text: "Run the shell command sleep 8, then answer A." }] }],
+        });
+        const replyPromise = collectText(response).then((value) => ({ value }), (error: Error) => ({ error }));
+        let commandStarted = false;
+        let lastRecord: ThreadRecord | undefined;
+        for (let attempt = 0; attempt < 600; attempt++) {
+          const record = (await (await request(app, `/api/threads/${threadId}`)).json()) as ThreadRecord;
+          lastRecord = record;
+          if (record.status === "error") throw new Error(`Codex turn failed: ${record.error}`);
+          commandStarted = record.messages.some((message) => message.parts.some((part) => isToolUIPart(part) && part.state !== "output-available"));
+          if (commandStarted) break;
+          await sleep(250);
+        }
+        if (!commandStarted) throw new Error(`Codex command did not start: ${lastRecord?.status}: ${lastRecord?.error ?? "no error"}`);
+        const accepted = (await (await postJson(app, `/api/threads/${threadId}/queue`, { text: "Change the final answer to B. Do not say A.", mode: "steer" })).json()) as ThreadRecord;
+        expect(accepted.queue?.[0]).toMatchObject({ mode: "steer", accepted: true });
+        const reply = await replyPromise;
+        if ("error" in reply) throw reply.error;
+        expect(reply.value.trim().endsWith("B")).toBe(true);
+        await waitForIdle(app, threadId);
+        for (let attempt = 0; attempt < 80; attempt++) {
+          if (((await (await request(app, `/api/threads/${threadId}`)).json()) as ThreadRecord).queue?.length === 0) break;
+          await sleep(250);
+        }
+        const finished = (await (await request(app, `/api/threads/${threadId}`)).json()) as ThreadRecord;
+        expect(finished.queue ?? []).toHaveLength(0);
+      } finally {
+        await app.shutdown();
+        await rm(dataDir, { recursive: true, force: true, maxRetries: 5 });
+        await rm(repoPath, { recursive: true, force: true, maxRetries: 5 });
+      }
+    },
+    15 * 60 * 1000,
+  );
+
+  codexSmoke(
     "parks a vgent approval, survives a restart, and finishes the write afterwards",
     async () => {
       const dataDir = await mkdtemp(join(tmpdir(), "vgent-server-smoke-vgent-"));

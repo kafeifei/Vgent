@@ -1057,28 +1057,43 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   // --- 排队 -------------------------------------------------------------
 
-  /**
-   * 运行中按 Enter 就排到这里，回合正常结束后 server 自己发出下一条 —— 浏览器
-   * 关掉也一样。Queueing itself is allowed in any status: the user is typing
-   * while something runs, and 「等它结束」 is the whole point.
-   */
+  /** Durable follow-ups: Enter steers; Command+Enter queues a next turn. */
   app.post("/api/threads/:id/queue", async (c) => {
     const id = c.req.param("id");
     assertNotArchived(await threadOf(id));
-    const body = (await c.req.json().catch(() => undefined)) as { text?: unknown } | undefined;
+    const body = (await c.req.json().catch(() => undefined)) as { text?: unknown; mode?: unknown } | undefined;
     const text = readQueueText(body?.text);
-    // 插话: a turn that is running right now, on an engine that takes input
-    // mid-turn, gets the message at once — it never enters the queue. Anything
-    // else queues, and an engine that reads its queue between steps picks it up
-    // from there.
-    if (await runs.steer(id, text)) return c.json(await threadOf(id));
-    const record = await queue.append(id, text);
+    const mode = body?.mode ?? "steer";
+    if (mode !== "queue" && mode !== "steer") throw new BadRequestError("mode 必须是 queue 或 steer", "invalid_queue_mode");
+    const record = await queue.append(id, text, mode);
+    const item = record.queue?.at(-1);
+    if (mode === "steer" && item != null) await runs.steer(id, text, item.id);
     // A turn can settle between the client seeing 「运行中」 and this write
     // landing. The dispatcher already ran on an empty queue by then, so it is
     // nudged again — it re-checks the status and does nothing unless the
     // thread really is idle.
     void runs.dispatchQueue(id).catch((error: unknown) => log.warn(`线程 ${id} 的排队消息没能发出`, error));
-    return c.json(record);
+    return c.json(await threadOf(id));
+  });
+
+  app.put("/api/threads/:id/queue/order", async (c) => {
+    const id = c.req.param("id");
+    await threadOf(id);
+    const body = (await c.req.json().catch(() => undefined)) as { ids?: unknown } | undefined;
+    if (!Array.isArray(body?.ids) || !body.ids.every((entry) => typeof entry === "string")) {
+      throw new BadRequestError("ids 必须是消息 ID 数组", "invalid_queue_order");
+    }
+    return c.json(await queue.reorder(id, body.ids));
+  });
+
+  app.post("/api/threads/:id/queue/:itemId/steer", async (c) => {
+    const id = c.req.param("id");
+    const thread = await threadOf(id);
+    if (!isLive(thread)) throw new ConflictError("当前没有运行中的回合", "thread_not_running");
+    const record = await queue.setMode(id, c.req.param("itemId"), "steer");
+    const item = record.queue?.find((entry) => entry.id === c.req.param("itemId"));
+    if (item != null) await runs.steer(id, item.text, item.id);
+    return c.json(await threadOf(id));
   });
 
   app.patch("/api/threads/:id/queue/:itemId", async (c) => {

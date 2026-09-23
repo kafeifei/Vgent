@@ -36,7 +36,7 @@ describe("引擎能力表", () => {
       compact: false,
       knownDefaultModel: false,
       extensions: false,
-      steer: false,
+      steer: true,
       customProviders: true,
     });
     expect(Object.values(registry.vgent.descriptor.capabilities).every(Boolean)).toBe(true);

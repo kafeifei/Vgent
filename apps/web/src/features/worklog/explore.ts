@@ -169,38 +169,11 @@ export function exploreCounts(tools: readonly ToolBlock[]): ExploreCounts {
   return counts;
 }
 
-/** `3 次读取 · 2 次搜索 · 1 次列目录` — the counts behind an 「已探索」 title, Koma's wording. */
+/** `读取 3 个文件 · 搜索 2 次 · 列出 1 个目录` — the one line a fold of looks shows. */
 export function exploreLabel(counts: ExploreCounts): string {
   const parts: string[] = [];
-  if (counts.read > 0) parts.push(`${counts.read} 次读取`);
-  if (counts.search > 0) parts.push(`${counts.search} 次搜索`);
-  if (counts.list > 0) parts.push(`${counts.list} 次列目录`);
+  if (counts.read > 0) parts.push(`读取 ${counts.read} 个文件`);
+  if (counts.search > 0) parts.push(`搜索 ${counts.search} 次`);
+  if (counts.list > 0) parts.push(`列出 ${counts.list} 个目录`);
   return parts.join(" · ");
-}
-
-/** One row of a live run: a fold of consecutive looks, or a single tool on its own line. */
-export type ExploreItem = { kind: "explore"; key: string; tools: ToolBlock[] } | { kind: "tool"; block: ToolBlock };
-
-/**
- * Folds two or more consecutive exploration calls into one item and leaves
- * everything else where it is. A lone look keeps its own line: 「读取 a.ts」
- * says more than 「1 次读取」.
- */
-export function exploreItemsOf(tools: readonly ToolBlock[]): ExploreItem[] {
-  const items: ExploreItem[] = [];
-  let pending: ToolBlock[] = [];
-  const flush = () => {
-    if (pending.length >= 2) items.push({ kind: "explore", key: pending[0]!.key, tools: pending });
-    else for (const block of pending) items.push({ kind: "tool", block });
-    pending = [];
-  };
-  for (const block of tools) {
-    if (exploreKindOf(block.part) != null) pending.push(block);
-    else {
-      flush();
-      items.push({ kind: "tool", block });
-    }
-  }
-  flush();
-  return items;
 }

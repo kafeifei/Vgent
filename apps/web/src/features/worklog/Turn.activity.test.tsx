@@ -16,12 +16,11 @@ const actions: TurnActions = {
 };
 
 const tool = (id: string, name: string, state = "output-available") =>
-  ({
-    type: `tool-${name}`,
-    toolCallId: id,
-    state,
-    input: { file_path: `${id}.ts`, command: "pnpm test", pattern: "x" },
-  }) as unknown as UIMessage["parts"][number];
+  ({ type: `tool-${name}`, toolCallId: id, state, input: { file_path: `${id}.ts`, pattern: "x" } }) as unknown as UIMessage["parts"][number];
+const bash = (id: string, command: string, state = "output-available") =>
+  ({ type: "tool-Bash", toolCallId: id, state, input: { command } }) as unknown as UIMessage["parts"][number];
+const reasoning = (text: string, state: "streaming" | "done" = "done") =>
+  ({ type: "reasoning", text, state }) as UIMessage["parts"][number];
 
 const htmlOf = (parts: UIMessage["parts"], live = false) => {
   const turn = buildTurns([{ id: "u", role: "user", parts: [{ type: "text", text: "问" }] }, { id: "a", role: "assistant", parts }])[0]!;
@@ -30,82 +29,53 @@ const htmlOf = (parts: UIMessage["parts"], live = false) => {
   );
 };
 
-describe("thinking sits on the activity title", () => {
-  const steps = [
-    tool("c1", "read"),
-    tool("c2", "read"),
-    { type: "reasoning", text: "想一下", state: "done" } as UIMessage["parts"][number],
-    tool("c3", "bash"),
-    { type: "text", text: "改完了" },
-    tool("c4", "edit"),
-  ];
+const steps = [
+  reasoning("先看看"),
+  tool("c1", "Read"),
+  bash("c2", "cd /repo; sed -n 1,40p src/app.ts"),
+  bash("c3", "pnpm test"),
+  { type: "text", text: "改完了" } as UIMessage["parts"][number],
+];
 
-  it("collapses a finished run into one category sentence, and does not leave the thought between the tools", () => {
-    const html = htmlOf(steps);
-    expect(html).toContain("已读取文件运行了命令");
-    expect(html).toContain("改完了");
-    expect(html).toContain("c4.ts");
-    expect(html).not.toContain("想一下");
-    expect(html).not.toContain("c1.ts");
-    expect(html).not.toContain(">$</span>");
-  });
-
-  it("shows the thought as the title above the tools while the turn is still going", () => {
-    const html = htmlOf([
-      tool("c1", "read"),
-      tool("c2", "read"),
-      { type: "reasoning", text: "想一下", state: "done" } as UIMessage["parts"][number],
-    ], true);
-    const title = html.indexOf("想一下");
-    const fold = html.indexOf("已探索");
-    expect(title).toBeGreaterThanOrEqual(0);
-    expect(fold).toBeGreaterThan(title);
-    expect(html.indexOf("想一下", title + "想一下".length)).toBe(-1);
-    expect(html).not.toContain("已读取文件");
-  });
-
-  it("replaces that title with the tool that is running", () => {
-    const html = htmlOf(
-      [
-        tool("c1", "read"),
-        { type: "reasoning", text: "想一下", state: "done" } as UIMessage["parts"][number],
-        tool("c3", "bash", "input-available"),
-      ],
-      true,
-    );
-    expect(html).not.toContain("想一下");
-    expect(html).toContain("正在运行命令");
-    // The command is on its row and nowhere else.
-    expect(html.indexOf("pnpm test")).toBe(html.lastIndexOf("pnpm test"));
-  });
-
-  it("folds consecutive looks into one 已探索 line while the turn is going, and leaves a command on its own", () => {
-    const bash = (id: string, command: string) =>
-      ({ type: "tool-Bash", toolCallId: id, state: "output-available", input: { command } }) as unknown as UIMessage["parts"][number];
-    const html = htmlOf(
-      [
-        bash("c1", "cd /repo; sed -n 100,140p src/app.ts"),
-        bash("c2", "grep -n runs.start src/app.ts"),
-        tool("c3", "read"),
-        bash("c4", "pnpm test"),
-      ],
-      true,
-    );
-    expect(html).toContain("已探索");
-    expect(html).toContain("2 次读取 · 1 次搜索");
-    expect(html).not.toContain("sed -n 100,140p");
+describe("a running turn", () => {
+  it("is the process in order: one thought row, looks folded with counts, a command on its own line", () => {
+    const html = htmlOf(steps.slice(0, 4), true);
+    expect(html).toContain("思考");
+    expect(html).toContain("读取 2 个文件");
+    expect(html).not.toContain("sed -n 1,40p");
     expect(html).toContain("pnpm test");
+    expect(html).not.toContain("工作了");
+    expect(html.indexOf("思考")).toBeLessThan(html.indexOf("读取 2 个文件"));
+    expect(html.indexOf("读取 2 个文件")).toBeLessThan(html.indexOf("pnpm test"));
   });
 
-  it("says 正在探索 while a look in the fold is still running", () => {
-    const html = htmlOf(
-      [
-        tool("c1", "read"),
-        tool("c2", "read", "input-available"),
-      ],
-      true,
-    );
-    expect(html).toContain("正在探索");
-    expect(html).toContain("2 次读取");
+  it("says 思考中… while the thought at its end is still going", () => {
+    expect(htmlOf([tool("c1", "Read"), reasoning("想一下", "streaming")], true)).toContain("思考中…");
+    expect(htmlOf([tool("c1", "Read"), reasoning("想完了")], true)).toContain("思考中…");
+    expect(htmlOf([reasoning("想完了"), tool("c1", "Read")], true)).not.toContain("思考中…");
+  });
+
+  it("shows a reply written mid-way where it happened", () => {
+    const html = htmlOf([tool("c1", "Read"), { type: "text", text: "先这样" } as UIMessage["parts"][number], bash("c2", "pnpm test")], true);
+    expect(html.indexOf("c1.ts")).toBeLessThan(html.indexOf("先这样"));
+    expect(html.indexOf("先这样")).toBeLessThan(html.indexOf("pnpm test"));
+  });
+});
+
+describe("a finished turn", () => {
+  it("folds the whole process behind 工作了 N 步 and shows the reply under it", () => {
+    const html = htmlOf(steps);
+    expect(html).toContain("工作了 3 步");
+    expect(html).toContain("改完了");
+    expect(html).not.toContain("pnpm test");
+    expect(html).not.toContain("读取 2 个文件");
+    expect(html).not.toContain("先看看");
+    expect(html.indexOf("工作了 3 步")).toBeLessThan(html.indexOf("改完了"));
+  });
+
+  it("does not fold a turn that only replied", () => {
+    const html = htmlOf([reasoning("想"), { type: "text", text: "就这样" } as UIMessage["parts"][number]]);
+    expect(html).not.toContain("工作了");
+    expect(html).toContain("就这样");
   });
 });

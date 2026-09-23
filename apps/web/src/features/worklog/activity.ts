@@ -1,172 +1,86 @@
 import { getToolName } from "ai";
 import { exploreKindOf } from "./explore";
-import { describeTool, type ToolKind } from "./toolMeta";
 import { isOpenApproval, isOpenQuestion, type Block } from "./turns";
 
 type ToolBlock = Extract<Block, { kind: "tool" }>;
 type ReasoningBlock = Extract<Block, { kind: "reasoning" }>;
+export type RowBlock = Exclude<Block, { kind: "reasoning" }>;
 
 /**
- * One run of tool calls. Thinking is not a row in the run: `thought` is only
- * the reasoning that has not been followed by a tool yet, and it is what the
- * title line shows during a gap. Text, an interjection, a plan, a subagent,
- * and anything waiting on the user end the run so they stay on their own.
+ * One line of a turn's process, in the order it happened. A `thought` is the
+ * reasoning of one stretch of tool calls, hoisted above them as one row, so
+ * thinking never sits between every two calls. An `explore` is two or more
+ * consecutive looks (reads, searches, listings) on one line with counts.
+ * Everything else — a command, an edit, a card, a reply written mid-way — is
+ * its own row.
  */
-export interface ActivityRun {
-  kind: "activity";
-  key: string;
-  tools: ToolBlock[];
-  thought: ReasoningBlock[];
-}
+export type ProcessItem =
+  | { kind: "thought"; key: string; parts: ReasoningBlock[] }
+  | { kind: "explore"; key: string; tools: ToolBlock[] }
+  | { kind: "block"; key: string; block: RowBlock };
 
-export type Segment = ActivityRun | { kind: "block"; block: Block };
-
-/**
- * `live` while this run is the tail of a turn that has not started its reply.
- * `summary` once two or more tools sit behind something else.
- * `plain` is a single settled tool, which keeps its own line.
- * `omit` is a thought with no tools, left behind a reply.
- */
-export type ActivityMode = "live" | "summary" | "plain" | "omit";
-
-export function activityMode(toolCount: number, liveEdge: boolean): ActivityMode {
-  if (toolCount === 0) return liveEdge ? "live" : "omit";
-  if (liveEdge) return "live";
-  if (toolCount >= 2) return "summary";
-  return "plain";
-}
-
-const GROUPED: ReadonlySet<ToolKind> = new Set(["read", "search", "bash", "write", "edit", "other"]);
-
-function isGroupedTool(block: Block): block is ToolBlock {
+/** A call that is waiting on the human, or that is drawn as a card: never a plain row. */
+function isCard(block: Block): boolean {
   if (block.kind !== "tool") return false;
-  if (isOpenApproval(block.part) || isOpenQuestion(block.part)) return false;
-  if (getToolName(block.part) === "askUserQuestions") return false;
-  return GROUPED.has(describeTool(block.part).kind);
+  return isOpenApproval(block.part) || isOpenQuestion(block.part) || getToolName(block.part) === "askUserQuestions";
 }
 
-export function segmentsOf(blocks: readonly Block[]): Segment[] {
-  const segments: Segment[] = [];
-  let run: ActivityRun | null = null;
+export function processItemsOf(blocks: readonly Block[]): ProcessItem[] {
+  const items: ProcessItem[] = [];
+  let thought: ReasoningBlock[] = [];
+  let tools: ToolBlock[] = [];
   const flush = () => {
-    if (run != null && (run.tools.length > 0 || run.thought.length > 0)) segments.push(run);
-    run = null;
+    if (thought.length > 0) items.push({ kind: "thought", key: thought[0]!.key, parts: thought });
+    let pending: ToolBlock[] = [];
+    const flushExplore = () => {
+      if (pending.length >= 2) items.push({ kind: "explore", key: pending[0]!.key, tools: pending });
+      else for (const block of pending) items.push({ kind: "block", key: block.key, block });
+      pending = [];
+    };
+    for (const block of tools) {
+      if (exploreKindOf(block.part) != null) pending.push(block);
+      else {
+        flushExplore();
+        items.push({ kind: "block", key: block.key, block });
+      }
+    }
+    flushExplore();
+    thought = [];
+    tools = [];
   };
   for (const block of blocks) {
     if (block.kind === "reasoning") {
-      run ??= { kind: "activity", key: block.key, tools: [], thought: [] };
-      run.thought.push(block);
+      thought.push(block);
       continue;
     }
-    if (isGroupedTool(block)) {
-      // A tool ends the thought that led to it. The next gap starts clean.
-      run ??= { kind: "activity", key: block.key, tools: [], thought: [] };
-      run.tools.push(block);
-      run.thought = [];
+    if (block.kind === "tool" && !isCard(block)) {
+      tools.push(block);
       continue;
     }
+    // A reply, an interjection, a compaction mark or a card ends the stretch.
     flush();
-    segments.push({ kind: "block", block });
+    items.push({ kind: "block", key: block.key, block: block as RowBlock });
   }
   flush();
-  return segments;
+  return items;
 }
 
 /**
- * The title line while a tool runs. A status, not the call itself: the row
- * with the command is right underneath, and showing it twice read as two logs.
+ * A finished turn: the trailing text is the reply, everything before it is
+ * the process that folds away behind 「工作了 N 步」.
  */
-export function runningLabel(part: ToolBlock["part"]): string {
-  const display = describeTool(part);
-  switch (display.kind) {
-    case "bash":
-      return "正在运行命令";
-    case "read":
-      return "正在读取文件";
-    case "search":
-      return "正在搜索";
-    case "write":
-      return "正在写入文件";
-    case "edit":
-      return "正在编辑文件";
-    case "agent":
-      return "子代理运行中";
-    case "plan":
-      return "正在更新计划";
-    default:
-      return `正在使用 ${getToolName(part)}`;
-  }
+export function splitReply(blocks: readonly Block[]): { process: Block[]; reply: Block[] } {
+  let end = blocks.length;
+  while (end > 0 && blocks[end - 1]!.kind === "text") end -= 1;
+  return { process: blocks.slice(0, end), reply: blocks.slice(end) };
 }
 
-export interface ThinkingLabel {
-  label: string;
-  streaming: boolean;
-  body?: string;
-}
+/** How many calls the fold stands for. Cards count too: they were steps. */
+export const stepCount = (blocks: readonly Block[]): number => blocks.filter((block) => block.kind === "tool").length;
 
-const TITLE_LIMIT = 40;
-
-/** The title line during a gap: a short heading the thought already has, otherwise 「正在思考」. */
-export function thinkingLabel(thought: readonly ReasoningBlock[]): ThinkingLabel {
-  const latest = thought.at(-1);
-  const text = latest?.part.text.trim() ?? "";
-  if (latest == null || text === "") return { label: "正在思考", streaming: true };
-  const streaming = latest.part.state === "streaming";
-  const bold = /^\*\*([^\n*]{1,80})\*\*(?:\s*|$)/.exec(text);
-  if (bold?.[1] != null) {
-    const body = text.slice(bold[0].length).trim();
-    return { label: bold[1], streaming, ...(body !== "" ? { body } : {}) };
-  }
-  const newline = text.indexOf("\n");
-  const first = (newline === -1 ? text : text.slice(0, newline)).trim();
-  if (first.length > 0 && first.length <= TITLE_LIMIT) {
-    if (newline === -1) return { label: first, streaming };
-    const body = text.slice(newline + 1).trim();
-    return { label: first, streaming, ...(body !== "" ? { body } : {}) };
-  }
-  return { label: streaming ? "正在思考" : "已完成思考", streaming, body: text };
-}
-
-type Category = "tool" | "read" | "search" | "command" | "edit";
-
-const CATEGORY_ORDER: readonly Category[] = ["tool", "read", "search", "command", "edit"];
-
-function categoryOf(kind: ToolKind): Category | undefined {
-  switch (kind) {
-    case "read":
-      return "read";
-    case "search":
-      return "search";
-    case "bash":
-      return "command";
-    case "write":
-    case "edit":
-      return "edit";
-    case "other":
-      return "tool";
-    default:
-      return undefined;
-  }
-}
-
-function phrase(category: Category, count: number, leading: boolean): string {
-  if (category === "tool") return count === 1 ? "加载了一个工具" : "加载了工具";
-  if (category === "read") return leading ? "已读取文件" : "读取文件";
-  if (category === "search") return leading ? "已搜索" : "搜索了";
-  if (category === "command") return "运行了命令";
-  return leading ? (count === 1 ? "编辑了一个文件" : "编辑了文件") : count === 1 ? "编辑了一个文件" : "编辑了多个文件";
-}
-
-/** The collapsed title of a finished run. Categories are concatenated, and the first one uses its leading form. */
-export function summaryLabel(tools: readonly ToolBlock[]): string {
-  const counts: Record<Category, number> = { tool: 0, read: 0, search: 0, command: 0, edit: 0 };
-  for (const tool of tools) {
-    // A shell command that only reads or searches counts as that, not as a command.
-    const explore = exploreKindOf(tool.part);
-    const category = explore != null ? (explore === "search" ? "search" : "read") : categoryOf(describeTool(tool.part).kind);
-    if (category != null) counts[category] += 1;
-  }
-  return CATEGORY_ORDER.filter((category) => counts[category] > 0)
-    .map((category, index) => phrase(category, counts[category], index === 0))
-    .join("");
-}
+/** The reasoning of one thought row, as one document. */
+export const thoughtText = (parts: readonly ReasoningBlock[]): string =>
+  parts
+    .map((block) => block.part.text.trim())
+    .filter((text) => text !== "")
+    .join("\n\n");

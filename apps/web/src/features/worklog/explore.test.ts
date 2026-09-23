@@ -1,6 +1,6 @@
 import type { UIMessage } from "ai";
 import { describe, expect, it } from "vitest";
-import { exploreCounts, exploreItemsOf, exploreLabel, shellExploreKind } from "./explore";
+import { exploreCounts, exploreLabel, shellExploreKind } from "./explore";
 import { buildTurns, type Block } from "./turns";
 
 const tool = (id: string, name: string, input: Record<string, unknown>, state = "output-available") =>
@@ -41,29 +41,14 @@ describe("shellExploreKind", () => {
   });
 });
 
-describe("exploreItemsOf", () => {
-  it("folds two or more consecutive looks and leaves a lone look and every command on its own line", () => {
-    const items = exploreItemsOf(
-      toolBlocks([
-        tool("c1", "Read", { file_path: "a.ts" }),
-        tool("c2", "Bash", { command: "sed -n 1,20p b.ts" }),
-        tool("c3", "Grep", { pattern: "x" }),
-        tool("c4", "Bash", { command: "pnpm test" }),
-        tool("c5", "Bash", { command: "ls src" }),
-        tool("c6", "Edit", { file_path: "a.ts" }),
-        tool("c7", "Read", { file_path: "c.ts" }),
-        tool("c8", "Read", { file_path: "d.ts" }),
-      ]),
-    );
-    expect(items.map((item) => (item.kind === "explore" ? `explore:${item.tools.length}` : item.block.key.split(":")[1]))).toEqual([
-      "explore:3",
-      "3",
-      "4",
-      "5",
-      "explore:2",
+describe("exploreLabel", () => {
+  it("counts each kind of look on one line", () => {
+    const tools = toolBlocks([
+      tool("c1", "Read", { file_path: "a.ts" }),
+      tool("c2", "Bash", { command: "sed -n 1,20p b.ts" }),
+      tool("c3", "Grep", { pattern: "x" }),
+      tool("c4", "Bash", { command: "ls src" }),
     ]);
-    const first = items[0];
-    if (first?.kind !== "explore") throw new Error("expected a fold");
-    expect(exploreLabel(exploreCounts(first.tools))).toBe("2 次读取 · 1 次搜索");
+    expect(exploreLabel(exploreCounts(tools))).toBe("读取 2 个文件 · 搜索 1 次 · 列出 1 个目录");
   });
 });

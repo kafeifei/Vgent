@@ -574,22 +574,17 @@ build 84 定的「日志里的图只有一种样子」只覆盖了回复里内�
 - **适配器升到 `@ai-sdk/harness-claude-code` 1.0.125 / `-codex` 1.0.123 / `harness` 1.0.121**。钉着的 1.0.119 有个会把压缩弄崩的 bug：压缩后 CLI 发来的用户消息 `content` 是字符串，桥接进程按数组 `.filter` 直接 TypeError，整轮报错（1.0.122 修的：「ignore non-array user messages」）——也就是说升级之前 Claude Code 的**自动**压缩在 Vgent 里同样会崩。真机核对（haiku，`/tmp` 里的小仓库）：`/compact` 那轮只有 `start` / `finish` 两个事件，CLI 的 transcript 里有 `compact_boundary` + `isCompactSummary`，下一轮的回复明确引用了摘要。harness 1.0.125 还**没有**把 `compaction` 事件冒到 `HarnessAgent.stream` 里（bridge 里有 latch，adapter 没接），所以 `runs.ts` 把它转成 `data-compaction`、`turns.ts` 画成一行的那套先备着（有单测），自动压缩暂时没有标记，手动压缩的标记来自那条 `/compact` 消息。
 
 
-## 2026-09-23：工作日志的折叠——运行中也折，只读命令算读取
+## 2026-09-23：工作日志的折叠——过程是一份清单，收尾折成「工作了 N 步」
 
-用户：「之前折叠的修改不见了？……我要你知道逻辑，然后自己重新实现。」经过是：09-22 下午按 Koma 把连续工具收成一句摘要（build 104），晚上因为摘要和露在外面的命令对不上被整个拿掉（109），再按 Codex 的样子把思考提到活动块标题上（112）——112 只做了标题行，**运行中一律平铺**，折叠这一层丢了。且 Claude Code 引擎读文件多半是 `Bash` 里的 `sed -n` / `cat` / `grep` / `ls`，一直被当成「命令」，永远合不进「读取」。
+用户一天里问了三次（「之前折叠的修改不见了？」「这他妈能算好？」「你到底知不知道该怎么改折叠啊？」）。前因：09-22 三个会话按 Koma、Codex 各改了一版（104 摘要句 → 109 全平铺 → 112 标题行），互相打架，每版都不是用户要的。最后由用户拍板的模型只有三条，代码就按这三条写，不再引 Koma / Codex 的句式：
 
-现在的规则，三层，都在 `features/worklog/`：
+1. **运行中就是一份按时间顺序的清单**，一条调用一行，正在跑的那条带转圈，没有额外的标题行、没有摘要句。相邻的读取 / 搜索 / 列目录合成一行带计数（`读取 3 个文件 · 搜索 2 次`），点开是那几条；命令、改文件各自一行。思考不穿插：一段连续调用里的所有 reasoning 提成**一行「思考」**放在这段最上面，可展开看全文；这行是回合末尾还在进行的思考时写「思考中…」。
+2. **回合结束**整段过程收成一行 **「工作了 N 步」**（N = 调用数；没有耗时可用），回复正文在它下面；点开就是运行中那份清单，原样，不重新组织成句子。只回复没调用的回合不折。
+3. **清单里的任何一条点了去右栏**（见下一条补记），行内不展开。
 
-1. **活动块**（`activity.ts` 的 `segmentsOf`，112 那版不变）：连续的工具调用加中间的思考是一段；正文、插话、计划、子代理、审批、提问把它切开。思考不是行，是标题：还是活边（live edge）时，标题行是正在跑的工具，没有工具在跑就是「正在思考」或这段思考自己的短标题；回复一落，整段收成一句类别摘要（`已读取文件搜索了运行了命令`），点开是逐条工具行。
-2. **探索组**（新，`explore.ts` 的 `exploreItemsOf`，只用于活边）：活动块里**两条及以上连续的读取 / 搜索 / 列目录**收成一行 `已探索 3 次读取 · 1 次搜索`（Koma 的 `ContextToolGroup`，措辞照它的 zh 文案），组里有调用在跑时标题是「正在探索」（Shimmer，不再画第二个转圈，转圈在活动块标题上）；默认收起，点开才是逐条。单独一条读取保持自己那一行（`读取 a.ts` 比 `1 次读取` 信息多）；命令和写 / 编辑各占一行，把前后的探索拆开。
-3. **只读命令算探索**（`explore.ts` 的 `shellExploreKind`，Codex `parse_command` 的思路）：把命令按 `|` `;` `&&` `||` 拆成阶段，`cd` / `export` / 变量赋值跳过，每一段的首词归类——`cat head tail sed(无 -i) nl wc stat jq` 等是读取，`grep rg ag`、`git grep` 是搜索，`ls find(无 -delete/-exec) tree fd`、`git branch -a` 是列目录，`sort uniq cut awk(无 -i) echo` 等是过滤（不单独成立）；`git status/log/diff/show/blame/ls-files` 等是读取。出现 `$(…)`、反引号、heredoc、`for/if`、括号、除 `/dev/null` 与 `2>&1` 之外的重定向，或任何认不出的词，整条就是命令。一条命令只记一种：搜索 > 读取 > 列目录。**收尾的那句摘要也按这个分类**，所以 Claude Code 一轮全是 `sed -n` 时是「已读取文件」而不是「运行了命令」；终端 tab 不受影响，它按工具名挑 shell 调用。
+实现（`features/worklog/`）：`activity.ts` 的 `processItemsOf(blocks)` 把 blocks 变成 `thought` / `explore` / `block` 三种行——正文、插话、压缩标记、审批 / 提问卡切断一段，段内 reasoning 提成一个 `thought`，段内工具按相邻的探索合成 `explore`（≥2 条）；`splitReply` 取末尾连续的 text 作回复，其余是过程；`stepCount` 数工具调用。`Turn.tsx`：未结束 → `ProcessList` 直接画；结束且有调用 → `Fold`（「工作了 N 步」）包住同一个 `ProcessList`，回复接在后面。`explore.ts` 的 `shellExploreKind` 把只读的 Bash（`cat / sed -n / head / git log` 读取，`grep / rg` 搜索，`ls / find / git branch -a` 列目录；`cd` 和变量赋值跳过；`$(…)`、heredoc、`for`、写文件的重定向、`sed -i`、认不出的词一律算命令）归到探索里，Claude Code 引擎满屏 `sed -n` 才合得起来。`describeTool` 显示 Bash 时去掉开头的 `cd <目录>;`（`withoutCd`）。测试：`activity.test.ts`、`explore.test.ts`、`Turn.activity.test.tsx`。
 
-`describeTool` 的显示没动：探索组展开后每一行仍是 `$ 命令本身`，标题和行是同一批东西，不会再出现 109 那种「摘要盖住了另一批」。测试：`explore.test.ts`（分类、分组）、`Turn.activity.test.tsx`（活边折叠、正在探索）。
-
-- **补（同日）：标题行不再复制命令**。用户截图：同一条 `git worktree …` 出现两次，上面那条挂着转圈——112 的标题行在有工具跑时把整条命令又画了一遍，行里还有它。现在标题行是状态短语（`activity.ts` 的 `runningLabel`：「正在运行命令」「正在读取文件」「正在搜索」「正在编辑文件」…，Shimmer，同「正在思考」一个样子），命令只在自己那一行出现。另外 `describeTool` 显示 Bash 时去掉开头的 `cd <目录>;` / `&&`（`withoutCd`，Codex 的摘要也这么做），行不再被 `cd /Users/…/Vgent;` 占一半；完整命令仍在行展开后的输入里，终端 tab 不变。
-
-- **补（同日）：工具行点开在右栏，不在行内**（用户：「折叠展开，应该是列出调用过哪些命令，点这些命令右侧栏打开详情」）。`ToolRow` 不再在行内展开输入 / 输出的盒子（计划行例外，它的清单就是内容，仍在原地开合）；点一行走 `TurnActions.inspect`，`ThreadView` 按种类分流：命令 → 右栏「终端」tab 并滚到那条、闪一下（`RightState.inspect` 带 `toolCallId` + `nonce`，`TerminalPanel` 的行有 `id="term-<toolCallId>"`，定位后停止跟底）；读取 → 「文件」tab 预览那个路径（`openPreview`）；写 / 编辑 → 和文件 chip 一样开「变更」；其余（搜索、子代理、MCP 等）→ 右栏新的 `tool` 视图（`rightpane/ToolDetail.tsx`：动词 + 目标、状态、输入 JSON、输出或子代理记录），它不在 tab 条里，只由点击进入。折叠（探索组、收尾摘要）展开后就是这份清单，每条都这么点。
-
+- **工具行点开在右栏，不在行内**（用户：「折叠展开，应该是列出调用过哪些命令，点这些命令右侧栏打开详情」）。`ToolRow` 没有行内展开的盒子（计划行例外，它的清单就是内容，仍在原地开合）；点一行走 `TurnActions.inspect`，`ThreadView` 按种类分流：命令 → 右栏「终端」tab 并滚到那条、闪一下（`RightState.inspect` 带 `toolCallId` + `nonce`，`TerminalPanel` 的行有 `id="term-<toolCallId>"`，定位后停止跟底）；读取 → 「文件」tab 预览那个路径（`openPreview`）；写 / 编辑 → 和文件 chip 一样开「变更」；其余（搜索、子代理、MCP 等）→ 右栏的 `tool` 视图（`rightpane/ToolDetail.tsx`：动词 + 目标、状态、输入 JSON、输出或子代理记录），它不在 tab 条里，只由点击进入。
 ## 2026-09-23：草稿带附件
 
 用户：「聊天框保存的草稿，需要包含附件」。之前草稿只有文字：附件是 `ThreadView` / `EmptyState` 各自的 `useState`，切任务、刷新、重启都丢。

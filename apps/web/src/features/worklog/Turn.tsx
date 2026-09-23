@@ -10,8 +10,8 @@ import { QuestionCard } from "./QuestionCard";
 import { Spinner, ToolRow } from "./ToolRow";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { TurnOutputs } from "./TurnOutputs";
-import { activityMode, runningLabel, segmentsOf, summaryLabel, thinkingLabel, type ActivityRun } from "./activity";
-import { exploreCounts, exploreItemsOf, exploreLabel } from "./explore";
+import { processItemsOf, splitReply, stepCount, thoughtText, type ProcessItem, type RowBlock } from "./activity";
+import { exploreCounts, exploreLabel } from "./explore";
 import { isToolStreaming, type ToolPart } from "./toolMeta";
 import type { Block, Turn as TurnModel } from "./turns";
 import { formatTokens } from "@/features/composer/contextUsage";
@@ -69,8 +69,12 @@ export function Turn({
   const { ref, pinned } = usePinned(isLast);
   // The reply, its actions and the output cards wait until the turn has settled.
   const settled = !(isLast && live);
-  const lastKey = turn.blocks.at(-1)?.key;
-  const segments = segmentsOf(turn.blocks);
+  // While it runs the whole turn is process; once it settles the trailing text is the reply.
+  const { process, reply } = settled ? splitReply(turn.blocks) : { process: turn.blocks, reply: [] };
+  const items = processItemsOf(process);
+  const steps = stepCount(process);
+  // A thought at the very end of a live turn is the one still going.
+  const thinkingKey = !settled && turn.blocks.at(-1)?.kind === "reasoning" ? turn.blocks.at(-1)!.key : undefined;
   // A `/compact` summary is an ordinary user message apart from this marker.
   const compacted = turn.user == null ? undefined : compactedOf(turn.user);
   return (
@@ -122,40 +126,23 @@ export function Turn({
         </div>
       )}
 
-      {segments.map((segment, index) => {
-        const liveEdge = live && isLast && index === segments.length - 1;
-        if (segment.kind === "block") {
-          if (segment.block.kind === "reasoning") return null;
-          return (
-            <div key={segment.block.key} className="px-chat-inset">
-              <BlockView
-                block={segment.block}
-                actions={actions}
-                allowlist={allowlist}
-                running={liveEdge && segment.block.key === lastKey}
-              />
-            </div>
-          );
-        }
-        const mode = activityMode(segment.tools.length, liveEdge);
-        if (mode === "omit") return null;
-        if (mode === "plain") {
-          return segment.tools.map((block) => (
-            <div key={block.key} className="px-chat-inset">
-              <BlockView block={block} actions={actions} allowlist={allowlist} running={live && isLast && block.key === lastKey} />
-            </div>
-          ));
-        }
-        return (
-          <div key={segment.key} className="px-chat-inset">
-            {mode === "summary" ? (
-              <SummaryActivity run={segment} actions={actions} />
-            ) : (
-              <LiveActivity run={segment} actions={actions} />
-            )}
+      {items.length > 0 &&
+        (settled && steps > 0 ? (
+          <div className="px-chat-inset">
+            <Fold steps={steps}>
+              <ProcessList items={items} actions={actions} allowlist={allowlist} thinkingKey={thinkingKey} />
+            </Fold>
           </div>
-        );
-      })}
+        ) : (
+          <div className="flex flex-col gap-block-gap px-chat-inset">
+            <ProcessList items={items} actions={actions} allowlist={allowlist} thinkingKey={thinkingKey} />
+          </div>
+        ))}
+      {reply.map((block) => (
+        <div key={block.key} className="px-chat-inset">
+          <BlockView block={block as RowBlock} actions={actions} allowlist={allowlist} />
+        </div>
+      ))}
       {/* Until the first block lands there is nothing else on screen to say the turn is alive. */}
       {!settled && turn.blocks.length === 0 && (
         <div className="px-chat-inset text-fg-muted">
@@ -211,54 +198,82 @@ function ReplyActions({ turn, onFork }: { turn: TurnModel; onFork?: () => void }
   );
 }
 
-/** The title line of a run that is still the live edge: the current tool, or the thought in the gap before the next one. */
-function LiveActivity({ run, actions }: { run: ActivityRun; actions: TurnActions }) {
-  const [thoughtOpen, setThoughtOpen] = useState(false);
-  const running = run.tools.findLast((block) => isToolStreaming(block.part));
-  const thinking = thinkingLabel(run.thought);
+/** The process, one row per item, in the order it happened. */
+function ProcessList({
+  items,
+  actions,
+  allowlist,
+  thinkingKey,
+}: { items: ProcessItem[]; actions: TurnActions; allowlist: readonly string[]; thinkingKey: string | undefined }) {
   return (
-    <div>
-      {running != null ? (
-        <div className="flex min-h-row-tool items-center gap-xs text-fg-muted text-md">
-          <Shimmer as="span">{runningLabel(running.part)}</Shimmer>
-        </div>
-      ) : (
-        <div className="flex min-h-row-tool items-center gap-xs text-fg-muted text-md">
-          {thinking.streaming ? <Shimmer as="span">{thinking.label}</Shimmer> : <span>{thinking.label}</span>}
-          {thinking.body != null && (
-            <button
-              type="button"
-              aria-label={thoughtOpen ? "收起思考" : "展开思考"}
-              onClick={() => setThoughtOpen((value) => !value)}
-              className="grid size-xl place-items-center rounded-md text-fg-faint hover:text-fg"
-            >
-              <ChevronDown className={cn("size-md", thoughtOpen ? "" : "-rotate-90")} />
-            </button>
-          )}
-        </div>
-      )}
-      {thoughtOpen && thinking.body != null && running == null && (
-        <div className="mb-2xs border-border border-l pl-md text-fg-faint text-sm">
-          <RichMarkdown className="text-sm">{thinking.body}</RichMarkdown>
-        </div>
-      )}
-      {exploreItemsOf(run.tools).map((item) =>
-        item.kind === "explore" ? (
+    <>
+      {items.map((item) =>
+        item.kind === "thought" ? (
+          <ThoughtRow key={item.key} parts={item.parts} thinking={item.parts.some((block) => block.key === thinkingKey)} />
+        ) : item.kind === "explore" ? (
           <ExploreGroup key={item.key} tools={item.tools} actions={actions} />
         ) : (
-          <ToolRow key={item.block.key} part={item.block.part} onOpenFile={actions.openFile} onInspect={actions.inspect} />
+          <BlockView key={item.key} block={item.block} actions={actions} allowlist={allowlist} />
         ),
+      )}
+    </>
+  );
+}
+
+/** 「工作了 N 步」: a finished turn's process, closed by default, the same list behind it. */
+function Fold({ steps, children }: { steps: number; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className="group/fold flex min-h-row-tool w-full items-center gap-xs text-left text-fg-muted text-md leading-chat hover:text-fg"
+      >
+        <span>工作了 {steps} 步</span>
+        <ChevronDown className={cn("size-md flex-none text-fg-faint transition-transform duration-[var(--duration-fast)]", !open && "-rotate-90")} />
+      </button>
+      {open && <div className="flex flex-col gap-block-gap border-border border-l pl-md">{children}</div>}
+    </div>
+  );
+}
+
+/** 「思考」: the reasoning of one stretch, one row; 「思考中…」 while it is the live edge. */
+function ThoughtRow({ parts, thinking }: { parts: Extract<ProcessItem, { kind: "thought" }>["parts"]; thinking: boolean }) {
+  const [open, setOpen] = useState(false);
+  const streaming = thinking || parts.at(-1)?.part.state === "streaming";
+  const text = thoughtText(parts);
+  return (
+    <div>
+      <button
+        type="button"
+        aria-expanded={open}
+        disabled={text === ""}
+        onClick={() => setOpen((value) => !value)}
+        className="group/thought flex min-h-row-tool w-full items-center gap-xs text-left text-fg-muted text-md leading-chat hover:text-fg"
+      >
+        {streaming ? <Shimmer as="span">思考中…</Shimmer> : <span>思考</span>}
+        {text !== "" && (
+          <ChevronDown
+            className={cn(
+              "size-md flex-none text-fg-faint opacity-0 transition-transform duration-[var(--duration-fast)] group-hover/thought:opacity-100",
+              open ? "opacity-100" : "-rotate-90",
+            )}
+          />
+        )}
+      </button>
+      {open && text !== "" && (
+        <div className="mb-2xs border-border border-l pl-md text-fg-faint text-sm">
+          <RichMarkdown className="text-sm">{text}</RichMarkdown>
+        </div>
       )}
     </div>
   );
 }
 
-/**
- * Two or more consecutive looks (reads, searches, listings) folded into one
- * line while the run is live, the way Koma's 「已探索」 group does it: the
- * counts tick up as calls land, and the rows are behind the title.
- */
-function ExploreGroup({ tools, actions }: { tools: ActivityRun["tools"]; actions: TurnActions }) {
+/** Two or more consecutive looks on one line with counts; the calls are behind it. A running one spins the line. */
+function ExploreGroup({ tools, actions }: { tools: Extract<ProcessItem, { kind: "explore" }>["tools"]; actions: TurnActions }) {
   const [open, setOpen] = useState(false);
   const busy = tools.some((block) => isToolStreaming(block.part));
   const label = exploreLabel(exploreCounts(tools));
@@ -270,8 +285,8 @@ function ExploreGroup({ tools, actions }: { tools: ActivityRun["tools"]; actions
         onClick={() => setOpen((value) => !value)}
         className="group/explore flex min-h-row-tool w-full items-center gap-xs text-left text-fg-muted text-md leading-chat hover:text-fg"
       >
-        {busy ? <Shimmer as="span" className="flex-none">正在探索</Shimmer> : <span className="flex-none">已探索</span>}
-        <span className="min-w-0 truncate text-fg-faint group-hover/explore:text-fg-muted">{label}</span>
+        {busy && <Spinner />}
+        <span className="min-w-0 truncate">{label}</span>
         <ChevronDown
           className={cn(
             "size-md flex-none text-fg-faint opacity-0 transition-transform duration-[var(--duration-fast)] group-hover/explore:opacity-100",
@@ -290,37 +305,11 @@ function ExploreGroup({ tools, actions }: { tools: ActivityRun["tools"]; actions
   );
 }
 
-/** A finished run of several tools, collapsed to one category sentence. The rows are still there, behind the title. */
-function SummaryActivity({ run, actions }: { run: ActivityRun; actions: TurnActions }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div>
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-        className="flex min-h-row-tool w-full items-center gap-xs text-left text-fg-muted text-md leading-chat hover:text-fg"
-      >
-        <span className="min-w-0 truncate">{summaryLabel(run.tools)}</span>
-        <ChevronDown className={cn("ml-auto size-md flex-none text-fg-faint", open ? "" : "-rotate-90")} />
-      </button>
-      {open && (
-        <div className="pl-md">
-          {run.tools.map((block) => (
-            <ToolRow key={block.key} part={block.part} onOpenFile={actions.openFile} onInspect={actions.inspect} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function BlockView({
   block,
   actions,
   allowlist,
-  running,
-}: { block: Exclude<Block, { kind: "reasoning" }>; actions: TurnActions; allowlist: readonly string[]; running: boolean }): ReactNode {
+}: { block: RowBlock; actions: TurnActions; allowlist: readonly string[] }): ReactNode {
   if (block.kind === "compaction") {
     const { tokensBefore, tokensAfter } = block.data;
     const tokens = tokensBefore != null && tokensAfter != null ? `（${formatTokens(tokensBefore)} → ${formatTokens(tokensAfter)}）` : "";
@@ -377,16 +366,5 @@ function BlockView({
     );
   }
 
-  return (
-    <div className="flex items-start gap-xs">
-      <div className="min-w-0 flex-1">
-        <ToolRow part={part} onOpenFile={actions.openFile} onInspect={actions.inspect} />
-      </div>
-      {running && (
-        <span className="flex h-row-tool flex-none items-center">
-          <Spinner />
-        </span>
-      )}
-    </div>
-  );
+  return <ToolRow part={part} onOpenFile={actions.openFile} onInspect={actions.inspect} />;
 }

@@ -10,7 +10,27 @@ export type Block =
   | { kind: "text"; key: string; part: TextPart }
   | { kind: "tool"; key: string; part: ToolPart }
   /** 插话: what the user said while this turn was running, at the point it went in. */
-  | { kind: "steer"; key: string; text: string };
+  | { kind: "steer"; key: string; text: string }
+  /** 压缩: the runtime compacted its context here (see `compaction.ts` on the server). */
+  | { kind: "compaction"; key: string; data: CompactionData };
+
+export interface CompactionData {
+  trigger: "manual" | "auto";
+  tokensBefore?: number;
+  tokensAfter?: number;
+}
+
+function compactionOf(part: UIMessage["parts"][number]): CompactionData | undefined {
+  if (part.type !== "data-compaction") return undefined;
+  const data = (part as { data?: unknown }).data;
+  if (typeof data !== "object" || data === null) return undefined;
+  const { trigger, tokensBefore, tokensAfter } = data as { trigger?: unknown; tokensBefore?: unknown; tokensAfter?: unknown };
+  return {
+    trigger: trigger === "manual" ? "manual" : "auto",
+    ...(typeof tokensBefore === "number" ? { tokensBefore } : {}),
+    ...(typeof tokensAfter === "number" ? { tokensAfter } : {}),
+  };
+}
 
 /** The server's `data-steer` part (see `steer.ts` there): a user message taken into a running turn. */
 function steerTextOf(part: UIMessage["parts"][number]): string | undefined {
@@ -52,7 +72,9 @@ function blocksOf(message: UIMessage): Block[] {
   message.parts.forEach((part, index) => {
     const key = `${message.id}:${index}`;
     const steer = steerTextOf(part);
+    const compaction = compactionOf(part);
     if (steer != null) blocks.push({ kind: "steer", key, text: steer });
+    else if (compaction != null) blocks.push({ kind: "compaction", key, data: compaction });
     // Blank text is not a reply: some models open a step with a lone space, and
     // one that ends there has said nothing (the turn's `answered` covers that).
     else if (part.type === "text") {

@@ -28,6 +28,7 @@ import type { QueueStore } from "./queue.js";
 import { forkNote } from "./fork.js";
 import { projectOfThread } from "./no-project.js";
 import { restoreNote } from "./restore.js";
+import { compactionChunk, isCompactionPart } from "./compaction.js";
 import { expandSteers, steerChunk } from "./steer.js";
 import type { ProjectStore } from "./store/projects.js";
 import type { SettingsStore } from "./store/settings.js";
@@ -619,6 +620,12 @@ export function createRunManager(options: {
         new TransformStream<TextStreamPart<ToolSet>, TextStreamPart<ToolSet>>({
           transform(part, controller) {
             if (part.type === "tool-error") toolErrors.add(part.error);
+            // A harness compacting its context is not something the UI stream
+            // converter knows; it becomes a data part of this turn instead.
+            if (isCompactionPart(part)) {
+              run.hub.publish(compactionChunk(part));
+              return;
+            }
             controller.enqueue(part);
           },
         }),

@@ -15,7 +15,11 @@ export interface EngineCapabilities {
   askUser: boolean;
   /** Can run a read-only Plan turn. */
   planMode: boolean;
-  /** Can have its history replaced by a summary (`POST /threads/:id/compact`). */
+  /**
+   * Takes `POST /threads/:id/compact`. A stateless engine has its stored
+   * history replaced by a summary; a harness that keeps its own transcript is
+   * asked to compact it itself (`/compact` is a prompt it understands).
+   */
   compact: boolean;
   /** We know which model it falls back to; otherwise only the harness does. */
   knownDefaultModel: boolean;

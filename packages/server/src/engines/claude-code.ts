@@ -17,7 +17,7 @@ const DESCRIPTOR: EngineDescriptor = {
     approvals: true,
     askUser: false,
     planMode: true,
-    compact: false,
+    compact: true,
     knownDefaultModel: false,
     extensions: false,
     // The harness's `experimental_steer`: the adapter hands the message to the runtime's streaming input.
@@ -120,11 +120,16 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
       const routed = providerRoute(ctx.thread.model, await createProviderStore(ctx.dataDir, ctx.log).list());
       // 上下文: Claude Code's long window is asked for on the model name itself.
       const route = routed == null ? undefined : { ...routed, model: withLongContext(routed.model, ctx.thread.contextWindow) };
+      // The window the task chose is also where the runtime compacts: without
+      // this the CLI compacts at the model's own limit, and a task that chose
+      // 200K on a 1M model would run far past what its ring shows as full.
+      const env = { ...route?.env, ...(ctx.thread.contextWindow != null ? { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(ctx.thread.contextWindow) } : {}) };
 
       const engine = await createClaudeCodeEngine({
         repoPath: ctx.project.repoPath,
         permissionMode: ctx.permissionMode,
-        ...(route != null ? route : ctx.thread.model != null ? { model: withLongContext(ctx.thread.model, ctx.thread.contextWindow) } : {}),
+        ...(route != null ? { model: route.model, auth: route.auth } : ctx.thread.model != null ? { model: withLongContext(ctx.thread.model, ctx.thread.contextWindow) } : {}),
+        ...(Object.keys(env).length > 0 ? { env } : {}),
         // 推理强度 is the harness's `effort`; thinking itself stays adaptive and
         // `summarized`, which is what puts the reasoning in the stream. A task
         // that names no level runs on 高.

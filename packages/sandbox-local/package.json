@@ -19,7 +19,7 @@
     "test": "vitest run --root ../.. --project @vgent/sandbox-local"
   },
   "dependencies": {
-    "@ai-sdk/harness": "1.0.115",
+    "@ai-sdk/harness": "1.0.121",
     "@ai-sdk/provider-utils": "5.0.43"
   }
 }

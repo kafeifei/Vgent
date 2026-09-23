@@ -469,6 +469,9 @@ export function useWorkbench(token: string) {
       compactThread: (threadId: string): Promise<void> =>
         client.compactThread(threadId).then(
           (record) => {
+            // A harness engine compacts in its own runtime: the request went in
+            // as a turn, and the log shows the marker when that turn lands.
+            if (record.status === "running") return;
             const before = (record.messages[0]?.metadata as ThreadMessageMetadata | undefined)?.compacted?.before;
             toast(`已压缩：${before ?? record.messages.length} 条消息 → 摘要`);
           },

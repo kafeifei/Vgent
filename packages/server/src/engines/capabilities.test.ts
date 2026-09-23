@@ -23,7 +23,7 @@ describe("引擎能力表", () => {
       approvals: true,
       askUser: false,
       planMode: true,
-      compact: false,
+      compact: true,
       knownDefaultModel: false,
       extensions: false,
       steer: true,

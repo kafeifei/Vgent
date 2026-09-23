@@ -11,6 +11,7 @@ import { Spinner, ToolRow } from "./ToolRow";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { TurnOutputs } from "./TurnOutputs";
 import type { Block, Run, Turn as TurnModel } from "./turns";
+import { formatTokens } from "@/features/composer/contextUsage";
 import { approvalAnchor, compactedOf, isOpenApproval, isOpenQuestion, questionAnchor, runsOf } from "./turns";
 
 export interface TurnActions {
@@ -103,7 +104,8 @@ export function Turn({
             </div>
           )}
           {turn.user.parts.map((part, index) =>
-            part.type === "text" ? (
+            // The `/compact` a harness engine was sent is the marker above, not a message.
+            part.type === "text" && !(compacted != null && part.text === "/compact") ? (
               <p key={index} className="m-0 whitespace-pre-wrap">
                 {part.text}
               </p>
@@ -227,6 +229,12 @@ function BlockView({
         </ReasoningContent>
       </Reasoning>
     );
+  }
+
+  if (block.kind === "compaction") {
+    const { tokensBefore, tokensAfter } = block.data;
+    const tokens = tokensBefore != null && tokensAfter != null ? `（${formatTokens(tokensBefore)} → ${formatTokens(tokensAfter)}）` : "";
+    return <p className="m-0 text-fg-muted text-xs">{block.data.trigger === "manual" ? "上下文已压缩" : "上下文快满，已自动压缩"}{tokens}</p>;
   }
 
   if (block.kind === "steer") {

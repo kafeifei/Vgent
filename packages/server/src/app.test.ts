@@ -363,7 +363,7 @@ describe("createApp", () => {
     const body = (await (await request(app, "/api/engines")).json()) as { engines: EngineDescriptor[] };
     expect(body.engines.map((entry) => entry.id)).toEqual(["codex", "claude-code", "vgent"]);
     expect(body.engines[0]).toMatchObject({ label: "Codex", capabilities: { approvals: false } });
-    expect(body.engines[1]).toMatchObject({ label: "Claude Code", capabilities: { approvals: true, compact: false } });
+    expect(body.engines[1]).toMatchObject({ label: "Claude Code", capabilities: { approvals: true, compact: true } });
   });
 
   it("takes a codex thread under any run mode — 运行模式 is global now", async () => {
@@ -1228,12 +1228,68 @@ describe("createApp", () => {
     expect(record.messages).toEqual(historyBeforeCompact);
   });
 
-  it("压缩上下文：其他引擎和空对话都被挡住", async () => {
+  it("压缩上下文：Claude Code 是让它自己压——/compact 作为一轮送进去，带着标记", async () => {
+    const dataDir = await tempDir();
+    const fake = createFakeEngine({ text: "压好了" });
+    const app = makeApp(dataDir, fake.factory);
+    const { thread } = await setupThread(app, await tempDir(), "claude-code");
+    await createThreadStore(dataDir).update(thread.id, { messages: historyBeforeCompact });
+
+    const response = await postJson(app, `/api/threads/${thread.id}/compact`, {});
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as ThreadRecord).status).toBe("running");
+
+    const record = await waitForStatus(app, thread.id, "idle");
+    // Nothing of ours was rewritten: the history is intact, the request is a
+    // user message the runtime saw as `/compact`, and the marker sits on it.
+    expect(record.messages.slice(0, historyBeforeCompact.length)).toEqual(historyBeforeCompact);
+    const request = record.messages[historyBeforeCompact.length]!;
+    expect(request.role).toBe("user");
+    expect(request.parts).toEqual([{ type: "text", text: "/compact" }]);
+    expect((request.metadata as ThreadMessageMetadata).compacted).toMatchObject({ before: historyBeforeCompact.length });
+    expect(fake.streamed.at(-1)?.at(-1)).toMatchObject({ role: "user", content: [{ type: "text", text: "/compact" }] });
+  });
+
+  it("压缩上下文：harness 自己压了，回合里留下一个 data-compaction 标记而不是报未知事件", async () => {
+    const dataDir = await tempDir();
+    const factory: EngineFactoryOverride = {
+      async create() {
+        return {
+          async stream() {
+            const parts = (async function* (): AsyncGenerator<TextStreamPart<ToolSet>> {
+              yield { type: "start" };
+              // What the harness emits when its runtime compacted — not a part the AI SDK's UI stream knows.
+              yield { type: "compaction", trigger: "auto", summary: "摘要", tokensBefore: 180000, tokensAfter: 12000 } as unknown as TextStreamPart<ToolSet>;
+              yield { type: "text-start", id: "t1" };
+              yield { type: "text-delta", id: "t1", text: "继续" };
+              yield { type: "text-end", id: "t1" };
+            })();
+            return { stream: ReadableStream.from(parts) as ReadableStream<TextStreamPart<ToolSet>> };
+          },
+          hasUnfinishedTurn: () => false,
+          async destroy() {},
+          async finish() {},
+        };
+      },
+    };
+    const app = makeApp(dataDir, factory);
+    const { thread } = await setupThread(app, await tempDir(), "claude-code");
+    const response = await postJson(app, `/api/chat/${thread.id}`, { messages: [{ id: "u1", role: "user", parts: [{ type: "text", text: "干活" }] }] });
+    expect(response.status).toBe(200);
+    await response.text();
+    const record = await waitForStatus(app, thread.id, "idle");
+    const assistant = record.messages.at(-1)!;
+    expect(assistant.role).toBe("assistant");
+    expect(assistant.parts).toContainEqual(expect.objectContaining({ type: "data-compaction", data: { trigger: "auto", tokensBefore: 180000, tokensAfter: 12000 } }));
+    expect(assistant.parts).toContainEqual(expect.objectContaining({ type: "text", text: "继续" }));
+  });
+
+  it("压缩上下文：Codex 没有手动压缩，空对话也被挡住", async () => {
     const dataDir = await tempDir();
     const app = createApp({ dataDir, token: TOKEN, compactModel: summariser("摘要内容") });
     apps.push(app);
 
-    const { thread: harness } = await setupThread(app, await tempDir(), "claude-code");
+    const { thread: harness } = await setupThread(app, await tempDir(), "codex");
     const unsupported = await postJson(app, `/api/threads/${harness.id}/compact`, {});
     expect(unsupported.status).toBe(400);
     expect(await unsupported.json()).toMatchObject({ error: { code: "compact_unsupported" } });

@@ -1,6 +1,6 @@
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { resolveModel } from "@vgent/engine";
 import {
   ModelDiscoveryError,
@@ -15,7 +15,7 @@ import {
   type ProviderInput,
   type ProviderProtocol,
 } from "@vgent/providers";
-import { UI_MESSAGE_STREAM_HEADERS, createUIMessageStreamResponse, type LanguageModel } from "ai";
+import { UI_MESSAGE_STREAM_HEADERS, createUIMessageStreamResponse, type LanguageModel, type UIMessage } from "ai";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { createCheckpoint, deleteCheckpoints, listCheckpointCommits, pinBaseline, restoreCheckpoint } from "./checkpoints.js";
@@ -59,6 +59,7 @@ import type {
   Project,
   ThreadMode,
   ThreadRecord,
+  ThreadMessageMetadata,
   ThreadRestorePoint,
   ThreadWorkspace,
   UiDensity,
@@ -1102,13 +1103,30 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const id = c.req.param("id");
     if (runs.isRunning(id)) throw new ConflictError("任务运行中，等它结束再压缩", "thread_running");
     const thread = await threadOf(id);
-    if (!capabilitiesOf(thread.engine).compact) throw new BadRequestError("这个引擎不支持压缩上下文", "compact_unsupported");
+    if (!capabilitiesOf(thread.engine).compact) {
+      throw new BadRequestError("这个引擎没有手动压缩，上下文快满时它会自己压", "compact_unsupported");
+    }
     if (thread.status === "awaiting-approval" || thread.status === "awaiting-input") {
       throw new ConflictError("有待处理的审批或提问，先处理完再压缩", "compact_pending");
     }
     if (thread.messages.length < 2) throw new BadRequestError("没有可压缩的对话", "compact_empty");
 
     const model = options.compactModel ?? resolveModel(thread.model ?? DEFAULT_VGENT_MODEL, await providers.list());
+    // A harness keeps the transcript the model sees; rewriting ours would only
+    // desynchronise the two. `/compact` is a prompt its runtime understands, so
+    // it goes in as a turn — marked, so the log draws it as the marker and
+    // not as a message the user wrote.
+    if (registry[thread.engine]?.statelessTurns !== true) {
+      const request: UIMessage = {
+        id: randomUUID(),
+        role: "user",
+        parts: [{ type: "text", text: "/compact" }],
+        metadata: { compacted: { before: thread.messages.length, at: new Date().toISOString() } } satisfies ThreadMessageMetadata,
+      };
+      await runs.start(id, [request]);
+      return c.json(await threadOf(id));
+    }
+
     const { messages } = await compactThread({ thread, model }).catch((error: unknown) => {
       throw new UpstreamModelError(`压缩失败: ${error instanceof Error ? error.message : String(error)}`);
     });

@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "ai": "7.0.111",
-    "@ai-sdk/mcp": "2.0.52",
+    "@ai-sdk/mcp": "2.0.55",
     "zod": "4.6.5",
     "@vgent/tools": "workspace:*",
     "@vgent/providers": "workspace:*"

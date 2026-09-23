@@ -34,6 +34,15 @@ const planCount = (input: unknown): number | undefined => {
 };
 
 /**
+ * Drops the `cd <dir>;` / `cd <dir> &&` an agent puts in front of nearly every
+ * command so the line starts with what it does, the way Codex's summary does.
+ * The full command is still in the row's input.
+ */
+export function withoutCd(command: string): string {
+  return command.replace(/^\s*cd\s+(?:"[^"]*"|'[^']*'|[^\s;&|]+)\s*(?:;|&&)\s*/, "");
+}
+
+/**
  * Tool call → one muted log line. Names cover both our own tools
  * (`read`/`bash`/…) and the Claude Code harness ones (`Read`/`Bash`/…).
  */
@@ -53,7 +62,7 @@ export function describeTool(part: ToolPart): ToolDisplay {
       };
     case "bash":
     case "shell":
-      return { kind: "bash", verb: "$", target: oneLine(field(input, "command") ?? "", 120) };
+      return { kind: "bash", verb: "$", target: oneLine(withoutCd(field(input, "command") ?? ""), 120) };
     case "write": {
       const file = field(input, "file_path", "path");
       return { kind: "write", verb: "写入", target: file ?? "", ...(file != null ? { file } : {}) };

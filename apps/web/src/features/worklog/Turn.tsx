@@ -10,9 +10,9 @@ import { QuestionCard } from "./QuestionCard";
 import { Spinner, ToolRow } from "./ToolRow";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { TurnOutputs } from "./TurnOutputs";
-import { activityMode, segmentsOf, summaryLabel, thinkingLabel, type ActivityRun } from "./activity";
+import { activityMode, runningLabel, segmentsOf, summaryLabel, thinkingLabel, type ActivityRun } from "./activity";
 import { exploreCounts, exploreItemsOf, exploreLabel } from "./explore";
-import { describeTool, isToolStreaming } from "./toolMeta";
+import { isToolStreaming } from "./toolMeta";
 import type { Block, Turn as TurnModel } from "./turns";
 import { formatTokens } from "@/features/composer/contextUsage";
 import { approvalAnchor, compactedOf, isOpenApproval, isOpenQuestion, questionAnchor } from "./turns";
@@ -217,7 +217,9 @@ function LiveActivity({ run, onOpenFile }: { run: ActivityRun; onOpenFile: (file
   return (
     <div>
       {running != null ? (
-        <ToolStatus part={running.part} />
+        <div className="flex min-h-row-tool items-center gap-xs text-fg-muted text-md">
+          <Shimmer as="span">{runningLabel(running.part)}</Shimmer>
+        </div>
       ) : (
         <div className="flex min-h-row-tool items-center gap-xs text-fg-muted text-md">
           {thinking.streaming ? <Shimmer as="span">{thinking.label}</Shimmer> : <span>{thinking.label}</span>}
@@ -307,17 +309,6 @@ function SummaryActivity({ run, onOpenFile }: { run: ActivityRun; onOpenFile: (f
           ))}
         </div>
       )}
-    </div>
-  );
-}
-
-function ToolStatus({ part }: { part: ActivityRun["tools"][number]["part"] }) {
-  const display = describeTool(part);
-  return (
-    <div className="flex min-h-row-tool items-center gap-xs text-fg-muted text-md">
-      <Spinner />
-      <span className={cn("flex-none", display.kind === "bash" && "font-mono text-code")}>{display.verb}</span>
-      <span className={cn("min-w-0 truncate text-fg-faint", display.kind === "bash" && "font-mono text-code")}>{display.target}</span>
     </div>
   );
 }

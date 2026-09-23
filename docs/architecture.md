@@ -585,3 +585,5 @@ build 84 定的「日志里的图只有一种样子」只覆盖了回复里内�
 3. **只读命令算探索**（`explore.ts` 的 `shellExploreKind`，Codex `parse_command` 的思路）：把命令按 `|` `;` `&&` `||` 拆成阶段，`cd` / `export` / 变量赋值跳过，每一段的首词归类——`cat head tail sed(无 -i) nl wc stat jq` 等是读取，`grep rg ag`、`git grep` 是搜索，`ls find(无 -delete/-exec) tree fd`、`git branch -a` 是列目录，`sort uniq cut awk(无 -i) echo` 等是过滤（不单独成立）；`git status/log/diff/show/blame/ls-files` 等是读取。出现 `$(…)`、反引号、heredoc、`for/if`、括号、除 `/dev/null` 与 `2>&1` 之外的重定向，或任何认不出的词，整条就是命令。一条命令只记一种：搜索 > 读取 > 列目录。**收尾的那句摘要也按这个分类**，所以 Claude Code 一轮全是 `sed -n` 时是「已读取文件」而不是「运行了命令」；终端 tab 不受影响，它按工具名挑 shell 调用。
 
 `describeTool` 的显示没动：探索组展开后每一行仍是 `$ 命令本身`，标题和行是同一批东西，不会再出现 109 那种「摘要盖住了另一批」。测试：`explore.test.ts`（分类、分组）、`Turn.activity.test.tsx`（活边折叠、正在探索）。
+
+- **补（同日）：标题行不再复制命令**。用户截图：同一条 `git worktree …` 出现两次，上面那条挂着转圈——112 的标题行在有工具跑时把整条命令又画了一遍，行里还有它。现在标题行是状态短语（`activity.ts` 的 `runningLabel`：「正在运行命令」「正在读取文件」「正在搜索」「正在编辑文件」…，Shimmer，同「正在思考」一个样子），命令只在自己那一行出现。另外 `describeTool` 显示 Bash 时去掉开头的 `cd <目录>;` / `&&`（`withoutCd`，Codex 的摘要也这么做），行不再被 `cd /Users/…/Vgent;` 占一半；完整命令仍在行展开后的输入里，终端 tab 不变。

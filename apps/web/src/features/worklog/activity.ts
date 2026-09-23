@@ -72,6 +72,32 @@ export function segmentsOf(blocks: readonly Block[]): Segment[] {
   return segments;
 }
 
+/**
+ * The title line while a tool runs. A status, not the call itself: the row
+ * with the command is right underneath, and showing it twice read as two logs.
+ */
+export function runningLabel(part: ToolBlock["part"]): string {
+  const display = describeTool(part);
+  switch (display.kind) {
+    case "bash":
+      return "正在运行命令";
+    case "read":
+      return "正在读取文件";
+    case "search":
+      return "正在搜索";
+    case "write":
+      return "正在写入文件";
+    case "edit":
+      return "正在编辑文件";
+    case "agent":
+      return "子代理运行中";
+    case "plan":
+      return "正在更新计划";
+    default:
+      return `正在使用 ${getToolName(part)}`;
+  }
+}
+
 export interface ThinkingLabel {
   label: string;
   streaming: boolean;

@@ -73,8 +73,9 @@ describe("thinking sits on the activity title", () => {
       true,
     );
     expect(html).not.toContain("想一下");
-    expect(html).toContain(">$</span>");
-    expect(html).toContain("pnpm test");
+    expect(html).toContain("正在运行命令");
+    // The command is on its row and nowhere else.
+    expect(html.indexOf("pnpm test")).toBe(html.lastIndexOf("pnpm test"));
   });
 
   it("folds consecutive looks into one 已探索 line while the turn is going, and leaves a command on its own", () => {

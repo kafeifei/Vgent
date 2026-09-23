@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeTool, diffStatOf, exitCodeOf, outputText, toolTitle, type ToolPart } from "./toolMeta";
+import { describeTool, diffStatOf, exitCodeOf, outputText, toolTitle, withoutCd, type ToolPart } from "./toolMeta";
 
 const part = (type: string, input: unknown): ToolPart =>
   ({ type, toolCallId: "c1", state: "output-available", input, output: {} }) as unknown as ToolPart;
@@ -11,6 +11,13 @@ describe("describeTool", () => {
     expect(describeTool(part("tool-Bash", { command: "pnpm test" }))).toMatchObject({ verb: "$", target: "pnpm test" });
     expect(describeTool(part("tool-Grep", { pattern: "createApp" }))).toMatchObject({ verb: "搜索", target: "createApp" });
     expect(describeTool(part("tool-Task", { description: "查找续流实现" }))).toMatchObject({ verb: "子代理" });
+  });
+
+  it("drops the leading cd from a command's line and keeps the rest", () => {
+    expect(withoutCd("cd /Users/me/Codes/Vgent; git status --short")).toBe("git status --short");
+    expect(withoutCd("cd \"/tmp/a b\" && ls")).toBe("ls");
+    expect(withoutCd("cd /tmp")).toBe("cd /tmp");
+    expect(withoutCd("git log | cd x")).toBe("git log | cd x");
   });
 
   it("hands write/edit a file for the chip and falls back to the tool name", () => {

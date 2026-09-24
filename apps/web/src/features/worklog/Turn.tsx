@@ -244,6 +244,12 @@ function ThoughtRow({ parts, thinking }: { parts: Extract<ProcessItem, { kind: "
   const [open, setOpen] = useState(false);
   const streaming = thinking || parts.at(-1)?.part.state === "streaming";
   const text = thoughtText(parts);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  // Capped box; while the thought is still coming, keep its newest lines in view.
+  useEffect(() => {
+    const body = bodyRef.current;
+    if (open && streaming && body != null) body.scrollTop = body.scrollHeight;
+  }, [open, streaming, text]);
   return (
     <div>
       <button
@@ -264,7 +270,10 @@ function ThoughtRow({ parts, thinking }: { parts: Extract<ProcessItem, { kind: "
         )}
       </button>
       {open && text !== "" && (
-        <div className="mb-2xs border-border border-l pl-md text-fg-faint text-sm">
+        <div
+          ref={bodyRef}
+          className="mb-2xs max-h-[calc(var(--spacing-3xl)*4)] overflow-y-auto border-border border-l pl-md text-fg-faint text-sm"
+        >
           <RichMarkdown className="text-sm">{text}</RichMarkdown>
         </div>
       )}

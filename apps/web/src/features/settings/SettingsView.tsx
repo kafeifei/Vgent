@@ -44,12 +44,12 @@ const stableStringify = (value: unknown): string =>
   );
 
 /**
- * 主题 and 密度 are not part of this page's draft: 外观 applies and stores them
- * on the click. Keeping them out of both the comparison and the payload is what
- * stops 保存 from writing back the theme this page was *opened* with.
+ * 主题, 密度 and the Computer Use switch are not part of this page's draft: they
+ * apply and store on the click. Keeping them out of both the comparison and the
+ * payload is what stops 保存 from writing back the values this page was *opened* with.
  */
-function withoutAppearance(settings: Settings): Omit<Settings, "theme" | "density"> {
-  const { theme: _theme, density: _density, ...rest } = settings;
+function withoutAppearance(settings: Settings): Omit<Settings, "theme" | "density" | "computerUseProvider"> {
+  const { theme: _theme, density: _density, computerUseProvider: _computerUse, ...rest } = settings;
   return rest;
 }
 
@@ -166,8 +166,8 @@ function McpFormPanel({
  * list. One local draft, edited freely and sent whole on 保存; the server
  * snapshot only overwrites it while there is nothing unsaved to lose.
  *
- * 外观 is the exception — it writes on the click and is kept out of the draft
- * entirely (see `withoutAppearance`).
+ * 外观 and the Computer Use switch are the exception — they write on the click
+ * and are kept out of the draft's comparison and payload (see `withoutAppearance`).
  */
 export function SettingsView({
   settings,
@@ -234,6 +234,16 @@ export function SettingsView({
       })
       .catch((error: Error) => setSaveError(error.message))
       .finally(() => setSaving(false));
+  };
+
+  // Written on the click like 外观; a failed write puts the switch back.
+  const setComputerUse = (value: boolean) => {
+    const previous = draft.computerUseProvider ?? null;
+    update({ computerUseProvider: value ? "cua" : null });
+    void client.putSettings({ computerUseProvider: value ? "cua" : null }).catch((error: Error) => {
+      update({ computerUseProvider: previous });
+      toast(error.message);
+    });
   };
 
   const openAddForm = () => {
@@ -368,7 +378,7 @@ export function SettingsView({
         <ComputerUseSection
           client={client}
           enabled={draft.computerUseProvider === "cua"}
-          onEnabledChange={(value) => update({ computerUseProvider: value ? "cua" : null })}
+          onEnabledChange={setComputerUse}
         />
       </SettingsPage>
     ),

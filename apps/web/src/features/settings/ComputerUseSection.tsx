@@ -71,7 +71,7 @@ export function ComputerUseSection({
     >
       <SettingsRow
         title={<>启用 Computer Use {status?.ready === true && <Tag>驱动已就绪</Tag>}</>}
-        help="保存后，新回合可以调用 Cua Driver；各引擎使用同一份本机授权。"
+        help="新回合起可以调用 Cua Driver；各引擎使用同一份本机授权。"
       >
         <Switch checked={enabled} onChange={onEnabledChange} disabled={!enabled && status?.ready !== true} label="启用 Cua Driver Computer Use" />
       </SettingsRow>

@@ -20,17 +20,22 @@ const isLive = (status: ThreadStatus): boolean => (LIVE_STATUSES as readonly str
  * The AI SDK's transport turns a non-OK chat response into an `APICallError`
  * whose `message` is the raw response body — for our `{ error: { code,
  * message } }` envelope (e.g. 503 `engine_unavailable`), that is the JSON
- * text itself. Unwrap it so a toast shows the server's Chinese message
- * instead of raw JSON.
+ * text itself. Unwrap it so the toast and the log's error bar show the
+ * server's Chinese message instead of raw JSON.
  */
-function describeTransportError(error: Error): Error {
+export function transportErrorText(message: string): string {
   try {
-    const body = JSON.parse(error.message) as { error?: { message?: string } };
-    if (typeof body.error?.message === "string") return new Error(body.error.message);
+    const body = JSON.parse(message) as { error?: { message?: string } };
+    if (typeof body.error?.message === "string") return body.error.message;
   } catch {
     // Not JSON — a network failure, abort, etc. Keep the original message.
   }
-  return error;
+  return message;
+}
+
+function describeTransportError(error: Error): Error {
+  const text = transportErrorText(error.message);
+  return text === error.message ? error : new Error(text);
 }
 
 /**

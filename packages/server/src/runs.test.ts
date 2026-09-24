@@ -833,6 +833,96 @@ describe("run lifecycle", () => {
     expect(JSON.stringify(record.messages)).not.toContain("An error occurred.");
   });
 
+  it("stores a tool called with no arguments with an empty input, so the history stays valid", async () => {
+    const dir = await tempDir();
+    const factory: EngineFactoryOverride = {
+      async create() {
+        return {
+          hasUnfinishedTurn: () => false,
+          async finish() {},
+          async destroy() {},
+          async stream() {
+            return {
+              stream: toStream([
+                { type: "start" },
+                // What Claude Code's ListAgents came back as: no `input` key at all.
+                { type: "tool-call", toolCallId: "c1", toolName: "ListAgents", input: undefined, providerExecuted: true, dynamic: true },
+                { type: "tool-result", toolCallId: "c1", toolName: "ListAgents", input: undefined, output: { listing: "none" }, providerExecuted: true, dynamic: true },
+              ] as unknown as TextStreamPart<ToolSet>[]),
+            };
+          },
+        } satisfies EngineRunner;
+      },
+    };
+    const app = makeApp(dir, factory);
+    const thread = await setupThread(app, dir);
+
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "谁在线")] }));
+    const record = await waitForStatus(app, thread.id, "idle");
+    const call = record.messages[1]?.parts.find(isToolUIPart);
+    expect(call?.state).toBe("output-available");
+    expect(call?.input).toEqual({});
+
+    // The next message carries that history back and is accepted.
+    await waitForSlotReleased(app, thread.id);
+    const next = await postJson(app, `/api/chat/${thread.id}`, { messages: [...record.messages, userMessage("u2", "好了？")] });
+    expect(next.status).toBe(200);
+    await readSse(next);
+  });
+
+  it("takes a history an older build stored without a tool input, and repairs the stored copy", async () => {
+    const dir = await tempDir();
+    const factory: EngineFactoryOverride = {
+      async create() {
+        return {
+          hasUnfinishedTurn: () => false,
+          async finish() {},
+          async destroy() {},
+          async stream() {
+            return { stream: toStream([{ type: "start" }, { type: "text-start", id: "t1" }, { type: "text-delta", id: "t1", text: "好了" }, { type: "text-end", id: "t1" }]) };
+          },
+        } satisfies EngineRunner;
+      },
+    };
+    const app = makeApp(dir, factory);
+    const thread = await setupThread(app, dir);
+    const broken = {
+      id: "a1",
+      role: "assistant",
+      parts: [{ type: "tool-ListAgents", toolCallId: "c1", state: "output-available", output: { listing: "none" }, providerExecuted: true }],
+    } as unknown as UIMessage;
+
+    await createThreadStore(dir).saveMessages(thread.id, [userMessage("u1", "谁在线"), broken]);
+
+    const response = await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "谁在线"), broken, userMessage("u2", "好了？")] });
+    expect(response.status).toBe(200);
+    await readSse(response);
+    const record = await waitForStatus(app, thread.id, "idle");
+    expect(record.messages.map((message) => message.id).slice(0, 3)).toEqual(["u1", "a1", "u2"]);
+    expect(record.messages[1]?.parts.find(isToolUIPart)?.input).toEqual({});
+  });
+
+  it("says which part of a malformed history broke, instead of echoing the history", async () => {
+    const dir = await tempDir();
+    const app = makeApp(dir, {
+      async create() {
+        throw new Error("never started");
+      },
+    });
+    const thread = await setupThread(app, dir);
+    const broken = {
+      id: "a1",
+      role: "assistant",
+      parts: [{ type: "text", text: "前一段" }, { type: "tool-read", toolCallId: "c1", state: "sideways", input: {} }],
+    } as unknown as UIMessage;
+
+    const response = await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "读一下"), broken, userMessage("u2", "再来")] });
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe("invalid_messages");
+    expect(body.error.message).toBe("消息格式不合法：第 2 条消息的 tool-read 一步");
+  });
+
   it("releases the slot when a stopped engine ignores its abort signal", async () => {
     const dir = await tempDir();
     let release = () => {};

@@ -5,8 +5,8 @@ import {
   convertToModelMessages,
   isToolUIPart,
   readUIMessageStream,
+  safeValidateUIMessages,
   toUIMessageStream,
-  validateUIMessages,
   type DynamicToolUIPart,
   type LanguageModelUsage,
   type ModelMessage,
@@ -719,7 +719,7 @@ export function createRunManager(options: {
         // An `error` part inside an otherwise well-formed stream still means the
         // turn failed; without this the thread would settle as a clean `idle`.
         if (value.type === "error") streamError ??= value.errorText;
-        run.hub.publish(value);
+        run.hub.publish(withChunkInput(value));
       }
       run.hub.close();
       await reader;
@@ -872,18 +872,22 @@ export function createRunManager(options: {
     // HTTP response instead of an unhandled rejection.
     await factory.ensureAvailable?.({ thread, dataDir });
 
-    let validated: UIMessage[];
-    try {
-      validated = await validateUIMessages({ messages: uiMessages });
-    } catch (error) {
-      throw new BadRequestError(`消息格式不合法: ${error instanceof Error ? error.message : String(error)}`, "invalid_messages");
+    const repaired = Array.isArray(uiMessages) ? withToolInputs(uiMessages as UIMessage[]) : uiMessages;
+    const result = await safeValidateUIMessages({ messages: repaired });
+    if (!result.success) {
+      // The SDK's message carries the whole history as JSON — for the log, not the user.
+      log.warn(`线程 ${threadId} 的消息未通过校验`, result.error);
+      throw new BadRequestError(`消息格式不合法${await locateInvalid(repaired)}`, "invalid_messages");
     }
+    const validated = result.data;
     if (validated.length === 0) throw new BadRequestError("消息为空", "invalid_messages");
 
     // Setup has settled and the engine has not started: this is the moment
     // the working directory still looks the way the user saw it.
     const checkpoint = await checkpointForTurn(thread, validated);
-    const messages = withAfterFallback(mergeIncoming(thread.messages, withCheckpoint(validated, checkpoint)), checkpoint);
+    // The client posts the history back, but only its tail is merged: the stored
+    // copy needs the same repair, or the engine converts the broken parts.
+    const messages = withAfterFallback(withToolInputs(mergeIncoming(thread.messages, withCheckpoint(validated, checkpoint))), checkpoint);
     // 从恢复点继续: the marker goes away with this message — the task is moving
     // forward from here — and the model is told once, in this turn's input, what
     // happened to the files it may remember writing.
@@ -1174,9 +1178,57 @@ function toClosedToolPart<T extends AnyToolUIPart>(part: T, errorText: string): 
     type: part.type,
     toolCallId: part.toolCallId,
     state: "output-error",
-    input: part.input,
+    input: part.input ?? {},
     errorText,
   } as unknown as T;
+}
+
+/**
+ * A tool called with no arguments can come back from an engine with no `input`
+ * at all. The SDK's reader stores the part that way, and its own validator then
+ * rejects every later request carrying that history — the task can never take
+ * another message. No input is an empty one. Only `input-streaming` may lack it.
+ */
+export function withToolInputs(messages: UIMessage[]): UIMessage[] {
+  if (!messages.some(hasPartLackingInput)) return messages;
+  return messages.map((message) =>
+    hasPartLackingInput(message)
+      ? { ...message, parts: message.parts.map((part) => (lacksInput(part) ? { ...part, input: {} } : part)) }
+      : message,
+  );
+}
+
+// Also run on a request body before validation, so nothing here trusts its shape.
+const hasPartLackingInput = (message: UIMessage): boolean => Array.isArray(message?.parts) && message.parts.some(lacksInput);
+
+const lacksInput = (part: UIMessage["parts"][number]): boolean =>
+  typeof part?.type === "string" && isToolUIPart(part) && part.state !== "input-streaming" && part.input === undefined;
+
+/** The same repair on the way in, so a new turn never stores such a part. */
+function withChunkInput(chunk: UIMessageChunk): UIMessageChunk {
+  if ((chunk.type === "tool-input-available" || chunk.type === "tool-input-error") && chunk.input === undefined) {
+    return { ...chunk, input: {} };
+  }
+  return chunk;
+}
+
+/**
+ * Where a history failed validation, as a short suffix for the error: which
+ * message and which part. The SDK's own error dumps the entire history.
+ */
+async function locateInvalid(messages: unknown): Promise<string> {
+  if (!Array.isArray(messages)) return "";
+  for (const [index, message] of (messages as unknown[]).entries()) {
+    if ((await safeValidateUIMessages({ messages: [message] })).success) continue;
+    const parts: unknown[] = Array.isArray((message as { parts?: unknown })?.parts) ? (message as { parts: unknown[] }).parts : [];
+    for (const part of parts) {
+      if ((await safeValidateUIMessages({ messages: [{ ...(message as object), parts: [part] }] })).success) continue;
+      const type = (part as { type?: unknown })?.type;
+      return `：第 ${index + 1} 条消息的 ${typeof type === "string" ? type : "未知"} 一步`;
+    }
+    return `：第 ${index + 1} 条消息`;
+  }
+  return "";
 }
 
 /**

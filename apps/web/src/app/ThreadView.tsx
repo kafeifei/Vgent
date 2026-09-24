@@ -19,7 +19,7 @@ import { pendingAutoApprovals } from "@/lib/autoApprove";
 import type { ApiClient } from "@/lib/api";
 import { useDraft } from "@/lib/drafts";
 import { previewKindOf } from "@/lib/preview";
-import { CHAT_THROTTLE_MS } from "@/lib/threadChats";
+import { CHAT_THROTTLE_MS, transportErrorText } from "@/lib/threadChats";
 import type { EngineDescriptor, EngineId, PermissionMode, ThreadSummary } from "@/lib/types";
 import { isLiveThread, type WorkbenchActions } from "./useWorkbench";
 
@@ -306,7 +306,7 @@ function ThreadChatView({
           thread={thread}
           live={live}
           // Only a task that ended in error has one to show: older builds also left a failed tool call's text here.
-          error={(thread.status === "error" ? thread.error : undefined) ?? error?.message}
+          error={(thread.status === "error" ? thread.error : undefined) ?? (error != null ? transportErrorText(error.message) : undefined)}
           actions={turnActions}
           allowlist={allowlist ?? []}
         />

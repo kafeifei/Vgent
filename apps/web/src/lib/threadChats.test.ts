@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UIMessage } from "ai";
-import { ThreadChats } from "./threadChats";
+import { ThreadChats, transportErrorText } from "./threadChats";
 import type { ThreadRecord, ThreadStatus, ThreadSummary } from "./types";
 
 const THREAD_ID = "t1";
@@ -199,5 +199,14 @@ describe("ThreadChats send", () => {
     chats.get(THREAD_ID);
     await chats.whenReady(THREAD_ID);
     await expect(chats.send(THREAD_ID, "server 关了")).rejects.toThrow();
+  });
+});
+
+describe("transportErrorText", () => {
+  it("shows the server's own message instead of its JSON envelope", () => {
+    const body = JSON.stringify({ error: { code: "invalid_messages", message: "消息格式不合法：第 2 条消息的 tool-read 一步" } });
+    expect(transportErrorText(body)).toBe("消息格式不合法：第 2 条消息的 tool-read 一步");
+    expect(transportErrorText("Failed to fetch")).toBe("Failed to fetch");
+    expect(transportErrorText('{"unrelated":true}')).toBe('{"unrelated":true}');
   });
 });

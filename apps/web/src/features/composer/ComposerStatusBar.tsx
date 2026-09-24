@@ -6,13 +6,12 @@ import { ContextRing } from "./ContextRing";
 import { sumChanges } from "./contextUsage";
 
 /**
- * The row **under** the composer, in every task and in the empty state alike:
- * which branch, where it runs, what there is to review, how full the context is.
+ * The row **under** the composer in every task: which branch, where it runs,
+ * what there is to review, how full the context is.
  *
  * It lives below the box rather than above it because it describes the task's
- * ground rather than the message being typed — 「在哪跑」 has to be readable
- * without opening anything, which is the whole point of moving it out of the
- * empty state. Above the box nothing is left but the queue and the notices.
+ * ground rather than the message being typed. The empty state has no such row:
+ * its branch and 运行位置 sit next to the project picker above the box.
  */
 export function ComposerStatusBar({
   branch,
@@ -26,7 +25,7 @@ export function ComposerStatusBar({
   /** Absent (a detached HEAD, a project that is not a repo) hides the glyph too. */
   branch?: string | undefined;
   branchTitle?: string | undefined;
-  /** 运行位置: the picker in the empty state, a static label once the task exists. */
+  /** 运行位置, a static label once the task exists. */
   location: ReactNode;
   /** This task's changes, for the 审查 pill. Absent or empty = no pill. */
   changedFiles?: readonly ChangedFile[] | undefined;

@@ -126,8 +126,8 @@ export function Composer({
   /** 分支 for the row under the box; absent on a detached HEAD or a non-repo. */
   branch?: string | undefined;
   branchTitle?: string | undefined;
-  /** 运行位置 for that same row: the picker in the empty state, a label in a task. */
-  location: ReactNode;
+  /** 运行位置 for that same row. Absent (the empty state, which has them above the box) drops the row. */
+  location?: ReactNode;
   /** Absent (the empty state) leaves `@` inert. */
   completeFiles?: (q: string) => Promise<FileEntry[]>;
   /** 附件 waiting to go out with the next message; the caller owns them, as it owns the text. */
@@ -641,15 +641,17 @@ export function Composer({
         </div>
       </div>
 
-      <ComposerStatusBar
-        {...(branch != null ? { branch } : {})}
-        {...(branchTitle != null ? { branchTitle } : {})}
-        location={location}
-        {...(changedFiles != null ? { changedFiles } : {})}
-        {...(onOpenChanges != null ? { onOpenChanges } : {})}
-        {...(messages != null ? { messages } : {})}
-        {...(contextWindow != null ? { contextWindow } : {})}
-      />
+      {location != null && (
+        <ComposerStatusBar
+          {...(branch != null ? { branch } : {})}
+          {...(branchTitle != null ? { branchTitle } : {})}
+          location={location}
+          {...(changedFiles != null ? { changedFiles } : {})}
+          {...(onOpenChanges != null ? { onOpenChanges } : {})}
+          {...(messages != null ? { messages } : {})}
+          {...(contextWindow != null ? { contextWindow } : {})}
+        />
+      )}
     </div>
   );
 }

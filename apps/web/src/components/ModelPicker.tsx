@@ -1,8 +1,17 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { createClient, getToken } from "@/lib/api";
-import type { EngineDescriptor, EngineId, ModelCatalog, ModelEntry } from "@/lib/types";
+import { createClient, getToken, type ModelPickPatch } from "@/lib/api";
+import type { EngineDescriptor, EngineId, ModelCatalog, ModelEntry, ModelPick } from "@/lib/types";
 import { CascadeLevel, type CascadeNode } from "./CascadeMenu";
-import { buildModelChoices, currentChoice, formatContext, preferredRoute, type EngineRoute, type ModelChoice } from "./modelChoices";
+import {
+  buildModelChoices,
+  currentChoice,
+  formatContext,
+  optionsOn,
+  preferredRoute,
+  type EngineRoute,
+  type ModelChoice,
+  type OptionsSet,
+} from "./modelChoices";
 import { Popover } from "./Popover";
 import { reasoningLabel } from "./reasoningLabels";
 import { SourceIcon } from "./SourceIcon";
@@ -102,7 +111,7 @@ export interface ModelOptions {
 }
 
 /** A change to those, `null` handing a choice back to the model's own default. */
-export type OptionsPatch = Partial<{ reasoningEffort: string; serviceTier: string | null; contextWindow: number | null }>;
+export type OptionsPatch = Partial<OptionsSet>;
 
 /** The level a model runs at: the task's own pick where the model offers it, else the model's default. */
 const levelOf = (entry: ModelEntry, chosen: string | undefined): string | undefined =>
@@ -112,9 +121,9 @@ const levelOf = (entry: ModelEntry, chosen: string | undefined): string | undefi
  * What a row in the model list runs with, dimmed right after its name the way
  * Cursor writes「Opus 5.5 1M High Fast」: a context window other than the model's
  * own, the 推理强度, Fast when it is on. The task's own row reads its choices;
- * any other, the model's defaults — which is only ever a level.
+ * any other, what that model was last picked with — its defaults if never.
  */
-function variantOf(entry: ModelEntry, options: ModelOptions | undefined): string {
+function variantOf(entry: ModelEntry, options: ModelOptions | ModelPick | undefined): string {
   const windows = entry.contextOptions ?? [];
   const own = entry.contextWindow ?? windows[0];
   const context = options?.contextWindow != null && options.contextWindow !== own && windows.includes(options.contextWindow) ? formatContext(options.contextWindow) : undefined;
@@ -227,7 +236,7 @@ function ModelList({
   mine,
   engine,
   engineLocked,
-  modelEngines,
+  picks,
   options,
   loading,
   failures,
@@ -237,11 +246,11 @@ function ModelList({
   mine: ModelChoice | undefined;
   engine: EngineId;
   engineLocked: boolean;
-  modelEngines: Readonly<Record<string, EngineId>> | undefined;
+  picks: Readonly<Record<string, ModelPick>> | undefined;
   options: ModelOptions | undefined;
   loading: boolean;
   failures: readonly string[];
-  onPick: (route: EngineRoute) => void;
+  onPick: (choice: ModelChoice, route: EngineRoute) => void;
 }) {
   const [query, setQuery] = useState("");
   const needle = query.trim().toLowerCase();
@@ -251,10 +260,11 @@ function ModelList({
     // The task's own row shows the engine it is really on; any other, the one it would get.
     const route =
       (isMine ? choice.routes.find((candidate) => candidate.engine === engine) : undefined) ??
-      preferredRoute(choice, engine, engineLocked, modelEngines);
+      preferredRoute(choice, engine, engineLocked, picks);
     if (route == null) return [];
     if (needle !== "" && !`${choice.label} ${route.entry.id}`.toLowerCase().includes(needle)) return [];
-    const variant = variantOf(route.entry, isMine ? options : undefined);
+    // Another model's row reads what it was last picked with: what clicking it would run.
+    const variant = variantOf(route.entry, isMine ? options : picks?.[choice.key]);
     return [
       {
         key: choice.key,
@@ -269,7 +279,7 @@ function ModelList({
         icon: <SourceIcon source={choice.source} />,
         ...(choice.source.name !== "" ? { section: choice.source.name } : {}),
         selected: isMine,
-        onPick: () => onPick(route),
+        onPick: () => onPick(choice, route),
       },
     ];
   });
@@ -313,8 +323,9 @@ export function ModelPicker({
   engineLocked = false,
   onPick,
   onPickOptions,
-  modelEngines,
-  onRememberEngine,
+  picks,
+  onRemember,
+  adoptRemembered = false,
   onCatalog,
   /** When nothing is chosen yet, write the resolved model back so the chip is a real selection. */
   commitDefault = false,
@@ -330,13 +341,28 @@ export function ModelPicker({
   options?: ModelOptions;
   /** A task with history cannot cross engines: models only another engine runs are not offered. */
   engineLocked?: boolean;
-  /** The engine always travels with the model. */
-  onPick: (engine: EngineId, model: string | undefined) => void;
+  /**
+   * The engine always travels with the model, and so does what it runs with:
+   * `options` is what the menu switches the task onto — the new model's
+   * remembered ones, or the task's own when only the engine changed. Absent
+   * where nothing was switched (settling on the default) or there are no
+   * options (the settings page).
+   */
+  onPick: (engine: EngineId, model: string | undefined, options?: OptionsSet) => void;
   /** `null` hands a choice back to the model's own default. */
   onPickOptions?: (patch: OptionsPatch) => void;
-  /** 记住上次选择: the engine last chosen per `modelKey` (`Settings.modelEngines`), and how a new choice is kept. */
-  modelEngines?: Readonly<Record<string, EngineId>>;
-  onRememberEngine?: (modelKey: string, engine: EngineId) => void;
+  /**
+   * 记住上次选择, per `modelKey` (`Settings.modelPicks`): the engine and the
+   * options each model was last picked with, and how a new choice is kept.
+   */
+  picks?: Readonly<Record<string, ModelPick>>;
+  onRemember?: (modelKey: string, pick: ModelPickPatch) => void;
+  /**
+   * A new task: the model it would run on — the default one, before anything is
+   * picked — comes with what it was last run with, handed up through
+   * `onPickOptions` whenever that model changes.
+   */
+  adoptRemembered?: boolean;
   /** See `useAllCatalogs`: the *selected* engine's list, handed up for a sibling to read. */
   onCatalog?: (catalog: ModelCatalog) => void;
   commitDefault?: boolean;
@@ -388,13 +414,29 @@ export function ModelPicker({
   const failures = Object.values(states).flatMap((state) => (state.status === "error" ? [state.message] : []));
 
   // The row whose knobs the first level shows: the resolved model, on the engine it runs on.
-  const route = mine == null ? undefined : (mine.routes.find((candidate) => candidate.engine === engine) ?? preferredRoute(mine, engine, engineLocked, modelEngines));
+  const route = mine == null ? undefined : (mine.routes.find((candidate) => candidate.engine === engine) ?? preferredRoute(mine, engine, engineLocked, picks));
+
+  const pickOptionsRef = useRef(onPickOptions);
+  pickOptionsRef.current = onPickOptions;
+  const picksRef = useRef(picks);
+  picksRef.current = picks;
+  const adopted = useRef<string | null>(null);
+  const adoptKey = adoptRemembered ? mine?.key : undefined;
+  const adoptEntry = route?.entry;
+  // Once per model, not on every change of `picks`: those change because this
+  // very menu wrote one, and adopting again would race the caller's own state.
+  useEffect(() => {
+    if (adoptKey == null || adoptEntry == null || adopted.current === adoptKey) return;
+    adopted.current = adoptKey;
+    pickOptionsRef.current?.(optionsOn(adoptEntry, picksRef.current?.[adoptKey]));
+  }, [adoptKey, adoptEntry]);
 
   return (
     <Popover align={align} side={side} className="min-w-[calc(var(--spacing-3xl)*4)]" trigger={(props) => trigger(props, chip)}>
       {(close) => {
-        const run = (next: EngineRoute): void => {
-          if (next.engine !== engine || next.entry.id !== model) onPick(next.engine, next.entry.id);
+        const run = (next: EngineRoute, carried: ModelPick | ModelOptions | undefined): void => {
+          if (next.engine === engine && next.entry.id === model) return;
+          onPick(next.engine, next.entry.id, options != null ? optionsOn(next.entry, carried) : undefined);
         };
         const nodes: CascadeNode[] =
           mine != null && route != null
@@ -403,12 +445,17 @@ export function ModelPicker({
                 route,
                 options,
                 engineLocked,
-                onOptions: (patch) => onPickOptions?.(patch),
+                onOptions: (patch) => {
+                  // 记住上次选择: what a model is set to here is what it comes with next time.
+                  onPickOptions?.(patch);
+                  onRemember?.(mine.key, patch);
+                },
                 onEngine: (next) => {
                   // 记住上次选择: an engine picked by hand is this model's from now on.
                   // The menu stays open — only picking a different model closes it.
-                  onRememberEngine?.(mine.key, next.engine);
-                  run(next);
+                  // Same model, so the task keeps its own options wherever the new engine offers them.
+                  onRemember?.(mine.key, { engine: next.engine });
+                  run(next, options);
                 },
               })
             : // The catalog has not named a model yet. 引擎 can still be changed.
@@ -440,12 +487,13 @@ export function ModelPicker({
               mine={mine}
               engine={engine}
               engineLocked={engineLocked}
-              modelEngines={modelEngines}
+              picks={picks}
               options={options}
               loading={loading}
               failures={failures}
-              onPick={(next) => {
-                run(next);
+              onPick={(choice, next) => {
+                // Another model brings what it was last picked with; its own row keeps the task's.
+                run(next, choice.key === mine?.key ? options : picks?.[choice.key]);
                 close();
               }}
             />

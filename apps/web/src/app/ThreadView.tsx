@@ -20,7 +20,7 @@ import type { ApiClient } from "@/lib/api";
 import { useDraft } from "@/lib/drafts";
 import { previewKindOf } from "@/lib/preview";
 import { CHAT_THROTTLE_MS, transportErrorText } from "@/lib/threadChats";
-import type { EngineDescriptor, EngineId, PermissionMode, ThreadSummary } from "@/lib/types";
+import type { EngineDescriptor, ModelPick, PermissionMode, ThreadSummary } from "@/lib/types";
 import { isLiveThread, type WorkbenchActions } from "./useWorkbench";
 
 /** Waits for the thread's history to land before mounting the chat view. */
@@ -35,8 +35,8 @@ export function ThreadView(props: {
   engines: EngineDescriptor[];
   /** The global 运行模式; the composer's notice reads it. */
   runMode: PermissionMode | undefined;
-  /** 记住上次选的引擎, by model. */
-  modelEngines: Readonly<Record<string, EngineId>> | undefined;
+  /** 记住上次选择, by model. */
+  modelPicks: Readonly<Record<string, ModelPick>> | undefined;
   /** The global 「一直允许」 list, which auto-answers matching approvals. */
   allowlist: readonly string[] | undefined;
   onQueue: (queue: QueueItem[]) => void;
@@ -80,7 +80,7 @@ function ThreadChatView({
   leftOpen,
   engines,
   runMode,
-  modelEngines,
+  modelPicks,
   allowlist,
   onQueue,
   onMessages,
@@ -95,8 +95,8 @@ function ThreadChatView({
   leftOpen: boolean;
   engines: EngineDescriptor[];
   runMode: PermissionMode | undefined;
-  /** 记住上次选的引擎, by model. */
-  modelEngines: Readonly<Record<string, EngineId>> | undefined;
+  /** 记住上次选择, by model. */
+  modelPicks: Readonly<Record<string, ModelPick>> | undefined;
   allowlist: readonly string[] | undefined;
   onQueue: (queue: QueueItem[]) => void;
   onMessages: (messages: UIMessage[]) => void;
@@ -336,12 +336,12 @@ function ThreadChatView({
             engineLocked={thread.messageCount > 0}
             model={thread.model}
             runMode={runMode}
-            modelEngines={modelEngines}
-            onRememberEngine={actions.rememberModelEngine}
+            modelPicks={modelPicks}
+            onRememberPick={actions.rememberModelPick}
             // Same rule as the 思考 chip below: a running turn already carries
             // the model it started with, so switching it mid-flight would be a lie.
-            onPickModel={(engine, model) =>
-              live ? actions.toast("运行中不能改，先停止") : actions.setModel(thread.id, engine, model)
+            onPickModel={(engine, model, options) =>
+              live ? actions.toast("运行中不能改，先停止") : actions.setModel(thread.id, engine, model, options)
             }
             reasoningEffort={thread.reasoningEffort}
             // Same rule as the header's pills.

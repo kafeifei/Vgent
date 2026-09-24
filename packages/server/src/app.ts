@@ -60,7 +60,7 @@ import { createPlanStore, MAX_PLAN_BYTES } from "./store/plans.js";
 import { createProjectStore, type ProjectStore } from "./store/projects.js";
 import { createCatalogStore } from "./store/catalog.js";
 import { createProviderStore } from "./store/providers.js";
-import { asMcpServers, createSettingsStore, type SettingsPatch } from "./store/settings.js";
+import { asMcpServers, createSettingsStore, mergeModelPick, type ModelPickPatch, type SettingsPatch } from "./store/settings.js";
 import { createThreadStore, type ThreadPatch } from "./store/threads.js";
 import type {
   ChangeStats,
@@ -1288,14 +1288,30 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   // 「一直允许」 on an approval card, and the 撤销 next to it in 设置. One tool at
   // a time, because that is how the two buttons think about it.
-  // 记住上次选的引擎: one entry of a map, so it is a read-modify-write on the
-  // server — two quick picks must not start from the same copy.
-  app.put("/api/settings/model-engines", async (c) => {
-    const body = (await c.req.json().catch(() => undefined)) as { modelKey?: unknown; engine?: unknown } | undefined;
-    const engine = asEngine(body?.engine);
+  // 记住上次选择: one model's entry of a map, so it is a read-modify-write on
+  // the server — two quick picks must not start from the same copy. Only the
+  // fields sent change; `null` hands one back to the model's own default.
+  app.put("/api/settings/model-picks", async (c) => {
+    const body = (await c.req.json().catch(() => undefined)) as Record<string, unknown> | undefined;
     const modelKey = typeof body?.modelKey === "string" ? body.modelKey.trim() : "";
-    if (engine == null || modelKey === "" || modelKey.length > 300) throw new BadRequestError("需要 modelKey 和 engine", "invalid_model_engine");
-    return c.json(await settings.mutate((current) => ({ modelEngines: { ...current.modelEngines, [modelKey]: engine } })));
+    if (modelKey === "" || modelKey.length > 300) throw new BadRequestError("需要 modelKey", "invalid_model_pick");
+    const sent = (field: string) => body != null && field in body;
+    const engine = asEngine(body?.engine);
+    if (sent("engine") && body?.engine != null && engine == null) throw new BadRequestError("未知引擎", "invalid_model_pick");
+    const patch: ModelPickPatch = {
+      ...(sent("engine") ? { engine } : {}),
+      ...(sent("reasoningEffort") ? { reasoningEffort: readReasoningEffort(body?.reasoningEffort) } : {}),
+      ...(sent("serviceTier") ? { serviceTier: readServiceTier(body?.serviceTier) } : {}),
+      ...(sent("contextWindow") ? { contextWindow: readContextWindow(body?.contextWindow) } : {}),
+    };
+    if (Object.keys(patch).length === 0) throw new BadRequestError("没有要记住的选项", "invalid_model_pick");
+    return c.json(
+      await settings.mutate((current) => {
+        const { [modelKey]: before, ...others } = current.modelPicks ?? {};
+        const after = mergeModelPick(before, patch);
+        return { modelPicks: after == null ? others : { ...others, [modelKey]: after } };
+      }),
+    );
   });
 
   // 提供商排序: the whole order at once, as the drag on the settings page left it.

@@ -308,6 +308,22 @@ describe("createProjectStore / createSettingsStore", () => {
     expect(await createSettingsStore(bare).get()).toMatchObject({ runMode: "allow-reads", allowlist: [] });
   });
 
+  it("folds the older engine-per-model map into the remembered picks", async () => {
+    const dir = await tempDir();
+    await writeJsonAtomic(join(dir, "settings.json"), {
+      defaultEngine: "vgent",
+      modelEngines: { "codex/gpt-5.5": "vgent", "gateway/kimi": "vgent" },
+      modelPicks: { "codex/gpt-5.5": { reasoningEffort: "xhigh", serviceTier: 7 }, junk: "fast" },
+    });
+
+    const migrated = await createSettingsStore(dir).get();
+    expect(migrated.modelPicks).toEqual({
+      "codex/gpt-5.5": { engine: "vgent", reasoningEffort: "xhigh" },
+      "gateway/kimi": { engine: "vgent" },
+    });
+    expect(migrated).not.toHaveProperty("modelEngines");
+  });
+
   it("dedupes the global allowlist", async () => {
     const dir = await tempDir();
     const store = createSettingsStore(dir);

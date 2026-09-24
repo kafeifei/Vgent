@@ -3,10 +3,22 @@ import type { UIMessage } from "ai";
 import { ArrowUp, Check, ChevronDown, File, FileText, Folder, Plus, Square, X } from "lucide-react";
 import { UrlFigure } from "@/components/Figure";
 import { ModelPicker, effectiveModel } from "@/components/ModelPicker";
+import type { OptionsSet } from "@/components/modelChoices";
 import { dirName } from "@/features/changes/paths";
+import type { ModelPickPatch } from "@/lib/api";
 import { baseName } from "@/lib/format";
 import { useToast } from "@/lib/toast";
-import type { ChangedFile, EngineDescriptor, EngineId, FileEntry, ModelCatalog, PermissionMode, QueuedMessage, ThreadMode } from "@/lib/types";
+import type {
+  ChangedFile,
+  EngineDescriptor,
+  EngineId,
+  FileEntry,
+  ModelCatalog,
+  ModelPick,
+  PermissionMode,
+  QueuedMessage,
+  ThreadMode,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { ComposerStatusBar } from "./ComposerStatusBar";
 import { QueueStrip } from "./QueueStrip";
@@ -54,8 +66,9 @@ export function Composer({
   engineLocked,
   model,
   runMode,
-  modelEngines,
-  onRememberEngine,
+  modelPicks,
+  onRememberPick,
+  adoptRemembered = false,
   onPickModel,
   reasoningEffort,
   onPickReasoning,
@@ -99,12 +112,16 @@ export function Composer({
   model: string | undefined;
   /** The global 运行模式, so an engine that cannot ask can say so. */
   runMode?: PermissionMode | undefined;
-  /** 记住上次选的引擎: `Settings.modelEngines`, and how the picker keeps a new choice. */
-  modelEngines?: Readonly<Record<string, EngineId>> | undefined;
-  onRememberEngine?: (modelKey: string, engine: EngineId) => void;
-  onPickModel: (engine: EngineId, model: string | undefined) => void;
+  /** 记住上次选择: `Settings.modelPicks`, and how the picker keeps a new choice. */
+  modelPicks?: Readonly<Record<string, ModelPick>> | undefined;
+  onRememberPick?: (modelKey: string, pick: ModelPickPatch) => void;
+  /** See `ModelPicker`: the empty state's model starts with what it was last run with. */
+  adoptRemembered?: boolean;
+  /** `options` comes with a switch the menu made; see `ModelPicker`. */
+  onPickModel: (engine: EngineId, model: string | undefined, options?: OptionsSet) => void;
   reasoningEffort: string | undefined;
-  onPickReasoning: (level: string) => void;
+  /** `null` hands the level back to the model's own default. */
+  onPickReasoning: (level: string | null) => void;
   /** The task's service tier (`priority` = Fast); unset is the standard one. */
   serviceTier: string | undefined;
   /** `null` goes back to standard. */
@@ -200,8 +217,8 @@ export function Composer({
    * Picking another engine's model can take Plan away. Falling back silently
    * would run the next message in a mode the chip no longer shows, so it says so.
    */
-  const pickModel = (nextEngine: EngineId, nextModel: string | undefined): void => {
-    onPickModel(nextEngine, nextModel);
+  const pickModel = (nextEngine: EngineId, nextModel: string | undefined, options?: OptionsSet): void => {
+    onPickModel(nextEngine, nextModel, options);
     const next = engines.find((entry) => entry.id === nextEngine);
     if (mode !== "plan" || next == null || next.capabilities.planMode) return;
     onPickMode("agent");
@@ -606,12 +623,14 @@ export function Composer({
             {...(engineLocked === true ? { engineLocked: true } : {})}
             onPick={pickModel}
             onPickOptions={(patch) => {
-              if (patch.reasoningEffort != null) onPickReasoning(patch.reasoningEffort);
+              if ("reasoningEffort" in patch) onPickReasoning(patch.reasoningEffort ?? null);
               if ("serviceTier" in patch) onPickServiceTier(patch.serviceTier ?? null);
               if ("contextWindow" in patch) onPickContext(patch.contextWindow ?? null);
             }}
-            {...(modelEngines != null ? { modelEngines } : {})}
-            {...(onRememberEngine != null ? { onRememberEngine } : {})}
+            {...(modelPicks != null ? { picks: modelPicks } : {})}
+            // A running task refuses the change, so there is nothing to remember either.
+            {...(onRememberPick != null && !live ? { onRemember: onRememberPick } : {})}
+            adoptRemembered={adoptRemembered}
             onCatalog={setCatalog}
             commitDefault={!live}
             side="top"

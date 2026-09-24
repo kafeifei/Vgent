@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EngineDescriptor, ModelEntry } from "@/lib/types";
-import { buildModelChoices, currentChoice, formatContext, preferredRoute } from "./modelChoices";
+import { buildModelChoices, currentChoice, formatContext, optionsOn, preferredRoute } from "./modelChoices";
 
 const engine = (id: string, label: string) => ({ id, label }) as unknown as EngineDescriptor;
 const ENGINES = [engine("codex", "Codex"), engine("claude-code", "Claude Code"), engine("vgent", "Vgent")];
@@ -79,17 +79,56 @@ describe("preferredRoute", () => {
   });
 
   it("remembers the engine last chosen for that model, and only for that model", () => {
-    const remembered = { [gpt!.key]: "vgent", [xdQwen!.key]: "codex" } as const;
+    const remembered = { [gpt!.key]: { engine: "vgent", reasoningEffort: "xhigh" }, [xdQwen!.key]: { engine: "codex" } } as const;
     expect(preferredRoute(gpt!, "codex", false, remembered)?.engine).toBe("vgent");
     expect(preferredRoute(xdQwen!, "vgent", false, remembered)?.engine).toBe("codex");
     expect(preferredRoute(xdGpt!, "vgent", false, remembered)?.engine).toBe("codex");
     // A remembered engine that does not offer the model falls back to the default.
-    expect(preferredRoute(opus!, "codex", false, { [opus!.key]: "vgent" })?.engine).toBe("claude-code");
+    expect(preferredRoute(opus!, "codex", false, { [opus!.key]: { engine: "vgent" } })?.engine).toBe("claude-code");
+    // Options remembered without an engine leave the engine to the default.
+    expect(preferredRoute(gpt!, "vgent", false, { [gpt!.key]: { reasoningEffort: "low" } })?.engine).toBe("codex");
   });
 
   it("offers nothing across engines once the task has history", () => {
     expect(preferredRoute(opus!, "codex", true)).toBeUndefined();
-    expect(preferredRoute(gpt!, "vgent", true, { [gpt!.key]: "codex" })?.engine).toBe("vgent");
+    expect(preferredRoute(gpt!, "vgent", true, { [gpt!.key]: { engine: "codex" } })?.engine).toBe("vgent");
+  });
+});
+
+describe("optionsOn", () => {
+  const entry: ModelEntry = {
+    id: "gpt-6",
+    label: "GPT-6",
+    reasoningLevels: ["low", "medium", "high", "xhigh"],
+    serviceTiers: [{ id: "priority", name: "Fast" }],
+    contextWindow: 272_000,
+    contextOptions: [272_000, 1_000_000],
+  };
+
+  it("brings back what the model was last picked with", () => {
+    expect(optionsOn(entry, { reasoningEffort: "xhigh", serviceTier: "priority", contextWindow: 1_000_000 })).toEqual({
+      reasoningEffort: "xhigh",
+      serviceTier: "priority",
+      contextWindow: 1_000_000,
+    });
+  });
+
+  it("falls back to the model's own default for anything this route does not offer", () => {
+    expect(optionsOn(entry, { reasoningEffort: "max", serviceTier: "flex", contextWindow: 2_000_000 })).toEqual({
+      reasoningEffort: null,
+      serviceTier: null,
+      contextWindow: null,
+    });
+    // A model that was never picked runs as the catalog gives it.
+    expect(optionsOn(entry, undefined)).toEqual({ reasoningEffort: null, serviceTier: null, contextWindow: null });
+    // The model's own window is its default, not a choice.
+    expect(optionsOn(entry, { contextWindow: 272_000 }).contextWindow).toBeNull();
+    // A route without the knobs takes none of them.
+    expect(optionsOn({ id: "haiku", label: "haiku" }, { reasoningEffort: "high", serviceTier: "priority", contextWindow: 1_000_000 })).toEqual({
+      reasoningEffort: null,
+      serviceTier: null,
+      contextWindow: null,
+    });
   });
 });
 

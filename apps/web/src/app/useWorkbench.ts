@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FileUIPart } from "ai";
+import type { OptionsSet } from "@/components/modelChoices";
 import { isNoProject } from "@/lib/noProject";
-import { createClient } from "@/lib/api";
+import { createClient, type ModelPickPatch } from "@/lib/api";
 import { pruneDrafts } from "@/lib/drafts";
 import { ThreadChats } from "@/lib/threadChats";
 import { useServerState } from "@/lib/useServerState";
@@ -394,16 +395,17 @@ export function useWorkbench(token: string) {
       },
 
       /**
-       * 选模型即选引擎: the two travel together, in one PATCH. The server refuses
-       * the engine half on a thread that already has messages.
+       * 选模型即选引擎: the two travel together, in one PATCH, and so do the
+       * options the picker switched the task onto. The server refuses the
+       * engine half on a thread that already has messages.
        */
-      setModel: (threadId: string, engine: EngineId, model: string | undefined) => {
-        void client.patchThread(threadId, { engine, model: model ?? null }).catch((error: Error) => toast(error.message));
+      setModel: (threadId: string, engine: EngineId, model: string | undefined, options?: OptionsSet) => {
+        void client.patchThread(threadId, { engine, model: model ?? null, ...options }).catch((error: Error) => toast(error.message));
       },
 
       /** 记住上次选择: the settings come back on the snapshot, so nothing is set here. */
-      rememberModelEngine: (modelKey: string, engine: EngineId) => {
-        void client.rememberModelEngine(modelKey, engine).catch((error: Error) => toast(error.message));
+      rememberModelPick: (modelKey: string, pick: ModelPickPatch) => {
+        void client.rememberModelPick(modelKey, pick).catch((error: Error) => toast(error.message));
       },
       setContextWindow: (threadId: string, contextWindow: number | null) => {
         void client.patchThread(threadId, { contextWindow }).catch((error: Error) => toast(error.message));

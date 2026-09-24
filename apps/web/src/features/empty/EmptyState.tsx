@@ -4,7 +4,7 @@ import type { Attachment } from "@/features/composer/attachments";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ProjectPicker } from "@/components/ProjectPicker";
 import { Composer } from "@/features/composer/Composer";
-import type { ApiClient } from "@/lib/api";
+import type { ApiClient, ModelPickPatch } from "@/lib/api";
 import type { DraftTransport } from "@/lib/drafts";
 import { NEW_TASK_DRAFT, useDraft } from "@/lib/drafts";
 import { useToast } from "@/lib/toast";
@@ -43,7 +43,7 @@ export function EmptyState({
   onAddProject,
   onPickFolder,
   onStart,
-  onRememberEngine,
+  onRememberPick,
 }: {
   projects: Project[];
   projectId: string | null;
@@ -74,7 +74,7 @@ export function EmptyState({
     serviceTier: string | null,
     contextWindow: number | null,
   ) => Promise<boolean>;
-  onRememberEngine: (modelKey: string, engine: EngineId) => void;
+  onRememberPick: (modelKey: string, pick: ModelPickPatch) => void;
 }) {
   const toast = useToast();
   // 草稿不丢, here too: the empty state has no task yet, so its draft is kept
@@ -86,8 +86,8 @@ export function EmptyState({
    * answering if they change while this screen is open.
    */
   const [picked, setPicked] = useState<{ engine: EngineId; model: string | null } | null>(null);
-  // A level belongs to a model, so switching the model clears it and the
-  // model's own default applies again.
+  // What the model runs with belongs to the model: the picker hands up the
+  // ones it was last picked with, on arrival and on every switch.
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [serviceTier, setServiceTier] = useState<string | null>(null);
   const [contextWindow, setContextWindow] = useState<number | null>(null);
@@ -235,19 +235,17 @@ export function EmptyState({
           engine={engine}
           model={model ?? undefined}
           runMode={settings?.runMode}
-          modelEngines={settings?.modelEngines}
-          onRememberEngine={onRememberEngine}
-          onPickModel={(nextEngine, nextModel) => {
-            // Settling「没选模型」onto a concrete one is not a change of model:
-            // a 推理强度 the user already set stays. Switching away does reset
-            // both, because a window and an effort belong to the model they
-            // were picked for.
-            const previous = picked?.model ?? (picked == null ? (settings?.defaultModel ?? null) : null);
+          modelPicks={settings?.modelPicks}
+          onRememberPick={onRememberPick}
+          adoptRemembered
+          onPickModel={(nextEngine, nextModel, options) => {
             setPicked({ engine: nextEngine, model: nextModel ?? null });
-            if (previous != null && (previous !== nextModel || picked?.engine !== nextEngine)) {
-              setReasoningEffort(null);
-              setContextWindow(null);
-            }
+            // Settling「没选模型」onto a concrete one brings no options; the
+            // picker adopts that model's remembered ones by itself.
+            if (options == null) return;
+            setReasoningEffort(options.reasoningEffort);
+            setServiceTier(options.serviceTier);
+            setContextWindow(options.contextWindow);
           }}
           contextWindow={contextWindow ?? undefined}
           onPickContext={setContextWindow}

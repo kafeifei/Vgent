@@ -439,6 +439,34 @@ describe("createApp", () => {
     expect(((await again.json()) as Settings).allowlist).toEqual(["write"]);
   });
 
+  it("remembers per model what it was last picked with, one field at a time", async () => {
+    const dir = await tempDir();
+    const app = makeApp(dir);
+    const pick = async (body: unknown) => {
+      const response = await request(app, "/api/settings/model-picks", { method: "PUT", body: JSON.stringify(body) });
+      return { status: response.status, picks: response.ok ? ((await response.json()) as Settings).modelPicks : undefined };
+    };
+
+    expect((await pick({ modelKey: "codex/gpt-5.5", engine: "codex" })).picks).toEqual({ "codex/gpt-5.5": { engine: "codex" } });
+    await pick({ modelKey: "codex/gpt-5.5", reasoningEffort: "xhigh" });
+    await pick({ modelKey: "codex/gpt-5.5", serviceTier: "priority", contextWindow: 1_000_000 });
+    // Another model's pick leaves this one alone.
+    await pick({ modelKey: "anthropic/opus", reasoningEffort: "max" });
+    // `null` hands a field back to the model's own default.
+    expect((await pick({ modelKey: "codex/gpt-5.5", serviceTier: null })).picks).toEqual({
+      "codex/gpt-5.5": { engine: "codex", reasoningEffort: "xhigh", contextWindow: 1_000_000 },
+      "anthropic/opus": { reasoningEffort: "max" },
+    });
+    // Nothing left to remember drops the model.
+    expect((await pick({ modelKey: "anthropic/opus", reasoningEffort: null })).picks).toEqual({
+      "codex/gpt-5.5": { engine: "codex", reasoningEffort: "xhigh", contextWindow: 1_000_000 },
+    });
+
+    for (const bad of [{ engine: "codex" }, { modelKey: "x" }, { modelKey: "x", engine: "nope" }, { modelKey: "x", contextWindow: "1M" }]) {
+      expect((await pick(bad)).status).toBe(400);
+    }
+  });
+
   it("lets an empty thread change engine but locks one that already has messages", async () => {
     const dir = await tempDir();
     const app = makeApp(dir, createFakeEngine().factory);

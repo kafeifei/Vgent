@@ -56,6 +56,14 @@ export interface ProviderInputBody {
   agents: Partial<Record<ProviderAgent, ProviderAgentConfig>>;
 }
 
+/** A change to one model's remembered choices (`Settings.modelPicks`): `null` hands a field back to the model's own default. */
+export interface ModelPickPatch {
+  engine?: EngineId;
+  reasoningEffort?: string | null;
+  serviceTier?: string | null;
+  contextWindow?: number | null;
+}
+
 const TOKEN_KEY = "vgent.token";
 
 /**
@@ -455,9 +463,9 @@ export function createClient(token: string) {
      * now — it is clicked mid-turn, so it cannot go through the settings draft.
      * Taking one back off is an ordinary settings edit (`putSettings`).
      */
-    /** 记住上次选的引擎, for the model with this `modelKey`. */
-    rememberModelEngine: (modelKey: string, engine: EngineId) =>
-      api<Settings>("/settings/model-engines", token, { method: "PUT", json: { modelKey, engine } }),
+    /** 记住上次选择, for the model with this `modelKey`: only the fields named change. */
+    rememberModelPick: (modelKey: string, pick: ModelPickPatch) =>
+      api<Settings>("/settings/model-picks", token, { method: "PUT", json: { modelKey, ...pick } }),
     /** 提供商排序: the whole「已添加」list's order, by subscription or provider id. */
     putProviderOrder: (order: readonly string[]) => api<Settings>("/settings/provider-order", token, { method: "PUT", json: { order } }),
     allowTool: (tool: string) => api<Settings>("/settings/allowlist", token, { method: "POST", json: { tool } }),

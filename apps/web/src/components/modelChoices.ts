@@ -1,4 +1,4 @@
-import type { EngineDescriptor, EngineId, ModelEntry } from "@/lib/types";
+import type { EngineDescriptor, EngineId, ModelEntry, ModelPick } from "@/lib/types";
 
 /** How one engine names a model, and what it says about it. */
 export interface EngineRoute {
@@ -86,11 +86,38 @@ export function preferredRoute(
   choice: ModelChoice,
   engine: EngineId,
   engineLocked: boolean,
-  remembered: Readonly<Record<string, EngineId>> = {},
+  picks: Readonly<Record<string, ModelPick>> = {},
 ): EngineRoute | undefined {
   const on = (id: EngineId | undefined) => choice.routes.find((route) => route.engine === id);
   if (engineLocked) return on(engine);
-  return on(remembered[choice.key]) ?? on(defaultEngineOf(choice)) ?? choice.routes[0];
+  return on(picks[choice.key]?.engine) ?? on(defaultEngineOf(choice)) ?? choice.routes[0];
+}
+
+/** Everything a model runs with besides the engine, as a switch onto it sets them: `null` is the model's own default. */
+export interface OptionsSet {
+  reasoningEffort: string | null;
+  serviceTier: string | null;
+  contextWindow: number | null;
+}
+
+/**
+ * What a model runs with on this route, from what it was last picked with. A
+ * value the route does not offer is the model's default instead: a level or a
+ * window chosen under one engine must not reach one that lacks it.
+ */
+export function optionsOn(
+  entry: ModelEntry,
+  wanted: { reasoningEffort?: string | undefined; serviceTier?: string | undefined; contextWindow?: number | undefined } | undefined,
+): OptionsSet {
+  const level = wanted?.reasoningEffort;
+  const tier = wanted?.serviceTier;
+  const window = wanted?.contextWindow;
+  const own = entry.contextWindow ?? entry.contextOptions?.[0];
+  return {
+    reasoningEffort: level != null && entry.reasoningLevels?.includes(level) === true ? level : null,
+    serviceTier: tier != null && entry.serviceTiers?.some((offered) => offered.id === tier) === true ? tier : null,
+    contextWindow: window != null && window !== own && entry.contextOptions?.includes(window) === true ? window : null,
+  };
 }
 
 /** `272000` → `272K`, `1050000` → `1M`. */

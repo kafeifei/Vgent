@@ -361,12 +361,12 @@ export interface Settings {
    */
   autoUpgradeRuntimes?: boolean;
   /**
-   * The engine last chosen for a model, by `ModelEntry.modelKey`. The picker
-   * runs a model on it next time instead of on the model's default engine.
-   * On the server rather than in the browser because the desktop app's origin
-   * changes with its port.
+   * 记住上次选择, by `ModelEntry.modelKey`: the engine a model last ran on and
+   * what it ran with. Picking the model again brings them back, and a new task
+   * on it starts with them. On the server rather than in the browser because
+   * the desktop app's origin changes with its port.
    */
-  modelEngines?: Record<string, EngineId>;
+  modelPicks?: Record<string, ModelPick>;
   /**
    * 提供商排序: the settings page's「已添加」list as the user dragged it, by
    * subscription id (`codex-subscription`, `claude-subscription`) or provider id.
@@ -385,6 +385,18 @@ export interface Settings {
    */
   theme?: UiTheme;
   density?: UiDensity;
+}
+
+/**
+ * What one model was last picked with. An absent field is the model's own
+ * default: its default engine (see the web's `preferredRoute`), and whatever
+ * level, tier and window the catalog gives it.
+ */
+export interface ModelPick {
+  engine?: EngineId;
+  reasoningEffort?: string;
+  serviceTier?: string;
+  contextWindow?: number;
 }
 
 /** 主题: dark is the default and the app never follows the system. */

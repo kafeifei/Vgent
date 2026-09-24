@@ -33,6 +33,7 @@ export type {
   MessageCheckpoint,
   ModelCatalog,
   ModelEntry,
+  ModelPick,
   PlanDocument,
   PermissionMode,
   Project,

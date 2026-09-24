@@ -142,7 +142,7 @@ export {
 } from "./store/drafts.js";
 export { createPlanStore, MAX_PLAN_BYTES, type PlanDocument, type PlanStore } from "./store/plans.js";
 export { createProjectStore, type ProjectStore } from "./store/projects.js";
-export { createSettingsStore, DEFAULT_SETTINGS, migrateSettings, type SettingsPatch, type SettingsStore } from "./store/settings.js";
+export { createSettingsStore, DEFAULT_SETTINGS, mergeModelPick, migrateSettings, type ModelPickPatch, type SettingsPatch, type SettingsStore } from "./store/settings.js";
 export { createThreadStore, DEFAULT_THREAD_TITLE, summarize, type CreateThreadInput, type ThreadPatch, type ThreadStore } from "./store/threads.js";
 export {
   acquireInstanceLock,
@@ -173,6 +173,7 @@ export type {
   HarnessState,
   Logger,
   MessageCheckpoint,
+  ModelPick,
   PermissionMode,
   Project,
   QueuedMessage,

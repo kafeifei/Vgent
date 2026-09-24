@@ -302,6 +302,79 @@ describe.skipIf(!hasGit)("插话", () => {
 });
 
 describe.skipIf(!hasGit)("排队", () => {
+  it("空闲时接连追加两条也只启动一轮，下一条随后发出", async () => {
+    const dir = await tempDir();
+    const repo = await repoWithHistory();
+    const engine = createGatedEngine();
+    let entered!: () => void;
+    let releaseStart!: () => void;
+    const atStart = new Promise<void>((resolve) => { entered = resolve; });
+    const startGate = new Promise<void>((resolve) => { releaseStart = resolve; });
+    let starts = 0;
+    const app = makeApp(dir, {
+      ...engine.factory,
+      async ensureAvailable() {
+        starts += 1;
+        if (starts === 1) {
+          entered();
+          await startGate;
+        }
+      },
+    });
+    const thread = await setupThread(app, repo);
+
+    expect((await postJson(app, `/api/threads/${thread.id}/queue`, { text: "追加一" })).status).toBe(200);
+    await atStart;
+    expect((await postJson(app, `/api/threads/${thread.id}/queue`, { text: "追加二" })).status).toBe(200);
+    releaseStart();
+
+    await waitFor("第一条开始", () => engine.prompts.length >= 1);
+    await sleep(50);
+    expect(engine.prompts).toEqual(["追加一"]);
+    await engine.releaseTurn(1);
+    await engine.releaseTurn(2);
+    await waitForStatus(app, thread.id, "idle");
+    expect(engine.prompts).toEqual(["追加一", "追加二"]);
+    expect((await getThread(app, thread.id)).messages.filter((message) => message.role === "user")).toHaveLength(2);
+  });
+
+  it("直接续发启动时撞上追加，追加留在队列等待下一轮", async () => {
+    const dir = await tempDir();
+    const repo = await repoWithHistory();
+    const engine = createGatedEngine();
+    let entered!: () => void;
+    let releaseStart!: () => void;
+    const atStart = new Promise<void>((resolve) => { entered = resolve; });
+    const startGate = new Promise<void>((resolve) => { releaseStart = resolve; });
+    let starts = 0;
+    const app = makeApp(dir, {
+      ...engine.factory,
+      async ensureAvailable() {
+        starts += 1;
+        if (starts === 1) {
+          entered();
+          await startGate;
+        }
+      },
+    });
+    const thread = await setupThread(app, repo);
+
+    const direct = postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "直接续发")] });
+    await atStart;
+    expect((await postJson(app, `/api/threads/${thread.id}/queue`, { text: "追加消息" })).status).toBe(200);
+    releaseStart();
+
+    await waitFor("直接续发开始", () => engine.prompts.length >= 1);
+    await sleep(50);
+    expect(engine.prompts).toEqual(["直接续发"]);
+    expect((await getThread(app, thread.id)).queue?.map((item) => item.text)).toEqual(["追加消息"]);
+    await engine.releaseTurn(1);
+    await (await direct).text();
+    await engine.releaseTurn(2);
+    await waitForStatus(app, thread.id, "idle");
+    expect(engine.prompts).toEqual(["直接续发", "追加消息"]);
+  });
+
   it("运行中排两条，依次执行，各自带上自己的 checkpoint", async () => {
     const dir = await tempDir();
     const repo = await repoWithHistory();

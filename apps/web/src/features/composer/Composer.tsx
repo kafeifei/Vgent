@@ -188,6 +188,9 @@ export function Composer({
   const canSwitchMode = !live && planSupported;
   /** Leaving a non-default mode is allowed even where entering it no longer is. */
   const canLeaveMode = !live;
+  // A typed follow-up uses the same button as an idle send. Once the caller
+  // clears the accepted draft, a running task shows Stop again.
+  const showSend = !live || value.trim().length > 0;
 
   /**
    * Picking another engine's model can take Plan away. Falling back silently
@@ -623,20 +626,19 @@ export function Composer({
             )}
           />
           {big && <span className="flex-1" />}
-          {/* 运行中 this is 停止 and nothing else: Enter queues the message, so a
-              second button for it would only crowd the one that matters. */}
           <button
             type="button"
-            aria-label={live ? "停止" : "发送"}
+            aria-label={showSend ? (live ? "追加发送" : "发送") : "停止"}
+            title={showSend && live ? "追加发送（排队）" : undefined}
             onClick={() => {
-              if (live) onStop?.();
-              else onSubmit();
+              if (showSend) onSubmit();
+              else onStop?.();
               // The click took the focus; the next message is typed without reaching for the mouse.
               textarea.current?.focus();
             }}
             className="grid size-7 flex-none place-items-center rounded-full bg-fg text-bg hover:opacity-85"
           >
-            {live ? <Square className="size-sm fill-current" /> : <ArrowUp className="size-lg" />}
+            {showSend ? <ArrowUp className="size-lg" /> : <Square className="size-sm fill-current" />}
           </button>
         </div>
       </div>

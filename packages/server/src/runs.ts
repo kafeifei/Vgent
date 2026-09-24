@@ -232,6 +232,22 @@ export function createRunManager(options: {
   const log = options.log ?? silentLogger;
   const stopTimeoutMs = options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS;
   const runs = new Map<string, LiveRun>();
+  /** Serialize only turn startup, not the turn itself or queue writes. */
+  const starting = new Map<string, Promise<void>>();
+  const dispatching = new Map<string, Promise<void>>();
+  const locked = async <T>(locks: Map<string, Promise<void>>, threadId: string, work: () => Promise<T>): Promise<T> => {
+    const previous = locks.get(threadId);
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    locks.set(threadId, current);
+    await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+      if (locks.get(threadId) === current) locks.delete(threadId);
+    }
+  };
   /**
    * A finished run releases its slot before it stops its engine, so a crash in
    * cleanup can never wedge a thread. The next turn still has to wait for that
@@ -781,12 +797,7 @@ export function createRunManager(options: {
    * 「发送」 route. Everything a turn needs to be a real turn — the setup wait,
    * 每回合快照, Plan mode, the title, the cleared 收口 — lives here.
    */
-  const startTurn = async (threadId: string, uiMessages: unknown): Promise<ChunkHub> => {
-    const thread = await threads.get(threadId);
-    if (thread == null) throw new NotFoundError(`线程不存在: ${threadId}`, "thread_not_found");
-    if (thread.workspace?.reclaimed === true) {
-      throw new ConflictError("此任务的工作目录已回收，请先恢复后再运行", "workspace_reclaimed");
-    }
+  const startTurnUnlocked = async (threadId: string, uiMessages: unknown): Promise<ChunkHub> => {
     const active = runs.get(threadId);
     if (active != null) {
       if (!active.hub.closed) throw new ConflictError(`线程已在运行: ${threadId}`, "thread_running");
@@ -799,14 +810,21 @@ export function createRunManager(options: {
     // submit their first message the moment the task appeared. A *failed*
     // setup does not hold the turn back — the task simply runs without it.
     await whenSetupSettled(threadId);
+    // The previous turn's engine may still be persisting its resume state.
+    await finishing.get(threadId);
+    // Read after both waits: the preceding turn may have written its final
+    // assistant message while this follow-up was waiting for its slot.
+    const thread = await threads.get(threadId);
+    if (thread == null) throw new NotFoundError(`线程不存在: ${threadId}`, "thread_not_found");
+    if (thread.workspace?.reclaimed === true) {
+      throw new ConflictError("此任务的工作目录已回收，请先恢复后再运行", "workspace_reclaimed");
+    }
     const factory = registry[thread.engine];
     if (factory == null) throw new BadRequestError(`未知引擎: ${thread.engine}`, "unknown_engine");
     // Awaited: the probe can touch the filesystem (a login store, an
     // environment credential), and a rejected precondition has to become the
     // HTTP response instead of an unhandled rejection.
     await factory.ensureAvailable?.({ thread, dataDir });
-    // The previous turn's engine may still be persisting its resume state.
-    await finishing.get(threadId);
 
     let validated: UIMessage[];
     try {
@@ -851,6 +869,8 @@ export function createRunManager(options: {
 
     return run.hub;
   };
+  const startTurn = (threadId: string, uiMessages: unknown): Promise<ChunkHub> =>
+    locked(starting, threadId, () => startTurnUnlocked(threadId, uiMessages));
 
   /**
    * 排队 dispatch: pull the head of the queue out and run it as an ordinary
@@ -878,15 +898,12 @@ export function createRunManager(options: {
     }
   };
 
-  /** Threads with a dispatch scheduled or in flight — one at a time, per thread. */
-  const dispatching = new Set<string>();
-
   /**
    * The next queued message, if this thread is really free to take it. A turn
    * that stopped on an approval, a question, an error or 停止 is *not* over, so
    * its queue stays put until the user says otherwise.
    */
-  const dispatchQueue = async (threadId: string): Promise<void> => {
+  const dispatchQueue = (threadId: string): Promise<void> => locked(dispatching, threadId, async () => {
     if (options.queue == null || runs.has(threadId)) return;
     const thread = await threads.get(threadId).catch(() => undefined);
     if (thread == null || thread.archivedAt != null || thread.status !== "idle") return;
@@ -896,7 +913,7 @@ export function createRunManager(options: {
       return undefined;
     });
     if (item != null) log.info(`线程 ${threadId} 自动发出了一条排队消息`);
-  };
+  });
 
   /**
    * Scheduled, never called inline from a turn's `finally`: the slot has to be
@@ -904,10 +921,9 @@ export function createRunManager(options: {
    * queue of twenty would nest twenty turns deep.
    */
   const scheduleDispatch = (threadId: string): void => {
-    if (options.queue == null || dispatching.has(threadId)) return;
-    dispatching.add(threadId);
+    if (options.queue == null) return;
     const timer = setTimeout(() => {
-      void dispatchQueue(threadId).finally(() => dispatching.delete(threadId));
+      void dispatchQueue(threadId);
     }, 0);
     timer.unref?.();
   };

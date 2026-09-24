@@ -922,6 +922,70 @@ describe("run lifecycle", () => {
     for (let attempt = 0; attempt < 100 && runs.subscribe(thread.id) != null; attempt++) await sleep(10);
     expect(runs.subscribe(thread.id)).toBeUndefined();
   });
+
+  it("续发等待上一轮落盘后使用最新历史", async () => {
+    const dir = await tempDir();
+    const threads = createThreadStore(dir);
+    const projects = createProjectStore(dir);
+    const project = await projects.create({ repoPath: dir });
+    const thread = await threads.create({ projectId: project.id, engine: "claude-code" });
+    let releaseFinal!: () => void;
+    let finalizing!: () => void;
+    let captured!: () => void;
+    const atFinal = new Promise<void>((resolve) => { finalizing = resolve; });
+    const atCapture = new Promise<void>((resolve) => { captured = resolve; });
+    const finalGate = new Promise<void>((resolve) => { releaseFinal = resolve; });
+    let captureNextRead = false;
+    const gated = {
+      ...threads,
+      async get(id: string) {
+        const record = await threads.get(id);
+        if (captureNextRead) {
+          captureNextRead = false;
+          captured();
+        }
+        return record;
+      },
+      // A failed interim save must not let a fast follow-up drop the final reply.
+      async saveMessages() {},
+      async update(id: string, patch: Parameters<typeof threads.update>[1]) {
+        if (patch.status === "idle" && (await threads.get(id))?.messages.length === 1) {
+          finalizing();
+          await finalGate;
+        }
+        return threads.update(id, patch);
+      },
+    };
+    const engine = createApprovalEngine();
+    const runs = createRunManager({
+      threads: gated,
+      projects,
+      settings: createSettingsStore(dir),
+      registry: createEngineRegistry({ "claude-code": engine.factory }),
+      dataDir: dir,
+    });
+    const first = await runs.start(thread.id, [userMessage("u1", "第一轮")]);
+    for await (const _chunk of first.subscribe()) {}
+    await atFinal;
+
+    captureNextRead = true;
+    const next = runs.start(thread.id, [userMessage("u2", "续发")]);
+    // The old startup reads before the final write; the repaired startup
+    // waits for that write and therefore has no read to signal yet.
+    await Promise.race([atCapture, sleep(50)]);
+    releaseFinal();
+    const second = await next;
+    for await (const _chunk of second.subscribe()) {}
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const current = await threads.get(thread.id);
+      if (current?.status === "idle" && current.messages.length >= 3) break;
+      await sleep(10);
+    }
+
+    const record = await threads.get(thread.id);
+    expect(record?.messages.map((message) => message.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    await runs.stopAll();
+  });
 });
 
 /**

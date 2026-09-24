@@ -1126,8 +1126,12 @@ export function createApp(options: CreateAppOptions): VgentApp {
     assertNotArchived(thread);
     if (body?.interrupt === true && isLive(thread)) {
       // Checked before stopping: a stale item id must not cost the user their turn.
-      if (thread.queue?.some((item) => item.id === itemId) !== true) {
+      const item = thread.queue?.find((entry) => entry.id === itemId);
+      if (item == null) {
         throw new NotFoundError("这条排队消息不存在", "queue_item_not_found");
+      }
+      if (item.applied === true) {
+        throw new ConflictError("这条引导已进入当前回合", "steer_already_applied");
       }
       await runs.stop(id);
     } else {

@@ -133,8 +133,8 @@ function createGatedEngine(
     failOn?: string;
     instant?: boolean;
     unavailable?: () => boolean;
-    /** 插话: `push` takes it through `runner.steer`, `pull` reads the queue once its gate opens, `refuse` has `steer` throw. */
-    steer?: "push" | "pull" | "refuse";
+    /** 插话: `push` takes it through `runner.steer`, `applied` also reports delivery, `pull` reads the queue once its gate opens, `refuse` has `steer` throw. */
+    steer?: "push" | "applied" | "pull" | "refuse";
   } = {},
 ) {
   const prompts: string[] = [];
@@ -189,11 +189,12 @@ function createGatedEngine(
     async create(ctx): Promise<EngineRunner> {
       return {
         hasUnfinishedTurn: () => false,
-        ...(options.steer === "push" || options.steer === "refuse"
+        ...(options.steer === "push" || options.steer === "applied" || options.steer === "refuse"
           ? {
-              async steer(text: string) {
+              async steer(text: string, messageId: string) {
                 if (options.steer === "refuse") throw new Error("这一轮已经结束");
                 steered.push(text);
+                if (options.steer === "applied") await ctx.steerApplied(messageId);
               },
             }
           : {}),
@@ -275,6 +276,23 @@ describe.skipIf(!hasGit)("插话", () => {
     await engine.releaseTurn(2);
     await waitFor("新回合发出", () => engine.prompts.some((text) => text.endsWith("立刻改方向")));
     expect(engine.prompts).toHaveLength(2);
+  });
+
+  it("引导已送入当前回合后不再打断重发", async () => {
+    const engine = createGatedEngine({ steer: "applied" });
+    const app = makeApp(await tempDir(), engine.factory);
+    const thread = await setupThread(app, await repoWithHistory());
+    const first = postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "慢活")] });
+    await waitFor("第一轮开始", () => engine.prompts.length === 1);
+    const record = (await (await postJson(app, `/api/threads/${thread.id}/queue`, { text: "已读的引导" })).json()) as ThreadRecord;
+    const item = record.queue![0]!;
+    expect(item).toMatchObject({ accepted: true, applied: true });
+    const response = await postJson(app, `/api/threads/${thread.id}/queue/${item.id}/send`, { interrupt: true });
+    expect(response.status).toBe(409);
+    expect((await getThread(app, thread.id)).status).toBe("running");
+    expect(engine.prompts).toHaveLength(1);
+    await engine.releaseTurn(1);
+    await (await first).text();
   });
 
   it("推：引导被接收后保留可打断项，回合完成后清除且不另起一轮", async () => {

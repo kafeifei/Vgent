@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 
 /**
  * Pending steer and next-turn queue items stay visible above the composer.
- * A steer can be interrupted and resent until the current turn finishes.
+ * A steer can be interrupted and sent as a new turn until the agent reads it.
  */
 export function QueueStrip({
   items,
@@ -93,7 +93,7 @@ export function QueueStrip({
               <span>发送</span>
             </button>
           )}
-          {onInterrupt != null && editing?.id !== item.id && (item.mode === "steer" || index === 0) && (
+          {onInterrupt != null && editing?.id !== item.id && item.applied !== true && (item.mode === "steer" || index === 0) && (
             <button
               type="button"
               title="停下当前这一轮，马上发这条"
@@ -101,7 +101,7 @@ export function QueueStrip({
               className="inline-flex h-lg flex-none items-center gap-3xs rounded-sm px-2xs text-fg-muted text-xs hover:bg-bg-active hover:text-fg"
             >
               <Send className="size-sm" />
-              <span>{item.applied === true ? "打断并重发" : "打断并发送"}</span>
+              <span>打断并发送</span>
             </button>
           )}
           {item.mode !== "steer" && onSteer != null && onInterrupt != null && (

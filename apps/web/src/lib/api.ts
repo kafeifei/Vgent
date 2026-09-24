@@ -1,4 +1,5 @@
 import type {
+  RemoteAccessState,
   HarnessEngineId,
   HarnessRuntimeStatus,
   ChangesResponse,
@@ -66,6 +67,12 @@ export const UNAUTHORIZED_EVENT = "vgent:unauthorized";
 
 /** Reads `#token=…` (it wins over the stored one), persists it, strips the URL. */
 export function bootstrapToken(): string | null {
+  // The private relay has already authenticated this browser as the owner.
+  // This public marker never grants access to the local listener.
+  if (window.location.protocol === "https:" && window.location.hostname.endsWith(".devtunnels.ms")) {
+    setToken("vgent-remote-session");
+    return "vgent-remote-session";
+  }
   const match = /[#&]token=([^&]*)/.exec(window.location.hash);
   if (match?.[1] != null) {
     sessionStorage.setItem(TOKEN_KEY, decodeURIComponent(match[1]));
@@ -180,6 +187,10 @@ async function apiBlob(path: string, token: string): Promise<Blob> {
 export function createClient(token: string) {
   return {
     token,
+    remoteSession: token === "vgent-remote-session",
+    getRemote: () => api<RemoteAccessState>("/remote", token),
+    remoteAction: (action: "signIn" | "cancelSignIn" | "signOut" | "refresh" | "setEnabled" | "rename", input: { enabled?: boolean; name?: string } = {}) =>
+      api<RemoteAccessState>("/remote", token, { method: "POST", json: { action, ...input } }),
     health: () => api<{ ok: boolean; version: string }>("/health", token),
 
     listProjects: () => api<{ projects: Project[] }>("/projects", token).then((body) => body.projects),
@@ -261,8 +272,21 @@ export function createClient(token: string) {
     /** The file itself; `path` may be absolute, as long as it is inside the task's directory. */
     getFileBlob: (threadId: string, path: string) => apiBlob(`/threads/${threadId}/files/raw?path=${encodeURIComponent(path)}`, token),
     /** 「下载」: a copy in the Downloads folder, of a file of the task or of a drawing that exists only in a reply. */
-    downloadFile: (threadId: string, content: { path: string } | { svg: string }) =>
-      api<{ savedTo: string }>(`/threads/${threadId}/files/download`, token, { method: "POST", json: content }),
+    downloadFile: async (threadId: string, content: { path: string } | { svg: string }) => {
+      if (token !== "vgent-remote-session") return api<{ savedTo: string }>(`/threads/${threadId}/files/download`, token, { method: "POST", json: content });
+      const blob = "path" in content
+        ? await apiBlob(`/threads/${threadId}/files/raw?path=${encodeURIComponent(content.path)}`, token)
+        : new Blob([content.svg], { type: "image/svg+xml" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "path" in content ? content.path.split(/[\\/]/).pop() || "download" : "image.svg";
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      return { savedTo: "浏览器下载" };
+    },
     /** Of these paths — as tools and replies wrote them — the ones that are this task's files right now. */
     resolveFiles: (threadId: string, paths: string[]) =>
       api<{ files: ResolvedFile[] }>(`/threads/${threadId}/files/resolve`, token, { method: "POST", json: { paths } }).then((body) => body.files),

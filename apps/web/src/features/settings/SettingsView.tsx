@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Bot, GitBranch, Palette, Pencil, Plug, Plus, Settings2, Trash2, Wrench } from "lucide-react";
+import { Globe, Bot, GitBranch, Palette, Pencil, Plug, Plus, Settings2, Trash2, Wrench } from "lucide-react";
+import { RemotePage } from "./RemotePage";
 import { RuntimesSection } from "./RuntimesSection";
 import { ApiError, type ApiClient } from "@/lib/api";
 import { useToast } from "@/lib/toast";
@@ -14,7 +15,7 @@ import { INPUT_CLASS, PILL, TEXTAREA_CLASS } from "./styles";
 import { isImeKeyEvent } from "@/lib/ime";
 
 /** The pages of 设置, in the order of the left-hand list. */
-export type SettingsTab = "general" | "appearance" | "agents" | "providers" | "mcp" | "worktrees";
+export type SettingsTab = "general" | "appearance" | "agents" | "providers" | "mcp" | "worktrees" | "remote";
 
 const TABS: ReadonlyArray<{ id: SettingsTab; label: string; icon: typeof Bot }> = [
   { id: "general", label: "通用", icon: Settings2 },
@@ -22,6 +23,7 @@ const TABS: ReadonlyArray<{ id: SettingsTab; label: string; icon: typeof Bot }> 
   { id: "agents", label: "Agents", icon: Bot },
   { id: "providers", label: "模型提供商", icon: Plug },
   { id: "mcp", label: "工具与 MCP", icon: Wrench },
+  { id: "remote", label: "远程控制", icon: Globe },
   { id: "worktrees", label: "Worktrees", icon: GitBranch },
 ];
 
@@ -297,6 +299,8 @@ export function SettingsView({
         />
       </SettingsPage>
     ),
+
+    remote: <RemotePage client={client} />,
 
     providers: <ProvidersPage client={client} engines={engines} />,
 

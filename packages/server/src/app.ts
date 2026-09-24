@@ -1,3 +1,5 @@
+import { registerRemoteRoutes } from "./remote/routes.js";
+import type { RemoteService } from "./remote/service.js";
 import { createClaudeLogin } from "./claude-login.js";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -94,6 +96,7 @@ const PERMISSION_MODES: readonly PermissionMode[] = ["allow-reads", "allow-edits
 export interface CreateAppOptions {
   dataDir: string;
   token: string;
+  remote?: RemoteService;
   registry?: EngineRegistry;
   /** The `git diff` backend behind the changes routes. Tests inject a shorter-fused one. */
   git?: Git;
@@ -465,6 +468,8 @@ export function createApp(options: CreateAppOptions): VgentApp {
   });
 
   app.get("/api/health", (c) => c.json({ ok: true, version: VGENT_SERVER_VERSION }));
+
+  registerRemoteRoutes(app, options.remote);
 
   // --- projects ---------------------------------------------------------
 
@@ -1636,7 +1641,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
       for (const timer of runtimeTimers) clearTimeout(timer);
       for (const unsubscribe of unsubscribes) unsubscribe();
       clients.clear();
-      await runs.stopAll();
+      await Promise.all([runs.stopAll(), options.remote?.stop()]);
     },
   };
 }

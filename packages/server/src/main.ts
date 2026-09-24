@@ -1,3 +1,4 @@
+import { createRemoteService, type RemoteService } from "./remote/service.js";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -142,9 +143,23 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   const releaseLock = await acquireInstanceLock(dataDir);
   try {
     const token = randomBytes(32).toString("hex");
+    let localUrl: string | undefined;
+    let remote: RemoteService | undefined;
+    if (webDist != null) {
+      try {
+        remote = createRemoteService({
+          dataDir,
+          backend: async () => {
+            if (!localUrl) throw new Error("Vgent server is not listening");
+            return { url: localUrl, token };
+          },
+        });
+      } catch { console.warn("远程控制配置无法读取，本机服务继续运行"); }
+    }
     const { app, projects, shutdown } = createApp({
       dataDir,
       token,
+      ...(remote != null ? { remote } : {}),
       log: consoleLogger,
       ...(webDist != null ? { webDist } : {}),
       // 「下载」 goes to the user's Downloads folder unless told otherwise — a scratch instance is told otherwise.
@@ -164,6 +179,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port }, (info) => resolve_(info.port));
     });
     const url = `http://127.0.0.1:${boundPort}`;
+    localUrl = url;
 
     await writeJsonAtomic(
       connectionPath,
@@ -174,6 +190,9 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     console.log(`vgent server listening on ${url}  (token in ${connectionPath})`);
     const webUrl = `${webDist == null ? DEV_WEB_URL : url}/#token=${token}`;
     if (!desktop) console.log(`web: ${webUrl}`);
+
+    // Restore remote access only after the local listener and token are ready.
+    void remote?.initialize();
 
     // `pnpm start` should need zero manual input: register whatever repo the
     // caller pointed at (or is standing inside) as a project up front.

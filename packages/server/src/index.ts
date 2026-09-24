@@ -209,3 +209,5 @@ export { createCatalogStore, type CatalogSnapshot, type CatalogSource, type Cata
 export type { HarnessEngineId, HarnessRuntimeStatus } from "./harness-runtime.js";
 
 export type { ClaudeLoginAttempt } from "./claude-login.js";
+
+export type { RemoteAccessState, RemoteDevice } from "./remote/types.js";

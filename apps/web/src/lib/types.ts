@@ -130,3 +130,5 @@ export const LIVE_STATUSES = ["running", "awaiting-approval", "awaiting-input"] 
 export const LIVE_REASON = "任务还在进行中（等待审批或回答），先处理或停止";
 
 export type UIMessagePart = UIMessage["parts"][number];
+
+export type { RemoteAccessState, RemoteDevice } from "@vgent/server";

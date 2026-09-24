@@ -295,7 +295,7 @@ function ModelList({
         className="block w-full border-border border-b bg-transparent px-xs py-2xs text-fg text-sm outline-none placeholder:text-fg-faint"
       />
       {/* Every model of every source in one list; it has to be able to scroll. */}
-      <CascadeLevel nodes={nodes} className="max-h-[calc(var(--spacing-xl)*14)] overflow-y-auto pt-2xs" />
+      <CascadeLevel nodes={nodes} revealSelected className="max-h-[calc(var(--spacing-xl)*14)] overflow-y-auto pt-2xs" />
       {nodes.length === 0 && (
         <div className="px-xs py-2xs text-fg-faint text-sm">{loading ? "加载中…" : needle === "" ? "没有可用的模型" : "没有匹配的模型"}</div>
       )}

@@ -38,14 +38,38 @@ const PANEL = "rounded-md bg-bg-elevated p-2xs shadow-popover";
  * scrolling list never clips it; it stays a DOM descendant of the popover panel,
  * which is what keeps the popover's outside-click from closing it.
  */
-export function CascadeLevel({ nodes, className }: { nodes: readonly CascadeNode[]; className?: string }) {
+export function CascadeLevel({
+  nodes,
+  className,
+  revealSelected = false,
+}: {
+  nodes: readonly CascadeNode[];
+  className?: string;
+  /** A list that scrolls opens on its selected row, not at the top — once, so searching does not jump it back. */
+  revealSelected?: boolean;
+}) {
   const [active, setActive] = useState<{ key: string; rect: DOMRect } | null>(null);
+  const list = useRef<HTMLDivElement | null>(null);
+  const revealed = useRef(false);
+  const selectedKey = nodes.find((node) => node.selected === true)?.key;
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancel = () => {
     if (timer.current != null) clearTimeout(timer.current);
     timer.current = null;
   };
   useEffect(() => cancel, []);
+
+  // The catalog may still be loading when the menu opens: reveal the row the first time there is one.
+  useLayoutEffect(() => {
+    const container = list.current;
+    if (!revealSelected || revealed.current || selectedKey == null || container == null) return;
+    const row = container.querySelector<HTMLElement>("[data-selected]");
+    if (row == null) return;
+    revealed.current = true;
+    const box = container.getBoundingClientRect();
+    const at = row.getBoundingClientRect();
+    container.scrollTop += at.top - box.top - (box.height - at.height) / 2;
+  }, [revealSelected, selectedKey]);
 
   const submenu = (node: CascadeNode): boolean => node.children != null || node.content != null;
 
@@ -61,7 +85,7 @@ export function CascadeLevel({ nodes, className }: { nodes: readonly CascadeNode
   return (
     <>
       {/* The anchor rect is taken once, so a list that scrolls lets go of its submenu rather than leave it floating. */}
-      <div className={className} onScroll={() => setActive(null)}>
+      <div ref={list} className={className} onScroll={() => setActive(null)}>
         {nodes.map((node, at) => (
           <Fragment key={node.key}>
             {node.separated === true && at > 0 && <div aria-hidden className="my-2xs h-px bg-border" />}
@@ -76,6 +100,7 @@ export function CascadeLevel({ nodes, className }: { nodes: readonly CascadeNode
               aria-haspopup={submenu(node) ? "menu" : undefined}
               aria-expanded={submenu(node) ? active?.key === node.key : undefined}
               {...(node.title != null ? { title: node.title } : {})}
+              {...(node.selected === true ? { "data-selected": "" } : {})}
               onMouseEnter={(event) => activate(node, event.currentTarget, false)}
               onMouseLeave={cancel}
               onClick={(event) => {

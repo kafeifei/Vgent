@@ -399,6 +399,7 @@ export function createClient(token: string) {
     startClaudeLogin: () => api<ClaudeLoginAttempt>("/subscriptions/claude-subscription/login", token, { method: "POST" }),
     getClaudeLogin: () => api<ClaudeLoginAttempt>("/subscriptions/claude-subscription/login", token),
     cancelClaudeLogin: () => api<ClaudeLoginAttempt>("/subscriptions/claude-subscription/login", token, { method: "DELETE" }),
+    logoutSubscription: (id: SubscriptionId) => api<{ ok: boolean }>(`/subscriptions/${encodeURIComponent(id)}/logout`, token, { method: "POST" }),
     listSubscriptions: (refresh = false) =>
       api<{ subscriptions: SubscriptionAccount[] }>(`/subscriptions${refresh ? "?refresh=1" : ""}`, token).then((body) => body.subscriptions),
     /** One switch of a subscription's model table, or a column of them. Answers with the table as it now stands. */

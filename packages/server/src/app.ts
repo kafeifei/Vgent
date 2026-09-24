@@ -39,6 +39,7 @@ import { asIntegrateAction, changeStatsOf, createIntegrator, taskTarget, type In
 import { contextOptionsFor, createModelCatalog, type ModelCatalog, type ModelEntry } from "./models.js";
 import { reasoningFor } from "./reasoning.js";
 import { SUBSCRIPTION_IDS, createSubscriptionService, markHidden, withHiddenModels, type ClaudeLoginStatus, type SubscriptionId } from "./subscriptions.js";
+import { logoutSubscription } from "./subscription-logout.js";
 import { createQueueStore, readQueueText } from "./queue.js";
 import { asRestoreTarget, lastTurnPair, planRestore, type RestoreTarget } from "./restore.js";
 import { createRunManager, recoverInterruptedThreads } from "./runs.js";
@@ -115,6 +116,8 @@ export interface CreateAppOptions {
   catalogFetch?: typeof globalThis.fetch;
   /** Whether Claude is signed in on this machine. Tests answer; production asks the `claude` CLI. */
   probeClaudeLogin?: () => Promise<ClaudeLoginStatus>;
+  /** Test seam; production asks the vendor CLI to sign out. */
+  logoutSubscription?: (id: SubscriptionId) => Promise<void>;
   /**
    * The keeper of Claude Code's and Codex's CLI + SDK. Tests pass a fake; left
    * unset the real one is built, but it only checks and upgrades on its own
@@ -1490,6 +1493,19 @@ export function createApp(options: CreateAppOptions): VgentApp {
   app.delete("/api/subscriptions/claude-subscription/login", (c) => {
     claudeLogin.cancel();
     return c.json(claudeLogin.status());
+  });
+
+  app.post("/api/subscriptions/:id/logout", async (c) => {
+    const id = c.req.param("id") as SubscriptionId;
+    if (!SUBSCRIPTION_IDS.includes(id)) throw new NotFoundError(`没有订阅 ${JSON.stringify(id)}`, "subscription_not_found");
+    if (id === "claude-subscription") claudeLogin.cancel();
+    try {
+      await (options.logoutSubscription ?? logoutSubscription)(id);
+    } catch (cause) {
+      const name = id === "claude-subscription" ? "Claude" : "Codex";
+      throw new VgentServerError({ message: `${name} 退出失败，请检查命令行工具后重试`, status: 502, code: "subscription_logout_failed" });
+    }
+    return c.json({ ok: true });
   });
 
   // One switch, or a whole column of them. Addressed by the table's row ids; the

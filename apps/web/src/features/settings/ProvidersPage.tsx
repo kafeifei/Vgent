@@ -573,6 +573,43 @@ function ClaudeLoginDialog({ client, onRecheck, onClose }: { client: ApiClient; 
   );
 }
 
+function ConfirmActionDialog({ title, message, confirmLabel, onConfirm, onClose }: {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  onConfirm: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const confirm = async () => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await onConfirm();
+      onClose();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Dialog title={title} onClose={() => { if (!busy) onClose(); }}>
+      <div className="flex flex-col gap-md px-lg py-md">
+        <p className="text-fg-muted text-md">{message}</p>
+        {error != null && <p className="text-danger text-sm">{error}</p>}
+        <div className="flex justify-end gap-xs">
+          <button type="button" disabled={busy} onClick={onClose} className={BUTTON_GHOST}>取消</button>
+          <button type="button" disabled={busy} onClick={() => void confirm()} className={cn(BUTTON_GHOST, "text-danger hover:bg-danger-bg hover:text-danger")}>
+            {busy ? "处理中…" : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
 type Open =
   | { kind: "login"; id: SubscriptionId }
   | { kind: "subscription-models"; id: SubscriptionId }
@@ -580,7 +617,9 @@ type Open =
   | { kind: "custom" }
   | { kind: "browse" }
   | { kind: "edit"; provider: RedactedProviderConfig }
-  | { kind: "models"; providerId: string };
+  | { kind: "models"; providerId: string }
+  | { kind: "disconnect"; providerId: string }
+  | { kind: "logout"; id: SubscriptionId };
 
 /**
  * 模型提供商: what is connected, the popular ones a click away, and everything
@@ -644,15 +683,20 @@ export function ProvidersPage({
     onChanged?.();
   };
 
-  const disconnect = (provider: RedactedProviderConfig) => {
-    void client
-      .deleteProvider(provider.id)
-      .then(() => {
-        setProviders((current) => current.filter((entry) => entry.id !== provider.id));
-        onChanged?.();
-        toast(`已断开 ${provider.name}`);
-      })
-      .catch((cause: Error) => toast(cause.message));
+  const disconnect = async (provider: RedactedProviderConfig) => {
+    await client.deleteProvider(provider.id);
+    setProviders((current) => current.filter((entry) => entry.id !== provider.id));
+    onChanged?.();
+    toast(`已断开 ${provider.name}`);
+  };
+
+  const logout = async (account: SubscriptionAccount) => {
+    await client.logoutSubscription(account.id);
+    const next = await reloadSubscriptions(false);
+    if (next.some((entry) => entry.id === account.id && isSignedIn(entry))) {
+      throw new Error("退出命令已结束，但仍检测到登录；请检查是否有其他客户端重新登录。");
+    }
+    toast(`已退出 ${account.name}`);
   };
 
   const reloadCatalog = () => {
@@ -670,9 +714,11 @@ export function ProvidersPage({
     [catalog, connectedCatalogIds],
   );
   const modelsOf = open?.kind === "models" ? providers.find((provider) => provider.id === open.providerId) : undefined;
+  const disconnectOf = open?.kind === "disconnect" ? providers.find((provider) => provider.id === open.providerId) : undefined;
   const subscriptionOf = (id: SubscriptionId) => subscriptions.find((account) => account.id === id);
   const loginOf = open?.kind === "login" ? subscriptionOf(open.id) : undefined;
   const subscriptionModelsOf = open?.kind === "subscription-models" ? subscriptionOf(open.id) : undefined;
+  const logoutOf = open?.kind === "logout" ? subscriptionOf(open.id) : undefined;
   const close = () => setOpen(undefined);
 
   return (
@@ -693,6 +739,11 @@ export function ProvidersPage({
             <button type="button" onClick={() => setOpen({ kind: isSignedIn(account) ? "subscription-models" : "login", id: account.id })} className={BUTTON_SECONDARY}>
               {isSignedIn(account) ? "选模型" : "登录"}
             </button>
+            {account.loggedIn !== false && (
+              <button type="button" onClick={() => setOpen({ kind: "logout", id: account.id })} className={BUTTON_GHOST}>
+                退出
+              </button>
+            )}
           </SettingsRow>
         ))}
         {providers.map((provider) => (
@@ -714,7 +765,7 @@ export function ProvidersPage({
             <button type="button" onClick={() => setOpen({ kind: "edit", provider })} className={BUTTON_GHOST}>
               连接设置
             </button>
-            <button type="button" onClick={() => disconnect(provider)} className={cn(BUTTON_GHOST, "hover:bg-danger-bg hover:text-danger")}>
+            <button type="button" onClick={() => setOpen({ kind: "disconnect", providerId: provider.id })} className={cn(BUTTON_GHOST, "hover:bg-danger-bg hover:text-danger")}>
               断开
             </button>
           </SettingsRow>
@@ -757,6 +808,25 @@ export function ProvidersPage({
 
       {unusable.length > 0 && <p className="text-fg-faint text-sm">{unusable.map((engine) => engine.label).join("、")} 只能跑在它自己的订阅上，接不了要 key 的提供商。</p>}
       {loadError != null && <p className="text-danger text-sm">{loadError}</p>}
+
+      {logoutOf != null && (
+        <ConfirmActionDialog
+          title={`退出 ${logoutOf.name}`}
+          message={`会退出这台机器上的 ${logoutOf.id === "claude-subscription" ? "Claude" : "Codex"} 登录。其他使用同一登录态的应用和正在运行的任务也可能受到影响。`}
+          confirmLabel="退出"
+          onConfirm={() => logout(logoutOf)}
+          onClose={close}
+        />
+      )}
+      {disconnectOf != null && (
+        <ConfirmActionDialog
+          title={`断开 ${disconnectOf.name}`}
+          message={`断开后会删除 ${disconnectOf.name} 的连接设置、已保存的 API key 和模型开关；重新连接需要重新填写 key。`}
+          confirmLabel="断开"
+          onConfirm={() => disconnect(disconnectOf)}
+          onClose={close}
+        />
+      )}
 
       {loginOf?.id === "claude-subscription" && (
         <ClaudeLoginDialog client={client} onClose={close} onRecheck={() => reloadSubscriptions(true).then((next) => {

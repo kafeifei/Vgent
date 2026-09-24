@@ -236,6 +236,23 @@ describe("provider routes", () => {
   });
 });
 
+describe("subscription logout route", () => {
+  it("calls only the selected vendor after an authenticated request", async () => {
+    const ids: string[] = [];
+    const app = createApp({
+      dataDir: await tempDir(), token: TOKEN, catalogFetch: offlineCatalog,
+      logoutSubscription: async (id) => { ids.push(id); },
+    });
+    apps.push(app);
+    expect((await request(app, "/api/subscriptions/claude-subscription/logout", { method: "POST" })).status).toBe(200);
+    expect((await request(app, "/api/subscriptions/codex-subscription/logout", { method: "POST" })).status).toBe(200);
+    expect((await request(app, "/api/subscriptions/unknown/logout", { method: "POST" })).status).toBe(404);
+    expect(ids).toEqual(["claude-subscription", "codex-subscription"]);
+    expect((await app.app.request(`${ORIGIN}/api/subscriptions/claude-subscription/logout`, { method: "POST" })).status).toBe(401);
+    expect(ids).toHaveLength(2);
+  });
+});
+
 describe("provider catalog", () => {
   const MODELS_DEV = {
     deepseek: {

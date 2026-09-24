@@ -25,6 +25,11 @@ export type ApprovalDecision = "not-applicable" | "user-approval";
  * — never the user's code — so asking for each note would be pure friction.
  */
 const READ_ONLY_TOOLS = new Set(["read", "grep", "glob", "explore", "toolSearch", "updatePlan", "memory"]);
+const CUA_READ_ONLY_TOOLS = new Set([
+  "cua__list_apps", "cua__list_windows", "cua__get_window_state", "cua__get_accessibility_tree",
+  "cua__get_desktop_state", "cua__get_screen_size", "cua__get_cursor_position",
+  "cua__get_browser_state", "cua__verify_state", "cua__zoom",
+]);
 
 /**
  * Tools that only surface a question to the human and have no `execute` of
@@ -66,7 +71,7 @@ export function decideApproval({
 }): ApprovalDecision {
   if (mode === "allow-all") return "not-applicable";
   if (isAllowlisted({ toolName, input, allowlist: alwaysAllow })) return "not-applicable";
-  if (READ_ONLY_TOOLS.has(toolName) || HUMAN_INPUT_TOOLS.has(toolName)) return "not-applicable";
+  if (READ_ONLY_TOOLS.has(toolName) || CUA_READ_ONLY_TOOLS.has(toolName) || HUMAN_INPUT_TOOLS.has(toolName)) return "not-applicable";
 
   if (EDIT_TOOLS.has(toolName)) {
     return mode === "allow-edits" ? "not-applicable" : "user-approval";

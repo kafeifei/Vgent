@@ -1,7 +1,9 @@
 import { codexProviderEnv, type CodexEngineOptions } from "@vgent/engines";
 import { describeSubscriptionAuth, splitProviderModelSpec, type ProviderConfig } from "@vgent/providers";
 import { BadRequestError, EngineUnavailableError } from "../errors.js";
+import { CUA_TOOLS, requireCuaDriver } from "../computer-use/cua.js";
 import { createProviderStore } from "../store/providers.js";
+import { createSettingsStore } from "../store/settings.js";
 import type { EngineDescriptor } from "./capabilities.js";
 import { createNativeCodexRunner } from "./codex-native.js";
 import { effectiveReasoningLevel } from "../reasoning.js";
@@ -91,6 +93,8 @@ export function createCodexEngineFactory(): EngineFactory {
     },
 
     async create(ctx: EngineContext): Promise<EngineRunner> {
+      const settings = await createSettingsStore(ctx.dataDir, ctx.log).get();
+      const cuaBinary = settings.computerUseProvider === "cua" ? await requireCuaDriver() : undefined;
       const reasoningEffort = asCodexEffort(effectiveReasoningLevel(ctx.thread.reasoningEffort));
       const route = codexProviderRoute(ctx.thread.model, await createProviderStore(ctx.dataDir, ctx.log).list());
       const model = route?.model ?? ctx.thread.model;
@@ -102,11 +106,12 @@ export function createCodexEngineFactory(): EngineFactory {
       // whatever the provider's model row said.
       const window = ctx.thread.contextWindow;
       const codexConfig =
-        route?.codexConfig != null || tier != null || window != null
+        route?.codexConfig != null || tier != null || window != null || cuaBinary != null
           ? {
               ...route?.codexConfig,
               ...(window != null ? { model_context_window: window } : {}),
               ...(tier != null ? { service_tier: tier } : {}),
+              ...(cuaBinary != null ? { mcp_servers: { "cua-driver": { command: cuaBinary, args: ["mcp"], enabled_tools: [...CUA_TOOLS] } } } : {}),
             }
           : undefined;
       return createNativeCodexRunner(ctx, {

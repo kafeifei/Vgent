@@ -4,6 +4,8 @@ import type {
   HarnessRuntimeStatus,
   ChangesResponse,
   ChangesScope,
+  CuaStatus,
+  CuaTestResult,
   CheckpointPreview,
   CheckpointRestore,
   EngineDescriptor,
@@ -457,6 +459,10 @@ export function createClient(token: string) {
 
     getSettings: () => api<Settings>("/settings", token),
     putSettings: (patch: Partial<Settings>) => api<Settings>("/settings", token, { method: "PUT", json: patch }),
+    getCuaStatus: () => api<CuaStatus>("/computer-use/cua/status", token),
+    startCuaDriver: () => api<CuaStatus>("/computer-use/cua/start", token, { method: "POST" }),
+    requestCuaPermissions: () => api<CuaStatus>("/computer-use/cua/permissions", token, { method: "POST" }),
+    testCuaDriver: () => api<CuaTestResult>("/computer-use/cua/test", token, { method: "POST" }),
 
     /**
      * 「一直允许」 on an approval card: one tool onto the global allowlist, right

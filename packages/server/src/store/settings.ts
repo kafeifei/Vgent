@@ -32,6 +32,7 @@ export interface SettingsPatch {
   /** 自动升级引擎运行时. `undefined` drops the field, which is the same as on. */
   autoUpgradeRuntimes?: boolean | undefined;
   mcpServers?: McpServerConfig[] | undefined;
+  computerUseProvider?: "cua" | undefined;
   worktreeMaxCount?: number | undefined;
   /** 界面偏好. `undefined` puts the built-in default back. */
   theme?: UiTheme | undefined;
@@ -119,7 +120,7 @@ const isSettings = (value: unknown): value is Settings =>
  * engine-per-model map (`modelEngines`) became part of `modelPicks` the same way.
  */
 export function migrateSettings(stored: Settings & { defaultPermissionMode?: PermissionMode; modelEngines?: unknown }): Settings {
-  const { defaultPermissionMode, hiddenModels, providerOrder, modelEngines, modelPicks, ...rest } = stored;
+  const { defaultPermissionMode, hiddenModels, providerOrder, modelEngines, modelPicks, computerUseProvider, ...rest } = stored;
   // Read on every model listing, so a hand-edited file must not be able to make it throw.
   const hidden = Object.entries(typeof hiddenModels === "object" && hiddenModels !== null ? hiddenModels : {}).flatMap(([engine, ids]) =>
     Array.isArray(ids) ? [[engine, ids.filter((id) => typeof id === "string")] as const] : [],
@@ -127,6 +128,7 @@ export function migrateSettings(stored: Settings & { defaultPermissionMode?: Per
   const picks = readModelPicks(modelPicks, modelEngines);
   return {
     ...rest,
+    ...(computerUseProvider === "cua" ? { computerUseProvider } : {}),
     ...(hidden.length > 0 ? { hiddenModels: Object.fromEntries(hidden) } : {}),
     ...(Array.isArray(providerOrder) ? { providerOrder: providerOrder.filter((id) => typeof id === "string") } : {}),
     ...(Object.keys(picks).length > 0 ? { modelPicks: picks } : {}),
@@ -163,6 +165,10 @@ export function createSettingsStore(dataDir: string, log: Logger = silentLogger)
     if ("mcpServers" in patch) {
       if (patch.mcpServers == null || patch.mcpServers.length === 0) delete next.mcpServers;
       else next.mcpServers = patch.mcpServers;
+    }
+    if ("computerUseProvider" in patch) {
+      if (patch.computerUseProvider == null) delete next.computerUseProvider;
+      else next.computerUseProvider = patch.computerUseProvider;
     }
     if ("defaultModel" in patch) {
       if (patch.defaultModel == null) delete next.defaultModel;

@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { CODEX_SUBSCRIPTION_PREFIX, connectMcpServers, createVgentEngine, loadSkillsIndex } from "@vgent/engine";
+import { cuaMcpConfig, onlyCuaTools, requireCuaDriver } from "../computer-use/cua.js";
 import { describeModelSpec, describeSubscriptionAuth } from "@vgent/providers";
 import type { LanguageModel, TextStreamPart, ToolSet } from "ai";
 import { BadRequestError, EngineUnavailableError } from "../errors.js";
@@ -106,63 +107,77 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
       // Both are re-read per turn, so editing settings or adding a skill takes
       // effect on the next message instead of on the next server restart.
       const settings = await createSettingsStore(ctx.dataDir, ctx.log).get();
-      const mcp = await connectMcpServers(settings.mcpServers ?? [], { log: ctx.log });
+      const cuaBinary = settings.computerUseProvider === "cua" ? await requireCuaDriver() : undefined;
       const providers = await createProviderStore(ctx.dataDir, ctx.log).list();
       const skills = await loadSkillsIndex([
         join(ctx.project.repoPath, ".claude", "skills"),
         join(homedir(), ".vgent", "skills"),
       ]);
-
-      const model = override ?? ctx.thread.model ?? DEFAULT_VGENT_MODEL;
-      const { workspace } = ctx.thread;
-
-      const engine = createVgentEngine({
-        model,
-        providers,
-        repoPath: ctx.project.repoPath,
-        permissionMode: ctx.permissionMode,
-        ...(ctx.alwaysAllow.length > 0 ? { alwaysAllow: ctx.alwaysAllow } : {}),
-        // 计划回合只读：the engine drops every writing tool, MCP included.
-        ...(ctx.planMode ? { plan: true } : {}),
-        extraTools: mcp.tools,
-        // 插话: whatever the user sent since the last step goes in before the next one.
-        pendingUserMessages: ctx.takeSteers,
-        skills,
-        memoryDir: memoryDirOf(ctx),
-        // The summary is always asked for (that is the engine's default); the
-        // effort is the task's, or 高. A model that does not reason ignores it.
-        // 「不指定」sends none, for an endpoint that refuses the parameter.
-        reasoning:
-          ctx.thread.reasoningEffort === PROVIDER_DEFAULT_LEVEL ? {} : { effort: effectiveReasoningLevel(ctx.thread.reasoningEffort) },
-        // 上下文: the in-house engine has no window setting to pass on — what it
-        // owns is when to start pruning, so a chosen window moves that line.
-        ...(ctx.thread.contextWindow != null ? { contextTokenBudget: Math.floor(ctx.thread.contextWindow * CONTEXT_BUDGET_SHARE) } : {}),
-        // Fast: the Responses API's `service_tier`, for the models that offer one.
-        ...(ctx.thread.serviceTier != null ? { serviceTier: ctx.thread.serviceTier } : {}),
-        // Everything the model cannot work out for itself: which model it is,
-        // which front end it is answering through, and whether this directory
-        // is the project or a worktree cut from it.
-        context: {
-          modelId: typeof model === "string" ? model : model.modelId,
-          host: process.env.VGENT_DESKTOP === "1" ? "Vgent desktop app (macOS)" : "Vgent web",
-          ...(workspace == null
-            ? {}
-            : {
-                workspace: {
-                  path: workspace.path,
-                  projectPath: ctx.projectPath,
-                  branch: workspace.branch,
-                  baseCommit: workspace.baseCommit,
-                },
-              }),
-        },
-      });
+      const cua = cuaBinary == null ? undefined : await connectMcpServers([cuaMcpConfig(cuaBinary)], { log: ctx.log });
+      const cuaTools = cua == null ? {} : onlyCuaTools(cua.tools);
+      if (cua != null && Object.keys(cuaTools).length === 0) {
+        await cua.close();
+        throw new Error("Cua Driver MCP 连接失败；请到设置 → Computer Use 检查服务");
+      }
+      let mcp: Awaited<ReturnType<typeof connectMcpServers>> | undefined;
+      let engine: ReturnType<typeof createVgentEngine>;
+      try {
+        mcp = await connectMcpServers(settings.mcpServers ?? [], { log: ctx.log });
+        const model = override ?? ctx.thread.model ?? DEFAULT_VGENT_MODEL;
+        const { workspace } = ctx.thread;
+        engine = createVgentEngine({
+          model,
+          providers,
+          repoPath: ctx.project.repoPath,
+          permissionMode: ctx.permissionMode,
+          ...(ctx.alwaysAllow.length > 0 ? { alwaysAllow: ctx.alwaysAllow } : {}),
+          // 计划回合只读：the engine drops every writing tool, MCP included.
+          ...(ctx.planMode ? { plan: true } : {}),
+          extraTools: { ...mcp.tools, ...cuaTools },
+          // 插话: whatever the user sent since the last step goes in before the next one.
+          pendingUserMessages: ctx.takeSteers,
+          skills,
+          memoryDir: memoryDirOf(ctx),
+          // The summary is always asked for (that is the engine's default); the
+          // effort is the task's, or 高. A model that does not reason ignores it.
+          // 「不指定」sends none, for an endpoint that refuses the parameter.
+          reasoning:
+            ctx.thread.reasoningEffort === PROVIDER_DEFAULT_LEVEL ? {} : { effort: effectiveReasoningLevel(ctx.thread.reasoningEffort) },
+          // 上下文: the in-house engine has no window setting to pass on — what it
+          // owns is when to start pruning, so a chosen window moves that line.
+          ...(ctx.thread.contextWindow != null ? { contextTokenBudget: Math.floor(ctx.thread.contextWindow * CONTEXT_BUDGET_SHARE) } : {}),
+          // Fast: the Responses API's `service_tier`, for the models that offer one.
+          ...(ctx.thread.serviceTier != null ? { serviceTier: ctx.thread.serviceTier } : {}),
+          // Everything the model cannot work out for itself: which model it is,
+          // which front end it is answering through, and whether this directory
+          // is the project or a worktree cut from it.
+          context: {
+            modelId: typeof model === "string" ? model : model.modelId,
+            host: process.env.VGENT_DESKTOP === "1" ? "Vgent desktop app (macOS)" : "Vgent web",
+            ...(workspace == null
+              ? {}
+              : {
+                  workspace: {
+                    path: workspace.path,
+                    projectPath: ctx.projectPath,
+                    branch: workspace.branch,
+                    baseCommit: workspace.baseCommit,
+                  },
+                }),
+          },
+        });
+      } catch (error) {
+        await mcp?.close();
+        await cua?.close();
+        throw error;
+      }
 
       let ended = false;
       const release = async () => {
         if (ended) return;
         ended = true;
         await mcp.close().catch((error) => ctx.log.warn(`关闭 MCP 连接失败 (thread ${ctx.thread.id})`, error));
+        await cua?.close().catch((error) => ctx.log.warn(`关闭 Cua 连接失败 (thread ${ctx.thread.id})`, error));
         await engine.dispose().catch((error) => ctx.log.warn(`释放 Vgent 引擎失败 (thread ${ctx.thread.id})`, error));
       };
 

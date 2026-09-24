@@ -376,6 +376,8 @@ export interface Settings {
   providerOrder?: string[];
   /** MCP servers the `vgent` engine connects to per turn. Their tools are deferred; see `connectMcpServers`. */
   mcpServers?: McpServerConfig[];
+  /** The built-in desktop-control backend. Absent means Computer Use is off. */
+  computerUseProvider?: "cua" | null;
   /** How many live worktrees to keep before the oldest idle ones are reclaimed. Absent = `DEFAULT_WORKTREE_MAX_COUNT`. */
   worktreeMaxCount?: number;
   /**

@@ -13,6 +13,8 @@ export type {
   ChangedFile,
   ChangeStats,
   ChangeStatus,
+  CuaStatus,
+  CuaTestResult,
   ChangesResponse,
   ChangesSnapshot,
   CheckpointPreview,

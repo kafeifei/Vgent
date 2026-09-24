@@ -1,10 +1,12 @@
 import { collectHarnessAgentToolApprovalContinuations, collectHarnessAgentToolResultContinuations } from "@ai-sdk/harness/agent";
-import { planModeInstructions } from "@vgent/engine";
+import { connectMcpServers, planModeInstructions } from "@vgent/engine";
+import { cuaMcpConfig, onlyCuaTools, requireCuaDriver } from "../computer-use/cua.js";
 import { claudeCodeEffort, claudeCodeProviderEnv, claudeCodeThinking, createClaudeCodeEngine } from "@vgent/engines";
 import { splitProviderModelSpec, type ProviderConfig } from "@vgent/providers";
 import type { TextStreamPart, ToolSet } from "ai";
 import { BadRequestError, TurnResumeFailedError } from "../errors.js";
 import { createProviderStore } from "../store/providers.js";
+import { createSettingsStore } from "../store/settings.js";
 import type { EngineDescriptor } from "./capabilities.js";
 import { stripDeniedApprovalResults } from "./harness-messages.js";
 import type { EngineContext, EngineFactory, EngineRunner } from "./registry.js";
@@ -116,8 +118,17 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
       // fresh prompt abandons it and starts from the last finished state.
       const continueFrom = ctx.continuesTurn ? ctx.harnessState?.continueFrom : undefined;
       const resumeFrom = continueFrom == null ? ctx.harnessState?.resumeFrom : undefined;
-
+      const settings = await createSettingsStore(ctx.dataDir, ctx.log).get();
       const routed = providerRoute(ctx.thread.model, await createProviderStore(ctx.dataDir, ctx.log).list());
+      const cua = settings.computerUseProvider === "cua" && !ctx.planMode
+        ? await connectMcpServers([cuaMcpConfig(await requireCuaDriver())], { log: ctx.log })
+        : undefined;
+      const cuaTools = cua == null ? {} : onlyCuaTools(cua.tools);
+      if (cua != null && Object.keys(cuaTools).length === 0) {
+        await cua.close();
+        throw new Error("Cua Driver MCP 连接失败；请到设置 → Computer Use 检查服务");
+      }
+
       // 上下文: Claude Code's long window is asked for on the model name itself.
       const route = routed == null ? undefined : { ...routed, model: withLongContext(routed.model, ctx.thread.contextWindow) };
       // The window the task chose is also where the runtime compacts: without
@@ -130,6 +141,7 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
         permissionMode: ctx.permissionMode,
         ...(route != null ? { model: route.model, auth: route.auth } : ctx.thread.model != null ? { model: withLongContext(ctx.thread.model, ctx.thread.contextWindow) } : {}),
         ...(Object.keys(env).length > 0 ? { env } : {}),
+        ...(cua != null ? { tools: Object.fromEntries(Object.entries(cuaTools).map(([name, tool]) => [name, { ...tool, deferLoading: false }])) } : {}),
         // 推理强度 is the harness's `effort`; thinking itself stays adaptive and
         // `summarized`, which is what puts the reasoning in the stream. A task
         // that names no level runs on 高.
@@ -140,7 +152,8 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
         sessionId: ctx.thread.id,
         ...(continueFrom != null ? { continueFrom } : {}),
         ...(resumeFrom != null ? { resumeFrom } : {}),
-      }).catch((error) => {
+      }).catch(async (error) => {
+        await cua?.close();
         // Attaching is the one failure mode the run manager has to treat
         // specially: the turn the client is answering no longer exists.
         if (continueFrom == null) throw error;
@@ -197,6 +210,7 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
           if (ended) return;
           ended = true;
           await engine.dispose().catch((error) => ctx.log.warn(`销毁 harness session 失败 (thread ${ctx.thread.id})`, error));
+          await cua?.close();
         },
 
         async suspend() {
@@ -205,6 +219,7 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
           // stop or destroy it afterwards — that would take the bridge down
           // with the turn we just froze.
           const continueTurn = await engine.suspend();
+          await cua?.close();
           ended = true;
           return {
             version: 1,
@@ -233,6 +248,8 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
           } catch (error) {
             ctx.log.warn(`保存 harness resume 状态失败 (thread ${ctx.thread.id})`, error);
             await engine.dispose().catch(() => {});
+          } finally {
+            await cua?.close();
           }
         },
       };

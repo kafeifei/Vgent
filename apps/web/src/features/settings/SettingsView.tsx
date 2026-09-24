@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Globe, Bot, GitBranch, Palette, Pencil, Plug, Plus, Settings2, Trash2, Wrench } from "lucide-react";
+import { Globe, Bot, GitBranch, Monitor, Palette, Pencil, Plug, Plus, Settings2, Trash2, Wrench } from "lucide-react";
+import { ComputerUseSection } from "./ComputerUseSection";
 import { RemotePage } from "./RemotePage";
 import { RuntimesSection } from "./RuntimesSection";
 import { ApiError, type ApiClient } from "@/lib/api";
@@ -15,7 +16,7 @@ import { INPUT_CLASS, PILL, TEXTAREA_CLASS } from "./styles";
 import { isImeKeyEvent } from "@/lib/ime";
 
 /** The pages of 设置, in the order of the left-hand list. */
-export type SettingsTab = "general" | "appearance" | "agents" | "providers" | "mcp" | "worktrees" | "remote";
+export type SettingsTab = "general" | "appearance" | "agents" | "providers" | "mcp" | "computer" | "worktrees" | "remote";
 
 const TABS: ReadonlyArray<{ id: SettingsTab; label: string; icon: typeof Bot }> = [
   { id: "general", label: "通用", icon: Settings2 },
@@ -23,6 +24,7 @@ const TABS: ReadonlyArray<{ id: SettingsTab; label: string; icon: typeof Bot }> 
   { id: "agents", label: "Agents", icon: Bot },
   { id: "providers", label: "模型提供商", icon: Plug },
   { id: "mcp", label: "工具与 MCP", icon: Wrench },
+  { id: "computer", label: "Computer Use", icon: Monitor },
   { id: "remote", label: "远程控制", icon: Globe },
   { id: "worktrees", label: "Worktrees", icon: GitBranch },
 ];
@@ -358,6 +360,16 @@ export function SettingsView({
             添加服务器
           </button>
         )}
+      </SettingsPage>
+    ),
+
+    computer: (
+      <SettingsPage title="Computer Use">
+        <ComputerUseSection
+          client={client}
+          enabled={draft.computerUseProvider === "cua"}
+          onEnabledChange={(value) => update({ computerUseProvider: value ? "cua" : null })}
+        />
       </SettingsPage>
     ),
 

@@ -1,6 +1,7 @@
 import { registerRemoteRoutes } from "./remote/routes.js";
 import type { RemoteService } from "./remote/service.js";
 import { createClaudeLogin } from "./claude-login.js";
+import { getCuaStatus, requestCuaPermissions, startCuaDriver, testCuaDriver } from "./computer-use/cua.js";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID, timingSafeEqual } from "node:crypto";
@@ -307,6 +308,12 @@ function readMcpServers(value: unknown) {
   } catch (error) {
     throw new BadRequestError(`mcpServers 不合法: ${error instanceof Error ? error.message : String(error)}`, "invalid_mcp_servers");
   }
+}
+
+function readComputerUseProvider(value: unknown): "cua" | undefined {
+  if (value == null) return undefined;
+  if (value === "cua") return value;
+  throw new BadRequestError("computerUseProvider 只能是 cua 或 null", "invalid_computer_use_provider");
 }
 
 export function createApp(options: CreateAppOptions): VgentApp {
@@ -1277,6 +1284,9 @@ export function createApp(options: CreateAppOptions): VgentApp {
         ? { autoUpgradeRuntimes: body?.autoUpgradeRuntimes === false ? false : undefined }
         : {}),
       ...("mcpServers" in (body ?? {}) ? { mcpServers: readMcpServers(body?.mcpServers) } : {}),
+      ...("computerUseProvider" in (body ?? {})
+        ? { computerUseProvider: readComputerUseProvider(body?.computerUseProvider) }
+        : {}),
       ...("worktreeMaxCount" in (body ?? {}) ? { worktreeMaxCount: readWorktreeMaxCount(body?.worktreeMaxCount) } : {}),
       // 界面偏好: the title bar's two toggles write them here, so they survive
       // the desktop shell's per-launch origin.
@@ -1285,6 +1295,11 @@ export function createApp(options: CreateAppOptions): VgentApp {
     };
     return c.json(await settings.update(patch));
   });
+
+  app.get("/api/computer-use/cua/status", async (c) => c.json(await getCuaStatus()));
+  app.post("/api/computer-use/cua/start", async (c) => c.json(await startCuaDriver()));
+  app.post("/api/computer-use/cua/permissions", async (c) => c.json(await requestCuaPermissions()));
+  app.post("/api/computer-use/cua/test", async (c) => c.json(await testCuaDriver()));
 
   // 「一直允许」 on an approval card, and the 撤销 next to it in 设置. One tool at
   // a time, because that is how the two buttons think about it.

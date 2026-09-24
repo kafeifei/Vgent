@@ -343,6 +343,14 @@ describe("createProjectStore / createSettingsStore", () => {
     expect(await store.update({ mcpServers: [] })).not.toHaveProperty("mcpServers");
   });
 
+  it("persists the Cua choice and clears it when disabled", async () => {
+    const dir = await tempDir();
+    const store = createSettingsStore(dir);
+    await store.update({ computerUseProvider: "cua" });
+    expect((await createSettingsStore(dir).get()).computerUseProvider).toBe("cua");
+    expect(await store.update({ computerUseProvider: undefined })).not.toHaveProperty("computerUseProvider");
+  });
+
   it("rejects a malformed MCP server list rather than dropping it", () => {
     expect(asMcpServers(undefined)).toBeUndefined();
     expect(asMcpServers(null)).toBeUndefined();

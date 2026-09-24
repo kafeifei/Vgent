@@ -5,6 +5,13 @@ const bash = (mode: "allow-reads" | "allow-edits" | "allow-all", command: string
   decideApproval({ mode, toolName: "bash", input: { command } });
 
 describe("decideApproval", () => {
+  it("allows Cua observation and asks before desktop actions", () => {
+    for (const mode of ["allow-reads", "allow-edits"] as const) {
+      expect(decideApproval({ mode, toolName: "cua__get_desktop_state", input: {} })).toBe("not-applicable");
+      expect(decideApproval({ mode, toolName: "cua__click", input: {} })).toBe("user-approval");
+      expect(decideApproval({ mode, toolName: "cua__type_text", input: {} })).toBe("user-approval");
+    }
+  });
   it("never asks in allow-all", () => {
     for (const toolName of ["read", "grep", "glob", "write", "edit", "bash", "askUserQuestions", "somethingNew"]) {
       expect(decideApproval({ mode: "allow-all", toolName, input: { command: "rm -rf /" } })).toBe("not-applicable");

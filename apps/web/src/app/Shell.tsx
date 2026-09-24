@@ -77,10 +77,11 @@ export function Shell({ token }: { token: string }) {
       { id: "right", label: right.open ? "收起右栏" : "展开右栏", hint: "⌘J", run: actions.toggleRight },
       { id: "changes", label: "查看变更", run: () => actions.openChanges() },
       { id: "settings", label: "设置", hint: "⌘,", run: actions.openSettings },
-      // Only an engine whose history we own can be compacted, and only between turns.
+      // Only an engine whose history we own can be compacted, only between turns, and not once archived.
       ...(thread != null &&
       engines.find((entry) => entry.id === thread.engine)?.capabilities.compact === true &&
-      !isLiveThread(thread)
+      !isLiveThread(thread) &&
+      thread.archivedAt == null
         ? [{ id: "compact", label: "压缩上下文", hint: "/compact", run: () => void actions.compactThread(thread.id) }]
         : []),
     ],

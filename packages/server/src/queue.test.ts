@@ -590,18 +590,33 @@ describe.skipIf(!hasGit)("排队", () => {
     expect((await getThread(app, thread.id)).queue?.[0]?.id).toBe(item.id);
   });
 
-  it("归档的任务不发，删除任务连队列一起没", async () => {
+  it("归档的任务不收也不发，删除任务连队列一起没", async () => {
     const dir = await tempDir();
     const repo = await repoWithHistory();
     const engine = createGatedEngine();
     const app = makeApp(dir, engine.factory);
     const thread = await setupThread(app, repo);
 
+    // A queue that 停止 paused, then archived with the task.
+    const first = postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "慢活")] });
+    await waitFor("第一轮开始", () => engine.prompts.length === 1);
+    await postJson(app, `/api/threads/${thread.id}/queue`, { text: "停下时排着的" });
+    await postJson(app, `/api/chat/${thread.id}/stop`, {});
+    await (await first).text();
+    await waitForStatus(app, thread.id, "interrupted");
     await patchJson(app, `/api/threads/${thread.id}`, { archived: true });
-    await postJson(app, `/api/threads/${thread.id}/queue`, { text: "归档了别发" });
+
+    const more = await postJson(app, `/api/threads/${thread.id}/queue`, { text: "归档了别收" });
+    expect(more.status).toBe(409);
+    expect(await more.json()).toMatchObject({ error: { code: "thread_archived" } });
+    // 「发送」 on the paused item is a turn too; the item goes back where it was.
+    const item = (await getThread(app, thread.id)).queue![0]!;
+    const send = await postJson(app, `/api/threads/${thread.id}/queue/${item.id}/send`, {});
+    expect(send.status).toBe(409);
+    expect(await send.json()).toMatchObject({ error: { code: "thread_archived" } });
     await sleep(120);
-    expect(engine.prompts).toHaveLength(0);
-    expect((await getThread(app, thread.id)).queue).toHaveLength(1);
+    expect(engine.prompts).toHaveLength(1);
+    expect((await getThread(app, thread.id)).queue?.map((entry) => entry.text)).toEqual(["停下时排着的"]);
 
     expect((await request(app, `/api/threads/${thread.id}`, { method: "DELETE" })).status).toBe(204);
     expect((await request(app, `/api/threads/${thread.id}`)).status).toBe(404);

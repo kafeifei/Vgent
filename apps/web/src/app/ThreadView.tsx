@@ -5,6 +5,7 @@ import type { UIMessage } from "ai";
 import { toFileParts } from "@/features/composer/attachments";
 import type { SlashCommand } from "@/features/composer/slash";
 import type { ChangesView } from "@/features/changes/useChanges";
+import { ArchivedBar } from "@/features/composer/ArchivedBar";
 import { Composer } from "@/features/composer/Composer";
 import { taskBranch, taskLocation } from "@/features/composer/location";
 import { TaskHeader } from "@/features/taskheader/TaskHeader";
@@ -312,76 +313,81 @@ function ThreadChatView({
       </FileAccessProvider>
 
       <div className="bg-bg px-md pb-xs">
-        <Composer
-          value={draft.value}
-          onChange={draft.edit}
-          attachments={attachments}
-          onAttachments={setAttachments}
-          commands={commands}
-          // Opening a task — including the one the empty state just started —
-          // puts the caret in its composer.
-          autoFocus
-          onSubmit={submit}
-          onStop={() => actions.stop(thread.id)}
-          live={live}
-          engines={engines}
-          engine={thread.engine}
-          // A task with history is stuck with its engine; the picker greys the
-          // other groups out and says why.
-          engineLocked={thread.messageCount > 0}
-          model={thread.model}
-          runMode={runMode}
-          modelEngines={modelEngines}
-          onRememberEngine={actions.rememberModelEngine}
-          // Same rule as the 思考 chip below: a running turn already carries
-          // the model it started with, so switching it mid-flight would be a lie.
-          onPickModel={(engine, model) =>
-            live ? actions.toast("运行中不能改，先停止") : actions.setModel(thread.id, engine, model)
-          }
-          reasoningEffort={thread.reasoningEffort}
-          // Same rule as the header's pills.
-          onPickReasoning={(level) =>
-            live ? actions.toast("运行中不能改，先停止") : actions.setReasoningEffort(thread.id, level)
-          }
-          contextWindow={thread.contextWindow}
-          onPickContext={(window) =>
-            live ? actions.toast("运行中不能改，先停止") : actions.setContextWindow(thread.id, window)
-          }
-          serviceTier={thread.serviceTier}
-          onPickServiceTier={(tier) =>
-            live ? actions.toast("运行中不能改，先停止") : actions.setServiceTier(thread.id, tier)
-          }
-          mode={thread.mode ?? "agent"}
-          onPickMode={(mode) => (live ? actions.toast("运行中不能改，先停止") : actions.setMode(thread.id, mode))}
-          queue={queued}
-          queueNote={queueNote}
-          // A paused queue is resumed by hand from its head item. While a turn
-          // is still going the same spot offers 「打断并发送」 instead: nothing
-          // jumps a running turn unless the user says so.
-          {...(live
-            ? { onInterruptWithQueued: (itemId: string) => actions.sendQueued(thread.id, itemId, { interrupt: true }) }
-            : { onSendQueued: (itemId: string) => actions.sendQueued(thread.id, itemId) })}
-          onEditQueued={(itemId, text) => actions.editQueued(thread.id, itemId, text)}
-          onDeleteQueued={(itemId) => actions.deleteQueued(thread.id, itemId)}
-          {...(branch != null ? { branch } : {})}
-          branchTitle={
-            thread.workspace == null ? "主目录当前分支，任务直接改这里的文件" : "这个任务自己的分支"
-          }
-          // 运行位置 is settled once the task exists, so here it is a label and
-          // not a picker; the directory itself is one hover away.
-          location={
-            <span
-              title={location.path ?? "位置未知"}
-              className="inline-flex min-w-0 items-center"
-            >
-              <span className="min-w-0 truncate">{location.label}</span>
-            </span>
-          }
-          completeFiles={completeFiles}
-          messages={messages}
-          {...(changes.snapshot != null ? { changedFiles: changes.snapshot.files } : {})}
-          onOpenChanges={() => actions.openChanges()}
-        />
+        {thread.archivedAt != null ? (
+          // The draft stays on the server meanwhile, so 取消归档 brings the composer back as it was.
+          <ArchivedBar onUnarchive={() => actions.archiveThread(thread.id, false)} />
+        ) : (
+          <Composer
+            value={draft.value}
+            onChange={draft.edit}
+            attachments={attachments}
+            onAttachments={setAttachments}
+            commands={commands}
+            // Opening a task — including the one the empty state just started —
+            // puts the caret in its composer.
+            autoFocus
+            onSubmit={submit}
+            onStop={() => actions.stop(thread.id)}
+            live={live}
+            engines={engines}
+            engine={thread.engine}
+            // A task with history is stuck with its engine; the picker greys the
+            // other groups out and says why.
+            engineLocked={thread.messageCount > 0}
+            model={thread.model}
+            runMode={runMode}
+            modelEngines={modelEngines}
+            onRememberEngine={actions.rememberModelEngine}
+            // Same rule as the 思考 chip below: a running turn already carries
+            // the model it started with, so switching it mid-flight would be a lie.
+            onPickModel={(engine, model) =>
+              live ? actions.toast("运行中不能改，先停止") : actions.setModel(thread.id, engine, model)
+            }
+            reasoningEffort={thread.reasoningEffort}
+            // Same rule as the header's pills.
+            onPickReasoning={(level) =>
+              live ? actions.toast("运行中不能改，先停止") : actions.setReasoningEffort(thread.id, level)
+            }
+            contextWindow={thread.contextWindow}
+            onPickContext={(window) =>
+              live ? actions.toast("运行中不能改，先停止") : actions.setContextWindow(thread.id, window)
+            }
+            serviceTier={thread.serviceTier}
+            onPickServiceTier={(tier) =>
+              live ? actions.toast("运行中不能改，先停止") : actions.setServiceTier(thread.id, tier)
+            }
+            mode={thread.mode ?? "agent"}
+            onPickMode={(mode) => (live ? actions.toast("运行中不能改，先停止") : actions.setMode(thread.id, mode))}
+            queue={queued}
+            queueNote={queueNote}
+            // A paused queue is resumed by hand from its head item. While a turn
+            // is still going the same spot offers 「打断并发送」 instead: nothing
+            // jumps a running turn unless the user says so.
+            {...(live
+              ? { onInterruptWithQueued: (itemId: string) => actions.sendQueued(thread.id, itemId, { interrupt: true }) }
+              : { onSendQueued: (itemId: string) => actions.sendQueued(thread.id, itemId) })}
+            onEditQueued={(itemId, text) => actions.editQueued(thread.id, itemId, text)}
+            onDeleteQueued={(itemId) => actions.deleteQueued(thread.id, itemId)}
+            {...(branch != null ? { branch } : {})}
+            branchTitle={
+              thread.workspace == null ? "主目录当前分支，任务直接改这里的文件" : "这个任务自己的分支"
+            }
+            // 运行位置 is settled once the task exists, so here it is a label and
+            // not a picker; the directory itself is one hover away.
+            location={
+              <span
+                title={location.path ?? "位置未知"}
+                className="inline-flex min-w-0 items-center"
+              >
+                <span className="min-w-0 truncate">{location.label}</span>
+              </span>
+            }
+            completeFiles={completeFiles}
+            messages={messages}
+            {...(changes.snapshot != null ? { changedFiles: changes.snapshot.files } : {})}
+            onOpenChanges={() => actions.openChanges()}
+          />
+        )}
       </div>
     </>
   );

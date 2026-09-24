@@ -422,10 +422,14 @@ export function useWorkbench(token: string) {
        * the composer uses.
        */
       buildFromPlan: (threadId: string, content: string): Promise<void> =>
-        client
-          .patchThread(threadId, { mode: "agent" })
-          .then(() => chats.send(threadId, `按下面的计划执行。\n\n${content}`))
-          .catch((error: Error) => toast(error.message)),
+        // The server refuses the turn on an archived task, but only after the
+        // mode switch went through — so it is turned away here, before either.
+        state.threads.find((entry) => entry.id === threadId)?.archivedAt != null
+          ? Promise.resolve(toast("任务已归档，取消归档后才能继续"))
+          : client
+              .patchThread(threadId, { mode: "agent" })
+              .then(() => chats.send(threadId, `按下面的计划执行。\n\n${content}`))
+              .catch((error: Error) => toast(error.message)),
 
       /**
        * 「一直允许」: more entries on the *global* allowlist, from an approval
@@ -442,7 +446,14 @@ export function useWorkbench(token: string) {
       // the server does both in one PATCH, so one failure means neither moved.
       archiveThread: (threadId: string, archived: boolean) => {
         void client.patchThread(threadId, { archived }).then(
-          () => toast(archived ? "已归档，worktree 已回收" : "已取消归档"),
+          () =>
+            toast(
+              !archived
+                ? "已取消归档"
+                : state.threads.find((entry) => entry.id === threadId)?.workspace != null
+                  ? "已归档，worktree 已回收"
+                  : "已归档",
+            ),
           (error: Error) => toast(error.message),
         );
       },

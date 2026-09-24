@@ -138,7 +138,7 @@ export function WorkLog({
 
           {turns.length === 0 && (
             <p className="py-2xl text-center text-fg-faint text-sm">
-              {thread.status === "idle" ? "还没有内容，在下面写下第一个目标。" : "等待引擎…"}
+              {thread.archivedAt != null ? "还没有内容。" : thread.status === "idle" ? "还没有内容，在下面写下第一个目标。" : "等待引擎…"}
             </p>
           )}
         </div>

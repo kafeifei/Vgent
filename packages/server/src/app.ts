@@ -541,6 +541,15 @@ export function createApp(options: CreateAppOptions): VgentApp {
     if (isLive(thread)) throw new ConflictError("任务还在进行中（等待审批或回答），先处理或停止", "thread_running");
   };
 
+  /**
+   * 归档的任务不再往下聊。Every route that starts a turn or lines one up asks
+   * this first — sending, queueing, 「发送」 on a queued item, compacting; the
+   * queue dispatcher already leaves an archived task alone. 取消归档 is the way back.
+   */
+  const assertNotArchived = (thread: ThreadRecord): void => {
+    if (thread.archivedAt != null) throw new ConflictError("任务已归档，取消归档后才能继续", "thread_archived");
+  };
+
   /** Keeps the record's 「+N −M」 current after an action that changed the tree. */
   const restat = async (threadId: string): Promise<void> => {
     const thread = await threads.get(threadId);
@@ -1052,7 +1061,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
    */
   app.post("/api/threads/:id/queue", async (c) => {
     const id = c.req.param("id");
-    await threadOf(id);
+    assertNotArchived(await threadOf(id));
     const body = (await c.req.json().catch(() => undefined)) as { text?: unknown } | undefined;
     const text = readQueueText(body?.text);
     // 插话: a turn that is running right now, on an engine that takes input
@@ -1096,6 +1105,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const itemId = c.req.param("itemId");
     const body = (await c.req.json().catch(() => undefined)) as { interrupt?: unknown } | undefined;
     const thread = await threadOf(id);
+    assertNotArchived(thread);
     if (body?.interrupt === true && isLive(thread)) {
       // Checked before stopping: a stale item id must not cost the user their turn.
       if (thread.queue?.some((item) => item.id === itemId) !== true) {
@@ -1155,6 +1165,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const id = c.req.param("id");
     if (runs.isRunning(id)) throw new ConflictError("任务运行中，等它结束再压缩", "thread_running");
     const thread = await threadOf(id);
+    assertNotArchived(thread);
     if (!capabilitiesOf(thread.engine).compact) {
       throw new BadRequestError("这个引擎没有手动压缩，上下文快满时它会自己压", "compact_unsupported");
     }
@@ -1504,6 +1515,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const threadId = c.req.param("threadId");
     const body = (await c.req.json().catch(() => undefined)) as { messages?: unknown } | undefined;
     if (body?.messages == null) throw new BadRequestError("缺少 messages", "invalid_messages");
+    assertNotArchived(await threadOf(threadId));
     const hub = await runs.start(threadId, body.messages);
     return createUIMessageStreamResponse({
       stream: hub.subscribe(c.req.raw.signal),

@@ -593,3 +593,10 @@ build 84 定的「日志里的图只有一种样子」只覆盖了回复里内�
 - **web**：`lib/drafts.ts` 的 `DraftSync` 持有 `{ text, attachments }`；`localStorage` 仍只缓存文字（10MB 的 data URL 放不进去），附件由 server 那次 `GET` 带回。对账分开算：用户敲过字就留本地文字、动过附件就留本地附件，另一半仍以 server 为准，所以「先敲字再等 server」不会把附件弄丢。`setAttachments` 不防抖、立刻 flush（拖进来的文件马上上 server，关窗口前就在）；`uploaded` 集合记住 server 已有字节的 id，写失败就清空、下次连字节一起重发。`clear()` 一并清附件。`useDraft` 多返回 `attachments` / `setAttachments`，`ThreadView` / `EmptyState` 直接用它，各自的 `useState` 删掉；`/compact` 只清文字不清附件。`startThread` 改收 `Attachment[]`，首条消息被拒时把文字和附件（带 `url`）一起写到新任务的草稿。
 - 测试：server `drafts.test.ts`（落盘、按 id 引用、删 tile 删文件、v1 迁移、文件丢了就略过、路由校验和 413、删线程删目录），web `drafts.test.ts`（附件立刻带字节上、之后只带 id、失败重发、server 附件在用户已敲字时仍进来、本地动过附件时不被盖）。没验：真 WebView 里拖一张图、切任务再切回来看 tile 还在。
 
+
+## 2026-09-24：已归档的任务不能再往下聊
+
+- 之前只有 worktree 任务归档后被 `workspace_reclaimed` 挡住，主工作区任务归档了照样能发消息、排队、压缩。
+- **server**：`app.ts` 的 `assertNotArchived`，四个会开回合或排回合的入口先问它：`POST /api/chat/:id`、`POST .../queue`、`POST .../queue/:item/send`、`POST .../compact`，有 `archivedAt` 就 409 `thread_archived`。排队派发本来就跳过已归档的任务。停止后暂停的队列跟着任务归档，不发、不丢。没放进 `runs.ts` 的 `startTurn`：那段当时有另一处改动在进行，入口在路由上已经齐了。
+- **web**：`ThreadView` 在任务已归档时把 `Composer` 换成 `features/composer/ArchivedBar.tsx`（「已归档」+「取消归档」，下面留出状态行的高度，切换时日志不跳）；命令面板不再列「压缩上下文」；计划面板的 Build 在切模式之前就挡住；空任务的占位文案不再说「在下面写」；归档提示只在真有 worktree 时说「worktree 已回收」。
+- 测试：`app.test.ts` 主工作区任务归档后三条路都 409、取消归档后能跑完一轮；`queue.test.ts` 那条原来断言「归档后还能排队」，改成排队和「发送」都 409、暂停的队列原样留着。

@@ -279,6 +279,32 @@ describe("createApp", () => {
     await waitForStatus(app, thread.id, "idle");
   });
 
+  it("已归档的任务不能再往下聊：发消息、排队、压缩都 409，取消归档后照常", async () => {
+    const dir = await tempDir();
+    const fake = createFakeEngine();
+    const app = makeApp(dir, fake.factory);
+    const { thread } = await setupThread(app, dir);
+    const patch = (body: unknown) => request(app, `/api/threads/${thread.id}`, { method: "PATCH", body: JSON.stringify(body) });
+
+    // A 主工作区 task: no worktree gets reclaimed, so nothing but the archive itself stands in the way.
+    expect((await patch({ archived: true })).status).toBe(200);
+    for (const response of [
+      await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "你好")] }),
+      await postJson(app, `/api/threads/${thread.id}/queue`, { text: "排一条" }),
+      await postJson(app, `/api/threads/${thread.id}/compact`, {}),
+    ]) {
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ error: { code: "thread_archived" } });
+    }
+    const record = (await (await request(app, `/api/threads/${thread.id}`)).json()) as ThreadRecord;
+    expect(record.messages).toHaveLength(0);
+    expect(record.queue ?? []).toHaveLength(0);
+
+    expect((await patch({ archived: false })).status).toBe(200);
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "你好")] }));
+    expect((await waitForStatus(app, thread.id, "idle")).messages).toHaveLength(2);
+  });
+
   it("rejects an unknown thread and bad messages", async () => {
     const dir = await tempDir();
     const fake = createFakeEngine();

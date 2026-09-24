@@ -1157,6 +1157,31 @@ describe("createApp", () => {
     expect((await app.app.request("http://evil.example.com/")).status).toBe(403);
   });
 
+  it("keeps serving the web build it started with after the directory is swapped for a new one", async () => {
+    const webDist = await tempDir();
+    await mkdir(join(webDist, "assets"), { recursive: true });
+    await writeFile(join(webDist, "index.html"), '<script src="/assets/lazy-old.js"></script>');
+    await writeFile(join(webDist, "assets", "lazy-old.js"), "export const build = 'old';\n");
+    const app = makeApp(await tempDir(), undefined, webDist);
+
+    // What installing a new Vgent.app over a running one does to the path.
+    await rm(join(webDist, "assets"), { recursive: true });
+    await mkdir(join(webDist, "assets"));
+    await writeFile(join(webDist, "index.html"), '<script src="/assets/lazy-new.js"></script>');
+    await writeFile(join(webDist, "assets", "lazy-new.js"), "export const build = 'new';\n");
+
+    // The page that is already open asks for its own chunk and gets it.
+    const chunk = await app.app.request(`${ORIGIN}/assets/lazy-old.js`);
+    expect(chunk.status).toBe(200);
+    expect(await chunk.text()).toContain("'old'");
+    expect(await (await app.app.request(`${ORIGIN}/`)).text()).toContain("lazy-old.js");
+
+    // A chunk this build never had is a 404, not index.html posing as JavaScript.
+    const missing = await app.app.request(`${ORIGIN}/assets/lazy-new.js`);
+    expect(missing.status).toBe(404);
+    expect(missing.headers.get("content-type")).not.toContain("html");
+  });
+
   /** The pre-compact history the success test seeds every thread with. */
   const historyBeforeCompact: UIMessage[] = [
     userMessage("m1", "把登录页改成中文"),

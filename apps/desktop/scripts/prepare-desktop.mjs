@@ -80,7 +80,7 @@ async function smokeTest(bundledNode) {
   const env = { ...process.env, VGENT_DESKTOP: "1" };
   delete env.NODE_OPTIONS;
   delete env.NODE_PATH;
-  const child = spawn(bundledNode, ["--enable-source-maps", join(serverDir, "dist", "main.js"), "--port", "0", "--data-dir", dataDir], {
+  const child = spawn(bundledNode, ["--enable-source-maps", join(serverDir, "dist", "main.js"), "--port", "0", "--data-dir", dataDir, "--web-dist", join(repoRoot, "apps", "web", "dist")], {
     cwd: serverDir,
     env,
     stdio: ["ignore", "pipe", "pipe"],
@@ -95,7 +95,16 @@ async function smokeTest(bundledNode) {
     for (let attempt = 0; attempt < 300; attempt++) {
       if (child.exitCode != null) throw new Error(`内置服务提前退出（${child.exitCode}）：\n${log.join("")}`);
       const connection = await readFile(connectionPath, "utf8").then(JSON.parse).catch(() => undefined);
-      if (connection?.pid === child.pid) return connection.url;
+      if (connection?.pid === child.pid) {
+        const response = await fetch(`${connection.url}/api/remote`, {
+          headers: { "x-vgent-token": connection.token }, signal: AbortSignal.timeout(5000),
+        });
+        const remote = await response.json();
+        if (!response.ok || remote.enabled !== false || remote.account !== null) {
+          throw new Error("内置远程控制服务初始化失败。");
+        }
+        return connection.url;
+      }
       await new Promise((r) => setTimeout(r, 100));
     }
     throw new Error(`内置服务 30 秒内没有写出 connection.json：\n${log.join("")}`);
@@ -125,6 +134,7 @@ export async function prepareDesktop() {
   // Deploy first: it owns `resources/server/`, and the Node license lands inside it.
   await deployServer();
   const bundledNode = await fetchNode(target);
+  run(bundledNode, ["--input-type=module", "-e", 'await import("./dist/remote/host.js")'], serverDir);
   const url = await smokeTest(bundledNode);
   console.log(`内置服务自检通过（${url}）。`);
 

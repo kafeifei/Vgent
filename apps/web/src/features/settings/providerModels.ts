@@ -257,3 +257,22 @@ export function withSubscriptionSwitch(models: readonly SubscriptionModel[], age
     return cell != null && rowIds.includes(model.id) ? { ...model, agents: { ...model.agents, [agent]: { ...cell, enabled } } } : model;
   });
 }
+
+/** One row of「已添加」: a login or a connected provider, keyed the way `Settings.providerOrder` names it. */
+export type AddedEntry = { key: string; account: SubscriptionAccount; provider?: never } | { key: string; provider: RedactedProviderConfig; account?: never };
+
+/**
+ * 「已添加」in 提供商排序: the ones the user placed, in their order, then the rest
+ * as they come — the logins first, then the providers in connection order.
+ */
+export function orderAdded(accounts: readonly SubscriptionAccount[], providers: readonly RedactedProviderConfig[], order: readonly string[] | undefined): AddedEntry[] {
+  const entries: AddedEntry[] = [...accounts.map((account) => ({ key: account.id, account })), ...providers.map((provider) => ({ key: provider.id, provider }))];
+  const rankOf = (entry: AddedEntry) => {
+    const at = order?.indexOf(entry.key) ?? -1;
+    return at < 0 ? Number.POSITIVE_INFINITY : at;
+  };
+  return entries
+    .map((entry, at) => ({ entry, at }))
+    .sort((a, b) => rankOf(a.entry) - rankOf(b.entry) || a.at - b.at)
+    .map(({ entry }) => entry);
+}

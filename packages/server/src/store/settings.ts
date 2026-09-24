@@ -40,6 +40,8 @@ export interface SettingsPatch {
   hiddenModels?: Partial<Record<EngineId, string[]>> | undefined;
   /** The whole map; an empty one drops the field. */
   modelEngines?: Record<string, EngineId> | undefined;
+  /** The whole order; an empty one drops the field. */
+  providerOrder?: string[] | undefined;
 }
 
 /**
@@ -75,7 +77,7 @@ const isSettings = (value: unknown): value is Settings =>
  * the global one; the old field is then dropped rather than kept in sync.
  */
 export function migrateSettings(stored: Settings & { defaultPermissionMode?: PermissionMode }): Settings {
-  const { defaultPermissionMode, hiddenModels, ...rest } = stored;
+  const { defaultPermissionMode, hiddenModels, providerOrder, ...rest } = stored;
   // Read on every model listing, so a hand-edited file must not be able to make it throw.
   const hidden = Object.entries(typeof hiddenModels === "object" && hiddenModels !== null ? hiddenModels : {}).flatMap(([engine, ids]) =>
     Array.isArray(ids) ? [[engine, ids.filter((id) => typeof id === "string")] as const] : [],
@@ -83,6 +85,7 @@ export function migrateSettings(stored: Settings & { defaultPermissionMode?: Per
   return {
     ...rest,
     ...(hidden.length > 0 ? { hiddenModels: Object.fromEntries(hidden) } : {}),
+    ...(Array.isArray(providerOrder) ? { providerOrder: providerOrder.filter((id) => typeof id === "string") } : {}),
     runMode: stored.runMode ?? defaultPermissionMode ?? DEFAULT_SETTINGS.runMode,
     allowlist: Array.isArray(stored.allowlist) ? stored.allowlist.filter((name) => typeof name === "string") : [],
   };
@@ -153,6 +156,11 @@ export function createSettingsStore(dataDir: string, log: Logger = silentLogger)
     if ("modelEngines" in patch) {
       if (patch.modelEngines == null || Object.keys(patch.modelEngines).length === 0) delete next.modelEngines;
       else next.modelEngines = patch.modelEngines;
+    }
+    if ("providerOrder" in patch) {
+      const order = [...new Set(patch.providerOrder ?? [])];
+      if (order.length === 0) delete next.providerOrder;
+      else next.providerOrder = order;
     }
     settings = next;
     const work = () => writeJsonAtomic(path, next);

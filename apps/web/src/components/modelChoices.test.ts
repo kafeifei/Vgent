@@ -43,6 +43,16 @@ describe("buildModelChoices", () => {
     expect(choices.map((choice) => choice.label)).toEqual(["GPT-6", "codex/gpt-6", "qwen", "claude-opus", "opus"]);
   });
 
+  it("puts the sources in 提供商排序, the ones never placed after them", () => {
+    const ranked = Object.fromEntries(
+      Object.entries(catalogs).map(([id, models]) => [
+        id,
+        models.map((entry) => (entry.source?.kind === "claude-subscription" ? { ...entry, source: { ...entry.source, rank: 0 } } : entry.source?.kind === "provider" ? { ...entry, source: { ...entry.source, rank: 1 } } : entry)),
+      ]),
+    );
+    expect(buildModelChoices(ENGINES, ranked).map((choice) => choice.label)).toEqual(["opus", "codex/gpt-6", "qwen", "claude-opus", "GPT-6"]);
+  });
+
   it("leaves out a switched-off model, except for the task already on it", () => {
     expect(choices.some((choice) => choice.label === "GPT-Old")).toBe(false);
     const mine = buildModelChoices(ENGINES, catalogs, { engine: "vgent", model: "codex-subscription:gpt-old" });

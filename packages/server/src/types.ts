@@ -367,6 +367,13 @@ export interface Settings {
    * changes with its port.
    */
   modelEngines?: Record<string, EngineId>;
+  /**
+   * 提供商排序: the settings page's「已添加」list as the user dragged it, by
+   * subscription id (`codex-subscription`, `claude-subscription`) or provider id.
+   * The model picker groups its rows in this order. One that is not in it — a
+   * provider connected since — follows the ones that are.
+   */
+  providerOrder?: string[];
   /** MCP servers the `vgent` engine connects to per turn. Their tools are deferred; see `connectMcpServers`. */
   mcpServers?: McpServerConfig[];
   /** How many live worktrees to keep before the oldest idle ones are reclaimed. Absent = `DEFAULT_WORKTREE_MAX_COUNT`. */

@@ -86,6 +86,31 @@ export interface ModelSource {
    * company gateway — which gets its initial instead.
    */
   logo?: string;
+  /**
+   * Where the user put this source in 提供商排序 (`Settings.providerOrder`).
+   * Absent for one they never placed; the picker lists those after the rest.
+   */
+  rank?: number;
+}
+
+/** How `Settings.providerOrder` names a source: a provider by its id, a login by its kind. */
+export const sourceOrderKey = (source: ModelSource): string => (source.kind === "provider" ? (source.id ?? source.name) : source.kind);
+
+/**
+ * The list regrouped in 提供商排序: each ranked source's models, in the user's
+ * order, then the unranked ones as they were. Stable within a source.
+ */
+export function orderBySource(models: readonly ModelEntry[], order: readonly string[] | undefined): ModelEntry[] {
+  if (order == null || order.length === 0) return [...models];
+  const ranked = models.map((entry) => {
+    const at = entry.source == null ? -1 : order.indexOf(sourceOrderKey(entry.source));
+    return at < 0 || entry.source == null ? entry : { ...entry, source: { ...entry.source, rank: at } };
+  });
+  const rankOf = (entry: ModelEntry) => entry.source?.rank ?? Number.POSITIVE_INFINITY;
+  return ranked
+    .map((entry, at) => ({ entry, at }))
+    .sort((a, b) => rankOf(a.entry) - rankOf(b.entry) || a.at - b.at)
+    .map(({ entry }) => entry);
 }
 
 const CODEX_SOURCE: ModelSource = { kind: "codex-subscription", name: "Codex", logo: "openai" };

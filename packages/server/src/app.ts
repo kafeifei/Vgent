@@ -38,7 +38,7 @@ import { pickFile, pickFolder } from "./folder-picker.js";
 import { isNoProject, projectOfThread, scratchDirOf } from "./no-project.js";
 import { planFork } from "./fork.js";
 import { asIntegrateAction, changeStatsOf, createIntegrator, taskTarget, type Integrator, type TaskTarget } from "./integrate.js";
-import { contextOptionsFor, createModelCatalog, type ModelCatalog, type ModelEntry } from "./models.js";
+import { contextOptionsFor, createModelCatalog, orderBySource, type ModelCatalog, type ModelEntry } from "./models.js";
 import { reasoningFor } from "./reasoning.js";
 import { SUBSCRIPTION_IDS, createSubscriptionService, markHidden, withHiddenModels, type ClaudeLoginStatus, type SubscriptionId } from "./subscriptions.js";
 import { logoutSubscription } from "./subscription-logout.js";
@@ -1298,6 +1298,15 @@ export function createApp(options: CreateAppOptions): VgentApp {
     return c.json(await settings.mutate((current) => ({ modelEngines: { ...current.modelEngines, [modelKey]: engine } })));
   });
 
+  // 提供商排序: the whole order at once, as the drag on the settings page left it.
+  app.put("/api/settings/provider-order", async (c) => {
+    const body = (await c.req.json().catch(() => undefined)) as { order?: unknown } | undefined;
+    if (!Array.isArray(body?.order) || !body.order.every((id): id is string => typeof id === "string" && id !== "" && id.length <= 300)) {
+      throw new BadRequestError("需要 order：提供商 id 的数组", "invalid_provider_order");
+    }
+    return c.json(await settings.update({ providerOrder: body.order }));
+  });
+
   app.post("/api/settings/allowlist", async (c) => {
     const body = (await c.req.json().catch(() => undefined)) as { tool?: unknown } | undefined;
     const tool = readToolName(body?.tool);
@@ -1352,7 +1361,11 @@ export function createApp(options: CreateAppOptions): VgentApp {
   app.patch("/api/providers/:id", async (c) => c.json(redactProvider(await providers.update(c.req.param("id"), await readProviderBody(c)))));
 
   app.delete("/api/providers/:id", async (c) => {
-    await providers.remove(c.req.param("id"));
+    const id = c.req.param("id");
+    await providers.remove(id);
+    // A provider connected again later under the same id starts at the end, like any new one.
+    const { providerOrder } = await settings.get();
+    if (providerOrder?.includes(id) === true) await settings.mutate((current) => ({ providerOrder: (current.providerOrder ?? []).filter((entry) => entry !== id) }));
     return c.body(null, 204);
   });
 
@@ -1479,7 +1492,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
         )
       : [];
     // What the 模型 table switched off stays in the list, marked: see `ModelEntry.hidden`.
-    const models = [...markHidden(listing.models, current.hiddenModels?.[engine]), ...fromProviders];
+    const models = orderBySource([...markHidden(listing.models, current.hiddenModels?.[engine]), ...fromProviders], current.providerOrder);
     const usable = models.filter((entry) => entry.hidden !== true);
     const defaultModel =
       remembered != null && usable.some((entry) => entry.id === remembered)

@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, Copy, ExternalLink, Plus, Search } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Check, Copy, ExternalLink, GripVertical, Plus, Search } from "lucide-react";
+import { Reorder, useDragControls } from "motion/react";
 import { ApiError, type ApiClient, type ProviderCatalog } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import type { CatalogProviderSummary, ClaudeLoginAttempt, EngineDescriptor, ProviderAgent, ProviderModel, RedactedProviderConfig, SubscriptionAccount, SubscriptionId } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { BUTTON_GHOST, BUTTON_PRIMARY, BUTTON_SECONDARY, Dialog, LetterAvatar, Segmented, SettingsEmpty, SettingsGroup, SettingsPage, SettingsRow, Switch, Tag } from "./layout";
 import { ModelTable } from "./ModelTable";
-import { AGENT_ORDER, EMPTY_CUSTOM_FORM, agentsOf, connectInput, customInput, describeSubscription, filterCatalog, isSignedIn, summarizeEnabled, summarizeSubscription, withAgentChoices, type CustomForm } from "./providerModels";
+import { AGENT_ORDER, EMPTY_CUSTOM_FORM, agentsOf, connectInput, customInput, describeSubscription, filterCatalog, isSignedIn, orderAdded, summarizeEnabled, summarizeSubscription, withAgentChoices, type CustomForm } from "./providerModels";
 import { SubscriptionTable } from "./SubscriptionTable";
 import { INPUT_CLASS } from "./styles";
 
@@ -610,6 +611,29 @@ function ConfirmActionDialog({ title, message, confirmLabel, onConfirm, onClose 
   );
 }
 
+/**
+ * One row of「已添加」that can be dragged by its grip — only by the grip, so the
+ * row's buttons still click. The grip sits in the row's left padding and shows
+ * on hover, so the list lines up with 热门 below it.
+ */
+function DraggableRow({ value, draggable, onDrop, children }: { value: string; draggable: boolean; onDrop: () => void; children: ReactNode }) {
+  const controls = useDragControls();
+  return (
+    <Reorder.Item as="div" value={value} dragListener={false} dragControls={controls} onDragEnd={onDrop} className="group relative bg-bg" whileDrag={{ zIndex: 1 }}>
+      {draggable && (
+        <span
+          aria-hidden
+          onPointerDown={(event) => controls.start(event)}
+          className="absolute inset-y-0 left-0 grid w-md cursor-grab touch-none place-items-center text-fg-faint opacity-0 hover:text-fg-muted active:cursor-grabbing group-hover:opacity-100"
+        >
+          <GripVertical className="size-md" />
+        </span>
+      )}
+      {children}
+    </Reorder.Item>
+  );
+}
+
 type Open =
   | { kind: "login"; id: SubscriptionId }
   | { kind: "subscription-models"; id: SubscriptionId }
@@ -645,6 +669,10 @@ export function ProvidersPage({
   const [loadError, setLoadError] = useState<string>();
   const [open, setOpen] = useState<Open>();
   const [reloading, setReloading] = useState(false);
+  /** 提供商排序 as last dragged; `Settings.providerOrder`. */
+  const [order, setOrder] = useState<string[]>();
+  const orderRef = useRef(order);
+  orderRef.current = order;
 
   const usable = useMemo(() => engines.filter((engine) => engine.capabilities.customProviders).map((engine) => engine.id as ProviderAgent), [engines]);
   const unusable = engines.filter((engine) => !engine.capabilities.customProviders);
@@ -663,7 +691,23 @@ export function ProvidersPage({
       .listSubscriptions()
       .then(setSubscriptions)
       .catch((cause: Error) => setLoadError(cause.message));
+    void client
+      .getSettings()
+      .then((settings) => setOrder(settings.providerOrder))
+      .catch((cause: Error) => setLoadError(cause.message));
   }, [client]);
+
+  const added = useMemo(() => orderAdded(subscriptions, providers, order), [subscriptions, providers, order]);
+
+  /** A drag is over: the order it left becomes the model picker's. */
+  const saveOrder = () => {
+    const next = orderRef.current;
+    if (next == null) return;
+    void client
+      .putProviderOrder(next)
+      .then(() => onChanged?.())
+      .catch((cause: Error) => toast(cause.message));
+  };
 
   const putSubscription = (next: SubscriptionAccount) => {
     setSubscriptions((current) => current.map((entry) => (entry.id === next.id ? next : entry)));
@@ -724,52 +768,57 @@ export function ProvidersPage({
   return (
     <SettingsPage title="模型提供商">
       <SettingsGroup title="已添加">
-        {subscriptions.map((account) => (
-          <SettingsRow
-            key={account.id}
-            leading={<LetterAvatar name={account.name} />}
-            title={
-              <>
-                <span className="truncate">{account.name}</span>
-                <Tag>订阅</Tag>
-              </>
-            }
-            help={isSignedIn(account) ? `${describeSubscription(account, agentLabel)} · 已打开的模型：${summarizeSubscription(account, agentLabel)}` : describeSubscription(account, agentLabel)}
-          >
-            <button type="button" onClick={() => setOpen({ kind: isSignedIn(account) ? "subscription-models" : "login", id: account.id })} className={BUTTON_SECONDARY}>
-              {isSignedIn(account) ? "选模型" : "登录"}
-            </button>
-            {account.loggedIn !== false && (
-              <button type="button" onClick={() => setOpen({ kind: "logout", id: account.id })} className={BUTTON_GHOST}>
-                退出
-              </button>
-            )}
-          </SettingsRow>
-        ))}
-        {providers.map((provider) => (
-          <SettingsRow
-            key={provider.id}
-            leading={<LetterAvatar name={provider.name} />}
-            title={
-              <>
-                <span className="truncate">{provider.name}</span>
-                {provider.presetId == null && <Tag>自定义</Tag>}
-                {!provider.hasKey && <Tag>无 key</Tag>}
-              </>
-            }
-            help={`已打开的模型：${summarizeEnabled(provider, agentLabel)}`}
-          >
-            <button type="button" onClick={() => setOpen({ kind: "models", providerId: provider.id })} className={BUTTON_SECONDARY}>
-              选模型
-            </button>
-            <button type="button" onClick={() => setOpen({ kind: "edit", provider })} className={BUTTON_GHOST}>
-              连接设置
-            </button>
-            <button type="button" onClick={() => setOpen({ kind: "disconnect", providerId: provider.id })} className={cn(BUTTON_GHOST, "hover:bg-danger-bg hover:text-danger")}>
-              断开
-            </button>
-          </SettingsRow>
-        ))}
+        {added.length > 0 && (
+          <Reorder.Group as="div" axis="y" values={added.map((entry) => entry.key)} onReorder={setOrder} className="flex flex-col divide-y divide-border">
+            {added.map(({ key, account, provider }) => (
+              <DraggableRow key={key} value={key} draggable={added.length > 1} onDrop={saveOrder}>
+                {account != null ? (
+                  <SettingsRow
+                    leading={<LetterAvatar name={account.name} />}
+                    title={
+                      <>
+                        <span className="truncate">{account.name}</span>
+                        <Tag>订阅</Tag>
+                      </>
+                    }
+                    help={isSignedIn(account) ? `${describeSubscription(account, agentLabel)} · 已打开的模型：${summarizeSubscription(account, agentLabel)}` : describeSubscription(account, agentLabel)}
+                  >
+                    <button type="button" onClick={() => setOpen({ kind: isSignedIn(account) ? "subscription-models" : "login", id: account.id })} className={BUTTON_SECONDARY}>
+                      {isSignedIn(account) ? "选模型" : "登录"}
+                    </button>
+                    {account.loggedIn !== false && (
+                      <button type="button" onClick={() => setOpen({ kind: "logout", id: account.id })} className={BUTTON_GHOST}>
+                        退出
+                      </button>
+                    )}
+                  </SettingsRow>
+                ) : (
+                  <SettingsRow
+                    leading={<LetterAvatar name={provider.name} />}
+                    title={
+                      <>
+                        <span className="truncate">{provider.name}</span>
+                        {provider.presetId == null && <Tag>自定义</Tag>}
+                        {!provider.hasKey && <Tag>无 key</Tag>}
+                      </>
+                    }
+                    help={`已打开的模型：${summarizeEnabled(provider, agentLabel)}`}
+                  >
+                    <button type="button" onClick={() => setOpen({ kind: "models", providerId: provider.id })} className={BUTTON_SECONDARY}>
+                      选模型
+                    </button>
+                    <button type="button" onClick={() => setOpen({ kind: "edit", provider })} className={BUTTON_GHOST}>
+                      连接设置
+                    </button>
+                    <button type="button" onClick={() => setOpen({ kind: "disconnect", providerId: provider.id })} className={cn(BUTTON_GHOST, "hover:bg-danger-bg hover:text-danger")}>
+                      断开
+                    </button>
+                  </SettingsRow>
+                )}
+              </DraggableRow>
+            ))}
+          </Reorder.Group>
+        )}
         {providers.length === 0 && subscriptions.length === 0 && <SettingsEmpty>还没有连接任何提供商。</SettingsEmpty>}
       </SettingsGroup>
 

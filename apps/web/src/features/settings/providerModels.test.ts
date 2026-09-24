@@ -12,6 +12,7 @@ import {
   isEnabled,
   isSignedIn,
   modelRows,
+  orderAdded,
   summarizeEnabled,
   summarizeSubscription,
   withModels,
@@ -180,6 +181,14 @@ describe("订阅", () => {
       { id: "gpt-5.5-mini", label: "GPT-5.5 mini", agents: { vgent: { spec: "codex-subscription:gpt-5.5-mini", enabled: false }, codex: { spec: "gpt-5.5-mini", enabled: true } } },
     ],
   };
+
+  it("lists「已添加」in 提供商排序, logins and providers alike; the ones never placed follow", () => {
+    const claude: SubscriptionAccount = { ...codex, id: "claude-subscription", name: "Claude 订阅" };
+    const other: RedactedProviderConfig = { ...connected, id: "xd", name: "XD" };
+    const keys = (order?: string[]) => orderAdded([codex, claude], [connected, other], order).map((entry) => entry.key);
+    expect(keys()).toEqual(["codex-subscription", "claude-subscription", "deepseek", "xd"]);
+    expect(keys(["xd", "claude-subscription", "gone"])).toEqual(["xd", "claude-subscription", "codex-subscription", "deepseek"]);
+  });
 
   it("says whose login it is, or what is missing, in one line", () => {
     expect(describeSubscription(codex, labelOf)).toBe("dev@example.com · Pro");

@@ -26,10 +26,10 @@ const UNKNOWN_SOURCE: ModelChoice["source"] = { kind: "provider", name: "" };
 
 /**
  * Folds the per-engine catalogs into the menu's rows. Entries that carry the
- * same `modelKey` are the same model; rows keep the order their *source* first
- * appeared in (the Codex login's models, then each provider's, then Claude's…),
- * and all of a source's models stay together even when only some engines list
- * them.
+ * same `modelKey` are the same model; sources go in 提供商排序 (`source.rank`),
+ * the ones never placed after them in the order they first appeared (the Codex
+ * login's models, then each provider's, then Claude's…), and all of a source's
+ * models stay together even when only some engines list them.
  */
 export function buildModelChoices(
   engines: readonly EngineDescriptor[],
@@ -52,11 +52,12 @@ export function buildModelChoices(
       byKey.set(key, choice);
     }
   }
+  const rankOf = (choice: ModelChoice) => choice.source.rank ?? Number.POSITIVE_INFINITY;
   const sourceOf = (choice: ModelChoice) => sourceOrder.indexOf(`${choice.source.kind}/${choice.source.id ?? choice.source.name}`);
   const choices = [...byKey.values()];
   for (const choice of choices) choice.routes.sort((a, b) => Number(b.engine === "vgent") - Number(a.engine === "vgent"));
   // Stable: within a source, rows stay in the order the catalogs listed them.
-  return choices.map((choice, at) => ({ choice, at })).sort((a, b) => sourceOf(a.choice) - sourceOf(b.choice) || a.at - b.at).map(({ choice }) => choice);
+  return choices.map((choice, at) => ({ choice, at })).sort((a, b) => rankOf(a.choice) - rankOf(b.choice) || sourceOf(a.choice) - sourceOf(b.choice) || a.at - b.at).map(({ choice }) => choice);
 }
 
 /** The row the task is on, if the menu has it. */

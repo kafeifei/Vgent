@@ -458,6 +458,8 @@ export function createClient(token: string) {
     /** 记住上次选的引擎, for the model with this `modelKey`. */
     rememberModelEngine: (modelKey: string, engine: EngineId) =>
       api<Settings>("/settings/model-engines", token, { method: "PUT", json: { modelKey, engine } }),
+    /** 提供商排序: the whole「已添加」list's order, by subscription or provider id. */
+    putProviderOrder: (order: readonly string[]) => api<Settings>("/settings/provider-order", token, { method: "PUT", json: { order } }),
     allowTool: (tool: string) => api<Settings>("/settings/allowlist", token, { method: "POST", json: { tool } }),
 
     stopChat: (threadId: string) => api<void>(`/chat/${threadId}/stop`, token, { method: "POST" }),

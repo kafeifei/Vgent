@@ -172,6 +172,29 @@ describe("provider routes", () => {
     });
   });
 
+  it("lists the sources in 提供商排序, and forgets a provider's place when it is disconnected", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "");
+    vi.stubEnv("CODEX_HOME", await tempDir());
+    vi.stubEnv("AI_GATEWAY_API_KEY", "");
+    vi.stubEnv("VERCEL_OIDC_TOKEN", "");
+    const app = makeApp(await tempDir());
+    await request(app, "/api/providers", { method: "POST", body: deepseekInput });
+    type Listed = { models: { id: string; source?: { kind: string; id?: string; rank?: number } }[] };
+    const sources = async () => {
+      const listed = (await (await request(app, "/api/engines/vgent/models")).json()) as Listed;
+      return [...new Set(listed.models.map((model) => `${model.source?.id ?? model.source?.kind}@${model.source?.rank ?? "-"}`))];
+    };
+    expect(await sources()).toEqual(["codex-subscription@-", "deepseek@-"]);
+
+    expect((await request(app, "/api/settings/provider-order", { method: "PUT", body: { order: "deepseek" } })).status).toBe(400);
+    const saved = await request(app, "/api/settings/provider-order", { method: "PUT", body: { order: ["deepseek", "codex-subscription"] } });
+    expect(await saved.json()).toMatchObject({ providerOrder: ["deepseek", "codex-subscription"] });
+    expect(await sources()).toEqual(["deepseek@0", "codex-subscription@1"]);
+
+    await request(app, "/api/providers/deepseek", { method: "DELETE" });
+    expect(await (await request(app, "/api/settings")).json()).toMatchObject({ providerOrder: ["codex-subscription"] });
+  });
+
   it("offers Codex a provider's models once the provider has a Codex address, under the Responses protocol whatever was sent", async () => {
     vi.stubEnv("CODEX_HOME", await tempDir());
     const app = makeApp(await tempDir());

@@ -109,6 +109,22 @@ const levelOf = (entry: ModelEntry, chosen: string | undefined): string | undefi
   chosen != null && entry.reasoningLevels?.includes(chosen) === true ? chosen : entry.defaultReasoningLevel;
 
 /**
+ * What a row in the model list runs with, dimmed right after its name the way
+ * Cursor writes「Opus 5.5 1M High Fast」: a context window other than the model's
+ * own, the 推理强度, Fast when it is on. The task's own row reads its choices;
+ * any other, the model's defaults — which is only ever a level.
+ */
+function variantOf(entry: ModelEntry, options: ModelOptions | undefined): string {
+  const windows = entry.contextOptions ?? [];
+  const own = entry.contextWindow ?? windows[0];
+  const context = options?.contextWindow != null && options.contextWindow !== own && windows.includes(options.contextWindow) ? formatContext(options.contextWindow) : undefined;
+  const level = levelOf(entry, options?.reasoningEffort);
+  const effort = level == null ? undefined : EFFORT_OFF.has(level) ? "不思考" : reasoningLabel(level);
+  const fast = entry.serviceTiers?.[0];
+  return [context, effort, fast != null && options?.serviceTier === fast.id ? fast.name : undefined].filter((part) => part != null).join(" ");
+}
+
+/**
  * The rows above 模型: Fast / 上下文 / 推理强度 / 引擎 — what the model the task is
  * already on runs with. They are read off `route`, the engine it runs on, since
  * the same model offers different levels and windows under different engines. A
@@ -238,15 +254,20 @@ function ModelList({
       preferredRoute(choice, engine, engineLocked, modelEngines);
     if (route == null) return [];
     if (needle !== "" && !`${choice.label} ${route.entry.id}`.toLowerCase().includes(needle)) return [];
-    // The level beside a name is what that row would run at, so the list reads as what it does.
-    const level = levelOf(route.entry, isMine ? options?.reasoningEffort : undefined);
+    const variant = variantOf(route.entry, isMine ? options : undefined);
     return [
       {
         key: choice.key,
-        label: choice.label,
+        label:
+          variant === "" ? (
+            choice.label
+          ) : (
+            <>
+              {choice.label} <span className="text-fg-faint">{variant}</span>
+            </>
+          ),
         icon: <SourceIcon source={choice.source} />,
         ...(choice.source.name !== "" ? { section: choice.source.name } : {}),
-        ...(level != null ? { hint: reasoningLabel(level) } : {}),
         selected: isMine,
         onPick: () => onPick(route),
       },

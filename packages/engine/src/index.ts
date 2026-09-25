@@ -53,3 +53,9 @@ export {
   type McpStdioServerConfig,
 } from "./mcp.js";
 export { loadSkillsIndex, parseSkillFrontmatter, type SkillSummary } from "./skills.js";
+export {
+  agentInstructionsSection,
+  loadAgentInstructions,
+  type AgentInstructionsFile,
+  type AgentInstructionsOptions,
+} from "./agent-instructions.js";

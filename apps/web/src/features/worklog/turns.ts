@@ -53,6 +53,10 @@ export interface Turn {
 export const compactedOf = (message: UIMessage): ThreadMessageMetadata["compacted"] =>
   (message.metadata as ThreadMessageMetadata | undefined)?.compacted;
 
+/** How this user message's turn ended, when it failed or was cut short; absent for a normal finish. */
+export const turnEndOf = (message: UIMessage): ThreadMessageMetadata["turnEnd"] =>
+  (message.metadata as ThreadMessageMetadata | undefined)?.turnEnd;
+
 /** The anchor ids the right-pane queue scrolls to. */
 export const approvalAnchor = (toolCallId: string): string => `approval-${toolCallId}`;
 export const questionAnchor = (toolCallId: string): string => `question-${toolCallId}`;

@@ -128,6 +128,20 @@ export interface ThreadMessageMetadata {
    * restoring the whole tree.
    */
   checkpointAfter?: MessageCheckpoint;
+  /**
+   * On the same user message: how its turn ended, when that was not a normal
+   * finish — it failed, was stopped, or the server went down under it. The
+   * thread's own `error` only ever describes the latest turn and is cleared by
+   * the next one, which used to leave an earlier failure as a question with no
+   * answer under it. Cleared again when the turn is picked back up.
+   */
+  turnEnd?: TurnEnd;
+}
+
+export interface TurnEnd {
+  status: "error" | "interrupted";
+  /** Why, in the words the log shows. */
+  reason: string;
 }
 
 /** Where a forked task came from. */

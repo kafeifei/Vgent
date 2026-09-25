@@ -833,6 +833,48 @@ describe("run lifecycle", () => {
     expect(JSON.stringify(record.messages)).toContain("开始");
   });
 
+  it("keeps a failed turn's error under its own message after the next turn clears the thread's", async () => {
+    const dir = await tempDir();
+    let calls = 0;
+    const factory: EngineFactoryOverride = {
+      async create() {
+        return {
+          hasUnfinishedTurn: () => false,
+          async finish() {},
+          async destroy() {},
+          async stream() {
+            calls += 1;
+            return {
+              stream: toStream(
+                calls === 1
+                  ? [{ type: "start" }, { type: "error", error: new Error("Connect Timeout Error") }]
+                  : [
+                      { type: "start" },
+                      { type: "text-start", id: "t1" },
+                      { type: "text-delta", id: "t1", text: "好了" },
+                      { type: "text-end", id: "t1" },
+                    ],
+              ),
+            };
+          },
+        } satisfies EngineRunner;
+      },
+    };
+    const app = makeApp(dir, factory);
+    const thread = await setupThread(app, dir);
+
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "发 debug")] }));
+    const failed = await waitForStatus(app, thread.id, "error");
+    expect(failed.messages.map((message) => message.role)).toEqual(["user"]);
+    expect(failed.messages[0]!.metadata).toMatchObject({ turnEnd: { status: "error", reason: "Connect Timeout Error" } });
+
+    await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [...failed.messages, userMessage("u2", "再发一次")] }));
+    const record = await waitForStatus(app, thread.id, "idle");
+    expect(record.error).toBeUndefined();
+    expect(record.messages[0]!.metadata).toMatchObject({ turnEnd: { status: "error", reason: "Connect Timeout Error" } });
+    expect((record.messages[1]!.metadata as { turnEnd?: unknown } | undefined)?.turnEnd).toBeUndefined();
+  });
+
   it("keeps a failed tool call out of the thread's error, with the tool's own text on the call", async () => {
     const dir = await tempDir();
     const factory: EngineFactoryOverride = {

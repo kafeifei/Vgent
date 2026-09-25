@@ -1,6 +1,13 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { CODEX_SUBSCRIPTION_PREFIX, connectMcpServers, createVgentEngine, loadSkillsIndex } from "@vgent/engine";
+import {
+  agentInstructionsSection,
+  CODEX_SUBSCRIPTION_PREFIX,
+  connectMcpServers,
+  createVgentEngine,
+  loadAgentInstructions,
+  loadSkillsIndex,
+} from "@vgent/engine";
 import { cuaMcpConfig, onlyCuaTools, requireCuaDriver } from "../computer-use/cua.js";
 import { describeModelSpec, describeSubscriptionAuth } from "@vgent/providers";
 import type { LanguageModel, TextStreamPart, ToolSet } from "ai";
@@ -110,9 +117,15 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
       const cuaBinary = settings.computerUseProvider === "cua" ? await requireCuaDriver() : undefined;
       const providers = await createProviderStore(ctx.dataDir, ctx.log).list();
       const skills = await loadSkillsIndex([
+        join(ctx.project.repoPath, ".agents", "skills"),
         join(ctx.project.repoPath, ".claude", "skills"),
         join(homedir(), ".vgent", "skills"),
+        join(homedir(), ".agents", "skills"),
+        join(homedir(), ".claude", "skills"),
       ]);
+      // AGENTS.md / CLAUDE.md, global and the project's — the rules the user
+      // already wrote down for Claude Code and Codex hold here too.
+      const standing = agentInstructionsSection(await loadAgentInstructions({ repoPath: ctx.project.repoPath, projectPath: ctx.projectPath }));
       const cua = cuaBinary == null ? undefined : await connectMcpServers([cuaMcpConfig(cuaBinary)], { log: ctx.log });
       const cuaTools = cua == null ? {} : onlyCuaTools(cua.tools);
       if (cua != null && Object.keys(cuaTools).length === 0) {
@@ -136,6 +149,7 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
           extraTools: { ...mcp.tools, ...cuaTools },
           // 插话: whatever the user sent since the last step goes in before the next one.
           pendingUserMessages: ctx.takeSteers,
+          ...(standing === "" ? {} : { instructions: standing }),
           skills,
           memoryDir: memoryDirOf(ctx),
           // The summary is always asked for (that is the engine's default); the

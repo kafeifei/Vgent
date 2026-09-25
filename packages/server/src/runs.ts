@@ -42,6 +42,7 @@ import type {
   ThreadMessageMetadata,
   ThreadRecord,
   ThreadStatus,
+  TurnEnd,
   UsageInfo,
 } from "./types.js";
 import { silentLogger } from "./types.js";
@@ -136,6 +137,21 @@ export const STOP_INTERRUPT_TEXT = "已停止";
 export const ABANDONED_TURN_TEXT = "该轮已被新的提问取代";
 /** A call the engine started announcing but never ran — the turn ended first. */
 export const UNEXECUTED_TOOL_TEXT = "未执行";
+
+/**
+ * `messages` with `end` recorded on the last user message — the one whose turn
+ * just ended — or, with `undefined`, cleared from it. See `TurnEnd`.
+ */
+export function withTurnEnd(messages: readonly UIMessage[], end: TurnEnd | undefined): UIMessage[] {
+  const index = messages.findLastIndex((message) => message.role === "user");
+  if (index < 0) return [...messages];
+  const message = messages[index]!;
+  const { turnEnd: previous, ...rest } = (message.metadata as ThreadMessageMetadata | undefined) ?? {};
+  if (end == null && previous == null) return [...messages];
+  const next = [...messages];
+  next[index] = { ...message, metadata: end == null ? rest : { ...rest, turnEnd: end } };
+  return next;
+}
 
 type AnyToolUIPart = ToolUIPart | DynamicToolUIPart;
 
@@ -742,7 +758,10 @@ export function createRunManager(options: {
         if (thread.mode === "plan" && status === "idle") await savePlanFrom(thread.id, settled);
         await threads
           .update(thread.id, {
-            messages: withAssistant(settled),
+            messages: withTurnEnd(
+              withAssistant(settled),
+              streamError != null ? { status: "error", reason: rawStreamError ?? streamError } : undefined,
+            ),
             status,
             error: streamError != null ? (rawStreamError ?? streamError) : undefined,
             ...(stats != null ? { changeStats: stats } : {}),
@@ -758,8 +777,10 @@ export function createRunManager(options: {
               .update(thread.id, { status: "error", error: getHarnessErrorMessage(error), unread: true })
               .catch((fallback) => log.error(`记录线程 ${thread.id} 的错误状态也失败`, fallback));
           });
-      } else if (assistant != null && assistant.parts.length > 0) {
-        await threads.update(thread.id, { messages: withAssistant(settled) });
+      } else {
+        // 停止: recorded even when the turn had produced nothing yet, or the
+        // question would sit in the log as if it had never been answered.
+        await threads.update(thread.id, { messages: withTurnEnd(withAssistant(settled), { status: "interrupted", reason: STOP_INTERRUPT_TEXT }) });
       }
     } catch (error) {
       park = false;
@@ -783,9 +804,16 @@ export function createRunManager(options: {
       await reader.catch(() => {});
       await threads
         .update(thread.id, {
-          messages: resumeFailed
-            ? closePendingToolParts(withAssistant(assistant), RESUME_FAILED_TEXT)
-            : withAssistant(run.stopped ? assistant : settleStreamingToolParts(assistant, seed?.dropped)),
+          messages: withTurnEnd(
+            resumeFailed
+              ? closePendingToolParts(withAssistant(assistant), RESUME_FAILED_TEXT)
+              : withAssistant(run.stopped ? assistant : settleStreamingToolParts(assistant, seed?.dropped)),
+            run.stopped
+              ? { status: "interrupted", reason: STOP_INTERRUPT_TEXT }
+              : resumeFailed
+                ? { status: "interrupted", reason: RESUME_FAILED_TEXT }
+                : { status: "error", reason: rawMessage },
+          ),
           status: run.stopped || resumeFailed ? "interrupted" : "error",
           ...(run.stopped ? {} : { error: rawMessage }),
         })
@@ -887,7 +915,12 @@ export function createRunManager(options: {
     const checkpoint = await checkpointForTurn(thread, validated);
     // The client posts the history back, but only its tail is merged: the stored
     // copy needs the same repair, or the engine converts the broken parts.
-    const messages = withAfterFallback(withToolInputs(mergeIncoming(thread.messages, withCheckpoint(validated, checkpoint))), checkpoint);
+    // A turn picked back up (an approval answered after a stop, say) is no
+    // longer ended; a new user message has no ending to clear.
+    const messages = withTurnEnd(
+      withAfterFallback(withToolInputs(mergeIncoming(thread.messages, withCheckpoint(validated, checkpoint))), checkpoint),
+      undefined,
+    );
     // 从恢复点继续: the marker goes away with this message — the task is moving
     // forward from here — and the model is told once, in this turn's input, what
     // happened to the files it may remember writing.
@@ -1137,7 +1170,7 @@ export async function recoverInterruptedThreads(threads: ThreadStore, registry: 
     if (record == null) continue;
     await threads
       .update(summary.id, {
-        messages: closePendingToolParts(record.messages, RESTART_PENDING_TOOL_TEXT),
+        messages: withTurnEnd(closePendingToolParts(record.messages, RESTART_PENDING_TOOL_TEXT), { status: "interrupted", reason: RESTART_INTERRUPT_TEXT }),
         queue: record.queue?.map((item) => item.accepted === true ? { ...item, accepted: false, applied: false } : item),
         status: "interrupted",
         error: RESTART_INTERRUPT_TEXT,

@@ -1,8 +1,8 @@
 import { readdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { createModelRegistry, splitProviderModelSpec, type ProviderConfig } from "@vgent/providers";
 import { createCodingTools } from "@vgent/tools";
-import { ToolLoopAgent, isStepCount, pruneMessages, toolSearch, wrapLanguageModel, type LanguageModel, type ModelMessage, type ToolSet } from "ai";
+import { ToolLoopAgent, extractReasoningMiddleware, isStepCount, pruneMessages, toolSearch, wrapLanguageModel, type LanguageModel, type ModelMessage, type ToolSet } from "ai";
 import { retryEmptyReply } from "./empty-reply.js";
 import { askUserQuestionsTool } from "./ask-user-questions.js";
 import { buildInstructions, type VgentContext } from "./instructions.js";
@@ -249,14 +249,18 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
   const { sessionFile, onEvent, skills, memoryDir } = options;
   const model = wrapLanguageModel({
     model: resolveModel(options.model, options.providers) as Parameters<typeof wrapLanguageModel>[0]["model"],
-    middleware: retryEmptyReply(),
+    // Some OpenAI-compatible gateways put the model's reasoning summary into the
+    // answer as `<thinking>…</thinking>`; it is taken back out as reasoning
+    // before the empty-reply check looks at what is left.
+    middleware: [retryEmptyReply(), extractReasoningMiddleware({ tagName: "thinking" })],
   });
   const subagents = options.subagents !== false;
 
   const plan = options.plan === true;
 
   const all: ToolSet = {
-    ...createCodingTools({ workDir: repoPath }),
+    // The skills are listed by path, and most live outside the repository.
+    ...createCodingTools({ workDir: repoPath, readRoots: [...new Set((skills ?? []).map((skill) => dirname(skill.path)))] }),
     askUserQuestions: askUserQuestionsTool,
     updatePlan: updatePlanTool,
     // Only the top-level agent remembers: a subagent is handed everything it

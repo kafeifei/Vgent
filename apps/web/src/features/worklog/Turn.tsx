@@ -15,7 +15,7 @@ import { exploreCounts, exploreLabel } from "./explore";
 import { isToolStreaming, type ToolPart } from "./toolMeta";
 import type { Block, Turn as TurnModel } from "./turns";
 import { formatTokens } from "@/features/composer/contextUsage";
-import { approvalAnchor, compactedOf, isOpenApproval, isOpenQuestion, questionAnchor } from "./turns";
+import { approvalAnchor, compactedOf, isOpenApproval, isOpenQuestion, questionAnchor, turnEndOf } from "./turns";
 
 export interface TurnActions {
   respondToApproval: (approvalId: string, approved: boolean) => void;
@@ -77,6 +77,9 @@ export function Turn({
   const thinkingKey = !settled && turn.blocks.at(-1)?.kind === "reasoning" ? turn.blocks.at(-1)!.key : undefined;
   // A `/compact` summary is an ordinary user message apart from this marker.
   const compacted = turn.user == null ? undefined : compactedOf(turn.user);
+  // How the turn ended when it did not simply finish. The last turn's error is
+  // the log's own banner; every other ending is said here, under its turn.
+  const ended = turn.user == null ? undefined : turnEndOf(turn.user);
   return (
     <TurnDrawingProvider drawings={drawings}>
     <section className={cn("flex flex-col gap-block-gap pb-xl text-md leading-chat", dimmed && "opacity-45")}>
@@ -149,7 +152,12 @@ export function Turn({
           <Shimmer>思考中…</Shimmer>
         </div>
       )}
-      {settled && turn.answered && turn.blocks.length === 0 && <p className="m-0 px-chat-inset text-fg-faint">这一轮模型没有返回内容</p>}
+      {settled && turn.answered && turn.blocks.length === 0 && ended == null && <p className="m-0 px-chat-inset text-fg-faint">这一轮模型没有返回内容</p>}
+      {settled && ended != null && !(isLast && ended.status === "error") && (
+        <p className={cn("m-0 px-chat-inset whitespace-pre-wrap break-words text-sm", ended.status === "error" ? "text-danger" : "text-fg-faint")}>
+          {ended.status === "error" ? `出错了 · ${ended.reason}` : ended.reason}
+        </p>
+      )}
       {settled && <TurnOutputs blocks={turn.blocks} drawings={drawings} />}
       {settled && turn.blocks.length > 0 && <ReplyActions turn={turn} {...(turn.user != null ? { onFork: () => actions.fork(turn.user!.id) } : {})} />}
     </section>

@@ -12,7 +12,8 @@
  */
 import type { Experimental_SandboxSession, ToolSet } from "ai";
 import { mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, resolve, sep } from "node:path";
 import { createNodeFileSystem, createSandboxFileSystem, type FileSystemLike } from "./fs.js";
 import { createLocalRunner } from "./local-runner.js";
 import { resolveToolPath, resolveWorkspacePath } from "./paths.js";
@@ -42,6 +43,11 @@ export interface CreateCodingToolsOptions {
   maxOutputChars?: number;
   /** When false, `grep` always uses the pure-Node fallback instead of ripgrep, even if it is on PATH. Defaults to true. */
   preferRg?: boolean;
+  /**
+   * Directories outside `workDir` that `read` — and only `read` — may open,
+   * e.g. the skills the system prompt lists by path. Host filesystem only.
+   */
+  readRoots?: readonly string[];
 }
 
 /**
@@ -61,6 +67,15 @@ export function createCodingTools(options: CreateCodingToolsOptions): ToolSet {
   const resolveForRead = (input: string): Promise<string> =>
     sandbox ? Promise.resolve(resolveWorkspacePath(workDir, input)) : resolveToolPath(workDir, input);
 
+  // `read` alone also reaches the extra roots, with the same symlink-safe walk
+  // against whichever root the path names.
+  const readRoots = sandbox ? [] : (options.readRoots ?? []);
+  const resolveForReadOnly = async (input: string): Promise<string> => {
+    const target = resolve(workDir, input.startsWith("~/") ? join(homedir(), input.slice(2)) : input);
+    const root = readRoots.find((dir) => target === dir || target.startsWith(`${dir}${sep}`));
+    return root == null ? resolveForRead(input) : resolveToolPath(root, target);
+  };
+
   // Write-oriented resolution additionally ensures the parent directory
   // exists and, on the real filesystem, re-validates afterwards in case a
   // symlink was planted while `mkdir` ran.
@@ -76,7 +91,7 @@ export function createCodingTools(options: CreateCodingToolsOptions): ToolSet {
   const resolveHostDir = (input: string): Promise<string> => resolveToolPath(workDir, input);
 
   return {
-    read: createReadTool({ fs, resolvePath: resolveForRead }),
+    read: createReadTool({ fs, resolvePath: resolveForReadOnly }),
     write: createWriteTool({ fs, resolvePath: resolveForWrite }),
     edit: createEditTool({ fs, resolvePath: resolveForRead }),
     bash: createBashTool({ runner, workDir, resolveDir: resolveForRead, maxOutputChars }),

@@ -3,6 +3,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { UIMessage } from "ai";
 import { describe, expect, it } from "vitest";
 import { Turn, type TurnActions } from "./Turn";
+import { ToolDetail } from "@/features/rightpane/ToolDetail";
+import type { ToolPart } from "./toolMeta";
 import { buildTurns } from "./turns";
 
 const actions: TurnActions = {
@@ -53,6 +55,32 @@ describe("a running turn", () => {
     expect(htmlOf([tool("c1", "Read"), reasoning("想一下", "streaming")], true)).toContain("思考中…");
     expect(htmlOf([tool("c1", "Read"), reasoning("想完了")], true)).toContain("思考中…");
     expect(htmlOf([reasoning("想完了"), tool("c1", "Read")], true)).not.toContain("思考中…");
+  });
+
+  it("shows a subagent as a single icon row, not its streamed transcript", () => {
+    const child = {
+      type: "tool-explore",
+      toolCallId: "child",
+      state: "output-available",
+      preliminary: true,
+      input: { prompt: "查找相关文件" },
+      output: { parts: [
+        { type: "tool-grep", toolCallId: "nested", state: "output-available", input: { pattern: "unique-child-search" } },
+        { type: "text", text: "unique-child-summary" },
+      ] },
+    } as unknown as UIMessage["parts"][number];
+    const html = htmlOf([child], true);
+    expect(html).toContain("子代理·探索");
+    expect(html).toContain("lucide-bot");
+    expect(html).toContain("运行中");
+    expect(html).not.toContain("查找相关文件");
+    expect(html).not.toContain("unique-child-search");
+    expect(html).not.toContain("unique-child-summary");
+    expect(html).not.toContain("进行中…");
+
+    const detail = renderToStaticMarkup(createElement(ToolDetail, { part: child as ToolPart, onOpenFile: () => {} }));
+    expect(detail).toContain("unique-child-search");
+    expect(detail).toContain("unique-child-summary");
   });
 
   it("shows a reply written mid-way where it happened", () => {

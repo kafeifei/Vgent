@@ -1,12 +1,11 @@
 import type { UIMessage } from "ai";
 import { useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { Bot, ChevronDown } from "lucide-react";
 import { baseName } from "@/lib/format";
 import { planItemsOf } from "@/features/plan/plan";
 import { PlanList } from "@/features/plan/PlanList";
 import { cn } from "@/lib/utils";
 import {
-  asChildMessage,
   asChildToolPart,
   describeTool,
   diffStatOf,
@@ -45,10 +44,8 @@ export function FileChip({
 }
 
 /**
- * A subagent's transcript: its own text, and for every tool it called the same
- * one-liner the parent's rows use. It is shown inline rather than folded away,
- * because it is the only place the child's work is ever visible — the parent
- * model itself receives nothing but the closing summary.
+ * A subagent's transcript for the tool detail pane. The main log keeps only
+ * a compact entry for the child; its individual steps remain available here.
  */
 export function ChildTranscript({ parts, preliminary }: { parts: UIMessage["parts"]; preliminary: boolean }) {
   return (
@@ -96,23 +93,26 @@ export function ToolRow({
   const [planOpen, setPlanOpen] = useState(true);
   const display = describeTool(part);
   const plan = display.kind === "plan" ? planItemsOf(part) : null;
-  const streaming = isToolStreaming(part);
+  const streaming = isToolStreaming(part) || (display.kind === "agent" && part.state === "output-available" && part.preliminary === true);
   const exitCode = part.state === "output-available" ? exitCodeOf(part.output) : undefined;
   const stat = part.state === "output-available" ? diffStatOf(part.output) : undefined;
-  const child = part.state === "output-available" ? asChildMessage(part.output) : undefined;
 
   return (
     <div>
       <button
         type="button"
         onClick={() => (plan != null ? setPlanOpen((value) => !value) : onInspect(part))}
+        title={display.kind === "agent" ? "查看子代理详情" : undefined}
         className="group/tool flex min-h-row-tool w-full items-center gap-xs text-left text-fg-muted text-md leading-chat hover:text-fg"
       >
         {streaming && <Spinner />}
+        {display.kind === "agent" && <Bot className="size-md flex-none text-fg-faint" aria-hidden="true" />}
         <span className={cn("flex-none", display.kind === "bash" && "font-mono text-code")}>{display.verb}</span>
-        <span className={cn("min-w-0 truncate text-fg-faint group-hover/tool:text-fg-muted", display.kind === "bash" && "font-mono text-code")}>
-          {display.target}
-        </span>
+        {display.kind !== "agent" && (
+          <span className={cn("min-w-0 truncate text-fg-faint group-hover/tool:text-fg-muted", display.kind === "bash" && "font-mono text-code")}>
+            {display.target}
+          </span>
+        )}
         {plan != null && (
           <ChevronDown
             className={cn(
@@ -131,10 +131,6 @@ export function ToolRow({
           ) : null}
         </span>
       </button>
-
-      {child != null && (
-        <ChildTranscript parts={child} preliminary={part.state === "output-available" && part.preliminary === true} />
-      )}
 
       {display.file != null && part.state === "output-available" && (
         <div className="flex flex-wrap gap-2xs py-3xs">

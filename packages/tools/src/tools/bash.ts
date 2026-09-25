@@ -9,7 +9,14 @@ export interface Runner {
     workingDirectory?: string;
     env?: Record<string, string>;
     abortSignal?: AbortSignal;
-  }): PromiseLike<{ exitCode: number; stdout: string; stderr: string }>;
+    onOutput?: (output: { stdout: string; stderr: string }) => void;
+  }): PromiseLike<{
+    exitCode: number;
+    stdout: string;
+    stderr: string;
+    outputFiles?: { stdout: string; stderr: string };
+    outputTruncated?: boolean;
+  }>;
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -23,12 +30,21 @@ export interface BashToolDeps {
   maxOutputChars: number;
 }
 
+export const bashOutputSchema = z.object({
+  exitCode: z.number().describe("The command's exit code."),
+  stdout: z.string(),
+  stderr: z.string(),
+  truncated: z.boolean().describe("True when stdout or stderr was truncated."),
+  durationMs: z.number(),
+  outputFiles: z.object({ stdout: z.string(), stderr: z.string() }).optional(),
+});
+
 export function createBashTool({ runner, workDir, resolveDir, maxOutputChars }: BashToolDeps) {
   return tool({
     description:
       "Run a shell command in the working directory and return its output. " +
       `Defaults to a ${DEFAULT_TIMEOUT_MS}ms timeout (max ${MAX_TIMEOUT_MS}ms); output is truncated ` +
-      `to ${maxOutputChars} characters, keeping the start and the end.`,
+      `to ${maxOutputChars} characters, keeping the start and the end. When outputFiles are returned, read those paths for the complete output.`,
     inputSchema: z.object({
       command: z.string().min(1).describe("The shell command to execute via `/bin/sh -c`."),
       timeout_ms: z
@@ -42,14 +58,9 @@ export function createBashTool({ runner, workDir, resolveDir, maxOutputChars }: 
         .optional()
         .describe("Working directory for the command, relative to the task working directory. Defaults to the working directory."),
     }),
-    outputSchema: z.object({
-      exitCode: z.number().describe("The command's exit code."),
-      stdout: z.string(),
-      stderr: z.string(),
-      truncated: z.boolean().describe("True when stdout or stderr was truncated."),
-      durationMs: z.number(),
-    }),
+    outputSchema: bashOutputSchema,
     execute: async ({ command, timeout_ms, working_directory }, { abortSignal }) => {
+      abortSignal?.throwIfAborted();
       const timeoutMs = Math.min(timeout_ms ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
       const cwd = working_directory ? await resolveDir(working_directory) : workDir;
 
@@ -75,7 +86,8 @@ export function createBashTool({ runner, workDir, resolveDir, maxOutputChars }: 
           exitCode: result.exitCode,
           stdout: stdout.text,
           stderr: stderr.text,
-          truncated: stdout.truncated || stderr.truncated,
+          truncated: result.outputTruncated === true || stdout.truncated || stderr.truncated,
+          ...(result.outputFiles ? { outputFiles: result.outputFiles } : {}),
           durationMs: Date.now() - start,
         };
       } catch (error) {

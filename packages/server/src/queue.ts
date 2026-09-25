@@ -1,3 +1,4 @@
+import type { UIMessage } from "ai";
 import { randomUUID } from "node:crypto";
 import { BadRequestError, ConflictError, NotFoundError } from "./errors.js";
 import type { ThreadStore } from "./store/threads.js";
@@ -42,14 +43,15 @@ export interface QueueStore {
   markApplied(threadId: string, itemId: string): Promise<void>;
   /** Remove only the acknowledgements belonging to a completed turn. */
   removeAccepted(threadId: string, ids: readonly string[]): Promise<void>;
-  /** Pull only steer items; explicit queue items stay for the next turn. */
-  takeSteers(threadId: string): Promise<QueuedMessage[]>;
+  /** Peek without a callback; with one, persist the transcript and consume steers in a single update. */
+  takeSteers(threadId: string, record?: (items: QueuedMessage[]) => UIMessage[]): Promise<QueuedMessage[]>;
   /**
    * Lift one item out — the named one, or the head. `undefined` means there was
    * nothing to take, which is the normal answer for a dispatcher that lost a
-   * race. Callers already holding the lock pass `held` so it is not re-taken.
+   * race. Production dispatch uses `retain` to claim durably until turn start.
+   * Callers already holding the lock pass `held` so it is not re-taken.
    */
-  take(threadId: string, options?: { itemId?: string; held?: boolean }): Promise<QueuedMessage | undefined>;
+  take(threadId: string, options?: { itemId?: string; held?: boolean; retain?: boolean }): Promise<QueuedMessage | undefined>;
   /** Put a taken item back at the head, for a turn that could not be started. */
   putBack(threadId: string, item: QueuedMessage, options?: { held?: boolean }): Promise<void>;
 }
@@ -94,7 +96,8 @@ export function createQueueStore(threads: ThreadStore): QueueStore {
         const thread = await load(threadId);
         const queue = thread.queue ?? [];
         if (!queue.some((item) => item.id === itemId)) throw new NotFoundError("这条排队消息不存在", "queue_item_not_found");
-        if (queue.some((item) => item.id === itemId && item.accepted === true)) throw new ConflictError("引导已送达，不能再编辑", "steer_already_accepted");
+        if (queue.some((item) => item.id === itemId && item.accepted === true))
+          throw new ConflictError("引导已送达，不能再编辑", "steer_already_accepted");
         return write(
           threadId,
           queue.map((item) => (item.id === itemId ? { ...item, text } : item)),
@@ -106,7 +109,8 @@ export function createQueueStore(threads: ThreadStore): QueueStore {
         const thread = await load(threadId);
         const queue = thread.queue ?? [];
         if (!queue.some((item) => item.id === itemId)) throw new NotFoundError("这条排队消息不存在", "queue_item_not_found");
-        if (queue.some((item) => item.id === itemId && item.accepted === true)) throw new ConflictError("引导已送达，不能直接删除", "steer_already_accepted");
+        if (queue.some((item) => item.id === itemId && item.accepted === true))
+          throw new ConflictError("引导已送达，不能直接删除", "steer_already_accepted");
         return write(
           threadId,
           queue.filter((item) => item.id !== itemId),
@@ -123,29 +127,42 @@ export function createQueueStore(threads: ThreadStore): QueueStore {
           throw new ConflictError("已送达的引导不能移动", "steer_already_accepted");
         }
         const byId = new Map(queue.map((item) => [item.id, item]));
-        return write(threadId, ids.map((id) => byId.get(id)!));
+        return write(
+          threadId,
+          ids.map((id) => byId.get(id)!),
+        );
       }),
 
     setMode: (threadId, itemId, mode) =>
       locked(threadId, async () => {
         const queue = (await load(threadId)).queue ?? [];
         if (!queue.some((item) => item.id === itemId)) throw new NotFoundError("这条排队消息不存在", "queue_item_not_found");
-        if (queue.some((item) => item.id === itemId && item.accepted === true)) throw new ConflictError("引导已送达", "steer_already_accepted");
-        return write(threadId, queue.map((item) => (item.id === itemId ? { ...item, mode, accepted: false } : item)));
+        if (queue.some((item) => item.id === itemId && item.accepted === true))
+          throw new ConflictError("引导已送达", "steer_already_accepted");
+        return write(
+          threadId,
+          queue.map((item) => (item.id === itemId ? { ...item, mode, accepted: false } : item)),
+        );
       }),
 
     markAccepted: (threadId, itemId, accepted) =>
       locked(threadId, async () => {
         const queue = (await load(threadId)).queue ?? [];
         if (!queue.some((item) => item.id === itemId)) return;
-        await write(threadId, queue.map((item) => (item.id === itemId ? { ...item, accepted, applied: accepted && item.applied === true } : item)));
+        await write(
+          threadId,
+          queue.map((item) => (item.id === itemId ? { ...item, accepted, applied: accepted && item.applied === true } : item)),
+        );
       }),
 
     markApplied: (threadId, itemId) =>
       locked(threadId, async () => {
         const queue = (await load(threadId)).queue ?? [];
         if (queue.some((item) => item.id === itemId && item.mode === "steer")) {
-          await write(threadId, queue.map((item) => item.id === itemId ? { ...item, applied: true } : item));
+          await write(
+            threadId,
+            queue.map((item) => (item.id === itemId ? { ...item, applied: true } : item)),
+          );
         }
       }),
 
@@ -157,11 +174,16 @@ export function createQueueStore(threads: ThreadStore): QueueStore {
         if (remaining.length !== queue.length) await write(threadId, remaining);
       }),
 
-    takeSteers: (threadId) =>
+    takeSteers: (threadId, record) =>
       locked(threadId, async () => {
         const queue = (await load(threadId)).queue ?? [];
         const taken = queue.filter((item) => item.mode === "steer" && item.accepted !== true);
-        if (taken.length > 0) await write(threadId, queue.filter((item) => !taken.includes(item)));
+        // With no transcript commit this is a peek: a crash cannot discard the input.
+        if (taken.length > 0 && record)
+          await threads.update(threadId, {
+            messages: record(taken),
+            queue: queue.filter((item) => !taken.includes(item)),
+          });
         return taken;
       }),
 
@@ -169,11 +191,16 @@ export function createQueueStore(threads: ThreadStore): QueueStore {
       const work = async (): Promise<QueuedMessage | undefined> => {
         const thread = await threads.get(threadId).catch(() => undefined);
         const queue = thread?.queue ?? [];
-        const item = options?.itemId == null ? queue[0] : queue.find((entry) => entry.id === options.itemId);
+        const item =
+          options?.itemId == null
+            ? queue.find((entry) => entry.accepted !== true)
+            : queue.find((entry) => entry.id === options.itemId && entry.accepted !== true);
         if (item == null) return undefined;
         await write(
           threadId,
-          queue.filter((entry) => entry.id !== item.id),
+          options?.retain
+            ? queue.map((entry) => (entry.id === item.id ? { ...entry, accepted: true, claimed: true } : entry))
+            : queue.filter((entry) => entry.id !== item.id),
         );
         return item;
       };
@@ -185,7 +212,13 @@ export function createQueueStore(threads: ThreadStore): QueueStore {
         const thread = await threads.get(threadId).catch(() => undefined);
         if (thread == null) return;
         const queue = thread.queue ?? [];
-        if (queue.some((entry) => entry.id === item.id)) return;
+        if (queue.some((entry) => entry.id === item.id)) {
+          await write(
+            threadId,
+            queue.map((entry) => (entry.id === item.id ? { ...item, accepted: false } : entry)),
+          );
+          return;
+        }
         await write(threadId, [item, ...queue]);
       };
       if (options?.held === true) await work();

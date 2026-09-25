@@ -29,7 +29,11 @@ async function tempDir(): Promise<string> {
   return dir;
 }
 
-const exists = (path: string) => stat(path).then(() => true, () => false);
+const exists = (path: string) =>
+  stat(path).then(
+    () => true,
+    () => false,
+  );
 
 const auth = { authorization: `Bearer ${TOKEN}` };
 
@@ -118,7 +122,8 @@ const emptyStream = () => ({
   }),
 });
 
-const mockModel = (results: unknown[]): LanguageModel => new MockLanguageModelV3({ doStream: results as never }) as unknown as LanguageModel;
+const mockModel = (results: unknown[]): LanguageModel =>
+  new MockLanguageModelV3({ doStream: results as never }) as unknown as LanguageModel;
 
 /** The real `createVgentEngineFactory`, only its model replaced — see `runs.test.ts`. */
 function makeApp(dataDir: string, model?: LanguageModel): VgentApp {
@@ -273,13 +278,16 @@ describe("计划回合", () => {
     const dataDir = await tempDir();
     const repoPath = await tempDir();
     await writeFile(join(repoPath, "README.md"), "# 项目\n");
-    const app = makeApp(dataDir, mockModel([
-      toolCallStream("call-r", "read", { file_path: "README.md" }),
-      // The engine asks again when a call comes back empty; this model stays empty every time.
-      emptyStream(),
-      emptyStream(),
-      emptyStream(),
-    ]));
+    const app = makeApp(
+      dataDir,
+      mockModel([
+        toolCallStream("call-r", "read", { file_path: "README.md" }),
+        // The engine asks again when a call comes back empty; this model stays empty every time.
+        emptyStream(),
+        emptyStream(),
+        emptyStream(),
+      ]),
+    );
     const thread = (await (await makeThread(app, repoPath, { mode: "plan" })).json()) as ThreadRecord;
 
     // A plan the user already has. A turn that produced no closing text must not
@@ -287,7 +295,8 @@ describe("计划回合", () => {
     await putJson(app, `/api/threads/${thread.id}/plan`, { content: PLAN_TEXT });
 
     await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "再看看")] }));
-    await waitForStatus(app, thread.id, "idle");
+    const record = await waitForStatus(app, thread.id, "interrupted");
+    expect((record.messages[0]!.metadata as { run?: { stopReason: string } }).run?.stopReason).toBe("empty");
 
     expect(await readFile(join(dataDir, "plans", `${thread.id}.md`), "utf8")).toBe(PLAN_TEXT);
   });

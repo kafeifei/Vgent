@@ -1,34 +1,25 @@
+import { fitContext, SUMMARY_INSTRUCTIONS } from "@vgent/engine";
 import { randomUUID } from "node:crypto";
 import { convertToModelMessages, generateText, type LanguageModel, type UIMessage } from "ai";
 import type { ThreadRecord } from "./types.js";
 import { expandSteers } from "./steer.js";
 
 /**
- * What the summariser is asked for. The result becomes the *only* thing the
- * next turn knows about everything before it, so it is aimed at continuing the
- * work rather than at reading nicely.
+ * Preserve enough of the older prefix to continue work. The recent original
+ * turns remain beside this summary; the route keeps a pre-compaction snapshot.
  */
-const SUMMARISER_INSTRUCTIONS = `你在压缩一段编码助手和用户的对话，压缩后的摘要会替换掉原始记录，成为后续工作唯一能看到的上下文。
-
-摘要要保留：
-- 用户的目标和明确要求（包括说过的约束、偏好、否决过的方案）
-- 已经做出的决定和理由
-- 改过、读过的关键文件和它们的作用
-- 当前进展：什么已完成并验证过，什么还没做
-- 未决事项：待确认的问题、已知的坑、下一步
-
-用 markdown 分条写，中文，不要复述寒暄和工具调用细节，不要臆造没发生过的事，控制在 600 字以内。`;
+const SUMMARISER_INSTRUCTIONS = SUMMARY_INSTRUCTIONS;
 
 export interface CompactResult {
-  /** The two messages that replace the whole history. */
+  /** The summary, its acknowledgement and the retained recent turns. */
   messages: UIMessage[];
   /** How many messages were compacted away. */
   before: number;
 }
 
 /**
- * Replaces a thread's history with a summary of it plus a one-line assistant
- * acknowledgement, so the next turn starts from a short prompt and the engine —
+ * Replaces the older history with a summary and keeps recent original turns,
+ * so the next turn starts from a short prompt and the engine —
  * which is stateless between turns and re-sends the whole array — needs no
  * changes at all.
  *
@@ -38,13 +29,26 @@ export async function compactThread({ thread, model }: { thread: ThreadRecord; m
   const before = thread.messages.length;
   // A turn that stopped on an open approval leaves a tool call with no result;
   // dropping those is what makes an arbitrary stored history convertible.
-  const modelMessages = await convertToModelMessages(expandSteers(thread.messages), { ignoreIncompleteToolCalls: true });
+  let boundary = Math.max(0, thread.messages.length - 4);
+  while (boundary > 0 && thread.messages[boundary]?.role !== "user") boundary -= 1;
+  const recent = boundary > 0 ? thread.messages.slice(boundary) : [];
+  const prefix = boundary > 0 ? thread.messages.slice(0, boundary) : thread.messages;
+  const converted = await convertToModelMessages(expandSteers(prefix), { ignoreIncompleteToolCalls: true });
+  const fitted = await fitContext({
+    messages: converted,
+    model,
+    budget: Math.floor((thread.contextWindow ?? 180000) * 0.8),
+    overhead: 2048,
+  });
+  const modelMessages = fitted.messages;
   const { text } = await generateText({
     model,
     instructions: SUMMARISER_INSTRUCTIONS,
+    maxOutputTokens: 2048,
     messages: [...modelMessages, { role: "user", content: "请按要求总结以上对话。" }],
   });
 
+  if (!text.trim()) throw new Error("摘要为空，原记录未修改。");
   const at = new Date().toISOString();
   return {
     before,
@@ -56,6 +60,7 @@ export async function compactThread({ thread, model }: { thread: ThreadRecord; m
         metadata: { compacted: { before, at } },
       },
       { id: randomUUID(), role: "assistant", parts: [{ type: "text", text: "已了解摘要，继续。" }] },
+      ...recent,
     ],
   };
 }

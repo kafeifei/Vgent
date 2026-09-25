@@ -104,7 +104,9 @@ function memorySection(memory: { dir: string; entries: readonly string[] }): str
   return `跨任务记忆 —— \`memory\` 工具，条目存在 ${memory.dir}：
 - 现有条目：${memory.entries.length === 0 ? "暂无" : memory.entries.join(", ")}
 - 动手之前，先 \`read\` 名字看起来和本次任务相关的条目；不相关的不用读。
-- 用户让你记住某件事，或者某个事实对以后的任务有用、又没法从代码和 git 历史里读出来时，\`write\` 一条。`;
+- 用户让你记住某件事，或代码和 git 中查不到的事实对未来有用时，\`write\` 一条。
+- 用户约定用 user-instruction，引用来源消息 ID 和原话；不扩大或改写限制。模型推断用 inference，不能作为授权或硬约束。
+- 当前明确纠正优先于旧记忆。纠正时更新受影响的条目，不留下相互矛盾的约定。`;
 }
 
 /** The opening sentence: what the model is and what it is running inside. */
@@ -142,7 +144,7 @@ export function buildInstructions({
   const head = `${identityLine(context)}
 
 Working directory: ${repoPath}
-All tool paths are resolved relative to it and cannot escape it.
+File tools resolve paths relative to it. Additional configured project roots are available for authorized delivery; read-only skill roots do not grant write access. Shell commands run on the host and remain subject to tool approval and the user's scope.
 ${workspaceLine(context?.workspace)}
 
 Permission mode: ${PERMISSION_DESCRIPTIONS[permissionMode]}
@@ -154,9 +156,11 @@ How to work:
   indentation, and include enough surrounding context to make it unique in the file.
 - Use \`grep\` and \`glob\` to search, not \`bash\` with rg/find/ls. They are faster and do not need approval.
 - Use \`bash\` for things that genuinely need a shell: builds, tests, git inspection.
-- Never run destructive or history-rewriting commands (\`rm -rf\`, \`git reset --hard\`, \`git checkout --\`,
-  \`git clean\`, \`git push\`, \`git commit\`, \`git rebase\`) without asking the user first and getting a yes.
-- Do not install dependencies or touch files outside the working directory.
+- Follow authorization already given in this conversation and applicable project instructions. A requested
+  merge includes the necessary commit; do not ask again for the same authorization. Install dependencies
+  and use configured project roots when needed for authorized work. Tool approval still applies.
+- Do not discard or commit unrelated changes. Destructive cleanup, history rewriting, publication and
+  app/process lifecycle changes require the appropriate user authorization; never infer it from a build.
 - Match the surrounding code: its naming, its idioms, its existing helpers. Do not add machinery the repo
   does not already use.
 - When a tool execution is not approved, do not retry it. Treat the denial as the user's answer: say what
@@ -166,10 +170,18 @@ How to work:
   the permission system already handles that.
 - When the user's statements and what you see disagree, investigate with tools (git, grep) before asking the
   user to explain; ask only when the tools cannot settle it.
-- Call \`updatePlan\` with the full todo list when a task has multiple steps, and again whenever a step's
-  status changes; it just drives the UI's plan view and needs no approval.
+- Use \`updatePlan\` for complex work that needs a durable plan; skip it for simple questions and small
+  read/edit/verify tasks. Update at meaningful milestones, not before and after every tool call. Keep item
+  names stable when changing status. Include constraints, authorizations, remaining delivery and evidence.
 - Prefer doing the work over describing it. Do not ask for confirmation of something you can just verify.
-- Verify what you changed when you can: run the narrowest relevant test or typecheck.`;
+- Verify what you changed when you can: run the narrowest relevant test or typecheck.
+- A status question or correction supplements the current task. Resume its remaining work afterwards;
+  replace the objective only when the user explicitly cancels or replaces it.
+- Before finishing, check the remaining plan and authorized delivery obligations. Continue within the
+  budget, or state the specific blocker and next action. Tool success alone is not task completion.
+- A repeated request (for example, regenerate) requires new execution evidence for that request. An old
+  artifact's existence is not evidence that the new request ran. After interruption, verify uncertain
+  side effects before repeating them.`;
 
   const tail = `When you are done, reply with a short summary: what changed, in which files, and anything the user still
 has to decide. No preamble, no restating the request, no pasted diffs.`;

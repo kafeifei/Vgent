@@ -1,3 +1,4 @@
+import type { TaskState } from "@vgent/engine";
 import type { McpServerConfig } from "@vgent/engine";
 import type { HarnessAgentContinueTurnState, HarnessAgentResumeSessionState } from "@vgent/engines";
 import type { UIMessage } from "ai";
@@ -136,6 +137,20 @@ export interface ThreadMessageMetadata {
    * answer under it. Cleared again when the turn is picked back up.
    */
   turnEnd?: TurnEnd;
+  run?: {
+    id: string;
+    harness: EngineId;
+    model?: string;
+    provider?: string;
+    startedAt: string;
+    endedAt?: string;
+    stopReason: string;
+    lastEvent?: string;
+    finishReason?: string;
+    steps?: number;
+    providerAttempts?: number;
+    errorClass?: string;
+  };
 }
 
 export interface TurnEnd {
@@ -236,6 +251,8 @@ export interface QueuedMessage {
   mode?: "queue" | "steer";
   /** A push engine acknowledged receipt, but has not confirmed model consumption. */
   accepted?: boolean;
+  /** Normal queued input reserved before its user message is atomically committed. */
+  claimed?: boolean;
   /** The runtime reported this message entered the active turn. */
   applied?: boolean;
 }
@@ -249,6 +266,7 @@ export interface ChangeStats {
 
 /** One task. Persisted whole in `threads/<id>.json`. */
 export interface ThreadRecord {
+  taskState?: TaskState;
   version: 1;
   id: string;
   projectId: string;

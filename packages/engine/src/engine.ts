@@ -1,8 +1,24 @@
+import { restoreContext, saveContext } from "./context-cache.js";
+import { observeProvider, type FailureClass } from "./failures.js";
+import { randomUUID } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { fitContext, estimateTokens } from "./context.js";
+import { agentInstructionsSection, loadScopedInstructions } from "./agent-instructions.js";
 import { readdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, join } from "node:path";
 import { createModelRegistry, splitProviderModelSpec, type ProviderConfig } from "@vgent/providers";
 import { createCodingTools } from "@vgent/tools";
-import { ToolLoopAgent, extractReasoningMiddleware, isStepCount, pruneMessages, toolSearch, wrapLanguageModel, type LanguageModel, type ModelMessage, type ToolSet } from "ai";
+import {
+  ToolLoopAgent,
+  asSchema,
+  extractReasoningMiddleware,
+  isStepCount,
+  toolSearch,
+  wrapLanguageModel,
+  type LanguageModel,
+  type ModelMessage,
+  type ToolSet,
+} from "ai";
 import { retryEmptyReply } from "./empty-reply.js";
 import { askUserQuestionsTool } from "./ask-user-questions.js";
 import { buildInstructions, type VgentContext } from "./instructions.js";
@@ -12,7 +28,7 @@ import { createToolApproval, type PermissionMode } from "./permissions.js";
 import { appendSession } from "./session-store.js";
 import type { SkillSummary } from "./skills.js";
 import { createSubagentTools } from "./subagents.js";
-import { updatePlanTool } from "./update-plan.js";
+import { createTaskPlan, type TaskState } from "./update-plan.js";
 
 /** Prefix that routes a model string to the machine's ChatGPT/Codex login instead of the gateway. */
 export const CODEX_SUBSCRIPTION_PREFIX = "codex-subscription:";
@@ -46,6 +62,11 @@ export interface VgentEngineOptions {
   providers?: readonly ProviderConfig[];
   /** Repository the agent works in. Tools are confined to it. */
   repoPath: string;
+  projectPath?: string;
+  outputDir?: string;
+  taskState?: TaskState;
+  saveTaskState?: (state: TaskState) => Promise<void>;
+  memorySources?: readonly { id: string; text: string }[];
   /**
    * Who and where the agent is — the model string the host picked, the front
    * end it answers through, the worktree it sits in. Goes into the system
@@ -66,7 +87,7 @@ export interface VgentEngineOptions {
   sessionFile?: string;
   /** Hard cap on loop steps. Defaults to 100. */
   maxSteps?: number;
-  /** Estimated prompt tokens above which messages are pruned. Defaults to 150000. */
+  /** Effective request input budget including instructions and tools; history is compacted to fit. */
   contextTokenBudget?: number;
   /** Lifecycle summaries, for logging. */
   onEvent?: (event: VgentEngineEvent) => void;
@@ -145,6 +166,7 @@ export interface VgentEngine {
    * `convertToModelMessages`, and only when it is given these same tools.
    */
   tools: ToolSet;
+  outcome(): EngineOutcome;
   /** Symmetry with the harness engines, which hold processes. Nothing to release here yet. */
   dispose(): Promise<void>;
 }
@@ -228,9 +250,14 @@ export function portableReasoning(
   return PORTABLE_REASONING_LEVELS.find((level) => level === reasoning.effort);
 }
 
-/** Cheap prompt-size estimate: roughly four characters per token. */
-function estimateTokens(messages: readonly ModelMessage[]): number {
-  return JSON.stringify(messages).length / 4;
+export interface EngineOutcome {
+  model: string;
+  provider: string;
+  stopReason: "response" | "budget" | "empty" | "incomplete" | "error" | "unknown";
+  steps: number;
+  providerAttempts: number;
+  finishReason?: string;
+  errorClass?: FailureClass;
 }
 
 /**
@@ -245,14 +272,48 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
   const repoPath = resolve(options.repoPath);
   const permissionMode: PermissionMode = options.permissionMode ?? "allow-edits";
   const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
-  const contextTokenBudget = options.contextTokenBudget ?? DEFAULT_CONTEXT_TOKEN_BUDGET;
+  const modelSpec = typeof options.model === "string" ? splitProviderModelSpec(options.model) : undefined;
+  const advertisedWindow = modelSpec
+    ? options.providers
+        ?.find((provider) => provider.id === modelSpec.providerId)
+        ?.agents.vgent?.models.find((entry) => entry.id === modelSpec.modelId)?.contextWindow
+    : undefined;
+  const contextTokenBudget = Math.min(
+    options.contextTokenBudget ?? DEFAULT_CONTEXT_TOKEN_BUDGET,
+    advertisedWindow ? Math.floor(advertisedWindow * 0.8) : Infinity,
+  );
   const { sessionFile, onEvent, skills, memoryDir } = options;
+  const resolvedModel = resolveModel(options.model, options.providers) as Parameters<typeof wrapLanguageModel>[0]["model"];
+  const outcome: EngineOutcome = {
+    model: resolvedModel.modelId,
+    provider: resolvedModel.provider,
+    stopReason: "unknown",
+    steps: 0,
+    providerAttempts: 0,
+  };
+  let turnSignal: AbortSignal | undefined;
+  let usageRatio = 1;
+  let lastEstimate = 0;
+  const accessed = new Set<string>();
+  let toolsMayRun = true;
+  const planState = createTaskPlan(options.taskState, options.saveTaskState);
   const model = wrapLanguageModel({
-    model: resolveModel(options.model, options.providers) as Parameters<typeof wrapLanguageModel>[0]["model"],
+    model: resolvedModel,
     // Some OpenAI-compatible gateways put the model's reasoning summary into the
     // answer as `<thinking>…</thinking>`; it is taken back out as reasoning
     // before the empty-reply check looks at what is left.
-    middleware: [retryEmptyReply(), extractReasoningMiddleware({ tagName: "thinking" })],
+    middleware: [
+      retryEmptyReply(),
+      extractReasoningMiddleware({ tagName: "thinking" }),
+      observeProvider(
+        () => {
+          outcome.providerAttempts += 1;
+        },
+        (kind) => {
+          outcome.errorClass = kind;
+        },
+      ),
+    ],
   });
   const subagents = options.subagents !== false;
 
@@ -260,17 +321,31 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
 
   const all: ToolSet = {
     // The skills are listed by path, and most live outside the repository.
-    ...createCodingTools({ workDir: repoPath, readRoots: [...new Set((skills ?? []).map((skill) => dirname(skill.path)))] }),
+    ...createCodingTools({
+      workDir: repoPath,
+      readRoots: [...new Set((skills ?? []).map((skill) => dirname(skill.path)))],
+      ...(options.projectPath ? { writeRoots: [options.projectPath] } : {}),
+      ...(options.outputDir ? { outputDir: options.outputDir } : {}),
+      onRead: async (path) => {
+        accessed.add(path);
+      },
+    }),
     askUserQuestions: askUserQuestionsTool,
-    updatePlan: updatePlanTool,
+    updatePlan: planState.tool,
     // Only the top-level agent remembers: a subagent is handed everything it
     // needs and has no conversation of its own worth carrying across tasks.
-    ...(memoryDir == null ? {} : { memory: createMemoryTool(memoryDir) }),
+    ...(memoryDir == null ? {} : { memory: createMemoryTool(memoryDir, options.memorySources) }),
     ...(subagents
       ? createSubagentTools({
           model: options.subagentModel == null ? model : resolveModel(options.subagentModel, options.providers),
           repoPath,
           permissionMode,
+          instructions: options.instructions,
+          readRoots: (skills ?? []).map((skill) => dirname(skill.path)),
+          projectPath: options.projectPath,
+          outputDir: options.outputDir,
+          contextTokenBudget,
+          taskContext: () => JSON.stringify(planState.get() ?? {}),
           ...(options.alwaysAllow == null ? {} : { alwaysAllow: options.alwaysAllow }),
         })
       : {}),
@@ -284,6 +359,19 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
   // `toolSearch` either.
   const deferred = !plan && hasDeferredTools(tools);
   if (deferred) tools.toolSearch = toolSearch();
+
+  for (const [name, definition] of Object.entries(tools)) {
+    const execute = definition.execute;
+    if (!execute) continue;
+    tools[name] = {
+      ...definition,
+      execute: (input, execution) => {
+        execution.abortSignal?.throwIfAborted();
+        if (!toolsMayRun) throw new Error("Execution budget exhausted; no new tool action was started.");
+        return execute(input, execution);
+      },
+    };
+  }
 
   // The TUI and the web UI both hand the agent a prompt, not a message list, so
   // there is no call site that could persist a turn. The hooks have to live on
@@ -326,34 +414,107 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
     tools,
     toolApproval: createToolApproval(permissionMode, options.alwaysAllow),
     stopWhen: [isStepCount(maxSteps)],
-    prepareStep: async ({ messages, stepNumber }) => {
+    prepareStep: async ({ messages, stepNumber, initialInstructions }) => {
       // 插话: what the user said while the last step ran is put in front of the
       // model now. The list this returns becomes the base of every later step,
       // so a message goes in once. Not before the first step — that one is
       // already answering a message, and the rest of a queue is not a reply to it.
       const said = stepNumber > 0 ? ((await options.pendingUserMessages?.()) ?? []) : [];
       const current = said.length === 0 ? messages : [...messages, ...said.map((text): ModelMessage => ({ role: "user", content: text }))];
-      if (estimateTokens(current) <= contextTokenBudget) return current === messages ? {} : { messages: current };
+      const scoped = agentInstructionsSection(await loadScopedInstructions(repoPath, [...accessed]));
+      const state = planState.get();
+      const instructions = [
+        initialInstructions,
+        scoped,
+        state ? `Task continuation state (verify evidence; latest user corrections govern):\n${JSON.stringify(state)}` : "",
+        options.memorySources?.length
+          ? `User message IDs for memory provenance:\n${options.memorySources
+              .slice(-20)
+              .map((source) => `${source.id}: ${source.text.slice(0, 240)}`)
+              .join("\n")}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      const closing = stepNumber >= maxSteps - 1 && maxSteps > 1;
+      toolsMayRun = !closing;
+      const finalInstructions =
+        instructions +
+        (closing
+          ? "\nExecution budget is nearly exhausted. Make no further tool calls; report verified progress, remaining work and the next action. Do not claim the task is complete without evidence."
+          : "");
+      const restored = stepNumber === 0 && options.outputDir ? await restoreContext(options.outputDir, current) : current;
+      const overhead =
+        estimateTokens(finalInstructions) +
+        estimateTokens(
+          await Promise.all(
+            Object.entries(tools)
+              .filter(([, definition]) => !definition.deferLoading)
+              .map(async ([name, definition]) => ({
+                name,
+                description: definition.description,
+                inputSchema: await asSchema(definition.inputSchema).jsonSchema,
+              })),
+          ),
+        );
+      const fitted = await fitContext({
+        messages: restored,
+        model,
+        budget: contextTokenBudget,
+        overhead: overhead + 1024,
+        ratio: usageRatio,
+        ...(turnSignal ? { abortSignal: turnSignal } : {}),
+        ...(options.outputDir
+          ? {
+              archive: async (history: ModelMessage[]) => {
+                await mkdir(options.outputDir!, { recursive: true, mode: 0o700 });
+                const path = join(options.outputDir!, `context-${randomUUID()}.json`);
+                await writeFile(path, JSON.stringify(history), { mode: 0o600 });
+                return path;
+              },
+            }
+          : {}),
+      });
+      if (stepNumber === 0 && options.outputDir && fitted.compacted) await saveContext(options.outputDir, current, fitted.messages);
+      lastEstimate = estimateTokens(fitted.messages) + overhead;
+      if (closing) outcome.stopReason = "budget";
       return {
-        messages: pruneMessages({
-          messages: current,
-          reasoning: "all",
-          toolCalls: "before-last-3-messages",
-          emptyMessages: "remove",
-        }),
+        messages: fitted.messages,
+        instructions: finalInstructions,
+        ...(closing ? { activeTools: [], toolChoice: "none" as const } : {}),
       };
     },
     onStart: async ({ messages }) => {
+      toolsMayRun = true;
+      outcome.steps = 0;
+      outcome.providerAttempts = 0;
+      outcome.stopReason = "unknown";
+      delete outcome.errorClass;
+      delete outcome.finishReason;
       if (sessionFile == null) return;
       await appendSession(sessionFile, messages.slice(persisted));
       persisted = messages.length;
     },
-    onEnd: async ({ responseMessages }) => {
+    onEnd: async ({ responseMessages, finishReason, text }) => {
+      outcome.finishReason = finishReason;
+      if (outcome.stopReason !== "budget")
+        outcome.stopReason =
+          finishReason === "stop" && text.trim()
+            ? "response"
+            : finishReason === "error"
+              ? "error"
+              : finishReason === "length" || outcome.steps >= maxSteps
+                ? "budget"
+                : text.trim()
+                  ? "incomplete"
+                  : "empty";
       if (sessionFile == null) return;
       await appendSession(sessionFile, responseMessages);
       persisted += responseMessages.length;
     },
-    onStepEnd: ({ stepNumber, finishReason, toolCalls }) => {
+    onStepEnd: ({ stepNumber, finishReason, toolCalls, usage }) => {
+      outcome.steps = stepNumber + 1;
+      if (lastEstimate > 0 && usage.inputTokens != null) usageRatio = Math.max(usageRatio, usage.inputTokens / lastEstimate);
       onEvent?.({
         type: "step-end",
         stepNumber,
@@ -371,9 +532,21 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
     },
   });
 
+  // A VgentEngine is scoped to one live turn; retain the caller's signal for nested compaction.
+  const stream = agent.stream.bind(agent);
+  agent.stream = (input) => {
+    turnSignal = input.abortSignal;
+    return stream(input);
+  };
+  const generate = agent.generate.bind(agent);
+  agent.generate = (input) => {
+    turnSignal = input.abortSignal;
+    return generate(input);
+  };
   return {
     agent,
     tools,
+    outcome: () => ({ ...outcome }),
     dispose: async () => {},
   };
 }

@@ -120,7 +120,7 @@ describe("explore subagent", () => {
     const toolMessage = modelMessages.find((message) => message.role === "tool");
     expect(toolMessage?.content[0]).toMatchObject({
       type: "tool-result",
-      output: { type: "text", value: "hello-vgent.txt 里写着 hello from vgent。" },
+      output: { type: "text", value: expect.stringContaining('"status":"completed"') },
     });
 
     // Without the tools, the whole transcript would go to the model instead.
@@ -158,10 +158,7 @@ describe("coder subagent", () => {
   });
 
   it("runs bash for the child when the parent's alwaysAllow covers it, even in allow-reads", async () => {
-    const child = childModel([
-      toolCallStep("child-1", "bash", { command: "echo ok" }),
-      textStep("跑完了。"),
-    ]);
+    const child = childModel([toolCallStep("child-1", "bash", { command: "echo ok" }), textStep("跑完了。")]);
     const tools: ToolSet = createSubagentTools({
       model: child,
       repoPath,
@@ -194,8 +191,8 @@ describe("summarizeSubagentMessage", () => {
       ],
     } as UIMessage;
     expect(summarizeSubagentMessage(message)).toBe("最后一段");
-    expect(summarizeSubagentMessage(undefined)).toBe("子代理没有返回文本。");
-    expect(summarizeSubagentMessage({ id: "m", role: "assistant", parts: [] } as UIMessage)).toBe("子代理没有返回文本。");
+    expect(summarizeSubagentMessage(undefined)).toContain("子代理没有返回文本。");
+    expect(summarizeSubagentMessage({ id: "m", role: "assistant", parts: [] } as UIMessage)).toContain("子代理没有返回文本。");
   });
 
   it("truncates a long summary and marks it", () => {
@@ -204,4 +201,72 @@ describe("summarizeSubagentMessage", () => {
     expect(summary.length).toBeLessThan(5000);
     expect(summary).toContain("摘要已截断");
   });
+});
+
+describe("child result contract", () => {
+  it("preserves a full report reference and gives the parent a bounded summary including its risk", async () => {
+    const child = new MockLanguageModelV3({
+      doStream: {
+        stream: simulateReadableStream({
+          chunks: textStep("details ".repeat(1500) + "RISK: migration is still pending"),
+          chunkDelayInMs: null,
+          initialDelayInMs: null,
+        }),
+      },
+      doGenerate: {
+        content: [{ type: "text", text: "Found files. RISK: migration is still pending; do not declare delivery complete." }],
+        finishReason: { unified: "stop" },
+        usage: NO_USAGE,
+        warnings: [],
+      },
+    });
+    const tools = createSubagentTools({
+      model: child,
+      repoPath,
+      permissionMode: "allow-reads",
+      instructions: "ROOT_CONSTRAINT_SENTINEL",
+      outputDir: join(repoPath, ".reports"),
+    });
+    let output: UIMessage | undefined;
+    for await (const value of tools.explore!.execute!(
+      { prompt: "Research migration" },
+      { toolCallId: "child", messages: [] },
+    ) as AsyncIterable<UIMessage>)
+      output = value;
+    const result = JSON.parse(summarizeSubagentMessage(output));
+    expect(result.summary).toContain("RISK: migration is still pending");
+    expect(result.summary.length).toBeLessThan(4000);
+    expect(typeof result.details).toBe("string");
+    const { readFile } = await import("node:fs/promises");
+    expect((await readFile(result.details, "utf8")).length).toBeGreaterThan(10000);
+    expect(JSON.stringify(child.doStreamCalls[0]!.prompt)).toContain("ROOT_CONSTRAINT_SENTINEL");
+  });
+  it("marks an empty final reply incomplete, even though the tool produced a transcript", async () => {
+    const tools = createSubagentTools({ model: childModel([textStep(" ")]), repoPath, permissionMode: "allow-reads" });
+    let output: UIMessage | undefined;
+    for await (const value of tools.explore!.execute!(
+      { prompt: "Inspect" },
+      { toolCallId: "child", messages: [] },
+    ) as AsyncIterable<UIMessage>)
+      output = value;
+    expect(JSON.parse(summarizeSubagentMessage(output))).toMatchObject({ status: "incomplete", stopReason: "empty" });
+  });
+});
+
+it("resumes a child by its durable ID with the prior delegated request and response", async () => {
+  const child = childModel([textStep("First finding: KEEP-832"), textStep("Continued using KEEP-832")]);
+  const tools = createSubagentTools({ model: child, repoPath, permissionMode: "allow-reads", outputDir: join(repoPath, ".reports") });
+  const execute = tools.explore!.execute as (input: unknown, options: unknown) => AsyncIterable<UIMessage>;
+  let first: UIMessage | undefined;
+  for await (const value of execute({ prompt: "Find KEEP-832" }, { toolCallId: "one", messages: [] })) first = value;
+  const taskId = JSON.parse(summarizeSubagentMessage(first)).taskId;
+  let second: UIMessage | undefined;
+  for await (const value of execute(
+    { prompt: "Continue from the earlier finding", resume_task_id: taskId },
+    { toolCallId: "two", messages: [] },
+  ))
+    second = value;
+  expect(JSON.parse(summarizeSubagentMessage(second)).taskId).toBe(taskId);
+  expect(JSON.stringify(child.doStreamCalls[1]!.prompt)).toContain("First finding: KEEP-832");
+  expect(JSON.stringify(child.doStreamCalls[1]!.prompt)).toContain("verify uncertain prior side effects");
 });

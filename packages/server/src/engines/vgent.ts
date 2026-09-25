@@ -14,6 +14,7 @@ import type { LanguageModel, TextStreamPart, ToolSet } from "ai";
 import { BadRequestError, EngineUnavailableError } from "../errors.js";
 import { createProviderStore } from "../store/providers.js";
 import { createSettingsStore } from "../store/settings.js";
+import { expandSteers } from "../steer.js";
 import type { EngineDescriptor } from "./capabilities.js";
 import { PROVIDER_DEFAULT_LEVEL, effectiveReasoningLevel } from "../reasoning.js";
 import type { EngineContext, EngineFactory, EngineRunner } from "./registry.js";
@@ -70,7 +71,8 @@ const CONTEXT_BUDGET_SHARE = 0.8;
  *
  * It is *stateless* between turns: the SDK's loop, approvals and tool results
  * all live in the message array the server already stores, so nothing has to be
- * persisted alongside it. That is why there is no `sessionFile` (the server owns
+ * retained in a separate runtime. Task state, compaction cache and child reports
+ * are durable local records. There is no `sessionFile` (the server owns
  * the history), why `hasUnfinishedTurn()` is always false, and why `finish()`
  * must not write a `<id>.harness.json` — there is no resume state, and an empty
  * one would only confuse the harness engines' loader.
@@ -106,7 +108,9 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
         return;
       }
       if (!GATEWAY_ENV_VARS.some((name) => (process.env[name] ?? "") !== "")) {
-        throw new EngineUnavailableError(`未配置 AI Gateway 凭证：模型 ${JSON.stringify(spec)} 需要环境变量 AI_GATEWAY_API_KEY 或 VERCEL_OIDC_TOKEN`);
+        throw new EngineUnavailableError(
+          `未配置 AI Gateway 凭证：模型 ${JSON.stringify(spec)} 需要环境变量 AI_GATEWAY_API_KEY 或 VERCEL_OIDC_TOKEN`,
+        );
       }
     },
 
@@ -125,7 +129,9 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
       ]);
       // AGENTS.md / CLAUDE.md, global and the project's — the rules the user
       // already wrote down for Claude Code and Codex hold here too.
-      const standing = agentInstructionsSection(await loadAgentInstructions({ repoPath: ctx.project.repoPath, projectPath: ctx.projectPath }));
+      const standing = agentInstructionsSection(
+        await loadAgentInstructions({ repoPath: ctx.project.repoPath, projectPath: ctx.projectPath }),
+      );
       const cua = cuaBinary == null ? undefined : await connectMcpServers([cuaMcpConfig(cuaBinary)], { log: ctx.log });
       const cuaTools = cua == null ? {} : onlyCuaTools(cua.tools);
       if (cua != null && Object.keys(cuaTools).length === 0) {
@@ -142,6 +148,19 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
           model,
           providers,
           repoPath: ctx.project.repoPath,
+          projectPath: ctx.projectPath,
+          outputDir: join(ctx.dataDir, "outputs", ctx.thread.id),
+          ...(ctx.thread.taskState ? { taskState: ctx.thread.taskState } : {}),
+          ...(ctx.saveTaskState ? { saveTaskState: ctx.saveTaskState } : {}),
+          memorySources: expandSteers(ctx.thread.messages)
+            .filter((message) => message.role === "user")
+            .map((message) => ({
+              id: message.id,
+              text: message.parts
+                .filter((part) => part.type === "text")
+                .map((part) => part.text)
+                .join("\n"),
+            })),
           permissionMode: ctx.permissionMode,
           ...(ctx.alwaysAllow.length > 0 ? { alwaysAllow: ctx.alwaysAllow } : {}),
           // 计划回合只读：the engine drops every writing tool, MCP included.
@@ -199,6 +218,7 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
         // What `convertToModelMessages` needs to turn a subagent's stored
         // transcript back into the one-paragraph summary the model saw.
         tools: engine.tools,
+        outcome: engine.outcome,
 
         // The agent holds no runtime between calls: a paused turn is only the
         // open tool part in the stored messages.

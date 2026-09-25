@@ -41,9 +41,11 @@ Vgent 是一个 **Web 优先**的本地 coding agent 工作台，底下可换引
 | MCP | `@ai-sdk/mcp` + 全部 `deferLoading: true` + `toolSearch()` |
 | Skills | 读项目 `.claude/skills` 等目录，`instructions` 里只放名称 + 描述索引，内容按需 `read`。**不要**像 freecode 那样每步全文拼进 instructions |
 | 记忆 | 自定义 tool 落盘 `~/.vgent/memory/<project>/`；Claude 模型可换 `anthropic.tools.memory_20250818` |
-| 压缩 | `prepareStep` 按估算 token 触发 `pruneMessages`；手动 /compact 用 `generateText` 摘要 |
+| 压缩 | `prepareStep` 核算指令、工具和历史预算，先裁剪再有界摘要，保留近期原文；手动 /compact 保留近期回合与压缩前快照 |
 | 模型 | 默认 AI Gateway `provider/model` 字串；也支持直连 `@ai-sdk/anthropic` / `@ai-sdk/openai` |
 | 观测 | `@ai-sdk/otel`；开发期 `@ai-sdk/devtools` |
+
+2026-09-25：文件协调、输入持久化、结束原因、任务续接、子代理、记忆与压缩的现行契约见 [harness-reliability.md](./harness-reliability.md)。
 
 ### 模型接入 `@vgent/providers`
 

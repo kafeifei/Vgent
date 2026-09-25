@@ -1,3 +1,4 @@
+import type { EngineOutcome, TaskState } from "@vgent/engine";
 import type { ModelMessage, TextStreamPart, ToolSet } from "ai";
 import type { EngineId, HarnessState, Logger, PermissionMode, Project, ThreadRecord } from "../types.js";
 import type { EngineDescriptor } from "./capabilities.js";
@@ -21,6 +22,7 @@ export interface EngineRunner {
    * engines run their tools out of process and leave this undefined.
    */
   tools?: ToolSet;
+  outcome?: () => EngineOutcome;
   /**
    * 引导, pushed: hand the running turn another user message. Resolves once the
    * runtime has accepted it; actual insertion may follow a running tool.
@@ -94,6 +96,7 @@ export interface EngineContext {
    * Whatever it never asks for stays queued and runs as the next turn.
    */
   takeSteers(): Promise<string[]>;
+  saveTaskState?: (state: TaskState) => Promise<void>;
   /** Native runtimes report when a submitted steer enters the active turn. */
   steerApplied(messageId: string): Promise<void>;
   /** Where `finish()` writes the resume state. Injected so the factory never reaches for the store. */

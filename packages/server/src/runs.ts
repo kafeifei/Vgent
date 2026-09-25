@@ -1,3 +1,4 @@
+import { classifyFailure } from "@vgent/engine";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { getHarnessErrorMessage } from "@ai-sdk/harness/agent";
@@ -124,7 +125,10 @@ export function deriveThreadTitle(messages: readonly UIMessage[]): string | unde
     .filter((part): part is { type: "text"; text: string } => part.type === "text")
     .map((part) => part.text)
     .join("");
-  const line = text.split("\n").find((candidate) => candidate.trim().length > 0)?.trim();
+  const line = text
+    .split("\n")
+    .find((candidate) => candidate.trim().length > 0)
+    ?.trim();
   if (line == null || line.length === 0) return undefined;
   return line.slice(0, AUTO_TITLE_MAX_LEN);
 }
@@ -151,6 +155,12 @@ export function withTurnEnd(messages: readonly UIMessage[], end: TurnEnd | undef
   const next = [...messages];
   next[index] = { ...message, metadata: end == null ? rest : { ...rest, turnEnd: end } };
   return next;
+}
+
+export function withRunRecord(messages: readonly UIMessage[], run: NonNullable<ThreadMessageMetadata["run"]>): UIMessage[] {
+  const index = messages.findLastIndex((message) => message.role === "user");
+  if (index < 0) return [...messages];
+  return messages.map((message, i) => (i === index ? { ...message, metadata: { ...(message.metadata as object), run } } : message));
 }
 
 type AnyToolUIPart = ToolUIPart | DynamicToolUIPart;
@@ -245,9 +255,9 @@ export function createRunManager(options: {
   /** Fire-and-forget: the runtime keeper's bookkeeping must never hold up or fail a turn. */
   const reportTurn = (engine: EngineId, ok: boolean, assistant: UIMessage | undefined): void => {
     const produced = (assistant?.parts.length ?? 0) > 0;
-    void options.onTurnSettled?.({ engine, ok, produced }).catch((error: unknown) =>
-      (options.log ?? silentLogger).warn(`回报 ${engine} 的运行结果失败`, error),
-    );
+    void options
+      .onTurnSettled?.({ engine, ok, produced })
+      .catch((error: unknown) => (options.log ?? silentLogger).warn(`回报 ${engine} 的运行结果失败`, error));
   };
   const log = options.log ?? silentLogger;
   const stopTimeoutMs = options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS;
@@ -258,7 +268,9 @@ export function createRunManager(options: {
   const locked = async <T>(locks: Map<string, Promise<void>>, threadId: string, work: () => Promise<T>): Promise<T> => {
     const previous = locks.get(threadId);
     let release!: () => void;
-    const current = new Promise<void>((resolve) => { release = resolve; });
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     locks.set(threadId, current);
     await previous;
     try {
@@ -459,14 +471,16 @@ export function createRunManager(options: {
     if (elapsed >= SLOW_CHECKPOINT_MS) log.warn(`线程 ${threadId} 的回合结束快照耗时 ${elapsed}ms`);
     if (taken == null) return;
     const checkpointAfter: MessageCheckpoint = { ...taken, at: new Date().toISOString() };
-    await threads.update(threadId, { messages: stampMetadata(record.messages, index, { checkpointAfter }) }).catch(async (error: unknown) => {
-      log.warn(`线程 ${threadId} 的回合结束快照没能记下`, error);
-      // 删除任务 can land in the moment this snapshot was being taken, and the
-      // ref it just wrote would then outlive the task in the user's own repo.
-      if ((await threads.get(threadId).catch(() => undefined)) == null) {
-        await deleteCheckpoints({ repoPath, threadId, log });
-      }
-    });
+    await threads
+      .update(threadId, { messages: stampMetadata(record.messages, index, { checkpointAfter }) })
+      .catch(async (error: unknown) => {
+        log.warn(`线程 ${threadId} 的回合结束快照没能记下`, error);
+        // 删除任务 can land in the moment this snapshot was being taken, and the
+        // ref it just wrote would then outlive the task in the user's own repo.
+        if ((await threads.get(threadId).catch(() => undefined)) == null) {
+          await deleteCheckpoints({ repoPath, threadId, log });
+        }
+      });
   };
 
   const deriveStatus = (assistant: UIMessage | undefined): ThreadStatus => {
@@ -526,7 +540,15 @@ export function createRunManager(options: {
     const factory = registry[thread.engine];
     if (factory == null) throw new BadRequestError(`未知引擎: ${thread.engine}`, "unknown_engine");
 
-    let messages = incoming;
+    const runRecord: NonNullable<ThreadMessageMetadata["run"]> = {
+      id: randomUUID(),
+      harness: thread.engine,
+      ...(thread.model ? { model: thread.model } : {}),
+      startedAt: new Date().toISOString(),
+      stopReason: "running",
+    };
+    let messages = withRunRecord(incoming, runRecord);
+    const durableSteers = new Map<string, QueuedMessage>();
     let runner: EngineRunner | undefined;
     let assistant: UIMessage | undefined;
     let lastPersistedAt = 0;
@@ -535,6 +557,8 @@ export function createRunManager(options: {
     /** The same error's raw, unmasked message — for the persisted thread record. */
     let rawStreamError: string | undefined;
     let park = false;
+    let finishReason: string | undefined;
+    let steps = 0;
 
     /**
      * The history with this turn's assistant message folded in — or unchanged
@@ -543,12 +567,25 @@ export function createRunManager(options: {
      * shell leaves the thread with an assistant bubble that renders nothing,
      * converts to nothing, and confuses every later read of the history.
      */
-    const withAssistant = (message: UIMessage | undefined): UIMessage[] =>
-      message != null && message.parts.length > 0 ? mergeIncoming(messages, [message]) : messages;
-
+    const withAssistant = (message: UIMessage | undefined): UIMessage[] => {
+      let value = message;
+      if (durableSteers.size > 0) {
+        value ??= { id: runRecord.id, role: "assistant", parts: [] };
+        const parts = [...value.parts];
+        for (const item of durableSteers.values()) {
+          if (!parts.some((part) => part.type === "data-steer" && (part as { id?: string }).id === item.id)) {
+            parts.push({ type: "data-steer", id: item.id, data: { text: item.text, messageId: item.id } });
+          }
+        }
+        value = { ...value, parts };
+      }
+      return withRunRecord(value != null && value.parts.length > 0 ? mergeIncoming(messages, [value]) : messages, runRecord);
+    };
     const persist = async (message: UIMessage) => {
       if (message.parts.length === 0) return;
-      await threads.saveMessages(thread.id, mergeIncoming(messages, [message]));
+      const save = () => threads.saveMessages(thread.id, withAssistant(message));
+      if (options.queue) await options.queue.locked(thread.id, save);
+      else await save();
     };
 
     // A turn that continues the last assistant message (an approval answer, a
@@ -587,6 +624,9 @@ export function createRunManager(options: {
     })();
 
     try {
+      // Include the durable start in the same cleanup boundary as the stream.
+      // A disk failure must release this run's slot too.
+      await threads.saveMessages(thread.id, messages);
       // 恢复之后的第一轮: the note rides on the converted history rather than on
       // the stored message, so the log still shows what the user typed.
       // 附件: the stored messages keep their `file` parts for the log; the
@@ -647,14 +687,28 @@ export function createRunManager(options: {
           // message shows up in the log at the point it went in.
           takeSteers: async () => {
             if (options.queue == null || run.stopped) return [];
-            const items = await options.queue.takeSteers(thread.id);
-            for (const item of items) {
-              run.hub.publish(steerChunk(item.text));
+            const added: string[] = [];
+            let items: QueuedMessage[];
+            try {
+              items = await options.queue.takeSteers(thread.id, (taken) => {
+                for (const item of taken) {
+                  durableSteers.set(item.id, item);
+                  added.push(item.id);
+                }
+                return withAssistant(assistant);
+              });
+            } catch (error) {
+              for (const id of added) durableSteers.delete(id);
+              throw error;
             }
+            for (const item of items) run.hub.publish(steerChunk(item.text, item.id));
             return items.map((item) => item.text);
           },
           steerApplied: async (messageId) => {
             await options.queue?.markApplied(thread.id, messageId).catch(() => {});
+          },
+          saveTaskState: async (state) => {
+            await threads.update(thread.id, { taskState: state });
           },
           saveHarnessState: (state) => threads.saveHarnessState(thread.id, state),
           log,
@@ -685,6 +739,14 @@ export function createRunManager(options: {
       const engineStream = result.stream.pipeThrough(
         new TransformStream<TextStreamPart<ToolSet>, TextStreamPart<ToolSet>>({
           transform(part, controller) {
+            runRecord.lastEvent = part.type;
+            if (part.type === "finish") finishReason = part.finishReason;
+            if (part.type === "finish-step") {
+              steps += 1;
+              runRecord.steps = steps;
+            }
+            const observed = runner?.outcome?.();
+            if (observed) runRecord.providerAttempts = observed.providerAttempts;
             if (part.type === "tool-error") toolErrors.add(part.error);
             // A harness compacting its context is not something the UI stream
             // converter knows; it becomes a data part of this turn instead.
@@ -709,6 +771,7 @@ export function createRunManager(options: {
           // The turn's own error: masked text to the client, raw text kept for
           // the thread record below.
           rawStreamError ??= rawErrorText(error);
+          runRecord.errorClass = classifyFailure(error);
           return getHarnessErrorMessage(error);
         },
         // Token usage, attached to the assistant message so the composer's
@@ -740,7 +803,22 @@ export function createRunManager(options: {
       run.hub.close();
       await reader;
 
-      const status = streamError != null ? "error" : deriveStatus(assistant);
+      const outcome = runner.outcome?.();
+      const derived = deriveStatus(assistant);
+      const incomplete = derived === "idle" && outcome != null && outcome.stopReason !== "response";
+      const status = streamError != null ? "error" : incomplete ? "interrupted" : derived;
+      Object.assign(runRecord, outcome ?? { steps, ...(finishReason ? { finishReason } : {}) }, {
+        endedAt: new Date().toISOString(),
+        stopReason: streamError
+          ? "error"
+          : park
+            ? "waiting"
+            : derived === "awaiting-approval" || derived === "awaiting-input"
+              ? derived
+              : (outcome?.stopReason ?? (finishReason ? "response" : "unknown")),
+      });
+      const incompleteReason =
+        outcome?.stopReason === "budget" ? "执行预算已用尽；请根据已保存的进展继续。" : "这一轮没有完整结束；请核实已执行操作后继续。";
       run.completedNormally = status === "idle";
       if (!run.stopped) reportTurn(thread.engine, status !== "error", assistant);
       park = !run.stopped && (status === "awaiting-approval" || status === "awaiting-input");
@@ -760,10 +838,14 @@ export function createRunManager(options: {
           .update(thread.id, {
             messages: withTurnEnd(
               withAssistant(settled),
-              streamError != null ? { status: "error", reason: rawStreamError ?? streamError } : undefined,
+              streamError != null
+                ? { status: "error", reason: rawStreamError ?? streamError }
+                : incomplete
+                  ? { status: "interrupted", reason: incompleteReason }
+                  : undefined,
             ),
             status,
-            error: streamError != null ? (rawStreamError ?? streamError) : undefined,
+            error: streamError != null ? (rawStreamError ?? streamError) : incomplete ? incompleteReason : undefined,
             ...(stats != null ? { changeStats: stats } : {}),
             // 未读: the turn ended on its own, so whoever sent it has not seen
             // this yet. The client clears it when the task is really on screen.
@@ -780,7 +862,10 @@ export function createRunManager(options: {
       } else {
         // 停止: recorded even when the turn had produced nothing yet, or the
         // question would sit in the log as if it had never been answered.
-        await threads.update(thread.id, { messages: withTurnEnd(withAssistant(settled), { status: "interrupted", reason: STOP_INTERRUPT_TEXT }) });
+        Object.assign(runRecord, { endedAt: new Date().toISOString(), stopReason: "cancelled" });
+        await threads.update(thread.id, {
+          messages: withTurnEnd(withAssistant(settled), { status: "interrupted", reason: STOP_INTERRUPT_TEXT }),
+        });
       }
     } catch (error) {
       park = false;
@@ -789,6 +874,11 @@ export function createRunManager(options: {
       // leaves behind, with every pending call closed, so the client stops
       // offering to answer a turn nobody holds any more.
       const resumeFailed = error instanceof TurnResumeFailedError;
+      Object.assign(runRecord, runner?.outcome?.() ?? {}, {
+        endedAt: new Date().toISOString(),
+        stopReason: run.stopped ? "cancelled" : resumeFailed ? "unknown" : "error",
+        errorClass: classifyFailure(error),
+      });
       if (resumeFailed) await clearContinueFrom(thread.id);
       if (!run.stopped && !resumeFailed) reportTurn(thread.engine, false, assistant);
       const message = error instanceof VgentServerError ? error.message : getHarnessErrorMessage(error);
@@ -823,11 +913,15 @@ export function createRunManager(options: {
       if (options.queue != null && run.acceptedSteers.size > 0) {
         const ids = [...run.acceptedSteers];
         if (!run.completedNormally || run.stopped) {
-          await Promise.allSettled(ids.map(async (id) => {
-            await options.queue!.markAccepted(thread.id, id, false);
-          }));
+          await Promise.allSettled(
+            ids.map(async (id) => {
+              await options.queue!.markAccepted(thread.id, id, false);
+            }),
+          );
         } else {
-          await options.queue.removeAccepted(thread.id, ids).catch((error) => log.warn(`清理已接收的引导失败 (thread ${thread.id})`, error));
+          await options.queue
+            .removeAccepted(thread.id, ids)
+            .catch((error) => log.warn(`清理已接收的引导失败 (thread ${thread.id})`, error));
         }
       }
       // Release the slot first: whatever happens to the engine, the thread must
@@ -924,29 +1018,40 @@ export function createRunManager(options: {
     // 从恢复点继续: the marker goes away with this message — the task is moving
     // forward from here — and the model is told once, in this turn's input, what
     // happened to the files it may remember writing.
-    const restored = thread.restoredTo != null && validated.at(-1)?.role === "user" ? restoreNote(thread.messages, thread.restoredTo.messageId) : undefined;
+    const restored =
+      thread.restoredTo != null && validated.at(-1)?.role === "user"
+        ? restoreNote(thread.messages, thread.restoredTo.messageId)
+        : undefined;
     // 分叉后的第一轮: an engine whose session keeps its own history has none of
     // what the fork copied, so that turn carries it as text. Said once.
-    const forked =
-      thread.forkedFrom?.pending === true && factory.statelessTurns !== true ? forkNote(thread.messages) : undefined;
+    const forked = thread.forkedFrom?.pending === true && factory.statelessTurns !== true ? forkNote(thread.messages) : undefined;
     const note = [forked, restored].filter((part) => part != null).join("\n\n") || undefined;
     // A thread is named by its first user message; an explicit title is kept.
     const title = thread.title === DEFAULT_THREAD_TITLE ? deriveThreadTitle(messages) : undefined;
     const updated = await threads.update(threadId, {
       messages,
+      consumeQueueIds: messages.filter((message) => message.role === "user").map((message) => message.id),
       status: "running",
       error: undefined,
       // The task is working again, so whatever it was wound up as no longer
       // describes what is on disk.
       outcome: undefined,
       restoredTo: undefined,
-      ...(thread.forkedFrom?.pending === true ? { forkedFrom: { threadId: thread.forkedFrom.threadId, messageId: thread.forkedFrom.messageId } } : {}),
+      ...(thread.forkedFrom?.pending === true
+        ? { forkedFrom: { threadId: thread.forkedFrom.threadId, messageId: thread.forkedFrom.messageId } }
+        : {}),
       ...(title != null ? { title } : {}),
     });
 
     const run: LiveRun = {
-      hub: createChunkHub(), abort: new AbortController(), done: Promise.resolve(), stopped: false,
-      acceptedSteers: new Set(), deliveringSteers: new Set(), steerCalls: new Set(), completedNormally: false,
+      hub: createChunkHub(),
+      abort: new AbortController(),
+      done: Promise.resolve(),
+      stopped: false,
+      acceptedSteers: new Set(),
+      deliveringSteers: new Set(),
+      steerCalls: new Set(),
+      completedNormally: false,
     };
     runs.set(threadId, run);
     // Detached on purpose: an HTTP client disconnecting must not cancel the turn.
@@ -971,12 +1076,12 @@ export function createRunManager(options: {
   const runQueued = async (threadId: string, itemId?: string): Promise<QueuedMessage | undefined> => {
     if (options.queue == null) return undefined;
     const queue = options.queue;
-    const item = await queue.take(threadId, itemId == null ? undefined : { itemId });
+    const item = await queue.take(threadId, { ...(itemId ? { itemId } : {}), retain: true });
     if (item == null) return undefined;
     try {
       // Built the way the web builds it, because from here on it is the same
       // message: `start` stamps its checkpoint and folds it into the history.
-      await startTurn(threadId, [{ id: randomUUID(), role: "user", parts: [{ type: "text", text: item.text }] }]);
+      await startTurn(threadId, [{ id: item.id, role: "user", parts: [{ type: "text", text: item.text }] }]);
       return item;
     } catch (error) {
       await queue.putBack(threadId, item).catch((failure: unknown) => log.error(`排队消息放回线程 ${threadId} 失败`, failure));
@@ -989,17 +1094,18 @@ export function createRunManager(options: {
    * that stopped on an approval, a question, an error or 停止 is *not* over, so
    * its queue stays put until the user says otherwise.
    */
-  const dispatchQueue = (threadId: string): Promise<void> => locked(dispatching, threadId, async () => {
-    if (options.queue == null || runs.has(threadId)) return;
-    const thread = await threads.get(threadId).catch(() => undefined);
-    if (thread == null || thread.archivedAt != null || thread.status !== "idle") return;
-    if ((thread.queue?.length ?? 0) === 0) return;
-    const item = await runQueued(threadId).catch((error: unknown) => {
-      log.warn(`线程 ${threadId} 的排队消息没能发出`, error);
-      return undefined;
+  const dispatchQueue = (threadId: string): Promise<void> =>
+    locked(dispatching, threadId, async () => {
+      if (options.queue == null || runs.has(threadId)) return;
+      const thread = await threads.get(threadId).catch(() => undefined);
+      if (thread == null || thread.archivedAt != null || thread.status !== "idle") return;
+      if ((thread.queue?.length ?? 0) === 0) return;
+      const item = await runQueued(threadId).catch((error: unknown) => {
+        log.warn(`线程 ${threadId} 的排队消息没能发出`, error);
+        return undefined;
+      });
+      if (item != null) log.info(`线程 ${threadId} 自动发出了一条排队消息`);
     });
-    if (item != null) log.info(`线程 ${threadId} 自动发出了一条排队消息`);
-  });
 
   /**
    * Scheduled, never called inline from a turn's `finally`: the slot has to be
@@ -1153,11 +1259,16 @@ export async function recoverInterruptedThreads(threads: ThreadStore, registry: 
     if (accepted.length > 0 && !UNFINISHED_STATUSES.includes(summary.status)) {
       const record = await threads.get(summary.id);
       if (record != null) {
-        await threads.update(summary.id, {
-          queue: summary.status === "idle"
-            ? record.queue?.filter((item) => item.accepted !== true)
-            : record.queue?.map((item) => item.accepted === true ? { ...item, accepted: false, applied: false } : item),
-        }).catch((error) => log.warn(`恢复线程 ${summary.id} 的待处理引导失败`, error));
+        await threads
+          .update(summary.id, {
+            queue:
+              summary.status === "idle"
+                ? record.queue
+                    ?.filter((item) => item.claimed === true || item.accepted !== true)
+                    .map((item) => (item.claimed === true ? { ...item, accepted: false, claimed: false } : item))
+                : record.queue?.map((item) => (item.accepted === true ? { ...item, accepted: false, applied: false } : item)),
+          })
+          .catch((error) => log.warn(`恢复线程 ${summary.id} 的待处理引导失败`, error));
       }
     }
     if (!UNFINISHED_STATUSES.includes(summary.status)) continue;
@@ -1170,8 +1281,31 @@ export async function recoverInterruptedThreads(threads: ThreadStore, registry: 
     if (record == null) continue;
     await threads
       .update(summary.id, {
-        messages: withTurnEnd(closePendingToolParts(record.messages, RESTART_PENDING_TOOL_TEXT), { status: "interrupted", reason: RESTART_INTERRUPT_TEXT }),
-        queue: record.queue?.map((item) => item.accepted === true ? { ...item, accepted: false, applied: false } : item),
+        messages: withTurnEnd(
+          closePendingToolParts(
+            record.messages.map((message) => {
+              const metadata = message.metadata as ThreadMessageMetadata | undefined;
+              return metadata?.run?.stopReason === "running"
+                ? {
+                    ...message,
+                    metadata: { ...metadata, run: { ...metadata.run, stopReason: "unknown", endedAt: new Date().toISOString() } },
+                  }
+                : message;
+            }),
+            RESTART_PENDING_TOOL_TEXT,
+          ),
+          { status: "interrupted", reason: RESTART_INTERRUPT_TEXT },
+        ),
+        queue: record.queue
+          ?.filter(
+            (item) =>
+              !record.messages.some(
+                (message) =>
+                  message.id === item.id ||
+                  message.parts.some((part) => part.type === "data-steer" && (part as { id?: string }).id === item.id),
+              ),
+          )
+          .map((item) => (item.accepted === true ? { ...item, accepted: false, applied: false } : item)),
         status: "interrupted",
         error: RESTART_INTERRUPT_TEXT,
       })

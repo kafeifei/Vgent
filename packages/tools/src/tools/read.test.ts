@@ -32,7 +32,19 @@ describe("read tool", () => {
       content: "     1\tone\n     2\ttwo\n     3\tthree",
       truncated: false,
       totalLines: 3,
+      byteLength: 13,
+      endsWithNewline: false,
     });
+  });
+
+  it("distinguishes byte-exact content with and without its final newline", async () => {
+    await writeFile(join(workDir, "a.txt"), "BUILD_OK\n");
+    await writeFile(join(workDir, "b.txt"), "BUILD_OK");
+    const a = await makeTool().execute!({ file_path: "a.txt" }, execOptions);
+    const b = await makeTool().execute!({ file_path: "b.txt" }, execOptions);
+    expect(a.content).toBe(b.content);
+    expect(a).toMatchObject({ byteLength: 9, endsWithNewline: true });
+    expect(b).toMatchObject({ byteLength: 8, endsWithNewline: false });
   });
 
   it("pages through a file with offset and limit", async () => {

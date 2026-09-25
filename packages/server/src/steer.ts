@@ -17,9 +17,14 @@ export const STEER_PART_TYPE = "data-steer";
 
 export interface SteerData {
   text: string;
+  messageId?: string;
 }
 
-export const steerChunk = (text: string): UIMessageChunk => ({ type: STEER_PART_TYPE, id: randomUUID(), data: { text } satisfies SteerData });
+export const steerChunk = (text: string, messageId?: string): UIMessageChunk => ({
+  type: STEER_PART_TYPE,
+  id: messageId ?? randomUUID(),
+  data: { text, ...(messageId ? { messageId } : {}) } satisfies SteerData,
+});
 
 /** The text of a `data-steer` part; `undefined` for any other part. */
 export function steerTextOf(part: UIMessage["parts"][number]): string | undefined {
@@ -61,7 +66,8 @@ export function expandSteers(messages: readonly UIMessage[]): UIMessage[] {
         continue;
       }
       flush();
-      expanded.push({ id: `${message.id}~${cut}`, role: "user", parts: [{ type: "text", text }] });
+      const sourceId = (part as { data?: SteerData }).data?.messageId;
+      expanded.push({ id: sourceId ?? `${message.id}~${cut}`, role: "user", parts: [{ type: "text", text }] });
       cut += 1;
     }
     flush();

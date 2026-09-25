@@ -5,13 +5,7 @@
  * context pruning; this package supplies the tools (`@vgent/tools`), the model
  * (`@vgent/providers`), the permission policy and the system prompt.
  */
-export {
-  createVgentEngine,
-  reasoningProviderOptions,
-  resolveModel,
-  usesOpenAIReasoning,
-  CODEX_SUBSCRIPTION_PREFIX,
-} from "./engine.js";
+export { createVgentEngine, reasoningProviderOptions, resolveModel, usesOpenAIReasoning, CODEX_SUBSCRIPTION_PREFIX } from "./engine.js";
 export type { VgentEngine, VgentEngineOptions, VgentEngineEvent, VgentReasoningOptions } from "./engine.js";
 export { createToolApproval, decideApproval, type ApprovalDecision, type PermissionMode } from "./permissions.js";
 // Also published as the `@vgent/engine/allowlist` subpath: the browser answers
@@ -59,3 +53,9 @@ export {
   type AgentInstructionsFile,
   type AgentInstructionsOptions,
 } from "./agent-instructions.js";
+
+export { type TaskState } from "./update-plan.js";
+export { type EngineOutcome } from "./engine.js";
+export { fitContext, estimateTokens, SUMMARY_INSTRUCTIONS } from "./context.js";
+
+export { classifyFailure, type FailureClass } from "./failures.js";

@@ -71,9 +71,6 @@ export async function resolveToolPath(workDir: string, input: string, options: R
   if (!input || input.includes("\0")) throw new Error(`Invalid file path: ${JSON.stringify(input)}`);
   const root = await realpath(workDir);
   const requested = resolve(root, expandHome(input));
-  if (!options.allowOutsideWorkDir && !within(root, requested)) {
-    throw new Error(`Path "${input}" resolves outside the working directory.`);
-  }
 
   let probe = requested;
   const missing: string[] = [];
@@ -86,7 +83,7 @@ export async function resolveToolPath(workDir: string, input: string, options: R
       }
       const target = resolve(canonical, ...missing);
       if (!options.allowOutsideWorkDir && !within(root, target)) {
-        throw new Error(`Path "${input}" escapes the working directory through a symlink.`);
+        throw new Error(`Path "${input}" resolves outside the working directory (including symlink escapes).`);
       }
       return target;
     } catch (error) {

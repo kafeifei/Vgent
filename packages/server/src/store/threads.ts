@@ -58,6 +58,8 @@ export interface CreateThreadInput {
 }
 
 export type ThreadPatch = Partial<{
+  consumeQueueIds: string[];
+  taskState: ThreadRecord["taskState"];
   title: string;
   /** Only ever changed on a thread with no messages; the route enforces that. */
   engine: EngineId;
@@ -117,7 +119,10 @@ export interface ThreadStore {
 }
 
 const isRecord = (value: unknown): value is ThreadRecord =>
-  typeof value === "object" && value !== null && typeof (value as ThreadRecord).id === "string" && Array.isArray((value as ThreadRecord).messages);
+  typeof value === "object" &&
+  value !== null &&
+  typeof (value as ThreadRecord).id === "string" &&
+  Array.isArray((value as ThreadRecord).messages);
 
 const isIndexFile = (value: unknown): value is ThreadIndexFile =>
   typeof value === "object" && value !== null && Array.isArray((value as ThreadIndexFile).threads);
@@ -143,7 +148,7 @@ export function countPendingApprovals(messages: readonly UIMessage[]): number {
 
 export function summarize(record: ThreadRecord): ThreadSummary {
   // `applyUndo` is destructured only to keep it out of `rest`.
-  const { messages, applyUndo: _applyUndo, ...rest } = record;
+  const { messages, applyUndo: _applyUndo, taskState: _taskState, ...rest } = record;
   return { ...rest, messageCount: messages.length, pendingApprovals: countPendingApprovals(messages) };
 }
 
@@ -211,7 +216,8 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
     const entries = await readdir(dir).catch(() => [] as string[]);
     const summaries: ThreadSummary[] = [];
     for (const entry of entries) {
-      if (!entry.endsWith(".json") || entry === "index.json" || entry.endsWith(".harness.json") || entry.includes(PRE_COMPACT_INFIX)) continue;
+      if (!entry.endsWith(".json") || entry === "index.json" || entry.endsWith(".harness.json") || entry.includes(PRE_COMPACT_INFIX))
+        continue;
       const record = await readJsonOrQuarantine<ThreadRecord>(join(dir, entry), { validate: isRecord, log });
       if (record != null) summaries.push(summarize(record));
     }
@@ -299,6 +305,15 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
             ? current.updatedAt
             : new Date().toISOString(),
         };
+        if (patch.consumeQueueIds) {
+          const consumed = new Set(patch.consumeQueueIds);
+          next.queue = (current.queue ?? []).filter((item) => !consumed.has(item.id));
+          if (!next.queue.length) delete next.queue;
+        }
+        if ("taskState" in patch) {
+          if (patch.taskState == null) delete next.taskState;
+          else next.taskState = patch.taskState;
+        }
         // `exactOptionalPropertyTypes`: clearing an optional field means deleting it.
         if ("model" in patch) {
           if (patch.model == null) delete next.model;
@@ -365,7 +380,18 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
         // An empty queue is the absence of one, so it is stored as one.
         if ("queue" in patch) {
           if (patch.queue == null || patch.queue.length === 0) delete next.queue;
-          else next.queue = patch.queue;
+          else {
+            const consumed = new Set(
+              next.messages.flatMap((message) => [
+                ...(message.role === "user" ? [message.id] : []),
+                ...message.parts.flatMap((part) =>
+                  part.type === "data-steer" && typeof (part as { id?: unknown }).id === "string" ? [(part as { id: string }).id] : [],
+                ),
+              ]),
+            );
+            next.queue = patch.queue.filter((item) => !consumed.has(item.id));
+            if (!next.queue.length) delete next.queue;
+          }
         }
         if ("archivedAt" in patch) {
           if (patch.archivedAt == null) delete next.archivedAt;

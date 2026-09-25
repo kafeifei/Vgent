@@ -13,10 +13,12 @@
 import type { Experimental_SandboxSession, ToolSet } from "ai";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createNodeFileSystem, createSandboxFileSystem, type FileSystemLike } from "./fs.js";
 import { createLocalRunner } from "./local-runner.js";
 import { resolveToolPath, resolveWorkspacePath } from "./paths.js";
+import { createStreamingBashTool } from "./streaming-bash.js";
+import type { ObservedFiles } from "./mutations.js";
 import { createBashTool, type Runner } from "./tools/bash.js";
 import { createEditTool } from "./tools/edit.js";
 import { createGlobTool } from "./tools/glob.js";
@@ -24,6 +26,7 @@ import { createGrepTool } from "./tools/grep.js";
 import { createReadTool } from "./tools/read.js";
 import { createWriteTool } from "./tools/write.js";
 
+export { mutateFile } from "./mutations.js";
 export { resolveToolPath, resolveWorkspacePath, type ResolvePathOptions } from "./paths.js";
 export { createNodeFileSystem, createSandboxFileSystem, type FileSystemLike, type FileStat } from "./fs.js";
 export { createLocalRunner, type LocalRunner, type LocalRunOptions, type LocalRunResult } from "./local-runner.js";
@@ -48,6 +51,10 @@ export interface CreateCodingToolsOptions {
    * e.g. the skills the system prompt lists by path. Host filesystem only.
    */
   readRoots?: readonly string[];
+  /** Additional explicitly configured project roots, subject to the tool approval mode. */
+  writeRoots?: readonly string[];
+  onRead?: (path: string) => Promise<void>;
+  outputDir?: string;
 }
 
 /**
@@ -58,43 +65,67 @@ export function createCodingTools(options: CreateCodingToolsOptions): ToolSet {
   const maxOutputChars = options.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS;
   const preferRg = options.preferRg ?? true;
 
+  const observed: ObservedFiles = new Map();
   const fs: FileSystemLike = sandbox ? createSandboxFileSystem(sandbox) : createNodeFileSystem();
-  const runner: Runner = sandbox ?? createLocalRunner(workDir);
+  const runner: Runner =
+    sandbox ?? createLocalRunner(workDir, options.outputDir ? { outputDir: options.outputDir, maxOutputChars } : undefined);
 
   // Read-oriented resolution: validate the path, nothing more. Real filesystem
   // paths get the full symlink-safe walk (`resolveToolPath`); a sandbox's
   // filesystem is already isolated, so a syntactic check is enough there.
-  const resolveForRead = (input: string): Promise<string> =>
-    sandbox ? Promise.resolve(resolveWorkspacePath(workDir, input)) : resolveToolPath(workDir, input);
-
-  // `read` alone also reaches the extra roots, with the same symlink-safe walk
-  // against whichever root the path names.
-  const readRoots = sandbox ? [] : (options.readRoots ?? []);
-  const resolveForReadOnly = async (input: string): Promise<string> => {
+  const resolveInRoots = async (input: string, roots: readonly string[]): Promise<string> => {
+    if (sandbox) return resolveWorkspacePath(workDir, input);
     const target = resolve(workDir, input.startsWith("~/") ? join(homedir(), input.slice(2)) : input);
-    const root = readRoots.find((dir) => target === dir || target.startsWith(`${dir}${sep}`));
-    return root == null ? resolveForRead(input) : resolveToolPath(root, target);
+    let failure: unknown;
+    for (const root of [workDir, ...roots]) {
+      try {
+        return await resolveToolPath(root, target);
+      } catch (error) {
+        failure = error;
+      }
+    }
+    throw failure;
   };
+  const resolveForRead = (input: string) => resolveInRoots(input, options.writeRoots ?? []);
+  const resolveForReadOnly = (input: string) =>
+    resolveInRoots(input, [...(options.writeRoots ?? []), ...(options.readRoots ?? []), ...(options.outputDir ? [options.outputDir] : [])]);
 
   // Write-oriented resolution additionally ensures the parent directory
   // exists and, on the real filesystem, re-validates afterwards in case a
   // symlink was planted while `mkdir` ran.
   const resolveForWrite = async (input: string): Promise<string> => {
     if (sandbox) return resolveWorkspacePath(workDir, input);
-    const resolved = await resolveToolPath(workDir, input);
+    const resolved = await resolveForRead(input);
     await mkdir(dirname(resolved), { recursive: true });
-    return resolveToolPath(workDir, input);
+    return resolveForRead(input);
   };
 
   // grep/glob always walk the host filesystem directly (see module doc), so their
   // directory argument is validated against the real disk regardless of `sandbox`.
-  const resolveHostDir = (input: string): Promise<string> => resolveToolPath(workDir, input);
+  const resolveHostDir = resolveForRead;
 
   return {
-    read: createReadTool({ fs, resolvePath: resolveForReadOnly }),
-    write: createWriteTool({ fs, resolvePath: resolveForWrite }),
-    edit: createEditTool({ fs, resolvePath: resolveForRead }),
-    bash: createBashTool({ runner, workDir, resolveDir: resolveForRead, maxOutputChars }),
+    read: createReadTool({
+      fs,
+      resolvePath: resolveForReadOnly,
+      observed,
+      ...(options.onRead ? { onRead: options.onRead } : {}),
+      ...(options.outputDir && !sandbox
+        ? {
+            allowLarge: async (path: string) => {
+              try {
+                await resolveToolPath(options.outputDir!, path);
+                return true;
+              } catch {
+                return false;
+              }
+            },
+          }
+        : {}),
+    }),
+    write: createWriteTool({ fs, resolvePath: resolveForWrite, observed, ...(sandbox ? { mutationScope: sandbox } : {}) }),
+    edit: createEditTool({ fs, resolvePath: resolveForRead, ...(sandbox ? { mutationScope: sandbox } : {}) }),
+    bash: (sandbox ? createBashTool : createStreamingBashTool)({ runner, workDir, resolveDir: resolveForRead, maxOutputChars }),
     grep: createGrepTool({ workDir, resolveDir: resolveHostDir, preferRg }),
     glob: createGlobTool({ workDir, resolveDir: resolveHostDir }),
   };

@@ -3,7 +3,7 @@ import { connectMcpServers, planModeInstructions } from "@vgent/engine";
 import { cuaMcpConfig, onlyCuaTools, requireCuaDriver } from "../computer-use/cua.js";
 import { claudeCodeEffort, claudeCodeProviderEnv, claudeCodeThinking, createClaudeCodeEngine } from "@vgent/engines";
 import { splitProviderModelSpec, type ProviderConfig } from "@vgent/providers";
-import type { TextStreamPart, ToolSet } from "ai";
+import type { TextStreamPart, Tool, ToolSet } from "ai";
 import { BadRequestError, TurnResumeFailedError } from "../errors.js";
 import { createProviderStore } from "../store/providers.js";
 import { createSettingsStore } from "../store/settings.js";
@@ -52,6 +52,21 @@ export const CLAUDE_CODE_LONG_CONTEXT = 1_000_000;
 export function withLongContext(model: string, contextWindow: number | undefined): string {
   if (contextWindow == null || contextWindow < CLAUDE_CODE_LONG_CONTEXT || model.endsWith("[1m]")) return model;
   return `${model}[1m]`;
+}
+
+/**
+ * MCP tools as tools the harness runs on this side. They load up front
+ * (`deferLoading: false`), and they stop being `dynamic`, which the harness
+ * only honours half-way: it passes the runtime's `tool-input-start` through
+ * without the flag but marks the parsed `tool-call` dynamic. The UI stream then
+ * opens a static part and a second, dynamic one for the same call, and the
+ * result lands on the first — the other stays open for good. As plain function
+ * tools every chunk agrees.
+ */
+export function asHostTools(tools: ToolSet): ToolSet {
+  return Object.fromEntries(
+    Object.entries(tools).map(([name, tool]) => [name, { ...tool, type: "function", deferLoading: false } as Tool]),
+  );
 }
 
 /**
@@ -141,7 +156,7 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
         permissionMode: ctx.permissionMode,
         ...(route != null ? { model: route.model, auth: route.auth } : ctx.thread.model != null ? { model: withLongContext(ctx.thread.model, ctx.thread.contextWindow) } : {}),
         ...(Object.keys(env).length > 0 ? { env } : {}),
-        ...(cua != null ? { tools: Object.fromEntries(Object.entries(cuaTools).map(([name, tool]) => [name, { ...tool, deferLoading: false }])) } : {}),
+        ...(cua != null ? { tools: asHostTools(cuaTools) } : {}),
         // 推理强度 is the harness's `effort`; thinking itself stays adaptive and
         // `summarized`, which is what puts the reasoning in the stream. A task
         // that names no level runs on 高.

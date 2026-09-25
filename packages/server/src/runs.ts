@@ -1169,18 +1169,15 @@ function closeOpenToolParts(message: UIMessage, errorText: string): UIMessage {
 /**
  * The `output-error` rebuild of an open tool part. The union's `output-error`
  * variant forbids the fields the open states carry (`approval`, `output`), so
- * the closed part is rebuilt, not spread. Dropping `approval` is deliberate: it
- * also stops `convertToModelMessages` from emitting a stale
- * `tool-approval-response` the next engine session could not resolve.
+ * those are taken off before the rest is kept. Dropping `approval` is
+ * deliberate: it also stops `convertToModelMessages` from emitting a stale
+ * `tool-approval-response` the next engine session could not resolve. What
+ * stays is what every state shares — above all a `dynamic-tool`'s `toolName`,
+ * without which the client cannot even name the step.
  */
 function toClosedToolPart<T extends AnyToolUIPart>(part: T, errorText: string): T {
-  return {
-    type: part.type,
-    toolCallId: part.toolCallId,
-    state: "output-error",
-    input: part.input ?? {},
-    errorText,
-  } as unknown as T;
+  const { state: _state, input, output: _output, errorText: _errorText, approval: _approval, ...shared } = part;
+  return { ...shared, state: "output-error", input: input ?? {}, errorText } as unknown as T;
 }
 
 /**

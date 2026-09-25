@@ -13,6 +13,7 @@ import { TurnResumeFailedError } from "./errors.js";
 import {
   ABANDONED_TURN_TEXT,
   AUTO_TITLE_MAX_LEN,
+  closePendingToolParts,
   createRunManager,
   deriveThreadTitle,
   RESTART_PENDING_TOOL_TEXT,
@@ -424,6 +425,38 @@ describe("approval parking", () => {
     const part = recovered.messages.at(-1)?.parts.find(isToolUIPart);
     expect(part?.state).toBe("output-error");
     expect((part as { errorText?: string }).errorText).toBe(RESTART_PENDING_TOOL_TEXT);
+  });
+
+  it("keeps a dynamic tool's name when closing it, so the client can still render the step", () => {
+    const [message] = closePendingToolParts(
+      [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "dynamic-tool",
+              toolName: "cua__launch_app",
+              toolCallId: "call-1",
+              state: "approval-requested",
+              input: { bundle_id: "com.apple.Safari" },
+              providerExecuted: false,
+              approval: { id: "ap-1" },
+            },
+          ],
+        },
+      ],
+      RESTART_PENDING_TOOL_TEXT,
+    );
+    expect(message?.parts[0]).toEqual({
+      type: "dynamic-tool",
+      toolName: "cua__launch_app",
+      toolCallId: "call-1",
+      state: "output-error",
+      input: { bundle_id: "com.apple.Safari" },
+      providerExecuted: false,
+      errorText: RESTART_PENDING_TOOL_TEXT,
+    });
   });
 
   /**

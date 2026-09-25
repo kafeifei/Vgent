@@ -34,6 +34,7 @@ export interface SettingsPatch {
   mcpServers?: McpServerConfig[] | undefined;
   computerUseProvider?: "cua" | undefined;
   worktreeMaxCount?: number | undefined;
+  defaultWorkspace?: "project" | "worktree" | undefined;
   /** 界面偏好. `undefined` puts the built-in default back. */
   theme?: UiTheme | undefined;
   density?: UiDensity | undefined;
@@ -186,6 +187,10 @@ export function createSettingsStore(dataDir: string, log: Logger = silentLogger)
     if ("worktreeMaxCount" in patch) {
       if (patch.worktreeMaxCount == null) delete next.worktreeMaxCount;
       else next.worktreeMaxCount = patch.worktreeMaxCount;
+    }
+    if ("defaultWorkspace" in patch) {
+      if (patch.defaultWorkspace == null) delete next.defaultWorkspace;
+      else next.defaultWorkspace = patch.defaultWorkspace;
     }
     if ("theme" in patch) {
       if (patch.theme == null) delete next.theme;

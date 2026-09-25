@@ -91,7 +91,9 @@ export function EmptyState({
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [serviceTier, setServiceTier] = useState<string | null>(null);
   const [contextWindow, setContextWindow] = useState<number | null>(null);
-  const [workspace, setWorkspace] = useState<WorkspaceMode>("project");
+  /** Null until the user picks one: until then the last started task's answers. */
+  const [pickedWorkspace, setWorkspace] = useState<WorkspaceMode | null>(null);
+  const workspace = pickedWorkspace ?? settings?.defaultWorkspace ?? "project";
   /** 模式 rides on the creation request; there is no task to PATCH yet. */
   const [mode, setMode] = useState<ThreadMode>("agent");
   const project = projects.find((entry) => entry.id === projectId);

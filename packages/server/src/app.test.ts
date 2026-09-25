@@ -781,6 +781,21 @@ describe("createApp", () => {
     ]);
   });
 
+  it("remembers the last project task's 运行位置, and a 无项目 task leaves it alone", async () => {
+    const repo = await gitRepo();
+    const app = makeApp(await tempDir());
+    const project = (await (await postJson(app, "/api/projects", { repoPath: repo })).json()) as Project;
+    const remembered = async () => ((await (await request(app, "/api/settings")).json()) as Settings).defaultWorkspace;
+
+    expect(await remembered()).toBeUndefined();
+    await postJson(app, "/api/threads", { projectId: project.id, workspace: "worktree" });
+    expect(await remembered()).toBe("worktree");
+    await postJson(app, "/api/threads", { projectId: "no-project" });
+    expect(await remembered()).toBe("worktree");
+    await postJson(app, "/api/threads", { projectId: project.id, workspace: "project" });
+    expect(await remembered()).toBe("project");
+  });
+
   it("refuses to list files once the task's worktree is reclaimed", async () => {
     const repo = await gitRepo();
     const app = makeApp(await tempDir());

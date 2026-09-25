@@ -932,7 +932,12 @@ export function createApp(options: CreateAppOptions): VgentApp {
     });
     // 记住上一次选择: the next task starts on what this one was started with.
     // Not a setting anyone edits — the composer's chip is the only place it shows.
-    await settings.mutate(() => ({ defaultEngine: engine, defaultModel: typeof model === "string" ? model : undefined }));
+    // 运行位置 the same way, but only from a project task: 无项目 has no choice.
+    await settings.mutate(() => ({
+      defaultEngine: engine,
+      defaultModel: typeof model === "string" ? model : undefined,
+      ...(project != null ? { defaultWorkspace: body?.workspace === "worktree" ? "worktree" : "project" } : {}),
+    }));
     if (body?.workspace !== "worktree" || project == null) return c.json(record);
     // The worktree is named after the thread, so the record has to exist
     // first — and must not survive a worktree that failed to materialize.

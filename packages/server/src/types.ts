@@ -413,6 +413,12 @@ export interface Settings {
   /** How many live worktrees to keep before the oldest idle ones are reclaimed. Absent = `DEFAULT_WORKTREE_MAX_COUNT`. */
   worktreeMaxCount?: number;
   /**
+   * 运行位置, 记住上一次选择: what the last task started in a project ran in, so
+   * the next one starts there too. Absent = 主目录. A 无项目 task has no choice
+   * to make, so it leaves this alone.
+   */
+  defaultWorkspace?: "project" | "worktree";
+  /**
    * 界面偏好, kept here rather than in the browser: the desktop shell's WebView
    * gets a new origin on every launch, so `localStorage` alone would forget
    * them. Absent = the built-in default (深色 / 舒适).

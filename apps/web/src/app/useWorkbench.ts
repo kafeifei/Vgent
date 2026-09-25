@@ -112,6 +112,12 @@ export function useWorkbench(token: string) {
   const thread = state.threads.find((entry) => entry.id === selectedThreadId);
   // A selected thread always wins over the manual project pick.
   const activeProjectId = thread?.projectId ?? projectId ?? state.projects[0]?.id ?? null;
+  // Opening a task is also picking its project: 新任务 from there starts in the
+  // same one, not wherever the picker was left.
+  const threadProjectId = thread?.projectId;
+  useEffect(() => {
+    if (threadProjectId != null) setProjectId(threadProjectId);
+  }, [threadProjectId]);
 
   /** The 变更 tab's selection, from the panel's own file rows. */
   const selectChange = useCallback((file: string | null) => setRight((state) => ({ ...state, file })), []);

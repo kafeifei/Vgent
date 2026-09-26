@@ -46,7 +46,7 @@ export function createTaskPlan(initial?: TaskState, save?: (state: TaskState) =>
   return {
     get: () => state,
     tool: tool({
-      description: "保存复杂任务的计划与续接信息；简单任务无需调用。更新状态时保持条目名称不变，省略的未完成项仍保留。",
+      description: "保存复杂任务的计划与续接信息；简单任务无需调用。更新状态时保持条目名称不变，省略的未完成项仍保留。记录约束、授权、剩余交付和执行证据；在有意义的里程碑更新。",
       inputSchema: updatePlanInputSchema,
       execute: async (input) => {
         const retained = input.replaceReason

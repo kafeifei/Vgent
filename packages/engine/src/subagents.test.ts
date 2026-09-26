@@ -270,3 +270,41 @@ it("resumes a child by its durable ID with the prior delegated request and respo
   expect(JSON.stringify(child.doStreamCalls[1]!.prompt)).toContain("First finding: KEEP-832");
   expect(JSON.stringify(child.doStreamCalls[1]!.prompt)).toContain("verify uncertain prior side effects");
 });
+
+it("passes the same project and skill capabilities into the child's actual model request and tool execution", async () => {
+  const { mkdir, readFile, rm } = await import("node:fs/promises");
+  const projectPath = await mkdtemp(join(tmpdir(), "vgent-parent-project-"));
+  const skillDir = join(projectPath, "skills", "delivery");
+  await mkdir(skillDir, { recursive: true });
+  await writeFile(join(skillDir, "SKILL.md"), "DELIVERY_SKILL_SENTINEL");
+  const delivered = join(projectPath, "delivered.txt");
+  try {
+    const child = childModel([
+      toolCallStep("child-read", "read", { file_path: join(skillDir, "SKILL.md") }),
+      toolCallStep("child-write", "write", { file_path: delivered, content: "verified delivery" }),
+      textStep("Created delivered.txt in the project checkout."),
+    ]);
+    const parent = parentModel("coder", { task: "Read the delivery skill and create delivered.txt in the project checkout." }, "Delivered.");
+    const engine = createVgentEngine({
+      model: parent, subagentModel: child, repoPath, projectPath,
+      permissionMode: "allow-reads", alwaysAllow: ["coder", "write"],
+      context: { host: "Vgent test host", workspace: { branch: "task-branch", baseCommit: "base123" } },
+      skills: [{ name: "delivery", description: "Delivery process", path: join(skillDir, "SKILL.md") }],
+      instructions: "PROJECT_RULE_SENTINEL: preserve unrelated changes.",
+    });
+    await engine.agent.generate({ prompt: "Delegate the delivery step." });
+    expect(await readFile(delivered, "utf8")).toBe("verified delivery");
+    const prompt = JSON.stringify(child.doStreamCalls[0]!.prompt);
+    for (const fact of ["Vgent test host", "task-branch", "base123", "PROJECT_RULE_SENTINEL", projectPath, "delivery", "allow-reads"])
+      expect(prompt).toContain(fact);
+    expect(prompt).toContain("Run without tool approval: read, write, grep, glob");
+    expect(prompt).toContain("are denied in this subagent");
+    expect(prompt).not.toContain("Available tools: read, write, edit, bash, grep, glob, coder");
+    for (const name of ["read", "write", "bash"]) {
+      const description = (call: { tools?: readonly { name?: string; description?: string }[] }) => call.tools?.find((tool) => tool.name === name)?.description;
+      expect(description(child.doStreamCalls[0]!)).toBe(description(parent.doGenerateCalls[0]!));
+    }
+  } finally {
+    await rm(projectPath, { recursive: true, force: true });
+  }
+});

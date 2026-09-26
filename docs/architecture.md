@@ -30,22 +30,22 @@ Vgent 是一个 **Web 优先**的本地 coding agent 工作台，底下可换引
 
 ### 自研引擎 `@vgent/engine`
 
-一个 `ToolLoopAgent`。SDK 负责循环、审批、子代理、裁剪、MCP、工具搜索、流协议；手写的只有工具执行体和产品逻辑。
+一个 `ToolLoopAgent` 驱动模型与工具循环。Vgent 提供工具实现、审批策略、上下文构造和产品状态；服务端 `RunManager` / `ThreadStore` 继续负责会话生命周期与持久化。
 
-| 能力 | 用什么 |
+2026-09-26：主代理与子代理通过 `packages/engine/src/agent-setup.ts` 的 `createAgentSetup()` 组装。该函数不持有会话状态，只创建工具、按当前模式筛选、绑定审批策略，然后生成指令。角色、预算和结果处理留在各自调用方。
+
+| 能力 | 实现与归属 |
 | --- | --- |
-| 主循环 | `ToolLoopAgent`，`stopWhen: isLoopFinished()` 加 token 预算条件 |
-| 内建工具 | 自写 `read/write/edit/bash/grep/glob/webSearch/askUserQuestions`，名字对齐 harness 公共工具名，全部通过 `experimental_sandbox` 操作。路径校验搬 freecode `server/tools.ts` 的 `resolveToolPath`（走到最近存在的祖先、审批后复验、拒绝悬空 symlink、写后再查） |
-| 权限 | `toolApproval` 函数：`permissionMode` 映射 readonly 放行、edit 按模式、bash 按模式 + 白名单；后期可换 `@ai-sdk/policy-opa` |
-| 子代理 | Explore（只读）/ Coder（可写）两个 `ToolLoopAgent` 包成 tool，async generator + `readUIMessageStream` 流式回传，`toModelOutput` 只给摘要。子代理内不能审批，所以只放安全工具或受主 agent 权限模式约束 |
-| MCP | `@ai-sdk/mcp` + 全部 `deferLoading: true` + `toolSearch()` |
-| Skills | 读项目 `.claude/skills` 等目录，`instructions` 里只放名称 + 描述索引，内容按需 `read`。**不要**像 freecode 那样每步全文拼进 instructions |
-| 记忆 | 自定义 tool 落盘 `~/.vgent/memory/<project>/`；Claude 模型可换 `anthropic.tools.memory_20250818` |
-| 压缩 | `prepareStep` 核算指令、工具和历史预算，先裁剪再有界摘要，保留近期原文；手动 /compact 保留近期回合与压缩前快照 |
-| 模型 | 默认 AI Gateway `provider/model` 字串；也支持直连 `@ai-sdk/anthropic` / `@ai-sdk/openai` |
-| 观测 | `@ai-sdk/otel`；开发期 `@ai-sdk/devtools` |
+| 主循环 | `ToolLoopAgent`，步数上限、最后一步收尾、取消信号保持现有机制 |
+| 内建工具 | `@vgent/tools` 的 `createCodingTools()`；同一份有效路径配置用于执行校验和工具描述。文件工具支持工作目录及额外配置的根目录，Shell 默认运行在宿主机，cwd 检查不构成系统沙箱 |
+| 权限 | `permissions.ts` 的 `createApprovalPolicy()` 同时提供审批函数与说明，使用相同的模式、允许列表和调用分类。主代理触发审批；子代理拒绝需要审批的调用并报告给父代理 |
+| 指令 | `buildInstructions()` 只组合通用行为、工作区事实、选中的工具、审批说明、项目规则与 Skills。工具用法放在工具定义中，删除工具即不再向模型发送它的能力说明 |
+| 子代理 | Explore / Coder 使用同一组装函数；Explore 仅开放读取工具，Coder 继承项目路径及权限。返回状态、摘要和可用的完整报告引用 |
+| MCP | `@ai-sdk/mcp`，延迟加载工具通过 `toolSearch()` 发现；计划模式过滤后不保留这些工具及其说明 |
+| Skills / 记忆 | Skills 按需读取；记忆工具拥有存储位置、条目索引和使用说明。计划模式不开放记忆写入 |
+| 压缩与恢复 | 保留原有 `prepareStep` 预算核算、历史压缩、缓存及服务端恢复实现；本次组装重构不引入第二套会话状态或执行循环 |
 
-2026-09-25：文件协调、输入持久化、结束原因、任务续接、子代理、记忆与压缩的现行契约见 [harness-reliability.md](./harness-reliability.md)。
+文件协调、输入持久化、结束原因、任务续接与恢复契约见 [harness-reliability.md](./harness-reliability.md)。
 
 ### 模型接入 `@vgent/providers`
 

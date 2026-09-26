@@ -38,7 +38,7 @@ export function createEditTool({ fs, resolvePath, mutationScope }: EditToolDeps)
     description:
       "Replace an exact string in a file with another string. `old_string` must match exactly one location " +
       "in the file unless `replace_all` is set — include enough surrounding context in `old_string` to make " +
-      "it unique. Returns a small unified diff of the change.",
+      "it unique. Read the file first and copy old_string exactly, including indentation. Returns a small unified diff of the change.",
     inputSchema: z.object({
       file_path: z.string().min(1).describe("Path to the file to edit. Absolute, or relative to the working directory."),
       old_string: z.string().min(1).describe("The exact text to find and replace. Must be unique in the file unless replace_all is set."),

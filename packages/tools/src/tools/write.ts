@@ -14,8 +14,8 @@ export interface WriteToolDeps {
 export function createWriteTool({ fs, resolvePath, observed, mutationScope }: WriteToolDeps) {
   return tool({
     description:
-      "Write content to a file in the working directory, overwriting it if it exists and creating parent " +
-      "directories if needed. Prefer `edit` for small changes to an existing file.",
+      "Write content to a file, overwriting it if it exists and creating parent " +
+      "directories if needed. Read an existing file before overwriting it; new files need no prior read. Prefer `edit` for small changes to an existing file.",
     inputSchema: z.object({
       file_path: z.string().min(1).describe("Path to the file to write. Absolute, or relative to the working directory."),
       content: z.string().describe("The full content to write to the file."),

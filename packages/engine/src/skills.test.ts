@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
-import { buildInstructions } from "./instructions.js";
+import { createAgentSetup } from "./agent-setup.js";
 import { loadSkillsIndex, parseSkillFrontmatter } from "./skills.js";
 
 let root: string;
@@ -54,9 +54,9 @@ describe("parseSkillFrontmatter", () => {
   });
 });
 
-describe("buildInstructions", () => {
+describe("skill context", () => {
   it("renders the skills index and points at the SKILL.md", () => {
-    const text = buildInstructions({
+    const { instructions: text } = createAgentSetup({
       repoPath: "/repo",
       permissionMode: "allow-edits",
       skills: [
@@ -70,16 +70,11 @@ describe("buildInstructions", () => {
     expect(text).toContain("SKILL.md before relying on it");
   });
 
-  it("mentions subagents and toolSearch only when they exist", () => {
-    const bare = buildInstructions({ repoPath: "/repo", permissionMode: "allow-edits" });
-    expect(bare).not.toContain("`explore`");
-    expect(bare).not.toContain("toolSearch");
-
-    const full = buildInstructions({ repoPath: "/repo", permissionMode: "allow-edits", subagents: true, toolSearch: true });
-    expect(full).toContain("`explore`");
-    expect(full).toContain("`coder`");
-    expect(full).toContain("toolSearch");
-    // The closing instruction still comes last, before any caller extra.
-    expect(full.indexOf("`explore`")).toBeLessThan(full.indexOf("When you are done"));
+  it("omits the skill index when no enabled tool can read it", () => {
+    const { instructions } = createAgentSetup({
+      repoPath: "/repo", permissionMode: "allow-edits", allowedTools: [],
+      skills: [{ name: "hidden-skill", description: "Unavailable", path: "/skills/hidden/SKILL.md" }],
+    });
+    expect(instructions).not.toContain("hidden-skill");
   });
 });

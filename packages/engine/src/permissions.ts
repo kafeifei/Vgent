@@ -7,7 +7,7 @@
  * side-effecting.
  */
 
-import { BASH_TOOL, isAllowlisted, isReadOnlyCommand } from "./allowlist.js";
+import { BASH_TOOL, bashEntryCommand, isVoidedBashEntry, isAllowlisted, isReadOnlyCommand } from "./allowlist.js";
 
 /** How much the agent may do without asking. Mirrors the harness engines' modes. */
 export type PermissionMode = "allow-reads" | "allow-edits" | "allow-all";
@@ -19,8 +19,7 @@ export type ApprovalDecision = "not-applicable" | "user-approval";
  * Tools that only observe the workspace. Never need approval in any mode.
  * `explore` is a read-only subagent (its child's tools are read-only too) and
  * `toolSearch` only looks up tool definitions — neither touches anything.
- * `updatePlan` has no side effects either: it only replaces the todo list the
- * UI renders, never anything on disk or for the user.
+ * `updatePlan` persists task state, and is approved as internal bookkeeping.
  * `memory` does write, but only inside its own directory outside the repository
  * — never the user's code — so asking for each note would be pure friction.
  */
@@ -55,50 +54,64 @@ const EDIT_TOOLS = new Set(["write", "edit", "coder"]);
  * `allow-all`: a tool the policy has not heard of is assumed to have effects.
  *
  * `alwaysAllow` is the global 「一直允许」 list. For `bash` it is command-scoped
- * (`bash(git)`), so whether it answers this call depends on the command — see
+ * (`bash(git status)`), so whether it answers this call depends on the command — see
  * `isAllowlisted`, which the browser runs on the very same entries.
  */
-export function decideApproval({
-  mode,
-  toolName,
-  input,
-  alwaysAllow,
-}: {
+interface ApprovalOptions {
   mode: PermissionMode;
-  toolName: string;
-  input: unknown;
   alwaysAllow?: readonly string[];
-}): ApprovalDecision {
-  if (mode === "allow-all") return "not-applicable";
-  if (isAllowlisted({ toolName, input, allowlist: alwaysAllow })) return "not-applicable";
-  if (READ_ONLY_TOOLS.has(toolName) || CUA_READ_ONLY_TOOLS.has(toolName) || HUMAN_INPUT_TOOLS.has(toolName)) return "not-applicable";
+}
 
-  if (EDIT_TOOLS.has(toolName)) {
-    return mode === "allow-edits" ? "not-applicable" : "user-approval";
-  }
+/** Both the decision and its explanation use this classification. */
+function requirement(options: ApprovalOptions, toolName: string): "immediate" | "command" | "approval" {
+  const { mode, alwaysAllow } = options;
+  if (mode === "allow-all" || isAllowlisted({ toolName, input: undefined, allowlist: alwaysAllow })) return "immediate";
+  if (READ_ONLY_TOOLS.has(toolName) || CUA_READ_ONLY_TOOLS.has(toolName) || HUMAN_INPUT_TOOLS.has(toolName)) return "immediate";
+  if (EDIT_TOOLS.has(toolName) && mode === "allow-edits") return "immediate";
+  // isAllowlisted also accepts built-in command rules when a standing list is present.
+  if (toolName === BASH_TOOL && (mode === "allow-edits" || (alwaysAllow?.length ?? 0) > 0)) return "command";
+  return "approval";
+}
 
-  if (toolName === BASH_TOOL) {
-    if (mode !== "allow-edits") return "user-approval";
+export function decideApproval(options: ApprovalOptions & { toolName: string; input: unknown }): ApprovalDecision {
+  const { toolName, input, mode, alwaysAllow } = options;
+  const kind = requirement(options, toolName);
+  if (kind === "immediate") return "not-applicable";
+  if (kind === "command") {
+    if (isAllowlisted({ toolName, input, allowlist: alwaysAllow })) return "not-applicable";
     const command = (input as { command?: unknown } | null | undefined)?.command;
-    return typeof command === "string" && isReadOnlyCommand(command) ? "not-applicable" : "user-approval";
+    if (mode === "allow-edits" && typeof command === "string" && isReadOnlyCommand(command)) return "not-applicable";
   }
-
   return "user-approval";
 }
 
-/**
- * Builds the generic `toolApproval` function for a permission mode, shaped for
- * `ToolLoopAgent`'s `toolApproval` option.
- */
-export function createToolApproval(
-  mode: PermissionMode,
-  alwaysAllow?: readonly string[],
-): (options: { toolCall: { toolName: string; input: unknown } }) => ApprovalDecision {
-  return ({ toolCall }) =>
-    decideApproval({
-      mode,
-      toolName: toolCall.toolName,
-      input: toolCall.input,
-      ...(alwaysAllow != null ? { alwaysAllow } : {}),
-    });
+/** One turn's effective policy, shared by execution and model-facing instructions. */
+export function createApprovalPolicy(mode: PermissionMode, alwaysAllow: readonly string[] = []) {
+  const options: ApprovalOptions = { mode, alwaysAllow: [...alwaysAllow] };
+  return {
+    toolApproval: ({ toolCall }: { toolCall: { toolName: string; input: unknown } }) => decideApproval({ ...options, ...toolCall }),
+    describe(toolNames: readonly string[], interactive: boolean): string {
+      const groups = {
+        immediate: toolNames.filter((name) => requirement(options, name) === "immediate"),
+        command: toolNames.filter((name) => requirement(options, name) === "command"),
+        approval: toolNames.filter((name) => requirement(options, name) === "approval"),
+      };
+      const standing = options.alwaysAllow!.filter((entry) =>
+        !isVoidedBashEntry(entry) && (toolNames.includes(entry) || (toolNames.includes(BASH_TOOL) && bashEntryCommand(entry) != null)),
+      );
+      const pending = interactive ? "require tool approval" : "are denied in this subagent; report the blocked operation to the parent";
+      return [
+        `Permission mode: ${mode}.`,
+        groups.immediate.length ? `Run without tool approval: ${groups.immediate.join(", ")}.` : "",
+        groups.command.length ? `Command-dependent approval: ${groups.command.join(", ")}. The engine checks the full input against its built-in command rules and standing approvals; unmatched calls ${pending}. These checks do not provide OS isolation.` : "",
+        groups.approval.length ? `Calls to ${groups.approval.join(", ")} ${pending}.` : "",
+        standing.length ? `Applicable standing approvals: ${JSON.stringify(standing)}. Shell entries are command-scoped and every segment must pass the engine's checks.` : "",
+        toolNames.includes("toolSearch") ? `Tools discovered later use the same policy; unrecognized tools ${mode === "allow-all" ? "run without tool approval" : pending}.` : "",
+        interactive
+          ? "Submit an authorized tool call to let the approval system handle it. Do not ask a separate conversational permission question. Respect a denial; do not route the same operation through another tool to bypass it."
+          : "This subagent cannot ask the user for approval. A denied call is a limitation to report, not permission to bypass the policy.",
+        "Tool approval does not expand the user's task scope or the tool's actual capabilities.",
+      ].filter(Boolean).join("\n");
+    },
+  };
 }

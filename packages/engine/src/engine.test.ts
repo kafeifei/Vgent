@@ -398,3 +398,20 @@ describe("resolveModel", () => {
     expect(() => resolveModel("not-a-spec")).toThrow(/模型标识不合法/);
   });
 });
+
+it("sends the selected plan tools and their descriptions without advertising excluded capabilities", async () => {
+  const model = readThenAnswer("Plan verified.");
+  const engine = createVgentEngine({
+    model, repoPath, plan: true, permissionMode: "allow-all", memoryDir: join(repoPath, "memory"),
+    extraTools: { publish: { description: "PUBLISH_CAPABILITY_SENTINEL", inputSchema: z.object({}), deferLoading: true, execute: async () => "ok" } },
+  });
+  await engine.agent.generate({ prompt: "Inspect and plan." });
+  const request = model.doGenerateCalls[0]!;
+  expect(request.tools?.map((tool) => tool.name).sort()).toEqual(["askUserQuestions", "explore", "glob", "grep", "read", "updatePlan"]);
+  const prompt = JSON.stringify(request.prompt);
+  expect(prompt).toContain("Available tools: read, grep, glob, explore, askUserQuestions, updatePlan.");
+  expect(prompt).not.toContain("PUBLISH_CAPABILITY_SENTINEL");
+  expect(prompt).not.toContain("coder");
+  expect(prompt).not.toContain("toolSearch");
+  expect(prompt).not.toContain("跨任务");
+});

@@ -14,6 +14,7 @@ import type { LanguageModel, TextStreamPart, ToolSet } from "ai";
 import { BadRequestError, EngineUnavailableError } from "../errors.js";
 import { createProviderStore } from "../store/providers.js";
 import { createSettingsStore } from "../store/settings.js";
+import { isNoProject } from "../no-project.js";
 import { expandSteers } from "../steer.js";
 import type { EngineDescriptor } from "./capabilities.js";
 import { PROVIDER_DEFAULT_LEVEL, effectiveReasoningLevel } from "../reasoning.js";
@@ -185,14 +186,13 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
           // which front end it is answering through, and whether this directory
           // is the project or a worktree cut from it.
           context: {
+            workspaceKind: isNoProject(ctx.thread.projectId) ? "scratch" : "project",
             modelId: typeof model === "string" ? model : model.modelId,
             host: process.env.VGENT_DESKTOP === "1" ? "Vgent desktop app (macOS)" : "Vgent web",
             ...(workspace == null
               ? {}
               : {
                   workspace: {
-                    path: workspace.path,
-                    projectPath: ctx.projectPath,
                     branch: workspace.branch,
                     baseCommit: workspace.baseCommit,
                   },

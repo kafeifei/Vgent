@@ -38,3 +38,18 @@ describe("createCodingTools readRoots", () => {
     ).rejects.toThrow(/outside the working directory/);
   });
 });
+
+it("snapshots root configuration for both tool descriptions and file execution", async () => {
+  const root = await mkdtemp(join(tmpdir(), "vgent-tool-snapshot-"));
+  try {
+    const workDir = join(root, "task"), project = join(root, "project"), other = join(root, "other");
+    await Promise.all([workDir, project, other].map((path) => mkdir(path)));
+    const writeRoots = [project];
+    const tools = createCodingTools({ workDir, writeRoots });
+    writeRoots.push(other);
+    expect(tools.write!.description).toContain(project);
+    expect(tools.write!.description).not.toContain(other);
+    await tools.write!.execute!({ file_path: join(project, "ok.txt"), content: "ok" }, execOptions);
+    await expect(tools.write!.execute!({ file_path: join(other, "no.txt"), content: "no" }, execOptions)).rejects.toThrow(/outside the working directory/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

@@ -40,7 +40,7 @@ const DEFAULT_MAX_OUTPUT_CHARS = 30_000;
 export interface CreateCodingToolsOptions {
   /** When provided, file tools and `bash` operate inside this sandbox instead of the host machine. */
   sandbox?: Experimental_SandboxSession;
-  /** The task's working directory. All tool paths are resolved relative to (and confined to) this directory. */
+  /** Default directory for file paths and commands. File access also includes the configured roots. */
   workDir: string;
   /** Cap on `bash` stdout/stderr length, keeping head and tail. Defaults to 30000. */
   maxOutputChars?: number;
@@ -61,7 +61,12 @@ export interface CreateCodingToolsOptions {
  * Builds the built-in coding `ToolSet`: `read`, `write`, `edit`, `bash`, `grep`, `glob`.
  */
 export function createCodingTools(options: CreateCodingToolsOptions): ToolSet {
-  const { sandbox, workDir } = options;
+  const { sandbox } = options;
+  const workDir = resolve(options.workDir);
+  // Snapshot the effective paths once for both execution and tool descriptions.
+  const roots = (paths: readonly string[]) => [...new Set(paths.map((path) => resolve(workDir, path)))];
+  const fileRoots = roots([workDir, ...(sandbox ? [] : (options.writeRoots ?? []))]);
+  const readRoots = roots([...fileRoots, ...(sandbox ? [] : (options.readRoots ?? [])), ...(options.outputDir && !sandbox ? [options.outputDir] : [])]);
   const maxOutputChars = options.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS;
   const preferRg = options.preferRg ?? true;
 
@@ -77,7 +82,7 @@ export function createCodingTools(options: CreateCodingToolsOptions): ToolSet {
     if (sandbox) return resolveWorkspacePath(workDir, input);
     const target = resolve(workDir, input.startsWith("~/") ? join(homedir(), input.slice(2)) : input);
     let failure: unknown;
-    for (const root of [workDir, ...roots]) {
+    for (const root of roots) {
       try {
         return await resolveToolPath(root, target);
       } catch (error) {
@@ -86,9 +91,9 @@ export function createCodingTools(options: CreateCodingToolsOptions): ToolSet {
     }
     throw failure;
   };
-  const resolveForRead = (input: string) => resolveInRoots(input, options.writeRoots ?? []);
+  const resolveForRead = (input: string) => resolveInRoots(input, fileRoots);
   const resolveForReadOnly = (input: string) =>
-    resolveInRoots(input, [...(options.writeRoots ?? []), ...(options.readRoots ?? []), ...(options.outputDir ? [options.outputDir] : [])]);
+    resolveInRoots(input, readRoots);
 
   // Write-oriented resolution additionally ensures the parent directory
   // exists and, on the real filesystem, re-validates afterwards in case a
@@ -104,7 +109,7 @@ export function createCodingTools(options: CreateCodingToolsOptions): ToolSet {
   // directory argument is validated against the real disk regardless of `sandbox`.
   const resolveHostDir = resolveForRead;
 
-  return {
+  const tools: ToolSet = {
     read: createReadTool({
       fs,
       resolvePath: resolveForReadOnly,
@@ -129,4 +134,14 @@ export function createCodingTools(options: CreateCodingToolsOptions): ToolSet {
     grep: createGrepTool({ workDir, resolveDir: resolveHostDir, preferRg }),
     glob: createGlobTool({ workDir, resolveDir: resolveHostDir }),
   };
+  // These descriptions are sent by the SDK with the actual selected tools.
+  // Removing a tool also removes its capability claims from the model input.
+  for (const [name, definition] of Object.entries(tools)) {
+    const paths = name === "read" ? readRoots : fileRoots;
+    const scope = name === "bash"
+      ? `${sandbox ? "Shell execution uses the configured sandbox." : "Host shell with process-account permissions; cwd is not an OS sandbox."} Default cwd: ${JSON.stringify(workDir)}. Other allowed cwd roots: ${JSON.stringify(fileRoots.slice(1))}. The cwd check does not restrict command effects.`
+      : `${sandbox && ["read", "write", "edit"].includes(name) ? "Sandbox" : "Host"} file access: paths resolve relative to ${JSON.stringify(workDir)} and are limited to that directory${paths.length > 1 ? ` plus ${JSON.stringify(paths.slice(1))}` : ""}.`;
+    tools[name] = { ...definition, description: `${definition.description}\n${scope}` } as ToolSet[string];
+  }
+  return tools;
 }

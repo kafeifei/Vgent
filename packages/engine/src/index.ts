@@ -7,7 +7,7 @@
  */
 export { createVgentEngine, reasoningProviderOptions, resolveModel, usesOpenAIReasoning, CODEX_SUBSCRIPTION_PREFIX } from "./engine.js";
 export type { VgentEngine, VgentEngineOptions, VgentEngineEvent, VgentReasoningOptions } from "./engine.js";
-export { createToolApproval, decideApproval, type ApprovalDecision, type PermissionMode } from "./permissions.js";
+export { createApprovalPolicy, decideApproval, type ApprovalDecision, type PermissionMode } from "./permissions.js";
 // Also published as the `@vgent/engine/allowlist` subpath: the browser answers
 // the same 「一直允许」 question for the harness engines and must not pull the
 // rest of this package into its bundle.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createToolApproval, decideApproval } from "./permissions.js";
+import { createApprovalPolicy, decideApproval } from "./permissions.js";
 
 const bash = (mode: "allow-reads" | "allow-edits" | "allow-all", command: string) =>
   decideApproval({ mode, toolName: "bash", input: { command } });
@@ -61,9 +61,9 @@ describe("decideApproval", () => {
   });
 });
 
-describe("createToolApproval", () => {
+describe("createApprovalPolicy", () => {
   it("wires the decision into the shape toolApproval expects", () => {
-    const approval = createToolApproval("allow-edits");
+    const { toolApproval: approval } = createApprovalPolicy("allow-edits");
     expect(approval({ toolCall: { toolName: "bash", input: { command: "git status" } } })).toBe("not-applicable");
     expect(approval({ toolCall: { toolName: "bash", input: { command: "cat x; rm -rf /" } } })).toBe("user-approval");
     expect(approval({ toolCall: { toolName: "write", input: { file_path: "a" } } })).toBe("not-applicable");
@@ -112,9 +112,36 @@ describe("alwaysAllow", () => {
     expect(decideApproval({ mode: "allow-reads", toolName: "write", input: {}, alwaysAllow: [] })).toBe("user-approval");
   });
 
-  it("reaches the agent through createToolApproval's second argument", () => {
-    const approval = createToolApproval("allow-reads", ["bash(rm)"]);
+  it("reaches the agent through createApprovalPolicy's second argument", () => {
+    const { toolApproval: approval } = createApprovalPolicy("allow-reads", ["bash(rm)"]);
     expect(approval({ toolCall: { toolName: "bash", input: { command: "rm -rf /" } } })).toBe("not-applicable");
     expect(approval({ toolCall: { toolName: "write", input: {} } })).toBe("user-approval");
+  });
+});
+
+describe("policy description and execution", () => {
+  it.each(["allow-reads", "allow-edits", "allow-all"] as const)("describes the actual non-shell decisions in %s", (mode) => {
+    const policy = createApprovalPolicy(mode, ["write"]);
+    const names = ["read", "edit", "write", "unknown"];
+    const lines = policy.describe(names, true).split("\n");
+    for (const name of names) {
+      const decision = policy.toolApproval({ toolCall: { toolName: name, input: {} } });
+      const line = lines.find((line) => line.startsWith(decision === "not-applicable" ? "Run without tool approval:" : "Calls to "));
+      expect(line).toContain(name);
+    }
+  });
+
+  it("snapshots standing approvals and describes command checks without advertising obsolete entries", () => {
+    const entries = ["bash(touch)", "bash(git)"];
+    const policy = createApprovalPolicy("allow-reads", entries);
+    entries.push("edit");
+    const description = policy.describe(["bash", "edit"], false);
+    expect(description).toContain("bash(touch)");
+    expect(description).not.toContain("bash(git)");
+    expect(description).toContain("every segment");
+    expect(description).toContain("are denied in this subagent");
+    expect(policy.toolApproval({ toolCall: { toolName: "edit", input: {} } })).toBe("user-approval");
+    expect(policy.toolApproval({ toolCall: { toolName: "bash", input: { command: "touch x" } } })).toBe("not-applicable");
+    expect(policy.toolApproval({ toolCall: { toolName: "bash", input: { command: "touch x && rm x" } } })).toBe("user-approval");
   });
 });

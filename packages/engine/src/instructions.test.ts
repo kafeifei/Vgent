@@ -1,71 +1,50 @@
 import { describe, expect, it } from "vitest";
-import { buildInstructions, planModeInstructions } from "./instructions.js";
+import { createAgentSetup } from "./agent-setup.js";
+import { planModeInstructions } from "./instructions.js";
 
 const base = { repoPath: "/repo", permissionMode: "allow-edits" as const };
 
-describe("buildInstructions", () => {
-  it("names the model and the host, and describes the worktree it is sitting in", () => {
-    const text = buildInstructions({
+describe("assembled instructions", () => {
+  it("uses host-supplied identity and worktree facts without claiming the checkout is confined", () => {
+    const { instructions: text } = createAgentSetup({
       ...base,
       repoPath: "/data/worktrees/t1",
+      projectPath: "/home/me/project",
       context: {
         modelId: "codex-subscription:gpt-5.5",
         host: "Vgent desktop app (macOS)",
-        workspace: {
-          path: "/data/worktrees/t1",
-          projectPath: "/home/me/project",
-          branch: "vgent/t1",
-          baseCommit: "abc1234",
-        },
+        workspace: { branch: "vgent/t1", baseCommit: "abc1234" },
       },
     });
-
-    expect(text).toContain("codex-subscription:gpt-5.5");
-    expect(text).toContain("Vgent desktop app (macOS)");
-    expect(text).toContain("dedicated git worktree of the project at `/home/me/project`");
-    expect(text).toContain("vgent/t1");
-    expect(text).toContain("abc1234");
-    expect(text).toContain("git worktree list");
-    expect(text).not.toContain("This is the project's main working tree.");
+    for (const fact of ["codex-subscription:gpt-5.5", "Vgent desktop app (macOS)", "/home/me/project", "vgent/t1", "abc1234", "git worktree list"])
+      expect(text).toContain(fact);
+    expect(text).not.toContain("Edits here never touch");
   });
 
-  it("says the directory is the main working tree when no worktree is given", () => {
-    const text = buildInstructions({ ...base, context: { modelId: "openai/gpt-5.5", host: "Vgent CLI" } });
-
-    expect(text).toContain("This is the project's main working tree.");
-    expect(text).toContain("openai/gpt-5.5");
-    expect(text).not.toContain("dedicated git worktree");
+  it("distinguishes project, scratch and unknown workspace metadata", () => {
+    expect(createAgentSetup({ ...base, context: { workspaceKind: "project" } }).instructions).toContain("project's own working directory");
+    expect(createAgentSetup({ ...base, context: { workspaceKind: "scratch" } }).instructions).toContain("scratch workspace with no attached project");
+    const unknown = createAgentSetup(base).instructions;
+    expect(unknown).toContain("No project or worktree metadata was supplied");
+    expect(unknown).not.toContain("main working tree");
   });
 
-  it("falls back to the generic opening with no context at all", () => {
-    const text = buildInstructions(base);
-
-    expect(text).toContain("You are Vgent, a coding agent working directly in a user's repository.");
-    expect(text).toContain("This is the project's main working tree.");
+  it("uses only selected tools and keeps child reporting separate from the parent final reply", () => {
+    const child = createAgentSetup({ ...base, allowedTools: ["read", "grep", "glob"], interactive: false, role: "Report findings to the parent." });
+    expect(Object.keys(child.tools)).toEqual(["read", "grep", "glob"]);
+    expect(child.instructions).toContain("Available tools: read, grep, glob.");
+    expect(child.instructions).toContain("Report findings to the parent.");
+    expect(child.instructions).not.toContain("When you are done");
+    expect(child.instructions).not.toContain("Command-dependent approval");
+    expect(child.instructions).not.toContain("askUserQuestions");
   });
 
-  it("lists the memory directory and its existing entries, and says 暂无 when there are none", () => {
-    const withEntries = buildInstructions({ ...base, memory: { dir: "/data/memory/demo", entries: ["build-command.md", "ui-tone.md"] } });
-    expect(withEntries).toContain("/data/memory/demo");
-    expect(withEntries).toContain("build-command.md, ui-tone.md");
-
-    expect(buildInstructions({ ...base, memory: { dir: "/data/memory/demo", entries: [] } })).toContain("现有条目：暂无");
-    // No memory dir, no section at all.
-    expect(buildInstructions(base)).not.toContain("跨任务记忆");
-  });
-
-  it("adds the Plan section only for a 计划 turn, and only the in-house engine is told to use askUserQuestions", () => {
-    const planning = buildInstructions({ ...base, plan: true });
-    expect(planning).toContain("Plan mode.");
-    expect(planning).toContain("saved verbatim as this task's plan document");
-    expect(buildInstructions(base)).not.toContain("Plan mode.");
-
-    // Claude Code has no such tool, so its copy of the same text says to ask in prose.
+  it("retains shared plan-document guidance without claiming an absent question tool is available", () => {
+    const planning = createAgentSetup({ ...base, plan: true, allowedTools: ["read", "grep", "glob"] });
+    expect(planning.instructions).toContain("Plan mode.");
+    expect(planning.instructions).toContain("saved verbatim as this task's plan document");
+    expect(planning.instructions).toContain("Ask in plain text and stop");
+    expect(createAgentSetup(base).instructions).not.toContain("Plan mode.");
     expect(planModeInstructions({ askTool: true })).toContain("`askUserQuestions`");
-    expect(planModeInstructions({ askTool: false })).toContain("Ask in plain text and stop");
-  });
-
-  it("tells the model to check with tools before asking the user to explain a contradiction", () => {
-    expect(buildInstructions(base)).toContain("investigate with tools (git, grep) before asking the");
   });
 });

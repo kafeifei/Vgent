@@ -4,16 +4,13 @@ import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { fitContext, estimateTokens } from "./context.js";
 import { agentInstructionsSection, loadScopedInstructions } from "./agent-instructions.js";
-import { readdirSync } from "node:fs";
-import { dirname, resolve, join } from "node:path";
+import { resolve, join } from "node:path";
 import { createModelRegistry, splitProviderModelSpec, type ProviderConfig } from "@vgent/providers";
-import { createCodingTools } from "@vgent/tools";
 import {
   ToolLoopAgent,
   asSchema,
   extractReasoningMiddleware,
   isStepCount,
-  toolSearch,
   wrapLanguageModel,
   type LanguageModel,
   type ModelMessage,
@@ -21,10 +18,10 @@ import {
 } from "ai";
 import { retryEmptyReply } from "./empty-reply.js";
 import { askUserQuestionsTool } from "./ask-user-questions.js";
-import { buildInstructions, type VgentContext } from "./instructions.js";
-import { hasDeferredTools } from "./mcp.js";
+import type { VgentContext } from "./instructions.js";
+import { createAgentSetup, type AgentSetupOptions } from "./agent-setup.js";
 import { createMemoryTool } from "./memory.js";
-import { createToolApproval, type PermissionMode } from "./permissions.js";
+import type { PermissionMode } from "./permissions.js";
 import { appendSession } from "./session-store.js";
 import type { SkillSummary } from "./skills.js";
 import { createSubagentTools } from "./subagents.js";
@@ -60,7 +57,7 @@ export interface VgentEngineOptions {
   model: LanguageModel | string;
   /** The providers from the settings page, which is what makes `<providerId>:<id>` resolvable. */
   providers?: readonly ProviderConfig[];
-  /** Repository the agent works in. Tools are confined to it. */
+  /** Default working directory. File tools also use configured project and skill roots; shell commands run on the host. */
   repoPath: string;
   projectPath?: string;
   outputDir?: string;
@@ -180,17 +177,6 @@ export interface VgentEngine {
 export function resolveModel(model: LanguageModel | string, providers: readonly ProviderConfig[] = []): LanguageModel {
   if (typeof model !== "string") return model;
   return createModelRegistry({ providers }).languageModel(model);
-}
-
-/** The memory entries that already exist, for the prompt. A directory nobody wrote to yet is simply empty. */
-function memoryEntries(dir: string): string[] {
-  try {
-    return readdirSync(dir)
-      .filter((name) => name.endsWith(".md"))
-      .sort();
-  } catch {
-    return [];
-  }
 }
 
 /**
@@ -319,59 +305,40 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
 
   const plan = options.plan === true;
 
-  const all: ToolSet = {
-    // The skills are listed by path, and most live outside the repository.
-    ...createCodingTools({
-      workDir: repoPath,
-      readRoots: [...new Set((skills ?? []).map((skill) => dirname(skill.path)))],
-      ...(options.projectPath ? { writeRoots: [options.projectPath] } : {}),
-      ...(options.outputDir ? { outputDir: options.outputDir } : {}),
-      onRead: async (path) => {
-        accessed.add(path);
-      },
-    }),
-    askUserQuestions: askUserQuestionsTool,
-    updatePlan: planState.tool,
-    // Only the top-level agent remembers: a subagent is handed everything it
-    // needs and has no conversation of its own worth carrying across tasks.
-    ...(memoryDir == null ? {} : { memory: createMemoryTool(memoryDir, options.memorySources) }),
-    ...(subagents
-      ? createSubagentTools({
-          model: options.subagentModel == null ? model : resolveModel(options.subagentModel, options.providers),
-          repoPath,
-          permissionMode,
-          instructions: options.instructions,
-          readRoots: (skills ?? []).map((skill) => dirname(skill.path)),
-          projectPath: options.projectPath,
-          outputDir: options.outputDir,
-          contextTokenBudget,
-          taskContext: () => JSON.stringify(planState.get() ?? {}),
-          ...(options.alwaysAllow == null ? {} : { alwaysAllow: options.alwaysAllow }),
-        })
-      : {}),
-    ...options.extraTools,
+  const setupOptions: AgentSetupOptions = {
+    repoPath,
+    projectPath: options.projectPath,
+    outputDir: options.outputDir,
+    permissionMode,
+    alwaysAllow: options.alwaysAllow?.slice(),
+    context: options.context,
+    skills,
+    instructions: options.instructions,
   };
-  const tools: ToolSet = plan
-    ? Object.fromEntries(PLAN_TOOL_NAMES.filter((name) => all[name] != null).map((name) => [name, all[name]!]))
-    : all;
-  // Deferred tools are invisible to the model until something looks them up.
-  // A 计划 turn has none — no MCP tool survived the filter — so it gets no
-  // `toolSearch` either.
-  const deferred = !plan && hasDeferredTools(tools);
-  if (deferred) tools.toolSearch = toolSearch();
-
-  for (const [name, definition] of Object.entries(tools)) {
-    const execute = definition.execute;
-    if (!execute) continue;
-    tools[name] = {
-      ...definition,
-      execute: (input, execution) => {
-        execution.abortSignal?.throwIfAborted();
-        if (!toolsMayRun) throw new Error("Execution budget exhausted; no new tool action was started.");
-        return execute(input, execution);
-      },
-    };
-  }
+  const setup = createAgentSetup({
+    ...setupOptions,
+    plan,
+    ...(plan ? { allowedTools: PLAN_TOOL_NAMES } : {}),
+    onRead: async (path) => {
+      accessed.add(path);
+    },
+    canExecute: () => toolsMayRun,
+    extraTools: {
+      askUserQuestions: askUserQuestionsTool,
+      updatePlan: planState.tool,
+      ...(memoryDir == null ? {} : { memory: createMemoryTool(memoryDir, options.memorySources) }),
+      ...(subagents
+        ? createSubagentTools({
+            ...setupOptions,
+            model: options.subagentModel == null ? model : resolveModel(options.subagentModel, options.providers),
+            contextTokenBudget,
+            taskContext: () => JSON.stringify(planState.get() ?? {}),
+          })
+        : {}),
+      ...options.extraTools,
+    },
+  });
+  const { tools } = setup;
 
   // The TUI and the web UI both hand the agent a prompt, not a message list, so
   // there is no call site that could persist a turn. The hooks have to live on
@@ -398,21 +365,9 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
     // pins on the model (`store: false`): `defaultSettingsMiddleware` merges
     // provider options and lets the call's own win.
     ...(providerOptions == null ? {} : { providerOptions }),
-    instructions: buildInstructions({
-      repoPath,
-      ...(options.context == null ? {} : { context: options.context }),
-      permissionMode,
-      subagents,
-      ...(plan ? { plan: true } : {}),
-      toolSearch: deferred,
-      ...(skills == null ? {} : { skills }),
-      // The tool did not survive the Plan filter, so the prompt must not
-      // advertise it either.
-      ...(memoryDir == null || plan ? {} : { memory: { dir: memoryDir, entries: memoryEntries(memoryDir) } }),
-      ...(options.instructions == null ? {} : { extra: options.instructions }),
-    }),
+    instructions: setup.instructions,
     tools,
-    toolApproval: createToolApproval(permissionMode, options.alwaysAllow),
+    toolApproval: setup.toolApproval,
     stopWhen: [isStepCount(maxSteps)],
     prepareStep: async ({ messages, stepNumber, initialInstructions }) => {
       // 插话: what the user said while the last step ran is put in front of the

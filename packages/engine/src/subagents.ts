@@ -13,7 +13,7 @@ import { agentInstructionsSection, loadScopedInstructions } from "./agent-instru
  * model only the child's closing summary. That asymmetry is the whole point —
  * the child may burn a large context exploring, the parent pays for a paragraph.
  */
-import { createCodingTools } from "@vgent/tools";
+import { createAgentSetup, type AgentSetupOptions } from "./agent-setup.js";
 import {
   ToolLoopAgent,
   asSchema,
@@ -28,7 +28,6 @@ import {
   type UIMessage,
 } from "ai";
 import { z } from "zod";
-import { decideApproval, type PermissionMode } from "./permissions.js";
 
 const EXPLORE_MAX_STEPS = 30;
 const CODER_MAX_STEPS = 60;
@@ -37,8 +36,7 @@ const SUMMARY_MAX_CHARS = 4000;
 
 const EXPLORE_INSTRUCTIONS = `You are Vgent's exploration subagent. You research a repository and report back; you never change it.
 
-You only have read-only tools: \`read\`, \`grep\`, \`glob\`. Search broadly, read what matters, and stop as
-soon as you can answer. Do not speculate about code you have not read.
+Search with the available tools, read what matters, and stop as soon as you can answer. Do not speculate about code you have not read.
 
 IMPORTANT: your final response is the only thing the parent agent sees. Make it a self-contained answer:
 what you found, in which files (absolute paths and line numbers), and anything the parent still has to
@@ -53,52 +51,12 @@ a behavioural tradeoff, files outside the stated scope), stop and say so instead
 IMPORTANT: your final response is the only thing the parent agent sees. Make it a self-contained report:
 what you changed, in which files, how you verified it, and anything left open. No preamble, no pasted diffs.`;
 
-export interface CreateSubagentToolsOptions {
-  /** The model the children run on. Normally the parent's own model. */
+export interface CreateSubagentToolsOptions extends AgentSetupOptions {
   model: LanguageModel;
-  /** Repository the children work in. Same confinement as the parent's tools. */
-  repoPath: string;
-  /** The parent's mode. Enforced inside the children by denial, not by approval. */
-  permissionMode: PermissionMode;
-  /** Hard cap on each child's steps. Defaults to 30 for `explore` and 60 for `coder`. */
+  /** Defaults to 30 for explore and 60 for coder. */
   maxSteps?: number;
-  /** Tool names the parent has been granted standing approval for; threaded into the children's denial check. */
-  alwaysAllow?: readonly string[];
-  instructions?: string | undefined;
-  readRoots?: readonly string[];
-  projectPath?: string | undefined;
-  outputDir?: string | undefined;
   contextTokenBudget?: number;
   taskContext?: () => string;
-}
-
-/**
- * A subagent's tools cannot ask for approval — there is no human in the child's
- * loop, and the SDK says so explicitly. So the mode is enforced the other way
- * round: anything that *would* have needed approval fails instead, and the
- * child reports the refusal in its summary.
- */
-function denyUnapproved(tools: ToolSet, mode: PermissionMode, alwaysAllow?: readonly string[], canExecute?: () => boolean): ToolSet {
-  const guarded: ToolSet = {};
-  for (const [toolName, definition] of Object.entries(tools)) {
-    const execute = definition.execute as ((input: unknown, options: unknown) => unknown) | undefined;
-    if (execute == null) {
-      guarded[toolName] = definition;
-      continue;
-    }
-    guarded[toolName] = {
-      ...definition,
-      execute: (input: unknown, options: unknown) => {
-        (options as { abortSignal?: AbortSignal }).abortSignal?.throwIfAborted();
-        if (canExecute?.() === false) throw new Error("Subtask budget exhausted; no new action was started.");
-        if (decideApproval({ mode, toolName, input, ...(alwaysAllow == null ? {} : { alwaysAllow }) }) === "user-approval") {
-          throw new Error(`子代理不能执行需要审批的操作：${toolName}（当前权限模式 ${mode}）`);
-        }
-        return execute(input, options);
-      },
-    } as ToolSet[string];
-  }
-  return guarded;
 }
 
 export interface ChildResult {
@@ -129,32 +87,27 @@ async function* streamChild(
   const taskId = resumeTaskId ?? randomUUID();
   const accessed = new Set<string>();
   let closing = false;
-  const coding = createCodingTools({
-    workDir: options.repoPath,
-    ...(options.projectPath ? { writeRoots: [options.projectPath] } : {}),
-    ...(options.readRoots ? { readRoots: options.readRoots } : {}),
-    ...(options.outputDir ? { outputDir: options.outputDir } : {}),
+  const setup = createAgentSetup({
+    ...options,
+    // A child may use a different model from its parent.
+    context: { ...options.context, modelId: typeof options.model === "string" ? options.model : options.model.modelId },
+    interactive: false,
+    ...(kind === "explore" ? { allowedTools: ["read", "grep", "glob"] } : {}),
+    role: [
+      kind === "coder" ? CODER_INSTRUCTIONS : EXPLORE_INSTRUCTIONS,
+      options.taskContext?.(),
+      "Keep the final report under 3000 characters: findings/changes, evidence, risks, unfinished work. State limitations explicitly.",
+    ].filter(Boolean).join("\n\n"),
     onRead: async (path) => {
       accessed.add(path);
     },
+    canExecute: () => !closing,
   });
-  const tools = denyUnapproved(
-    kind === "coder" ? coding : Object.fromEntries(Object.entries(coding).filter(([name]) => ["read", "grep", "glob"].includes(name))),
-    options.permissionMode,
-    options.alwaysAllow,
-    () => !closing,
-  );
+  const { tools } = setup;
   const maxSteps = options.maxSteps ?? (kind === "coder" ? CODER_MAX_STEPS : EXPLORE_MAX_STEPS);
   const agent = new ToolLoopAgent({
     model: options.model,
-    instructions: [
-      kind === "coder" ? CODER_INSTRUCTIONS : EXPLORE_INSTRUCTIONS,
-      options.instructions,
-      options.taskContext?.(),
-      "Keep the final report under 3000 characters: findings/changes, evidence, risks, unfinished work. State limitations explicitly.",
-    ]
-      .filter(Boolean)
-      .join("\n\n"),
+    instructions: setup.instructions,
     tools,
     stopWhen: [isStepCount(maxSteps)],
     prepareStep: async ({ messages, stepNumber, initialInstructions }) => {
@@ -310,7 +263,7 @@ export function createSubagentTools(options: CreateSubagentToolsOptions): ToolSe
         "Delegate a read-only research task to an exploration subagent: where something is defined, how a " +
         "subsystem is wired, which files a pattern touches. It searches with its own context and returns a " +
         "summary, so use it instead of reading many files yourself. State what you already know, so it does " +
-        "not repeat your work.",
+        "not repeat your work. The result includes status, summary and available full-report references.",
       inputSchema: z.object({
         prompt: z.string().describe("The research task, self-contained: what to find and what is already known."),
         resume_task_id: z
@@ -331,7 +284,7 @@ export function createSubagentTools(options: CreateSubagentToolsOptions): ToolSe
         "Delegate one already-decided, mechanical change to a coding subagent: it reads, edits and verifies on " +
         "its own and returns a report. Give it the complete context — exact files, the change to make, how to " +
         "verify — because it cannot see this conversation. Decide the design yourself first; it will stop and " +
-        "ask rather than choose.",
+        "report missing decisions rather than choose. It cannot ask the user for approval; blocked calls are reported to the parent.",
       inputSchema: z.object({
         task: z.string().describe("The change to make, self-contained: files, the edit, and how to verify it."),
         resume_task_id: z.uuid().optional().describe("Continue an existing subtask after verifying uncertain prior side effects."),

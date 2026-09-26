@@ -1,6 +1,7 @@
 import { mutateFile } from "@vgent/tools";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rm, writeFile, rename } from "node:fs/promises";
+import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tool } from "ai";
 import { z } from "zod";
@@ -20,6 +21,7 @@ const DESCRIPTION = `跨任务的长期记忆，一条事实一个文件（纯�
 - name 是 kebab-case 的短语，例如 \`build-runs-with-pnpm.md\`（不写 .md 会自动补上）；正文第一行先写一句话摘要，后面再展开。
 - 什么该记：用户明确要求记住的事，以及以后的任务用得上、又没法从代码和 git 历史里读出来的事实（约定、偏好、踩过的坑）。代码里能查到的东西不要记。
 - 用户明确约定用 kind=user-instruction，source 填当前用户消息 ID 和精确原话；正文以核实后的原话保存，禁止扩张限制。推断用 inference，不能作为授权或硬约束。旧条目被修订时保存版本。
+- 动手前用 read action 读取相关条目；当前用户纠正优先于旧记忆，更新受影响的条目。
 - action：list 列出全部条目和它们的摘要，read 读一条，write 写入（同名覆盖），delete 删一条。`;
 
 /** The first non-empty line of an entry — what `list` shows instead of the whole file. */
@@ -48,9 +50,17 @@ function resolveName(raw: string | undefined): { name: string } | { error: strin
  * lives outside the repository so the notes survive a worktree being reclaimed
  * and are shared by every task of the project.
  */
+function memoryEntries(dir: string): string[] {
+  try {
+    return readdirSync(dir).filter((name) => name.endsWith(".md")).sort();
+  } catch {
+    return [];
+  }
+}
+
 export function createMemoryTool(memoryDir: string, sources: readonly { id: string; text: string }[] = []) {
   return tool({
-    description: DESCRIPTION,
+    description: `${DESCRIPTION}\n存储目录：${memoryDir}\n现有条目：${memoryEntries(memoryDir).join(", ") || "暂无"}`,
     inputSchema: memoryInputSchema,
     execute: async ({ action, name, content, kind = "inference", source }, { abortSignal }): Promise<string> => {
       abortSignal?.throwIfAborted();

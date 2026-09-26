@@ -33,7 +33,7 @@ export interface ReadToolDeps {
 export function createReadTool({ fs, resolvePath, observed, onRead, allowLarge }: ReadToolDeps) {
   return tool({
     description:
-      "Read a text file from the working directory. Returns its content with 1-based line numbers " +
+      "Read a text file. Returns its content with 1-based line numbers " +
       "(like `cat -n`). Reads at most 2000 lines by default; use `offset`/`limit` to page through a " +
       "larger file. byteLength and endsWithNewline describe the original file; numbered content omits the final newline. " +
       "For byte-exact copies, use a copy operation and compare bytes. Files over 1 MiB are rejected except saved command logs.",

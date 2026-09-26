@@ -119,3 +119,38 @@ it("manual compaction preserves recent original turns and their user constraints
   expect(JSON.stringify(result.messages)).toContain("Do not restart");
   expect(JSON.stringify(model.doGenerateCalls[0]!.prompt)).not.toContain("history 7");
 });
+
+it("the production factory describes a scratch session and refreshes approval facts on the next turn", async () => {
+  const { NO_PROJECT_ID } = await import("./no-project.js");
+  const { simulateReadableStream } = await import("ai");
+  const dataDir = await temp();
+  const threads = createThreadStore(dataDir), projects = createProjectStore(dataDir), settings = createSettingsStore(dataDir);
+  const thread = await threads.create({ projectId: NO_PROJECT_ID, engine: "vgent" });
+  const model = new MockLanguageModelV3({ doStream: async () => ({ stream: simulateReadableStream({
+    chunks: [
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "text" },
+      { type: "text-delta", id: "text", delta: "Ready." },
+      { type: "text-end", id: "text" },
+      { type: "finish", finishReason: { unified: "stop" }, usage },
+    ], chunkDelayInMs: null, initialDelayInMs: null,
+  }) }) });
+  const runs = createRunManager({ threads, projects, settings, dataDir, registry: createEngineRegistry({ vgent: createVgentEngineFactory({ model }) }) });
+  try {
+    for (const [index, allowlist] of [[], ["write"]].entries()) {
+      await settings.update({ runMode: "allow-reads", allowlist });
+      const current = (await threads.get(thread.id))!;
+      const hub = await runs.start(thread.id, [...current.messages, { id: `user-${index}`, role: "user", parts: [{ type: "text", text: "Describe your environment." }] }]);
+      for await (const _ of hub.subscribe()) { /* drain the production stream */ }
+      for (let i = 0; i < 200 && runs.isRunning(thread.id); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(model.doStreamCalls).toHaveLength(2);
+    const first = JSON.stringify(model.doStreamCalls[0]!.prompt);
+    const second = JSON.stringify(model.doStreamCalls[1]!.prompt);
+    expect(first).toContain("scratch workspace with no attached project");
+    expect(first).not.toContain("This is the project's main working tree");
+    expect(first).toContain("Calls to write, edit, bash, coder require tool approval");
+    expect(second).toContain("Run without tool approval: read, write, grep, glob");
+    expect(second).toContain("Applicable standing approvals");
+  } finally { await runs.stopAll(); }
+});

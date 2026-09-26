@@ -1,7 +1,7 @@
 import { execFile, spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Project, ThreadRecord, ThreadWorkspace } from "./types.js";
@@ -112,11 +112,14 @@ describe.skipIf(!hasGit)("workspace", () => {
     await writeFile(join(workspace.path, "tracked.txt"), "line1\n改了\n");
     await writeFile(join(workspace.path, "staged.txt"), "暂存但未提交\n");
     await run(workspace.path, "add", "staged.txt");
+    // Staged, then edited again: the index and the file on disk disagree.
+    await writeFile(join(workspace.path, "staged.txt"), "暂存之后又改了\n");
     const before = await inventory(workspace.path);
-    const stagedBlob = (await run(workspace.path, "rev-parse", ":staged.txt")).stdout.trim();
 
     const { snapshotPath } = await reclaimWorktree({ dataDir, project, thread: threadOf(id, workspace) });
-    expect(await readFile(join(snapshotPath, "objects", stagedBlob), "utf8")).toBe("暂存但未提交\n");
+    // The changes live in git now, not in a copy of the directory.
+    const archive = (await run(repo, "rev-parse", `refs/vgent/archive/${id}`)).stdout.trim();
+    expect(JSON.parse(await readFile(join(snapshotPath, "manifest.json"), "utf8"))).toMatchObject({ version: 2, archive, branch: workspace.branch });
     await expect(readFile(join(workspace.path, "untracked.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     expect((await run(repo, "worktree", "list", "--porcelain")).stdout).not.toContain(workspace.path);
 
@@ -127,12 +130,40 @@ describe.skipIf(!hasGit)("workspace", () => {
     expect(await inventory(workspace.path)).toBe(before);
     expect(await readFile(join(workspace.path, "untracked.txt"), "utf8")).toBe("只在工作目录里\n");
     expect(await readFile(join(workspace.path, "tracked.txt"), "utf8")).toBe("line1\n改了\n");
-    // The index came back too, so the staged file is still staged.
+    // The index came back too, so the staged file is still staged — as it was staged.
     expect((await run(workspace.path, "diff", "--cached", "--name-only")).stdout.trim()).toBe("staged.txt");
+    expect((await run(workspace.path, "show", ":staged.txt")).stdout).toBe("暂存但未提交\n");
+    expect(await readFile(join(workspace.path, "staged.txt"), "utf8")).toBe("暂存之后又改了\n");
+    // Consumed once the changes are back.
+    await expect(run(repo, "rev-parse", "--verify", `refs/vgent/archive/${id}`)).rejects.toBeDefined();
     expect(await status(repo)).toBe("");
   });
 
-  it("abandons the snapshot and keeps the worktree when a file changes mid-copy", async () => {
+  it("leaves ignored files behind and keeps no archive for a clean worktree", async () => {
+    const dataDir = await tempDir("vgent-ws-data-");
+    const repo = await seededRepo();
+    await writeFile(join(repo, ".gitignore"), "node_modules/\n*.log\n");
+    await run(repo, "add", ".gitignore");
+    await run(repo, "commit", "-q", "-m", "忽略");
+    const id = "ignored0-0000-0000-0000-000000000001";
+    const project = projectOf(repo);
+    const workspace = await createWorktree({ dataDir, project, threadId: id });
+    await mkdir(join(workspace.path, "node_modules", "dep"), { recursive: true });
+    await writeFile(join(workspace.path, "node_modules", "dep", "index.js"), "装出来的\n");
+    await writeFile(join(workspace.path, "debug.log"), "日志\n");
+
+    const { snapshotPath } = await reclaimWorktree({ dataDir, project, thread: threadOf(id, workspace) });
+    expect(JSON.parse(await readFile(join(snapshotPath, "manifest.json"), "utf8"))).not.toHaveProperty("archive");
+    await expect(run(repo, "rev-parse", "--verify", `refs/vgent/archive/${id}`)).rejects.toBeDefined();
+
+    await restoreWorktree({ dataDir, project, thread: threadOf(id, { ...workspace, reclaimed: true, snapshotPath }), snapshotPath });
+    // Rebuilding them is the setup's job, not the archive's.
+    await expect(readFile(join(workspace.path, "debug.log"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(workspace.path, "node_modules", "dep", "index.js"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await status(workspace.path)).toBe("");
+  });
+
+  it("keeps the worktree and no archive when a file changes mid-archive", async () => {
     const dataDir = await tempDir("vgent-ws-data-");
     const repo = await seededRepo();
     const id = "racecond-0000-0000-0000-000000000001";
@@ -145,12 +176,70 @@ describe.skipIf(!hasGit)("workspace", () => {
         dataDir,
         project,
         thread: threadOf(id, workspace),
-        onBeforeCopy: () => writeFile(join(workspace.path, "busy.txt"), "外部编辑\n"),
+        onCaptured: () => writeFile(join(workspace.path, "busy.txt"), "外部编辑\n"),
       }),
     ).rejects.toMatchObject({ code: "workspace_changed_during_snapshot" });
 
     expect(await readFile(join(workspace.path, "busy.txt"), "utf8")).toBe("外部编辑\n");
     expect((await run(repo, "worktree", "list", "--porcelain")).stdout).toContain(workspace.path);
+    await expect(run(repo, "rev-parse", "--verify", `refs/vgent/archive/${id}`)).rejects.toBeDefined();
+  });
+
+  it("finishes a reclaim whose directory went before the record said so", async () => {
+    const dataDir = await tempDir("vgent-ws-data-");
+    const repo = await seededRepo();
+    const id = "resumerc-0000-0000-0000-000000000001";
+    const project = projectOf(repo);
+    const workspace = await createWorktree({ dataDir, project, threadId: id });
+    await writeFile(join(workspace.path, "work.txt"), "没提交\n");
+
+    const first = await reclaimWorktree({ dataDir, project, thread: threadOf(id, workspace) });
+    // The process died before recording the reclaim: the record still points at a live directory.
+    const again = await reclaimWorktree({ dataDir, project, thread: threadOf(id, workspace) });
+    expect(again.snapshotPath).toBe(first.snapshotPath);
+  });
+
+  it("takes a failed restore back so the next one starts clean", async () => {
+    const dataDir = await tempDir("vgent-ws-data-");
+    const repo = await seededRepo();
+    const id = "rollback-0000-0000-0000-000000000001";
+    const project = projectOf(repo);
+    const workspace = await createWorktree({ dataDir, project, threadId: id });
+    await writeFile(join(workspace.path, "work.txt"), "没提交\n");
+    const { snapshotPath } = await reclaimWorktree({ dataDir, project, thread: threadOf(id, workspace) });
+    const reclaimed = threadOf(id, { ...workspace, reclaimed: true, snapshotPath });
+
+    const ref = `refs/vgent/archive/${id}`;
+    const archive = (await run(repo, "rev-parse", ref)).stdout.trim();
+    await run(repo, "update-ref", ref, workspace.baseCommit);
+    await expect(restoreWorktree({ dataDir, project, thread: reclaimed, snapshotPath })).rejects.toMatchObject({ code: "archive_mismatch" });
+    expect((await run(repo, "worktree", "list", "--porcelain")).stdout).not.toContain(workspace.path);
+
+    await run(repo, "update-ref", ref, archive);
+    await restoreWorktree({ dataDir, project, thread: reclaimed, snapshotPath });
+    expect(await readFile(join(workspace.path, "work.txt"), "utf8")).toBe("没提交\n");
+  });
+
+  it("still restores a snapshot copied byte for byte by an older version", async () => {
+    const dataDir = await tempDir("vgent-ws-data-");
+    const repo = await seededRepo();
+    const id = "legacyv1-0000-0000-0000-000000000001";
+    const project = projectOf(repo);
+    const workspace = await createWorktree({ dataDir, project, threadId: id });
+    await writeFile(join(workspace.path, "old.txt"), "旧版快照里的\n");
+
+    const snapshotPath = join(dataDir, "snapshots", id, "legacy");
+    await cp(workspace.path, join(snapshotPath, "files"), { recursive: true, filter: (source) => !source.endsWith("/.git") });
+    const index = (await run(workspace.path, "rev-parse", "--git-path", "index")).stdout.trim();
+    await cp(resolve(workspace.path, index), join(snapshotPath, "index"));
+    await writeFile(
+      join(snapshotPath, "manifest.json"),
+      JSON.stringify({ version: 1, threadId: id, head: workspace.baseCommit, branch: workspace.branch, createdAt: new Date().toISOString(), indexObjects: [] }),
+    );
+    await run(repo, "worktree", "remove", "--force", workspace.path);
+
+    await restoreWorktree({ dataDir, project, thread: threadOf(id, { ...workspace, reclaimed: true, snapshotPath }), snapshotPath });
+    expect(await readFile(join(workspace.path, "old.txt"), "utf8")).toBe("旧版快照里的\n");
   });
 
   it("deletes the task branch only when the task committed nothing", async () => {

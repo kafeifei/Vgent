@@ -603,3 +603,14 @@ build 84 定的「日志里的图只有一种样子」只覆盖了回复里内�
 - **server**：`app.ts` 的 `assertNotArchived`，四个会开回合或排回合的入口先问它：`POST /api/chat/:id`、`POST .../queue`、`POST .../queue/:item/send`、`POST .../compact`，有 `archivedAt` 就 409 `thread_archived`。排队派发本来就跳过已归档的任务。停止后暂停的队列跟着任务归档，不发、不丢。没放进 `runs.ts` 的 `startTurn`：那段当时有另一处改动在进行，入口在路由上已经齐了。
 - **web**：`ThreadView` 在任务已归档时把 `Composer` 换成 `features/composer/ArchivedBar.tsx`（「已归档」+「取消归档」，下面留出状态行的高度，切换时日志不跳）；命令面板不再列「压缩上下文」；计划面板的 Build 在切模式之前就挡住；空任务的占位文案不再说「在下面写」；归档提示只在真有 worktree 时说「worktree 已回收」。
 - 测试：`app.test.ts` 主工作区任务归档后三条路都 409、取消归档后能跑完一轮；`queue.test.ts` 那条原来断言「归档后还能排队」，改成排队和「发送」都 409、暂停的队列原样留着。
+
+## 2026-09-26：归档照 Fumie——只存 Git 看得见的改动，依赖靠 setup 重建
+
+用户：「按照 fumie 的整体做法来做，那个项目我调了很久，比较满意」。之前的归档是从 freecode 移植的整目录逐字节快照：每次归档把 worktree 连 `node_modules` 一起 `fs.cp` 到 `<dataDir>/snapshots/`（Vgent 自己的任务每个约 850MB、3.5 万个文件；Node 22 在 macOS 上不走 APFS 克隆），恢复再逐字节拷回去，前后各把每个字节读一遍算 sha256。对照的是 `~/Codes/fumie` 的 `WorktreeIsolation` 和 `src/vs/platform/agentHost/AGENTS.md` 的归档一节。
+
+- **归档**（`workspace.ts` 的 `reclaimWorktree`）：`captureTrees` 用临时 index 写出四棵树——HEAD 的、暂存区的（`write-tree`）、已跟踪文件磁盘上的样子（`diff-files` 列出的路径 `add -f -A` 进以暂存区为底的临时 index）、没被忽略的未跟踪文件（`ls-files --others --exclude-standard` 进空 index）；真 index 和 HEAD 不碰。有改动就用 `commit-tree` 拼成 stash 形状的提交（工作树为 tree，父是 HEAD、暂存区提交、可选的未跟踪提交）挂在 `refs/vgent/archive/<threadId>`，干净的不建 ref。再抓一次四棵树，对不上就 `workspace_changed_during_snapshot`、删掉刚建的 ref、目录不动。子模块改动（gitlink）和 Git 表示不了的脏状态照旧拒绝回收。`snapshots/<id>/<uuid>/manifest.json` 升到 `version: 2`，只记 head、branch 和 archive 提交，几百字节。删目录走带重试的 `removeRegistered`（`index.lock` / "Directory not empty" 这类竞争退避重试 5 次，以 git 不再登记为准）。进程在删完目录、没来得及记账时退出，重做归档会认出最新的 v2 manifest 直接返回。
+- **恢复**：分支规则照旧（没人动过就用原分支，否则在 head 上另起 `-restored-`），`worktree add` 之后校验 ref 和 manifest 对得上、HEAD 就是归档时的提交，`git stash apply --index` 应用，再抓一次四棵树必须和归档提交里的一致；失败就把刚建的 worktree（和另起的分支）删掉，改动还在 ref 里，下次重来是干净的。成功后删 ref，`app.ts` 记账后删掉用过的快照目录。v1 的旧快照（本机那 11 个、5.3GB）走原来的逐字节恢复，恢复成功同样删掉。
+- **被忽略的文件不进归档**，照 Fumie 的约定由 `worktrees.json` 重建，新建和恢复同一条路（`app.ts` 的 `beginSetup`）：先按 `include-files`（git glob pathspec，只挑项目目录里被忽略的文件）从项目目录复制，再跑 `setup-worktree`。**碰 `node_modules` 的规则一律忽略**（Fumie 原话：可以带小的被忽略配置，永远不带依赖树），列出来的路径里带 `node_modules` 的也跳过。恢复之后 setup 状态重新从 running 走一遍，第一轮照旧等它。恢复之后顺带按上限整理一次 worktree（Fumie 在重建后也做磁盘预算）。
+- 没照搬的：Fumie 归档脏任务前要用户确认一次（`preserveChanges`），Vgent 的改动总会存下来，没加这一步；Fumie 删任务时会删掉没推送的分支，Vgent 仍只删停在基线上的分支（仓库常没有 remote，照搬会删掉有提交的分支）；Fumie 的磁盘预算按字节、只回收孤儿目录，Vgent 保留按个数的上限。
+- 同一天合入 09-24 做完没进 main 的「归档 / 取消归档先换状态再干活」（`transition: archiving | unarchiving`，行上「归档中 / 恢复中」，失败退回，重启接着做）。
+- 测试：`workspace.test.ts` 往返（未跟踪 / 已改 / 暂存后又改）、被忽略文件留不下来且干净任务不建 ref、归档途中文件变了、重做已完成的归档、恢复失败退干净后能重来、v1 旧快照照样恢复；`worktree-setup.test.ts` 的 `include-files` 过滤和「新建复制 `.env`、不带 `node_modules`，取消归档后 `.env` 重新复制、setup 重跑」。

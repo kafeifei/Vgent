@@ -81,7 +81,7 @@ import type {
   UiTheme,
 } from "./types.js";
 import { silentLogger } from "./types.js";
-import { createWorktree, reclaimWorktree, removeWorktree, restoreWorktree } from "./workspace.js";
+import { createWorktree, discardSnapshot, reclaimWorktree, removeWorktree, restoreWorktree } from "./workspace.js";
 import { DEFAULT_WORKTREE_MAX_COUNT, enforceWorktreeLimit } from "./worktree-limit.js";
 import { failInterruptedSetups, readSetupLog, startSetup } from "./worktree-setup.js";
 
@@ -131,7 +131,7 @@ export interface CreateAppOptions {
   harnessRuntime?: HarnessRuntime;
   /** Turns on the background check-and-upgrade loop. `main.ts` sets it; tests do not. */
   autoUpgradeRuntimes?: boolean;
-  /** Runs inside 归档's worktree snapshot, before the copy. Tests hold an 归档 open — or fail it — here. */
+  /** Runs inside 归档, after the worktree's changes are captured and before they are sealed. Tests hold an 归档 open — or fail it — here. */
   beforeWorktreeSnapshot?: () => Promise<void>;
 }
 
@@ -863,9 +863,9 @@ export function createApp(options: CreateAppOptions): VgentApp {
   // --- workspace --------------------------------------------------------
 
   /**
-   * Snapshot and remove the task's worktree. `undefined` means there was
-   * nothing to do — no worktree, or it is already gone — so the caller leaves
-   * the record alone. Archiving shares this with the explicit route.
+   * Keep the task's changes in git and remove its worktree. `undefined` means
+   * there was nothing to do — no worktree, or it is already gone — so the
+   * caller leaves the record alone. Archiving shares this with the explicit route.
    */
   const reclaimFor = async (thread: ThreadRecord): Promise<ThreadWorkspace | undefined> => {
     const workspace = thread.workspace;
@@ -874,30 +874,49 @@ export function createApp(options: CreateAppOptions): VgentApp {
       dataDir,
       project: await projectOf(thread),
       thread,
-      ...(options.beforeWorktreeSnapshot != null ? { onBeforeCopy: options.beforeWorktreeSnapshot } : {}),
+      ...(options.beforeWorktreeSnapshot != null ? { onCaptured: options.beforeWorktreeSnapshot } : {}),
     });
     return { ...workspace, reclaimed: true, snapshotPath };
   };
 
-  /** The other direction; `undefined` when the task's directory is already there. */
-  const restoreFor = async (thread: ThreadRecord): Promise<ThreadWorkspace | undefined> => {
+  /**
+   * The project's `include-files` and setup, in the background, on a worktree
+   * that has just come to be — made new or put back. A turn waits for it
+   * through `whenSetupSettled`.
+   */
+  const beginSetup = (threadId: string, workspacePath: string, project: Project): void => {
+    startSetup({
+      dataDir,
+      threadId,
+      workspacePath,
+      projectPath: project.repoPath,
+      log,
+      onStatus: async (setup) => {
+        const current = await threads.get(threadId);
+        if (current?.workspace == null) return;
+        await threads.update(threadId, { workspace: { ...current.workspace, setup } });
+      },
+    });
+  };
+
+  /**
+   * The other direction: the worktree back and the record saying so, then
+   * what 归档 did not keep — the ignored files — rebuilt by the project's
+   * setup, as on creation. `undefined` when the directory is already there.
+   */
+  const restoreFor = async (thread: ThreadRecord, patch: ThreadPatch = {}): Promise<ThreadRecord | undefined> => {
     const workspace = thread.workspace;
     if (workspace?.reclaimed !== true || workspace.snapshotPath == null) return undefined;
-    const { branch } = await restoreWorktree({
-      dataDir,
-      project: await projectOf(thread),
-      thread,
-      snapshotPath: workspace.snapshotPath,
+    const project = await projectOf(thread);
+    const { branch } = await restoreWorktree({ dataDir, project, thread, snapshotPath: workspace.snapshotPath });
+    const record = await threads.update(thread.id, {
+      ...patch,
+      workspace: { mode: "worktree", path: workspace.path, branch, baseCommit: workspace.baseCommit },
     });
-    // The snapshot carried the ignored files back too (`node_modules` included),
-    // so setup is not re-run and its old result stays on the record.
-    return {
-      mode: "worktree",
-      path: workspace.path,
-      branch,
-      baseCommit: workspace.baseCommit,
-      ...(workspace.setup != null ? { setup: workspace.setup } : {}),
-    };
+    beginSetup(thread.id, workspace.path, project);
+    void discardSnapshot(dataDir, thread.id, workspace.snapshotPath).catch((error: unknown) => log.warn(`线程 ${thread.id} 用过的归档快照没删掉`, error));
+    void trimWorktrees();
+    return record;
   };
 
   /**
@@ -915,8 +934,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
         // Archiving says they are done with it, so the offer goes away.
         return await threads.update(id, { ...(workspace != null ? { workspace } : {}), applyUndo: undefined, transition: undefined });
       }
-      const workspace = await restoreFor(thread);
-      return await threads.update(id, { ...(workspace != null ? { workspace } : {}), transition: undefined });
+      return (await restoreFor(thread, { transition: undefined })) ?? (await threads.update(id, { transition: undefined }));
     } catch (error) {
       await threads
         .update(id, {
@@ -969,9 +987,9 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const id = c.req.param("id");
     const thread = await threadOf(id);
     assertSettled(thread);
-    const workspace = await restoreFor(thread);
-    if (workspace == null) throw new ConflictError("此任务的工作目录没有被回收，无需恢复", "workspace_not_reclaimed");
-    return c.json(await threads.update(id, { workspace }));
+    const record = await restoreFor(thread);
+    if (record == null) throw new ConflictError("此任务的工作目录没有被回收，无需恢复", "workspace_not_reclaimed");
+    return c.json(record);
   });
 
   // --- threads ----------------------------------------------------------
@@ -1032,18 +1050,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
       const withWorkspace = await threads.update(record.id, { workspace });
       // Detached: a `pnpm install` must not hold up the response, and the first
       // message can be typed while it runs — `runs.start()` waits for it.
-      startSetup({
-        dataDir,
-        threadId: record.id,
-        workspacePath: workspace.path,
-        projectPath: project.repoPath,
-        log,
-        onStatus: async (setup) => {
-          const current = await threads.get(record.id);
-          if (current?.workspace == null) return;
-          await threads.update(record.id, { workspace: { ...current.workspace, setup } });
-        },
-      });
+      beginSetup(record.id, workspace.path, project);
       void trimWorktrees();
       return c.json(withWorkspace);
     } catch (error) {

@@ -4,8 +4,8 @@
  * Every worktree is a full checkout plus whatever its setup installed, so a
  * month of tasks is tens of gigabytes nobody asked for. Over the cap, the
  * oldest tasks that are not mid-turn give their directory back — through the
- * ordinary reclaim, which snapshots first, so 「恢复工作目录」 still brings it
- * all back.
+ * ordinary reclaim, which keeps their changes in git first, so 「恢复工作目录」
+ * brings them back and reruns the setup for the rest.
  */
 import type { ProjectStore } from "./store/projects.js";
 import type { ThreadStore } from "./store/threads.js";

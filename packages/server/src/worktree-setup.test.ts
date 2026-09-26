@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createApp, type VgentApp } from "./app.js";
 import { createEngineRegistry, type EngineFactoryOverride } from "./engines/registry.js";
 import type { ThreadRecord } from "./types.js";
-import { findSetupSpec } from "./worktree-setup.js";
+import { findIncludeFiles, findSetupSpec } from "./worktree-setup.js";
 
 const execFileAsync = promisify(execFile);
 const hasGit = spawnSync("git", ["--version"]).status === 0;
@@ -211,6 +211,52 @@ describe.skipIf(!hasGit)("worktree setup", () => {
     await response.text();
     expect(engine.seen).toEqual([true]);
     expect((await getThread(app, created.id)).workspace?.setup?.status).toBe("ok");
+  });
+});
+
+describe("findIncludeFiles", () => {
+  it("reads include-files and drops every rule that reaches into node_modules", async () => {
+    const repo = await tempDir();
+    await writeConfig(repo, ".vgent/worktrees.json", { "include-files": [".env", "**/node_modules/**", "config/*.local.json", " "] });
+    await expect(findIncludeFiles(repo)).resolves.toEqual([".env", "config/*.local.json"]);
+    await expect(findIncludeFiles(await tempDir())).resolves.toEqual([]);
+  });
+});
+
+describe.skipIf(!hasGit)("include-files 和取消归档", () => {
+  it("copies include-files into a new worktree, and rebuilds ignored files after 取消归档", async () => {
+    const repo = await gitRepo({
+      path: ".vgent/worktrees.json",
+      body: { "include-files": [".env", "node_modules/**"], "setup-worktree": ["echo installed > marker"] },
+    });
+    await writeFile(join(repo, ".gitignore"), ".env\nmarker\nnode_modules/\n");
+    await execFileAsync("git", ["add", ".gitignore"], { cwd: repo });
+    await execFileAsync("git", ["commit", "-q", "-m", "忽略"], { cwd: repo });
+    await writeFile(join(repo, ".env"), "SECRET=1\n");
+    await mkdir(join(repo, "node_modules", "dep"), { recursive: true });
+    await writeFile(join(repo, "node_modules", "dep", "index.js"), "项目自己的依赖\n");
+
+    const app = makeApp(await tempDir());
+    const created = await worktreeThread(app, repo);
+    const path = created.workspace!.path;
+    expect((await settledThread(app, created.id)).workspace?.setup?.status).toBe("ok");
+    expect(await readFile(join(path, ".env"), "utf8")).toBe("SECRET=1\n");
+    // Dependencies are installed by the setup, never copied from the project.
+    expect(existsSync(join(path, "node_modules"))).toBe(false);
+    await writeFile(join(path, "work.txt"), "任务的改动\n");
+
+    const patch = (archived: boolean) => request(app, `/api/threads/${created.id}`, { method: "PATCH", body: JSON.stringify({ archived }) });
+    expect((await patch(true)).status).toBe(200);
+    expect(existsSync(path)).toBe(false);
+    await writeFile(join(repo, ".env"), "SECRET=2\n");
+
+    const restored = (await (await patch(false)).json()) as ThreadRecord;
+    expect(restored.workspace?.reclaimed).toBeUndefined();
+    expect(await readFile(join(path, "work.txt"), "utf8")).toBe("任务的改动\n");
+    expect((await settledThread(app, created.id)).workspace?.setup?.status).toBe("ok");
+    // Ignored files come back the way they came the first time: copied fresh, or rebuilt.
+    expect(await readFile(join(path, ".env"), "utf8")).toBe("SECRET=2\n");
+    expect(await readFile(join(path, "marker"), "utf8")).toBe("installed\n");
   });
 });
 

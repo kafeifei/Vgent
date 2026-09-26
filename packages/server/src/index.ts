@@ -154,8 +154,8 @@ export {
 export { DEFAULT_DATA_DIR, resolveDataDir } from "./paths.js";
 export {
   createWorktree,
+  discardSnapshot,
   inventory,
-  makeSnapshot,
   reclaimWorktree,
   removeWorktree,
   restoreWorktree,
@@ -163,7 +163,7 @@ export {
   type WorkspaceOwnership,
 } from "./workspace.js";
 export { DEFAULT_WORKTREE_MAX_COUNT, enforceWorktreeLimit } from "./worktree-limit.js";
-export { findSetupSpec, readSetupLog, runSetup, startSetup, whenSetupSettled, type SetupSpec } from "./worktree-setup.js";
+export { copyIncludeFiles, findIncludeFiles, findSetupSpec, readSetupLog, runSetup, startSetup, whenSetupSettled, type SetupSpec } from "./worktree-setup.js";
 export type {
   ApplyUndoRecord,
   ChangeStats,

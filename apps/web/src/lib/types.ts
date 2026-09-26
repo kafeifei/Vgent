@@ -1,4 +1,5 @@
 import type { UIMessage } from "ai";
+import type { ThreadTransition } from "@vgent/server";
 
 /**
  * The server's own shapes, re-exported so the client can never drift from them.
@@ -49,6 +50,7 @@ export type {
   ThreadRestorePoint,
   ThreadStatus,
   ThreadSummary,
+  ThreadTransition,
   ThreadWorkspace,
   UiDensity,
   UiTheme,
@@ -131,6 +133,12 @@ export const LIVE_STATUSES = ["running", "awaiting-approval", "awaiting-input"] 
 
 /** Why 收口 and 归档 are off while a turn lives — the server's own 409 says the same. */
 export const LIVE_REASON = "任务还在进行中（等待审批或回答），先处理或停止";
+
+/** 归档中 / 恢复中: what a task says while its worktree is still being moved. */
+export const TRANSITION_LABELS: Record<ThreadTransition, string> = {
+  archiving: "归档中",
+  unarchiving: "恢复中",
+};
 
 export type UIMessagePart = UIMessage["parts"][number];
 

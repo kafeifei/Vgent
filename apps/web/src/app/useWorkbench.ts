@@ -15,6 +15,7 @@ import { useChanges } from "@/features/changes/useChanges";
 import { notificationsEnabled, pendingApprovalLabel } from "@/features/notify/notify";
 import { useNotifications } from "@/features/notify/useNotifications";
 import type { Grouping } from "@/features/sidebar/grouping";
+import { settledPendingArchive, withPendingArchive, type PendingArchive } from "@/features/sidebar/pendingArchive";
 import type { RightTab } from "@/features/rightpane/RightPane";
 
 export type LeftMode = "on" | "off";
@@ -69,7 +70,18 @@ export const isLiveThread = (thread: ThreadSummary | undefined): boolean =>
 export function useWorkbench(token: string) {
   const toast = useToast();
   const client = useMemo(() => createClient(token), [token]);
-  const state = useServerState(token);
+  const server = useServerState(token);
+  /**
+   * 归档 / 取消归档 moves the row on the click, not on the server's answer: the
+   * worktree behind it can take a while, and the snapshot shows 归档中 / 恢复中
+   * until it is done. Everything below reads the snapshot with these applied.
+   */
+  const [pendingArchive, setPendingArchive] = useState<PendingArchive>(() => new Map());
+  useEffect(() => setPendingArchive((pending) => settledPendingArchive(pending, server.threads)), [server.threads]);
+  const state = useMemo(
+    () => (pendingArchive.size === 0 ? server : { ...server, threads: withPendingArchive(server.threads, pendingArchive) }),
+    [pendingArchive, server],
+  );
 
   const chats = useMemo(() => new ThreadChats(token, (error) => toast(error.message)), [token, toast]);
   useEffect(() => () => chats.dispose(), [chats]);
@@ -454,19 +466,23 @@ export function useWorkbench(token: string) {
           .catch((error: Error) => toast(error.message));
       },
 
-      // 归档 also reclaims the task's worktree, and un-archiving restores it —
-      // the server does both in one PATCH, so one failure means neither moved.
+      // 归档 also reclaims the task's worktree, and un-archiving restores it.
+      // The row moves at once; the PATCH answers when the worktree is done, and
+      // a failure puts the task back where it was.
       archiveThread: (threadId: string, archived: boolean) => {
+        setPendingArchive((pending) => new Map(pending).set(threadId, archived));
+        const workspace = state.threads.find((entry) => entry.id === threadId)?.workspace;
+        const reclaims = workspace != null && workspace.reclaimed !== true;
         void client.patchThread(threadId, { archived }).then(
-          () =>
-            toast(
-              !archived
-                ? "已取消归档"
-                : state.threads.find((entry) => entry.id === threadId)?.workspace != null
-                  ? "已归档，worktree 已回收"
-                  : "已归档",
-            ),
-          (error: Error) => toast(error.message),
+          () => toast(archived ? (reclaims ? "已归档，worktree 已回收" : "已归档") : "已取消归档"),
+          (error: Error) => {
+            setPendingArchive((pending) => {
+              const next = new Map(pending);
+              next.delete(threadId);
+              return next;
+            });
+            toast(error.message);
+          },
         );
       },
 

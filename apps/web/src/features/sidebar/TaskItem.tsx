@@ -4,11 +4,12 @@ import type { Chat } from "@ai-sdk/react";
 import { isToolUIPart, type UIMessage } from "ai";
 import { GitFork, MoreHorizontal } from "lucide-react";
 import { OutcomeBadge } from "@/components/OutcomeBadge";
+import { Shimmer } from "@/components/ai-elements/shimmer";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { shortTime } from "@/lib/format";
 import { isImeKeyEvent } from "@/lib/ime";
 import { CHAT_THROTTLE_MS } from "@/lib/threadChats";
-import { LIVE_REASON, LIVE_STATUSES, type ThreadStatus, type ThreadSummary } from "@/lib/types";
+import { LIVE_REASON, LIVE_STATUSES, TRANSITION_LABELS, type ThreadStatus, type ThreadSummary, type ThreadTransition } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { describeTool } from "@/features/worklog/toolMeta";
 
@@ -48,6 +49,8 @@ type RowMenuActions = {
   unread: boolean;
   /** Archiving reclaims the worktree, so a turn that still owns it blocks it. Deleting stops the run first, so it does not. */
   live: boolean;
+  /** The last 归档 / 取消归档 is still moving the worktree; another waits for it. */
+  transition: ThreadTransition | undefined;
   onArchive: (archived: boolean) => void;
   onUnread: (unread: boolean) => void;
   onDelete: () => void;
@@ -65,6 +68,7 @@ function RowMenuItems({
   archived,
   unread,
   live,
+  transition,
   close,
   onArchive,
   onUnread,
@@ -116,8 +120,8 @@ function RowMenuItems({
       </PopItem>
       <PopItem
         shortcut="a"
-        disabled={live}
-        {...(live ? { hint: "进行中", title: LIVE_REASON } : {})}
+        disabled={live || transition != null}
+        {...(transition != null ? { hint: TRANSITION_LABELS[transition] } : live ? { hint: "进行中", title: LIVE_REASON } : {})}
         onClick={() => {
           close();
           onArchive(!archived);
@@ -254,13 +258,18 @@ export function TaskItem({
         {/* The stamp gives way to the row's menu on hover, so the two never fight for the corner. */}
         <span className="flex flex-none items-center gap-xs text-fg-faint text-sm group-hover:invisible group-has-[[aria-expanded=true]]:invisible">
           {thread.workspace != null && <GitFork className="size-md" aria-label="在 worktree 里" />}
-          <span>{shortTime(thread.updatedAt)}</span>
+          {thread.transition != null ? (
+            <Shimmer as="span">{TRANSITION_LABELS[thread.transition]}</Shimmer>
+          ) : (
+            <span>{shortTime(thread.updatedAt)}</span>
+          )}
         </span>
       </button>
       <RowMenu
         archived={archived}
         unread={unread}
         live={(LIVE_STATUSES as readonly string[]).includes(thread.status)}
+        transition={thread.transition}
         openRef={openMenu}
         onArchive={onArchive}
         onUnread={onUnread}

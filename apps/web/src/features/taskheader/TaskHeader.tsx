@@ -3,19 +3,22 @@ import { GitFork, PanelRight } from "lucide-react";
 import { STRIP_ICON_BUTTON, TopStrip } from "@/components/TopStrip";
 import { OutcomeBadge } from "@/components/OutcomeBadge";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
-import type { ThreadSummary, ThreadWorkspace } from "@/lib/types";
+import { TRANSITION_LABELS, type ThreadSummary, type ThreadTransition, type ThreadWorkspace } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** The worktree glyph's popover: where the task's files are, and reclaim / restore. */
 function WorkspaceMenu({
   workspace,
   running,
+  transition,
   onReclaim,
   onRestore,
   close,
 }: {
   workspace: ThreadWorkspace;
   running: boolean;
+  /** 归档中 / 恢复中 is doing exactly this already. */
+  transition: ThreadTransition | undefined;
   onReclaim: () => Promise<void>;
   onRestore: () => Promise<void>;
   close: () => void;
@@ -24,7 +27,7 @@ function WorkspaceMenu({
   const reclaimed = workspace.reclaimed === true;
   // Only a live run holds the directory open, which is the very condition the
   // server refuses a reclaim on (`runs.isRunning`).
-  const blocked = busy || (!reclaimed && running);
+  const blocked = busy || transition != null || (!reclaimed && running);
 
   return (
     <>
@@ -40,7 +43,7 @@ function WorkspaceMenu({
       </div>
       <PopItem
         disabled={blocked}
-        {...(!reclaimed && running ? { hint: "任务运行中" } : {})}
+        {...(transition != null ? { hint: TRANSITION_LABELS[transition] } : !reclaimed && running ? { hint: "任务运行中" } : {})}
         onClick={() => {
           setBusy(true);
           void (reclaimed ? onRestore() : onReclaim()).finally(() => {
@@ -146,6 +149,7 @@ export function TaskHeader({
             <WorkspaceMenu
               workspace={workspace}
               running={thread.status === "running"}
+              transition={thread.transition}
               onReclaim={onReclaimWorkspace}
               onRestore={onRestoreWorkspace}
               close={close}

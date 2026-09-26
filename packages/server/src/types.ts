@@ -90,6 +90,9 @@ export interface MessageCheckpoint {
  * this is set keeps it: a snapshot of an already-restored tree is not 最新.
  * Cleared when the user sends the next message, or by 「回到最新」 itself.
  */
+/** Which way an 归档 whose worktree work has not finished yet is going. */
+export type ThreadTransition = "archiving" | "unarchiving";
+
 export interface ThreadRestorePoint {
   messageId: string;
   undoCommit: string;
@@ -342,6 +345,11 @@ export interface ThreadRecord {
   queue?: QueuedMessage[];
   /** Set when the task was archived; its worktree is reclaimed at the same time. */
   archivedAt?: string;
+  /**
+   * 归档中 / 恢复中: `archivedAt` already says where the task is going, and its
+   * worktree is still being snapshotted away or put back. Absent once that is done.
+   */
+  transition?: ThreadTransition;
   createdAt: string;
   updatedAt: string;
   messages: UIMessage[];

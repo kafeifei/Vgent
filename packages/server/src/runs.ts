@@ -984,6 +984,10 @@ export function createRunManager(options: {
     // assistant message while this follow-up was waiting for its slot.
     const thread = await threads.get(threadId);
     if (thread == null) throw new NotFoundError(`线程不存在: ${threadId}`, "thread_not_found");
+    // 归档中 / 恢复中: the worktree is being taken apart or put back.
+    if (thread.transition != null) {
+      throw new ConflictError(`任务正在${thread.transition === "archiving" ? "归档" : "恢复"}，稍等`, "thread_transitioning");
+    }
     if (thread.workspace?.reclaimed === true) {
       throw new ConflictError("此任务的工作目录已回收，请先恢复后再运行", "workspace_reclaimed");
     }
@@ -1098,7 +1102,7 @@ export function createRunManager(options: {
     locked(dispatching, threadId, async () => {
       if (options.queue == null || runs.has(threadId)) return;
       const thread = await threads.get(threadId).catch(() => undefined);
-      if (thread == null || thread.archivedAt != null || thread.status !== "idle") return;
+      if (thread == null || thread.archivedAt != null || thread.transition != null || thread.status !== "idle") return;
       if ((thread.queue?.length ?? 0) === 0) return;
       const item = await runQueued(threadId).catch((error: unknown) => {
         log.warn(`线程 ${threadId} 的排队消息没能发出`, error);

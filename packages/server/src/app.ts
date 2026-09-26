@@ -75,6 +75,7 @@ import type {
   ThreadMessageMetadata,
   ThreadRecord,
   ThreadRestorePoint,
+  ThreadTransition,
   ThreadWorkspace,
   UiDensity,
   UiTheme,
@@ -130,6 +131,8 @@ export interface CreateAppOptions {
   harnessRuntime?: HarnessRuntime;
   /** Turns on the background check-and-upgrade loop. `main.ts` sets it; tests do not. */
   autoUpgradeRuntimes?: boolean;
+  /** Runs inside 归档's worktree snapshot, before the copy. Tests hold an 归档 open — or fail it — here. */
+  beforeWorktreeSnapshot?: () => Promise<void>;
 }
 
 export interface VgentApp {
@@ -438,6 +441,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
   // git once per task, and the first `/api/state` waits on `recovered` — it
   // must not also wait on housekeeping.
   void recovered
+    .then(() => resumeTransitions())
     .then(trimWorktrees)
     .then(backfillChangeStats)
     .then(dispatchQueuesAtBoot)
@@ -540,6 +544,8 @@ export function createApp(options: CreateAppOptions): VgentApp {
    * snapshot its first turn started with (`baselineCommit`).
    */
   const targetFor = async (thread: ThreadRecord): Promise<TaskTarget> => {
+    // Even a read: `git status` refreshes the index, and the snapshot refuses a tree that moved under it.
+    assertSettled(thread);
     if (thread.workspace?.reclaimed === true) throw new ConflictError("此任务的工作目录已回收", "workspace_reclaimed");
     return taskTarget(thread, await projectOf(thread));
   };
@@ -565,6 +571,33 @@ export function createApp(options: CreateAppOptions): VgentApp {
    */
   const assertNotArchived = (thread: ThreadRecord): void => {
     if (thread.archivedAt != null) throw new ConflictError("任务已归档，取消归档后才能继续", "thread_archived");
+  };
+
+  /**
+   * 归档 / 取消归档 whose worktree work is still under way, per thread. The
+   * record's `transition` is what everyone sees; this is what 删除 waits on,
+   * and what turns a second request away before it can start another move
+   * underneath the first.
+   */
+  const transitions = new Map<string, { direction: ThreadTransition; done: Promise<void> }>();
+
+  /** 归档中 / 恢复中: the worktree is being taken apart or put back, so nothing may touch it. */
+  const assertSettled = (thread: ThreadRecord): void => {
+    const direction = transitions.get(thread.id)?.direction ?? thread.transition;
+    if (direction != null) throw new ConflictError(`任务正在${direction === "archiving" ? "归档" : "恢复"}，稍等`, "thread_transitioning");
+  };
+
+  /** Takes the thread's slot; the returned function gives it back. */
+  const claimTransition = (id: string, direction: ThreadTransition): (() => void) => {
+    let release!: () => void;
+    const done = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    transitions.set(id, { direction, done });
+    return () => {
+      transitions.delete(id);
+      release();
+    };
   };
 
   /** Keeps the record's 「+N −M」 current after an action that changed the tree. */
@@ -837,7 +870,12 @@ export function createApp(options: CreateAppOptions): VgentApp {
   const reclaimFor = async (thread: ThreadRecord): Promise<ThreadWorkspace | undefined> => {
     const workspace = thread.workspace;
     if (workspace == null || workspace.reclaimed === true) return undefined;
-    const { snapshotPath } = await reclaimWorktree({ dataDir, project: await projectOf(thread), thread });
+    const { snapshotPath } = await reclaimWorktree({
+      dataDir,
+      project: await projectOf(thread),
+      thread,
+      ...(options.beforeWorktreeSnapshot != null ? { onBeforeCopy: options.beforeWorktreeSnapshot } : {}),
+    });
     return { ...workspace, reclaimed: true, snapshotPath };
   };
 
@@ -862,10 +900,54 @@ export function createApp(options: CreateAppOptions): VgentApp {
     };
   };
 
+  /**
+   * The slow half of 归档 / 取消归档, after the record already says where the
+   * task is going: the worktree's snapshot-and-remove, or its way back. A
+   * failure takes the move back — the task returns to where it was, as the
+   * whole request used to leave it — and is rethrown for whoever is waiting.
+   */
+  const finishTransition = async (id: string, direction: ThreadTransition, archivedBefore: string | undefined): Promise<ThreadRecord> => {
+    try {
+      const thread = await threadOf(id);
+      if (direction === "archiving") {
+        const workspace = await reclaimFor(thread);
+        // 撤销带回 is an offer about a task the user is still looking at.
+        // Archiving says they are done with it, so the offer goes away.
+        return await threads.update(id, { ...(workspace != null ? { workspace } : {}), applyUndo: undefined, transition: undefined });
+      }
+      const workspace = await restoreFor(thread);
+      return await threads.update(id, { ...(workspace != null ? { workspace } : {}), transition: undefined });
+    } catch (error) {
+      await threads
+        .update(id, {
+          transition: undefined,
+          archivedAt: direction === "archiving" ? undefined : (archivedBefore ?? new Date().toISOString()),
+        })
+        .catch((failure: unknown) => log.warn(`线程 ${id} 的归档状态没能退回`, failure));
+      throw error;
+    }
+  };
+
+  /**
+   * A move the last process never finished: the record still says where the
+   * task was going, so it is carried out now. Failing takes it back just the
+   * same, only with nobody waiting for the answer.
+   */
+  const resumeTransitions = async (): Promise<void> => {
+    for (const summary of await threads.list()) {
+      if (summary.transition == null || transitions.has(summary.id)) continue;
+      const release = claimTransition(summary.id, summary.transition);
+      await finishTransition(summary.id, summary.transition, undefined)
+        .catch((error: unknown) => log.warn(`线程 ${summary.id} 没做完的归档已退回`, error))
+        .finally(release);
+    }
+  };
+
   app.post("/api/threads/:id/workspace/reclaim", async (c) => {
     const id = c.req.param("id");
     if (runs.isRunning(id)) throw new ConflictError(`线程正在运行，无法回收工作目录: ${id}`, "thread_running");
     const thread = await threadOf(id);
+    assertSettled(thread);
     if (thread.workspace == null) throw new ConflictError("此任务没有独立工作目录", "workspace_not_worktree");
     const workspace = await reclaimFor(thread);
     return c.json(workspace == null ? thread : await threads.update(id, { workspace }));
@@ -885,7 +967,9 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   app.post("/api/threads/:id/workspace/restore", async (c) => {
     const id = c.req.param("id");
-    const workspace = await restoreFor(await threadOf(id));
+    const thread = await threadOf(id);
+    assertSettled(thread);
+    const workspace = await restoreFor(thread);
     if (workspace == null) throw new ConflictError("此任务的工作目录没有被回收，无需恢复", "workspace_not_reclaimed");
     return c.json(await threads.update(id, { workspace }));
   });
@@ -1031,47 +1115,56 @@ export function createApp(options: CreateAppOptions): VgentApp {
     assertModeSupported(mode ?? current.mode ?? "agent", engine ?? current.engine);
 
     // 归档 is a lifecycle move, not a field edit: it reclaims the task's
-    // worktree on the way in and restores it on the way out, and a failure
-    // there fails the whole request rather than leaving the two out of step.
+    // worktree on the way in and restores it on the way out. The task moves
+    // first — this update is what the sidebar sees — and carries a
+    // `transition` while its worktree catches up; the response waits for that.
     const lifecycle: ThreadPatch = {};
     if ("archived" in (body ?? {})) {
       if (typeof body?.archived !== "boolean") throw new BadRequestError("archived 只能是布尔值", "invalid_archived");
       // Archiving reclaims the worktree, so it needs the same guard 收口 does.
       assertNotLive(current);
+      assertSettled(current);
+      const workspace = current.workspace;
       if (body.archived) {
         if (current.archivedAt == null) {
-          const workspace = await reclaimFor(current);
-          if (workspace != null) lifecycle.workspace = workspace;
           lifecycle.archivedAt = new Date().toISOString();
-          // 撤销带回 is an offer about a task the user is still looking at.
-          // Archiving says they are done with it, so the offer goes away.
-          lifecycle.applyUndo = undefined;
+          if (workspace != null && workspace.reclaimed !== true) {
+            lifecycle.transition = "archiving";
+          } else {
+            // Nothing to reclaim, so the move is complete now — see `finishTransition`.
+            lifecycle.applyUndo = undefined;
+          }
         }
       } else {
-        const workspace = await restoreFor(current);
-        if (workspace != null) lifecycle.workspace = workspace;
         lifecycle.archivedAt = undefined;
+        if (workspace?.reclaimed === true && workspace.snapshotPath != null) lifecycle.transition = "unarchiving";
       }
     }
-
-    const record = await threads.update(id, {
-      ...lifecycle,
-      ...(typeof body?.title === "string" ? { title: body.title } : {}),
-      ...(engine != null ? { engine } : {}),
-      ...(mode != null ? { mode } : {}),
-      ...(marksRead ? { unread: body?.unread === true } : {}),
-      ...("model" in (body ?? {}) ? { model: typeof body?.model === "string" ? body.model : undefined } : {}),
-      // `null` clears it; an absent key leaves it alone.
-      ...("reasoningEffort" in (body ?? {}) ? { reasoningEffort: readReasoningEffort(body?.reasoningEffort) } : {}),
-      ...("serviceTier" in (body ?? {}) ? { serviceTier: readServiceTier(body?.serviceTier) } : {}),
-      // A window belongs to the model it was picked for: another model takes its own unless the same edit names one.
-      ...("contextWindow" in (body ?? {})
-        ? { contextWindow: readContextWindow(body?.contextWindow) }
-        : "model" in (body ?? {}) && body?.model !== current.model
-          ? { contextWindow: undefined }
-          : {}),
-    });
-    return c.json(record);
+    const direction = lifecycle.transition;
+    const release = direction != null ? claimTransition(id, direction) : undefined;
+    try {
+      const record = await threads.update(id, {
+        ...lifecycle,
+        ...(typeof body?.title === "string" ? { title: body.title } : {}),
+        ...(engine != null ? { engine } : {}),
+        ...(mode != null ? { mode } : {}),
+        ...(marksRead ? { unread: body?.unread === true } : {}),
+        ...("model" in (body ?? {}) ? { model: typeof body?.model === "string" ? body.model : undefined } : {}),
+        // `null` clears it; an absent key leaves it alone.
+        ...("reasoningEffort" in (body ?? {}) ? { reasoningEffort: readReasoningEffort(body?.reasoningEffort) } : {}),
+        ...("serviceTier" in (body ?? {}) ? { serviceTier: readServiceTier(body?.serviceTier) } : {}),
+        // A window belongs to the model it was picked for: another model takes its own unless the same edit names one.
+        ...("contextWindow" in (body ?? {})
+          ? { contextWindow: readContextWindow(body?.contextWindow) }
+          : "model" in (body ?? {}) && body?.model !== current.model
+            ? { contextWindow: undefined }
+            : {}),
+      });
+      if (direction == null) return c.json(record);
+      return c.json(await finishTransition(id, direction, current.archivedAt));
+    } finally {
+      release?.();
+    }
   });
 
   // --- 排队 -------------------------------------------------------------
@@ -1245,6 +1338,8 @@ export function createApp(options: CreateAppOptions): VgentApp {
   app.delete("/api/threads/:id", async (c) => {
     const id = c.req.param("id");
     await runs.stop(id);
+    // 归档中 is still moving the worktree; deleting under it would race it.
+    await transitions.get(id)?.done;
     const thread = await threads.get(id);
     // A failed ownership check aborts the delete: a thread record is the only
     // thing that still points at a worktree, so it outlives a directory we

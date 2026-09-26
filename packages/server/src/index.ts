@@ -187,6 +187,7 @@ export type {
   ThreadRestorePoint,
   ThreadStatus,
   ThreadSummary,
+  ThreadTransition,
   ThreadWorkspace,
   UiDensity,
   UiTheme,

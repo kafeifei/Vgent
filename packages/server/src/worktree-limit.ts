@@ -38,14 +38,15 @@ export async function enforceWorktreeLimit(options: EnforceWorktreeLimitOptions)
   if (count <= max) return 0;
 
   const candidates = live
-    .filter((summary) => !LIVE.includes(summary.status))
+    // 归档中 is reclaiming it already.
+    .filter((summary) => !LIVE.includes(summary.status) && summary.transition == null)
     .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
 
   let reclaimed = 0;
   for (const candidate of candidates) {
     if (count <= max) break;
     const thread = await threads.get(candidate.id);
-    if (thread?.workspace == null || thread.workspace.reclaimed === true) continue;
+    if (thread?.workspace == null || thread.workspace.reclaimed === true || thread.transition != null) continue;
     // A 无项目 task never has a worktree, so the stored projects are all there is to look in.
     const project = await projects.get(thread.projectId);
     if (project == null) continue;

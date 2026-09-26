@@ -18,6 +18,7 @@ import type {
   ThreadRestorePoint,
   ThreadStatus,
   ThreadSummary,
+  ThreadTransition,
   ThreadWorkspace,
 } from "../types.js";
 import { silentLogger } from "../types.js";
@@ -91,6 +92,8 @@ export type ThreadPatch = Partial<{
   queue: QueuedMessage[] | undefined;
   /** `undefined` un-archives. */
   archivedAt: string | undefined;
+  /** 归档中 / 恢复中. `undefined` once the worktree side of it is done — or taken back. */
+  transition: ThreadTransition | undefined;
   messages: UIMessage[];
 }>;
 
@@ -396,6 +399,10 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
         if ("archivedAt" in patch) {
           if (patch.archivedAt == null) delete next.archivedAt;
           else next.archivedAt = patch.archivedAt;
+        }
+        if ("transition" in patch) {
+          if (patch.transition == null) delete next.transition;
+          else next.transition = patch.transition;
         }
         await writeJsonAtomic(recordPath(id), next);
         return next;

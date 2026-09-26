@@ -6,11 +6,11 @@ import { promisify } from "node:util";
 import type { LanguageModel, ModelMessage, TextStreamPart, ToolSet, UIMessage } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createApp, type VgentApp } from "./app.js";
+import { createApp, type CreateAppOptions, type VgentApp } from "./app.js";
 import type { EngineDescriptor } from "./engines/capabilities.js";
 import { createEngineRegistry, type EngineContext, type EngineFactoryOverride } from "./engines/registry.js";
 import { DEFAULT_VGENT_MODEL } from "./engines/vgent.js";
-import { EngineUnavailableError } from "./errors.js";
+import { ConflictError, EngineUnavailableError } from "./errors.js";
 import { createThreadStore, type ThreadPreCompactSnapshot } from "./store/threads.js";
 import type { HarnessState, Project, Settings, ThreadMessageMetadata, ThreadRecord, ThreadSummary } from "./types.js";
 
@@ -76,8 +76,9 @@ function createFakeEngine(options?: { text?: string; deltaDelayMs?: number; writ
   return { factory, created, streamed };
 }
 
-function makeApp(dataDir: string, factory?: EngineFactoryOverride, webDist?: string): VgentApp {
+function makeApp(dataDir: string, factory?: EngineFactoryOverride, webDist?: string, extra?: Partial<CreateAppOptions>): VgentApp {
   const instance = createApp({
+    ...extra,
     dataDir,
     token: TOKEN,
     // Never the real Downloads folder.
@@ -1161,6 +1162,99 @@ describe("createApp", () => {
     const wrong = await patch({ archived: "yes" });
     expect(wrong.status).toBe(400);
     expect(await wrong.json()).toMatchObject({ error: { code: "invalid_archived" } });
+  });
+
+  it("归档先换状态：worktree 还在回收时任务已经在已归档里，显示归档中", async () => {
+    const repo = await gitRepo();
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    let proceed!: () => void;
+    const held = new Promise<void>((resolve) => {
+      proceed = resolve;
+    });
+    const app = makeApp(await tempDir(), undefined, undefined, {
+      beforeWorktreeSnapshot: async () => {
+        enter();
+        await held;
+      },
+    });
+    const project = (await (await postJson(app, "/api/projects", { repoPath: repo })).json()) as Project;
+    const thread = (await (
+      await postJson(app, "/api/threads", { projectId: project.id, workspace: "worktree" })
+    ).json()) as ThreadRecord;
+    const patch = (body: unknown) => request(app, `/api/threads/${thread.id}`, { method: "PATCH", body: JSON.stringify(body) });
+
+    const answer = patch({ archived: true });
+    await entered;
+    const during = (await (await request(app, `/api/threads/${thread.id}`)).json()) as ThreadRecord;
+    expect(during.archivedAt).toEqual(expect.any(String));
+    expect(during.transition).toBe("archiving");
+    expect(during.workspace?.reclaimed).toBeUndefined();
+
+    // The worktree is mid-snapshot: nothing else may start on it, a read included.
+    const again = await patch({ archived: false });
+    expect(again.status).toBe(409);
+    expect(await again.json()).toMatchObject({ error: { code: "thread_transitioning" } });
+    expect((await request(app, `/api/threads/${thread.id}/changes`)).status).toBe(409);
+    expect((await postJson(app, `/api/threads/${thread.id}/workspace/reclaim`, {})).status).toBe(409);
+
+    proceed();
+    const archived = (await (await answer).json()) as ThreadRecord;
+    expect(archived.transition).toBeUndefined();
+    expect(archived.archivedAt).toBe(during.archivedAt);
+    expect(archived.workspace?.reclaimed).toBe(true);
+    await expect(stat(thread.workspace?.path ?? "")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("归档没做成：任务退回原处，worktree 原样还在", async () => {
+    const repo = await gitRepo();
+    const app = makeApp(await tempDir(), undefined, undefined, {
+      beforeWorktreeSnapshot: async () => {
+        throw new ConflictError("归档期间文件发生了变化，已保留工作目录。请停止外部编辑后重试。", "workspace_changed_during_snapshot");
+      },
+    });
+    const project = (await (await postJson(app, "/api/projects", { repoPath: repo })).json()) as Project;
+    const thread = (await (
+      await postJson(app, "/api/threads", { projectId: project.id, workspace: "worktree" })
+    ).json()) as ThreadRecord;
+    const workspacePath = thread.workspace?.path ?? "";
+    await writeFile(join(workspacePath, "未提交.txt"), "任务留下的\n");
+
+    const failed = await request(app, `/api/threads/${thread.id}`, { method: "PATCH", body: JSON.stringify({ archived: true }) });
+    expect(failed.status).toBe(409);
+    expect(await failed.json()).toMatchObject({ error: { code: "workspace_changed_during_snapshot" } });
+
+    const after = (await (await request(app, `/api/threads/${thread.id}`)).json()) as ThreadRecord;
+    expect(after.archivedAt).toBeUndefined();
+    expect(after.transition).toBeUndefined();
+    expect(after.workspace?.reclaimed).toBeUndefined();
+    expect(await readFile(join(workspacePath, "未提交.txt"), "utf8")).toBe("任务留下的\n");
+  });
+
+  it("归档做到一半进程退了：重启后接着做完", async () => {
+    const repo = await gitRepo();
+    const dir = await tempDir();
+    const first = makeApp(dir);
+    const project = (await (await postJson(first, "/api/projects", { repoPath: repo })).json()) as Project;
+    const thread = (await (
+      await postJson(first, "/api/threads", { projectId: project.id, workspace: "worktree" })
+    ).json()) as ThreadRecord;
+    // What the record looks like when the process dies right after the task moved.
+    await createThreadStore(dir).update(thread.id, { archivedAt: new Date().toISOString(), transition: "archiving" });
+
+    const second = makeApp(dir);
+    let record: ThreadRecord | undefined;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      record = (await (await request(second, `/api/threads/${thread.id}`)).json()) as ThreadRecord;
+      if (record.transition == null) break;
+      await sleep(50);
+    }
+    expect(record?.transition).toBeUndefined();
+    expect(record?.archivedAt).toEqual(expect.any(String));
+    expect(record?.workspace?.reclaimed).toBe(true);
+    await expect(stat(thread.workspace?.path ?? "")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("回合结束时记下改动统计", async () => {

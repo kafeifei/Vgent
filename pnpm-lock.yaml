@@ -4,6 +4,14 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@ai-sdk/harness-claude-code@1.0.125':
+    hash: 989743597d608bb997d05e12f8376b6b61f451c75e99b8fdd5c4a425aa8ad461
+    path: patches/@ai-sdk__harness-claude-code@1.0.125.patch
+  '@ai-sdk/harness@1.0.121':
+    hash: 32241f90bea59b3ac04ce8fbf6ff368a02c4466d4241edba1fc1fef9fbb14b1d
+    path: patches/@ai-sdk__harness@1.0.121.patch
+
 importers:
 
   .:
@@ -152,10 +160,10 @@ importers:
     dependencies:
       '@ai-sdk/harness':
         specifier: 1.0.121
-        version: 1.0.121(ws@8.21.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@4.6.5)
+        version: 1.0.121(patch_hash=32241f90bea59b3ac04ce8fbf6ff368a02c4466d4241edba1fc1fef9fbb14b1d)(ws@8.21.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@4.6.5)
       '@ai-sdk/harness-claude-code':
         specifier: 1.0.125
-        version: 1.0.125(bufferutil@4.1.0)(utf-8-validate@5.0.10)(zod@4.6.5)
+        version: 1.0.125(patch_hash=989743597d608bb997d05e12f8376b6b61f451c75e99b8fdd5c4a425aa8ad461)(bufferutil@4.1.0)(utf-8-validate@5.0.10)(zod@4.6.5)
       '@ai-sdk/harness-codex':
         specifier: 1.0.123
         version: 1.0.123(bufferutil@4.1.0)(utf-8-validate@5.0.10)(zod@4.6.5)
@@ -197,7 +205,7 @@ importers:
         version: 4.0.44(zod@4.6.5)
       '@ai-sdk/harness':
         specifier: 1.0.121
-        version: 1.0.121(ws@8.21.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@4.6.5)
+        version: 1.0.121(patch_hash=32241f90bea59b3ac04ce8fbf6ff368a02c4466d4241edba1fc1fef9fbb14b1d)(ws@8.21.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@4.6.5)
       '@ai-sdk/mistral':
         specifier: 4.0.46
         version: 4.0.46(zod@4.6.5)
@@ -227,7 +235,7 @@ importers:
     dependencies:
       '@ai-sdk/harness':
         specifier: 1.0.121
-        version: 1.0.121(ws@8.21.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@4.6.5)
+        version: 1.0.121(patch_hash=32241f90bea59b3ac04ce8fbf6ff368a02c4466d4241edba1fc1fef9fbb14b1d)(ws@8.21.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@4.6.5)
       '@ai-sdk/provider-utils':
         specifier: 5.0.45
         version: 5.0.45(zod@4.6.5)
@@ -236,13 +244,10 @@ importers:
     dependencies:
       '@ai-sdk/harness':
         specifier: 1.0.121
-        version: 1.0.121(ws@8.21.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@4.6.5)
+        version: 1.0.121(patch_hash=32241f90bea59b3ac04ce8fbf6ff368a02c4466d4241edba1fc1fef9fbb14b1d)(ws@8.21.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@4.6.5)
       '@hono/node-server':
         specifier: 2.1.1
         version: 2.1.1(hono@4.13.8)
-      '@openai/codex':
-        specifier: 0.156.1
-        version: 0.156.1
       '@microsoft/dev-tunnels-connections':
         specifier: 1.3.56
         version: 1.3.56(@microsoft/dev-tunnels-ssh-tcp@3.12.42)(@microsoft/dev-tunnels-ssh@3.12.42)
@@ -258,6 +263,9 @@ importers:
       '@microsoft/dev-tunnels-ssh-tcp':
         specifier: 3.12.42
         version: 3.12.42
+      '@openai/codex':
+        specifier: 0.156.1
+        version: 0.156.1
       '@saymiao/remote-core':
         specifier: file:../../vendor/saymiao-remote-core-0.1.0.tgz
         version: file:vendor/saymiao-remote-core-0.1.0.tgz
@@ -3870,9 +3878,9 @@ snapshots:
       '@ai-sdk/provider-utils': 5.0.43(zod@4.6.5)
       zod: 4.6.5
 
-  '@ai-sdk/harness-claude-code@1.0.125(bufferutil@4.1.0)(utf-8-validate@5.0.10)(zod@4.6.5)':
+  '@ai-sdk/harness-claude-code@1.0.125(patch_hash=989743597d608bb997d05e12f8376b6b61f451c75e99b8fdd5c4a425aa8ad461)(bufferutil@4.1.0)(utf-8-validate@5.0.10)(zod@4.6.5)':
     dependencies:
-      '@ai-sdk/harness': 1.0.121(ws@8.21.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@4.6.5)
+      '@ai-sdk/harness': 1.0.121(patch_hash=32241f90bea59b3ac04ce8fbf6ff368a02c4466d4241edba1fc1fef9fbb14b1d)(ws@8.21.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@4.6.5)
       '@ai-sdk/provider-utils': 5.0.45(zod@4.6.5)
       ws: 8.21.3(bufferutil@4.1.0)(utf-8-validate@5.0.10)
       zod: 4.6.5
@@ -3882,7 +3890,7 @@ snapshots:
 
   '@ai-sdk/harness-codex@1.0.123(bufferutil@4.1.0)(utf-8-validate@5.0.10)(zod@4.6.5)':
     dependencies:
-      '@ai-sdk/harness': 1.0.121(ws@8.21.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@4.6.5)
+      '@ai-sdk/harness': 1.0.121(patch_hash=32241f90bea59b3ac04ce8fbf6ff368a02c4466d4241edba1fc1fef9fbb14b1d)(ws@8.21.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@4.6.5)
       '@ai-sdk/provider-utils': 5.0.45(zod@4.6.5)
       ws: 8.21.3(bufferutil@4.1.0)(utf-8-validate@5.0.10)
       zod: 4.6.5
@@ -3899,7 +3907,7 @@ snapshots:
     optionalDependencies:
       ws: 8.21.3(bufferutil@4.1.0)(utf-8-validate@5.0.10)
 
-  '@ai-sdk/harness@1.0.121(ws@8.21.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@4.6.5)':
+  '@ai-sdk/harness@1.0.121(patch_hash=32241f90bea59b3ac04ce8fbf6ff368a02c4466d4241edba1fc1fef9fbb14b1d)(ws@8.21.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@4.6.5)':
     dependencies:
       '@ai-sdk/provider': 4.0.17
       '@ai-sdk/provider-utils': 5.0.45(zod@4.6.5)

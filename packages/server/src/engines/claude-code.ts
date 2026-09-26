@@ -8,6 +8,7 @@ import { BadRequestError, TurnResumeFailedError } from "../errors.js";
 import { createProviderStore } from "../store/providers.js";
 import { createSettingsStore } from "../store/settings.js";
 import type { EngineDescriptor } from "./capabilities.js";
+import { trackClaudeSteers } from "./claude-steer.js";
 import { stripDeniedApprovalResults } from "./harness-messages.js";
 import type { EngineContext, EngineFactory, EngineRunner } from "./registry.js";
 
@@ -200,7 +201,7 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
               toolResultContinuations: collectHarnessAgentToolResultContinuations({ messages: harnessMessages }),
               abortSignal,
             });
-            return { stream: result.stream as ReadableStream<TextStreamPart<ToolSet>> };
+            return { stream: trackClaudeSteers(result.stream as ReadableStream<TextStreamPart<ToolSet>>, ctx.steerApplied) };
           }
           // The whole converted history goes in on purpose. The harness session
           // owns its own native history and collapses the array to its last
@@ -214,12 +215,12 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
             abortSignal,
             options: undefined,
           });
-          return { stream: result.stream as ReadableStream<TextStreamPart<ToolSet>> };
+          return { stream: trackClaudeSteers(result.stream as ReadableStream<TextStreamPart<ToolSet>>, ctx.steerApplied) };
         },
 
         // 插话: the harness's own API. It throws when the turn is already over,
         // which the run manager reads as「排队吧」.
-        steer: (text) => engine.harnessAgent.experimental_steer({ session: engine.session, text }),
+        steer: (text, messageId) => engine.harnessAgent.experimental_steer({ session: engine.session, text, messageId }),
 
         async destroy() {
           if (ended) return;

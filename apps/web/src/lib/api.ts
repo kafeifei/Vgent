@@ -315,6 +315,8 @@ export function createClient(token: string) {
       contextWindow?: number;
       /** `worktree` gives the task its own checkout; the default edits the project. */
       workspace?: WorkspaceMode;
+      /** Return the session while its worktree is being created. */
+      deferWorkspace?: boolean;
       /** 模式 of the first turn; `plan` needs an engine with `capabilities.planMode`. */
       mode?: ThreadMode;
     }) => api<ThreadRecord>("/threads", token, { method: "POST", json: input }),

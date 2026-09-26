@@ -86,13 +86,15 @@ export function useWorkbench(token: string) {
   const chats = useMemo(() => new ThreadChats(token, (error) => toast(error.message)), [token, toast]);
   useEffect(() => () => chats.dispose(), [chats]);
   useEffect(() => chats.observeThreads(state.threads), [chats, state.threads]);
+  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(() => readThreadFromUrl());
+  // The create response is already a durable task; paint it before the next SSE snapshot arrives.
+  const [justCreated, setJustCreated] = useState<ThreadSummary | null>(null);
+  const [failedFirstSend, setFailedFirstSend] = useState<string | null>(null);
   // 草稿 of a task that no longer exists — deleted here or in another window —
   // is the one thing nothing else would ever clean up.
   useEffect(() => {
-    if (state.connected) pruneDrafts(state.threads.map((entry) => entry.id));
-  }, [state.connected, state.threads]);
-
-  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(() => readThreadFromUrl());
+    if (state.connected) pruneDrafts([...state.threads.map((entry) => entry.id), ...(justCreated == null ? [] : [justCreated.id])]);
+  }, [justCreated, state.connected, state.threads]);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [view, setView] = useState<View>(() => (readThreadFromUrl() == null ? "empty" : "thread"));
   const [left, setLeft] = useState<LeftMode>("on");
@@ -119,7 +121,8 @@ export function useWorkbench(token: string) {
     };
   }, [client, toast]);
 
-  const thread = state.threads.find((entry) => entry.id === selectedThreadId);
+  const thread = state.threads.find((entry) => entry.id === selectedThreadId) ??
+    (justCreated?.id === selectedThreadId ? justCreated : undefined);
   // A selected thread always wins over the manual project pick.
   const activeProjectId = thread?.projectId ?? projectId ?? state.projects[0]?.id ?? null;
   // Opening a task is also picking its project: 新任务 from there starts in the
@@ -142,7 +145,7 @@ export function useWorkbench(token: string) {
     client,
     // 无项目 runs in a plain directory: no repo, so no 改动 and nothing to 收口 — and nothing to ask the server for.
     // Nor before the task list has arrived: until then a task opened from the URL is not known to be one.
-    threadId: thread == null || isNoProject(thread.projectId) ? null : selectedThreadId,
+    threadId: thread == null || isNoProject(thread.projectId) || thread.workspaceState != null ? null : selectedThreadId,
     refreshKey: thread?.updatedAt ?? "",
     selected: right.file,
     onSelect: selectChange,
@@ -214,11 +217,12 @@ export function useWorkbench(token: string) {
     const ids = new Set(state.threads.map((entry) => entry.id));
     const vanished = selectedThreadId != null && knownThreadIds.current.has(selectedThreadId) && !ids.has(selectedThreadId);
     knownThreadIds.current = ids;
+    if (justCreated != null && ids.has(justCreated.id)) setJustCreated(null);
     if (vanished && selectedThreadId != null) {
       chats.forget(selectedThreadId);
       selectThread(null);
     }
-  }, [chats, selectThread, selectedThreadId, state.connected, state.threads]);
+  }, [chats, justCreated, selectThread, selectedThreadId, state.connected, state.threads]);
 
   /**
    * A 计划 turn that just ended has produced a document nobody asked to see.
@@ -299,7 +303,7 @@ export function useWorkbench(token: string) {
       pickFolder: () => client.pickFolder(),
 
       /**
-       * Empty state: create the thread, send the first message, open it.
+       * Empty state: create the thread, open it immediately, then send the first message.
        * Resolves `false` when the task could not even be created — the empty
        * state keeps its draft then. A task that exists but whose first message
        * the server refused keeps the text and the files too, as *that task's*
@@ -325,6 +329,7 @@ export function useWorkbench(token: string) {
             projectId: activeProjectId,
             engine,
             workspace,
+            ...(workspace === "worktree" ? { deferWorkspace: true } : {}),
             // Omitted, not null: the server reads「没传」as「用 defaultModel」.
             ...(model == null ? {} : { model }),
             ...(reasoningEffort == null ? {} : { reasoningEffort }),
@@ -337,14 +342,21 @@ export function useWorkbench(token: string) {
             return null;
           });
         if (record == null) return false;
+        const { messages: _messages, applyUndo: _applyUndo, ...summary } = record;
+        setJustCreated({ ...summary, messageCount: record.messages.length, pendingApprovals: 0 });
+        selectThread(record.id);
         const accepted = await chats.send(record.id, text, toFileParts(attachments)).then(
           () => true,
           () => false,
         );
-        // Written before the task is opened, so its composer reads it on mount.
-        // The files go with their bytes: the new task's draft has never seen them.
-        if (!accepted) await client.putDraft(record.id, { text, attachments: [...attachments] }).catch(() => undefined);
-        selectThread(record.id);
+        // A rejected send still belongs to this task, even if the user has
+        // switched away while its worktree was being created.
+        if (!accepted) {
+          await client.putDraft(record.id, { text, attachments: [...attachments] }).then(
+            () => setFailedFirstSend(record.id),
+            (error: Error) => toast(error.message),
+          );
+        }
         return true;
       },
 
@@ -398,7 +410,7 @@ export function useWorkbench(token: string) {
        * `interrupt` it is 「打断并发送」: the live turn is stopped first.
        */
       sendQueued: (threadId: string, itemId: string, options: { interrupt?: boolean } = {}) => {
-        void client.sendQueued(threadId, itemId, options).catch((error: Error) => toast(error.message));
+        return client.sendQueued(threadId, itemId, options).catch((error: Error) => toast(error.message));
       },
 
       stop: (threadId: string) => {
@@ -496,6 +508,7 @@ export function useWorkbench(token: string) {
         void client.deleteThread(threadId).then(
           () => {
             chats.forget(threadId);
+            setJustCreated((current) => current?.id === threadId ? null : current);
             if (threadId === selectedThreadId) selectThread(null);
             toast("已删除任务");
           },
@@ -570,6 +583,9 @@ export function useWorkbench(token: string) {
     client,
     engines,
     thread,
+    visibleThreads: justCreated != null && !state.threads.some((entry) => entry.id === justCreated.id)
+      ? [justCreated, ...state.threads]
+      : state.threads,
     changes,
     selectedThreadId,
     activeProjectId,
@@ -579,6 +595,7 @@ export function useWorkbench(token: string) {
     palette,
     grouping,
     settingsOpen,
+    failedFirstSend,
     actions,
   };
 }

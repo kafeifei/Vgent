@@ -40,3 +40,22 @@ describe("steer", () => {
     expect(expandSteers([plain])[0]).toBe(plain);
   });
 });
+
+it("does not submit a pending push receipt twice when rebuilding model history", () => {
+  const pending = { type: "data-steer", id: "s1", data: { text: "guide", messageId: "s1", receipt: true } } as UIMessage["parts"][number];
+  const messages: UIMessage[] = [{ id: "a1", role: "assistant", parts: [text("before"), pending, text("after")] }];
+  expect(expandSteers(messages, new Set(["s1"])).map(message => message.role)).toEqual(["assistant"]);
+  expect(expandSteers(messages).map(message => message.role)).toEqual(["assistant", "user", "assistant"]);
+});
+
+it("promotes one legacy receipt while preserving identical earlier and stable messages", async () => {
+  const { withoutPromotedSteers } = await import("./steer.js");
+  const messages: UIMessage[] = [
+    { id: "a1", role: "assistant", parts: [steer("guide")] },
+    { id: "a2", role: "assistant", parts: [steer("guide")] },
+  ];
+  const promoted: UIMessage[] = [{ id: "s1", role: "user", parts: [text("guide")] }];
+  const result = withoutPromotedSteers(messages, promoted);
+  expect(result.map(message => message.parts.length)).toEqual([1, 0]);
+  expect(messages[1]!.parts).toHaveLength(1);
+});

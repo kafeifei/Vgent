@@ -132,10 +132,10 @@ function Scene({ session, right, setRight, left, toggleLeft, onReset, onEmpty }:
     setContextWindow: (_id, value) => session.patch({ contextWindow: value ?? undefined }),
     setServiceTier: (_id, value) => session.patch({ serviceTier: value ?? undefined }),
     setMode: (_id, mode) => session.patch({ mode }),
-    sendQueued: (_id, itemId) => {
+    sendQueued: async (_id, itemId) => {
       const item = session.snapshot().queue?.find((entry) => entry.id === itemId);
       if (!item) return;
-      void session.stop().then(() => { session.patch({ queue: session.snapshot().queue?.filter((entry) => entry.id !== itemId) }); return session.send(item.text); });
+      await session.stop().then(() => { session.patch({ queue: session.snapshot().queue?.filter((entry) => entry.id !== itemId) }); return session.send(item.text, [], item.id); });
     },
     editQueued: (_id, itemId, text) => session.patch({ queue: session.snapshot().queue?.map((item) => item.id === itemId ? { ...item, text } : item) }),
     deleteQueued: (_id, itemId) => session.patch({ queue: session.snapshot().queue?.filter((item) => item.id !== itemId) }),
@@ -161,7 +161,7 @@ function Scene({ session, right, setRight, left, toggleLeft, onReset, onEmpty }:
   return <ModelCatalogClientContext value={client}>
     <div ref={grid} className="relative grid min-h-0 flex-1" style={{ gridTemplateColumns: `minmax(0,1fr) ${right ? `min(${paneWidth}px, 48%)` : "0px"}` }}>
       <main className="grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto]">
-        <ThreadView thread={thread} actions={actions} client={client} changes={changes} rightOpen={right} leftOpen={left} engines={ENGINES} runMode="allow-reads" modelPicks={{}} allowlist={allowlist} onQueue={setQueue} onMessages={setMessages} onOpenPicture={setPicture} />
+        <ThreadView thread={thread} failedFirstSend={false} actions={actions} client={client} changes={changes} rightOpen={right} leftOpen={left} engines={ENGINES} runMode="allow-reads" modelPicks={{}} allowlist={allowlist} onQueue={setQueue} onMessages={setMessages} onOpenPicture={setPicture} />
       </main>
       {right && <RightPane queue={queue} open tab={tab} onTab={setTab} changes={changes} client={client} threadId={thread.id} refreshKey={thread.updatedAt} preview={preview} onPreviewTaken={() => setPreview(null)} inspect={inspect} messages={messages} thread={thread} place="样例项目" live={isLiveThread(thread)} onBuild={async (_id, content) => { session.patch({ mode: "agent" }); await session.send(content); }} onOpenPicture={setPicture} onOpenFile={openFile} />}
       <div className="pointer-events-none absolute top-0 right-0 z-10 flex h-topbar items-center pr-sm"><RightPaneToggle open={right} pending={queue.length} onToggle={() => setRight(!right)} className="pointer-events-auto" /></div>

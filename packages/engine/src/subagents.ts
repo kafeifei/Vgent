@@ -25,6 +25,7 @@ import {
   toUIMessageStream,
   type LanguageModel,
   type ToolSet,
+  type ToolLoopAgentSettings,
   type UIMessage,
 } from "ai";
 import { z } from "zod";
@@ -57,6 +58,8 @@ export interface CreateSubagentToolsOptions extends AgentSetupOptions {
   maxSteps?: number;
   contextTokenBudget?: number;
   taskContext?: () => string;
+  /** Displayable reasoning summaries, without changing the child's reasoning effort. */
+  providerOptions?: ToolLoopAgentSettings["providerOptions"];
 }
 
 export interface ChildResult {
@@ -107,6 +110,7 @@ async function* streamChild(
   const maxSteps = options.maxSteps ?? (kind === "coder" ? CODER_MAX_STEPS : EXPLORE_MAX_STEPS);
   const agent = new ToolLoopAgent({
     model: options.model,
+    ...(options.providerOptions == null ? {} : { providerOptions: options.providerOptions }),
     instructions: setup.instructions,
     tools,
     stopWhen: [isStepCount(maxSteps)],
@@ -166,7 +170,15 @@ async function* streamChild(
       ],
     },
   ];
-  let message: UIMessage = { id: taskId, role: "assistant", parts: [] };
+  let message: UIMessage = {
+    id: taskId, role: "assistant", parts: [],
+    metadata: { subagent: {
+      modelId: typeof options.model === "string" ? options.model : options.model.modelId,
+      ...(typeof options.model === "string" ? {} : { provider: options.model.provider }),
+    } },
+  };
+  // Available before the first token and retained in live, saved and failed transcripts.
+  yield structuredClone(message);
   let finishReason = "unknown";
   let failure: string | undefined;
   try {
@@ -184,6 +196,7 @@ async function* streamChild(
       }),
     );
     for await (const next of readUIMessageStream({
+      message,
       stream: toUIMessageStream({ stream, onError: (error) => (error instanceof Error ? error.message : String(error)) }),
     })) {
       message = next;

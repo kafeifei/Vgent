@@ -9,6 +9,7 @@ import type { TextStreamPart, ToolSet } from "ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp, type VgentApp } from "./app.js";
 import { createEngineRegistry, type EngineFactoryOverride } from "./engines/registry.js";
+import { createThreadStore } from "./store/threads.js";
 import type { ThreadRecord } from "./types.js";
 import { findIncludeFiles, findSetupSpec } from "./worktree-setup.js";
 
@@ -286,5 +287,86 @@ describe.skipIf(!hasGit)("worktree 上限", () => {
     const response = await request(app, "/api/settings", { method: "PUT", body: JSON.stringify({ worktreeMaxCount: 0 }) });
     expect(response.status).toBe(400);
     expect((await response.json()) as { error: { code: string } }).toMatchObject({ error: { code: "invalid_worktree_max_count" } });
+  });
+});
+
+describe.skipIf(!hasGit)("deferred worktree creation", () => {
+  it("marks an interrupted creation as failed on boot instead of running in the main checkout", async () => {
+    const dir = await tempDir();
+    const seeded = await createThreadStore(dir).create({ projectId: "missing", engine: "claude-code", workspaceState: "creating" });
+    const app = makeApp(dir);
+    // Thread creation waits for boot recovery; the run guard also refuses before it finishes.
+    await postJson(app, "/api/threads", { projectId: "missing" });
+    const record = await getThread(app, seeded.id);
+    expect(record.workspaceState).toBe("failed");
+    expect(record.error).toContain("中断");
+    const response = await postJson(app, `/api/chat/${seeded.id}`, {
+      messages: [{ id: "m1", role: "user", parts: [{ type: "text", text: "开工" }] }],
+    });
+    expect(response.status).toBe(409);
+  });
+
+  it("returns a durable creating record, waits for the worktree and setup before sending, and leaves main checkout untouched", async () => {
+    const repo = await gitRepo({ path: ".vgent/worktrees.json", body: { "setup-worktree": ["echo ready > marker"] } });
+    const engine = markerEngine("marker");
+    const app = makeApp(await tempDir(), engine.factory);
+    const project = (await (await postJson(app, "/api/projects", { repoPath: repo })).json()) as { id: string };
+    const response = await postJson(app, "/api/threads", { projectId: project.id, engine: "claude-code", workspace: "worktree", deferWorkspace: true });
+    const created = (await response.json()) as ThreadRecord;
+    expect(response.status).toBe(200);
+    expect(created).toMatchObject({ workspaceState: "creating", status: "idle" });
+    expect(created.workspace).toBeUndefined();
+    const listed = (await (await request(app, "/api/threads")).json()) as { threads: ThreadRecord[] };
+    expect(listed.threads.find((thread) => thread.id === created.id)?.workspaceState).toBe("creating");
+
+    const sent = await postJson(app, `/api/chat/${created.id}`, {
+      messages: [{ id: "m1", role: "user", parts: [{ type: "text", text: "开工" }] }],
+    });
+    expect(sent.status).toBe(200);
+    await sent.text();
+    expect(engine.seen).toEqual([true]);
+    const ready = await getThread(app, created.id);
+    expect(ready.workspaceState).toBeUndefined();
+    expect(ready.workspace?.mode).toBe("worktree");
+    expect(existsSync(join(repo, "marker"))).toBe(false);
+  });
+
+  it("keeps creation failures and refuses turns, including after restart", async () => {
+    const repo = await tempDir();
+    await execFileAsync("git", ["init", "-q"], { cwd: repo });
+    const dir = await tempDir();
+    const app = makeApp(dir);
+    const project = (await (await postJson(app, "/api/projects", { repoPath: repo })).json()) as { id: string };
+    const created = (await (await postJson(app, "/api/threads", {
+      projectId: project.id, workspace: "worktree", deferWorkspace: true,
+    })).json()) as ThreadRecord;
+    expect(created.workspaceState).toBe("creating");
+    const send = () => postJson(app, `/api/chat/${created.id}`, {
+      messages: [{ id: "m1", role: "user", parts: [{ type: "text", text: "开工" }] }],
+    });
+    const refused = await send();
+    expect(refused.status).toBe(409);
+    const failed = await getThread(app, created.id);
+    expect(failed.workspaceState).toBe("failed");
+    expect(failed.error).toContain("提交");
+    await app.shutdown();
+    const restarted = makeApp(dir);
+    expect((await postJson(restarted, `/api/chat/${created.id}`, {
+      messages: [{ id: "m1", role: "user", parts: [{ type: "text", text: "开工" }] }],
+    })).status).toBe(409);
+  });
+
+  it("waits for pending creation before deleting its worktree", async () => {
+    const repo = await gitRepo();
+    const app = makeApp(await tempDir());
+    const project = (await (await postJson(app, "/api/projects", { repoPath: repo })).json()) as { id: string };
+    const created = (await (await postJson(app, "/api/threads", {
+      projectId: project.id, workspace: "worktree", deferWorkspace: true,
+    })).json()) as ThreadRecord;
+    expect(created.workspaceState).toBe("creating");
+    expect((await request(app, `/api/threads/${created.id}`, { method: "DELETE" })).status).toBe(204);
+    expect((await request(app, `/api/threads/${created.id}`)).status).toBe(404);
+    const worktrees = await execFileAsync("git", ["worktree", "list", "--porcelain"], { cwd: repo });
+    expect(worktrees.stdout).not.toContain(created.id);
   });
 });

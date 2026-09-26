@@ -115,7 +115,8 @@ export async function createNativeCodexRunner(
     if (event.method === "item/started" && id != null && type != null) {
       if (type === "userMessage") {
         const clientId = asString(item.clientId);
-        if (clientId != null) void ctx.steerApplied(clientId);
+        if (clientId != null) void ctx.steerApplied(clientId)
+          .catch(error => ctx.log.warn(`保存 Codex 引导回执失败 (${clientId})`, error));
       } else if (type === "agentMessage") {
         textOpen.add(id);
         emit({ type: "text-start", id });

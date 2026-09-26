@@ -51,7 +51,7 @@ export function EmptyState({
    * The draft routes — this screen's draft lives on the server like every
    * other — plus the project's current branch, for the row above the composer.
    */
-  client: DraftTransport & Pick<ApiClient, "getProjectBranch">;
+  client: DraftTransport & Pick<ApiClient, "getProjectBranch" | "putSettings">;
   onSelectProject: (projectId: string) => void;
   onAddProject: (repoPath: string) => Promise<void>;
   onPickFolder: () => Promise<string | null>;
@@ -85,12 +85,12 @@ export function EmptyState({
   const [serviceTier, setServiceTier] = useState<string | null>(null);
   const [contextWindow, setContextWindow] = useState<number | null>(null);
   /** Null until the user picks one: until then the last started task's answers. */
-  const [pickedWorkspace, setWorkspace] = useState<WorkspaceMode | null>(null);
-  const workspace = pickedWorkspace ?? settings?.defaultWorkspace ?? "project";
+  const [pickedWorkspace, setPickedWorkspace] = useState<WorkspaceMode | null>(null);
   /** 模式 rides on the creation request; there is no task to PATCH yet. */
   const [mode, setMode] = useState<ThreadMode>("agent");
   const project = projects.find((entry) => entry.id === projectId);
   const noProject = isNoProject(projectId);
+  const workspace = noProject ? "project" : (pickedWorkspace ?? settings?.defaultWorkspace ?? "project");
 
   /**
    * The branch the row above the composer names: whichever one this checkout is
@@ -202,8 +202,9 @@ export function EmptyState({
                     key={entry.id}
                     selected={entry.id === workspace}
                     onClick={() => {
-                      setWorkspace(entry.id);
+                      setPickedWorkspace(entry.id);
                       close();
+                      void client.putSettings({ defaultWorkspace: entry.id }).catch((error: Error) => toast(error.message));
                     }}
                   >
                     <span className="flex flex-col gap-3xs whitespace-normal">

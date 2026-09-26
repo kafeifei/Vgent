@@ -1,8 +1,9 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { UIMessage } from "ai";
 import { ArrowDownIcon } from "lucide-react";
+import type { ApiClient } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import type { ThreadSummary } from "@/lib/types";
+import type { SetupLog, ThreadSummary } from "@/lib/types";
 import { RestoredBar } from "./RestoredBar";
 import { Turn, type TurnActions } from "./Turn";
 import { writtenDrawings } from "./outputs";
@@ -36,6 +37,7 @@ export function WorkLog({
   error,
   actions,
   allowlist,
+  client,
 }: {
   messages: UIMessage[];
   thread: ThreadSummary;
@@ -44,8 +46,9 @@ export function WorkLog({
   actions: TurnActions;
   /** The global 「一直允许」 list; only the approval card reads it. */
   allowlist: readonly string[];
+  client: Pick<ApiClient, "getSetupLog">;
 }) {
-  const turns = useMemo(() => buildTurns(messages), [messages]);
+  const turns = useMemo(() => buildTurns(messages, thread.queue, live), [messages, thread.queue, live]);
   // What each turn left in the SVGs the task writes, carried forward turn to turn (see `writtenDrawings`).
   const drawings = useMemo(() => {
     let held: ReadonlyMap<string, string> = new Map();
@@ -58,6 +61,31 @@ export function WorkLog({
    */
   const restoredAt = thread.restoredTo?.messageId;
   const restoredIndex = restoredAt == null ? -1 : turns.findIndex((turn) => turn.user?.id === restoredAt);
+  const setupStatus = thread.workspace?.setup?.status;
+  const preparing = thread.workspaceState === "creating" || setupStatus === "running";
+  const [setupLog, setSetupLog] = useState<SetupLog | null>(null);
+  // Setup output is not a chat message: read its log while it runs, and once
+  // more when it settles so the final lines are visible right here in the log.
+  useEffect(() => {
+    if (setupStatus == null) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = () => {
+      void client.getSetupLog(thread.id).then(
+        (result) => {
+          if (!cancelled) setSetupLog(result);
+        },
+        () => undefined,
+      ).finally(() => {
+        if (!cancelled && setupStatus === "running") timer = setTimeout(load, 1000);
+      });
+    };
+    load();
+    return () => {
+      cancelled = true;
+      if (timer != null) clearTimeout(timer);
+    };
+  }, [client, setupStatus, thread.id]);
 
   const remembered = places.get(thread.id);
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -114,6 +142,32 @@ export function WorkLog({
         className="absolute inset-0 overflow-y-auto [overflow-anchor:none]"
       >
         <div className="mx-auto flex w-full max-w-[calc(var(--spacing-log-max)+2*var(--spacing-md))] flex-col gap-0 px-md pt-2xs pb-3xl">
+          {thread.workspaceState === "creating" && (
+            <p role="status" className="py-md text-fg-muted text-sm">正在创建 worktree，完成后初始化并发送消息…</p>
+          )}
+          {thread.workspaceState === "failed" && (
+            <div className="my-md rounded-md border border-danger bg-danger-bg px-md py-sm text-danger text-sm">
+              <span className="font-semibold">创建 worktree 失败</span>
+              <span className="ml-xs whitespace-pre-wrap break-words">{thread.error}</span>
+            </div>
+          )}
+          {setupStatus != null && (
+            <div className="my-md text-fg-muted text-sm">
+              <p role="status" className={setupStatus === "failed" ? "text-warning" : undefined}>
+                {setupStatus === "running" ? "正在初始化 worktree，完成后开始执行…" :
+                  setupStatus === "failed" ? "worktree 初始化失败，仍会尝试执行任务" : "worktree 初始化完成"}
+              </p>
+              {setupLog?.log && (
+                <details key={setupStatus} open={setupStatus !== "ok"} className="mt-xs">
+                  <summary className="cursor-pointer text-xs">初始化输出</summary>
+                  <pre className="mt-xs max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-sm bg-bg-inset px-sm py-xs font-mono text-xs">{setupLog.log}</pre>
+                </details>
+              )}
+            </div>
+          )}
+          {thread.workspace?.mode === "worktree" && setupStatus == null && turns.length === 0 && (
+            <p className="py-md text-fg-muted text-sm">worktree 已创建，正在发送消息…</p>
+          )}
           {turns.map((turn, index) => (
             <div key={turn.key}>
               {index === restoredIndex && <RestoredBar live={live} onLatest={actions.restoreLatest} />}
@@ -129,14 +183,14 @@ export function WorkLog({
             </div>
           ))}
 
-          {error != null && (
+          {error != null && thread.workspaceState !== "failed" && (
             <div className="mb-xl rounded-md border border-danger bg-danger-bg px-md py-sm text-danger text-sm">
               <span className="font-semibold">出错了</span>
               <span className="ml-xs whitespace-pre-wrap break-words">{error}</span>
             </div>
           )}
 
-          {turns.length === 0 && (
+          {turns.length === 0 && !preparing && thread.workspaceState !== "failed" && (
             <p className="py-2xl text-center text-fg-faint text-sm">
               {thread.archivedAt != null ? "还没有内容。" : thread.status === "idle" ? "还没有内容，在下面写下第一个目标。" : "等待引擎…"}
             </p>

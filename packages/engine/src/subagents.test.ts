@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LanguageModelV3StreamPart, LanguageModelV3Usage } from "@ai-sdk/provider";
@@ -73,6 +73,40 @@ const parentModel = (toolName: string, input: unknown, finalText: string) =>
   });
 
 describe("explore subagent", () => {
+  it("retains the actual child model and visible reasoning in live and saved transcripts", async () => {
+    const child = new MockLanguageModelV3({ modelId: "actual-child-model", provider: "child-provider", doStream: {
+      stream: simulateReadableStream({ chunks: [
+        { type: "stream-start", warnings: [] },
+        { type: "reasoning-start", id: "r" },
+        { type: "reasoning-delta", id: "r", delta: "First inspect the matching files." },
+        { type: "reasoning-end", id: "r" },
+        ...textStep("Found the relevant files.").slice(1),
+      ], chunkDelayInMs: null, initialDelayInMs: null }),
+    } });
+    const tools = createSubagentTools({ model: child, repoPath, permissionMode: "allow-reads", outputDir: join(repoPath, ".reports"), context: { modelId: "parent-model" } });
+    const snapshots: UIMessage[] = [];
+    for await (const value of tools.explore!.execute!({ prompt: "Inspect" }, { toolCallId: "child", messages: [] }) as AsyncIterable<UIMessage>) snapshots.push(value);
+    expect(snapshots[0]?.parts).toEqual([]);
+    for (const snapshot of snapshots) expect(snapshot.metadata).toMatchObject({ subagent: { modelId: "actual-child-model", provider: "child-provider" } });
+    const last = snapshots.at(-1)!;
+    expect(last.parts).toContainEqual(expect.objectContaining({ type: "reasoning", text: "First inspect the matching files.", state: "done" }));
+    const result = JSON.parse(summarizeSubagentMessage(last));
+    const saved = JSON.parse(await readFile(result.transcript, "utf8"));
+    expect(saved.messages.at(-1).metadata.subagent.modelId).toBe("actual-child-model");
+    expect(saved.messages.at(-1).parts).toEqual(last.parts);
+    expect(result.summary).toBe("Found the relevant files.");
+  });
+
+  it.each([undefined, false])("requests supported child summaries without changing effort and respects summary=%s", async (summary) => {
+    const child = new MockLanguageModelV3({ provider: "codex-subscription.responses", modelId: "child-model", doStream: {
+      stream: simulateReadableStream({ chunks: textStep("Done."), chunkDelayInMs: null, initialDelayInMs: null }),
+    } });
+    const engine = createVgentEngine({ model: parentModel("explore", { prompt: "Inspect" }, "Done"), subagentModel: child, repoPath, reasoning: { effort: "high", ...(summary === false ? { summary } : {}) } });
+    await engine.agent.generate({ prompt: "Delegate" });
+    expect(child.doStreamCalls[0]?.providerOptions?.openai?.reasoningSummary).toBe(summary === false ? undefined : "auto");
+    expect(child.doStreamCalls[0]?.providerOptions?.openai?.reasoningEffort).toBeUndefined();
+  });
+
   it("runs a child agent and hands the parent its transcript as the tool output", async () => {
     const child = childModel([
       toolCallStep("child-1", "read", { file_path: "hello-vgent.txt" }),

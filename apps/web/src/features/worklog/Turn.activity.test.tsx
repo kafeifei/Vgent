@@ -64,7 +64,8 @@ describe("a running turn", () => {
       state: "output-available",
       preliminary: true,
       input: { prompt: "查找相关文件" },
-      output: { parts: [
+      output: { metadata: { subagent: { modelId: "actual-child-model" } }, parts: [
+        { type: "reasoning", text: "unique-child-thought", state: "streaming" },
         { type: "tool-grep", toolCallId: "nested", state: "output-available", input: { pattern: "unique-child-search" } },
         { type: "text", text: "unique-child-summary" },
       ] },
@@ -76,11 +77,24 @@ describe("a running turn", () => {
     expect(html).not.toContain("查找相关文件");
     expect(html).not.toContain("unique-child-search");
     expect(html).not.toContain("unique-child-summary");
+    expect(html).not.toContain("actual-child-model");
+    expect(html).not.toContain("unique-child-thought");
     expect(html).not.toContain("进行中…");
 
     const detail = renderToStaticMarkup(createElement(ToolDetail, { part: child as ToolPart, onOpenFile: () => {} }));
     expect(detail).toContain("unique-child-search");
     expect(detail).toContain("unique-child-summary");
+    expect(detail).toContain("actual-child-model");
+    expect(detail).toContain("unique-child-thought");
+    expect(detail).toContain("思考中…");
+  });
+
+  it("keeps legacy child results readable without inventing their model or reasoning", () => {
+    const part = { type: "dynamic-tool", toolName: "explore", toolCallId: "legacy", state: "output-available", input: { prompt: "Inspect" }, output: { parts: [{ type: "text", text: "Legacy result" }] } } as ToolPart;
+    const detail = renderToStaticMarkup(createElement(ToolDetail, { part, onOpenFile: () => {} }));
+    expect(detail).toContain("未记录");
+    expect(detail).toContain("没有可展示的思考记录");
+    expect(detail).toContain("Legacy result");
   });
 
   it("shows a reply written mid-way where it happened", () => {

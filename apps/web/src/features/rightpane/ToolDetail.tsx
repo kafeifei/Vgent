@@ -3,7 +3,7 @@ import { DataSection, StructuredData, ToolResult, isRecord } from "./StructuredD
 import { PlanList } from "@/features/plan/PlanList";
 import { planItemsOf } from "@/features/plan/plan";
 import { ChildTranscript, FileChip } from "@/features/worklog/ToolRow";
-import { asChildMessage, describeTool, diffStatOf, exitCodeOf, type ToolPart } from "@/features/worklog/toolMeta";
+import { asChildMessage, describeTool, diffStatOf, exitCodeOf, field, type ToolPart } from "@/features/worklog/toolMeta";
 import { cn } from "@/lib/utils";
 
 /** The call a row in the log pointed at, or nothing once its thread is gone. */
@@ -27,6 +27,7 @@ export function ToolDetail({ part, onOpenFile }: { part: ToolPart | undefined; o
   const exitCode = part.state === "output-available" ? exitCodeOf(part.output) : undefined;
   const stat = part.state === "output-available" ? diffStatOf(part.output) : undefined;
   const child = part.state === "output-available" ? asChildMessage(part.output) : undefined;
+  const childModel = child != null && isRecord(child.metadata) ? field(child.metadata.subagent, "modelId") : undefined;
   const name = getToolName(part);
   const mcp = /^mcp__(.+?)__(.+)$/.exec(name);
   const plan = planItemsOf(part);
@@ -69,10 +70,14 @@ export function ToolDetail({ part, onOpenFile }: { part: ToolPart | undefined; o
         </>
       )}
       {child != null && (
-        <>
-          <div className="text-2xs text-fg-faint tracking-widest">子代理</div>
-          <ChildTranscript parts={child} preliminary={part.state === "output-available" && part.preliminary === true} />
-        </>
+        <section aria-label="子代理详情" className="min-w-0 space-y-sm border-t border-border pt-md">
+          <h3 className="text-xs font-medium text-fg-muted">子代理</h3>
+          <dl className="flex items-baseline gap-sm text-xs">
+            <dt className="shrink-0 text-fg-muted">模型</dt>
+            <dd className="min-w-0 break-all text-fg" title={childModel == null ? "这条历史记录没有保存子代理模型" : childModel}>{childModel ?? "未记录"}</dd>
+          </dl>
+          <ChildTranscript parts={child.parts} preliminary={part.state === "output-available" && part.preliminary === true} />
+        </section>
       )}
       {part.state === "output-available" && child == null && (
         <DataSection key={`${part.toolCallId}-output`} title="输出" value={part.output} onOpenFile={onOpenFile}>

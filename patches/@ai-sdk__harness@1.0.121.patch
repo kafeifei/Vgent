@@ -1,0 +1,186 @@
+diff --git a/dist/agent/index.d.ts b/dist/agent/index.d.ts
+index 3685c04da0e511a6e23af158eaec87cf6ffff5d1..111643ed4fc3fcc23be5186413d3c53659b498d7 100644
+--- a/dist/agent/index.d.ts
++++ b/dist/agent/index.d.ts
+@@ -362,7 +362,7 @@ type HarnessV1PromptControl = {
+      * Inject a fresh user message into a turn that is still in flight.
+      * Supported only by runtimes that accept interactive input.
+      */
+-    submitUserMessage?(text: string): PromiseLike<void>;
++    submitUserMessage?(text: string, messageId?: string): PromiseLike<void>;
+     /**
+      * Resolves when the adapter has finished the turn (success or failure).
+      * Rejects with the underlying error when the turn fails.
+@@ -1619,7 +1619,7 @@ declare class HarnessAgentSession {
+      * The runtime accepts the message for its next safe input boundary. Output
+      * caused by the message remains part of the active turn's result stream.
+      */
+-    experimental_steerTurn(text: string): Promise<void>;
++    experimental_steerTurn(text: string, messageId?: string): Promise<void>;
+     /**
+      * Park the session, returning a payload the caller can persist and later
+      * pass to `agent.createSession({ sessionId, resumeFrom })` to reconnect.
+@@ -1822,6 +1822,7 @@ declare class HarnessAgent<THarness extends HarnessAgentAdapter<any> = HarnessAg
+     experimental_steer(options: {
+         session: HarnessAgentSession;
+         text: string;
++    messageId?: string;
+     }): Promise<void>;
+     private _startPromptTurn;
+     private _startContinueTurn;
+diff --git a/dist/agent/index.js b/dist/agent/index.js
+index d5f4b9814b52202c343eed96d3bec24269dd1406..e5f5bf27a7d13452782e3adbfc213e230683ba3d 100644
+--- a/dist/agent/index.js
++++ b/dist/agent/index.js
+@@ -2861,7 +2861,7 @@ var HarnessAgentSession = class {
+    * The runtime accepts the message for its next safe input boundary. Output
+    * caused by the message remains part of the active turn's result stream.
+    */
+-  async experimental_steerTurn(text) {
++  async experimental_steerTurn(text, messageId) {
+     this.requireReusableSession();
+     const activePromptControl = this.activePromptControl;
+     if (this.turnState !== "running" || this.suspendedTurnState != null || activePromptControl == null) {
+@@ -2881,7 +2881,7 @@ var HarnessAgentSession = class {
+         harnessId: this.harness.harnessId
+       });
+     }
+-    await control.submitUserMessage(text);
++    await control.submitUserMessage(text, messageId);
+   }
+   /**
+    * Park the session, returning a payload the caller can persist and later
+@@ -4053,7 +4053,7 @@ var HarnessAgent = class {
+    * the current turn's stream.
+    */
+   async experimental_steer(options) {
+-    await options.session.experimental_steerTurn(options.text);
++    await options.session.experimental_steerTurn(options.text, options.messageId);
+   }
+   // ─── Internals ──────────────────────────────────────────────────────
+   async _startPromptTurn(input) {
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index 6cd159158c59d2fac375e8038a3631694b745c86..388fc227f412fc19dbd54eebc610065baf0810ac 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -366,7 +366,7 @@ type HarnessV1PromptControl = {
+      * Inject a fresh user message into a turn that is still in flight.
+      * Supported only by runtimes that accept interactive input.
+      */
+-    submitUserMessage?(text: string): PromiseLike<void>;
++    submitUserMessage?(text: string, messageId?: string): PromiseLike<void>;
+     /**
+      * Resolves when the adapter has finished the turn (success or failure).
+      * Rejects with the underlying error when the turn fails.
+diff --git a/dist/utils/index.d.ts b/dist/utils/index.d.ts
+index acefef6d6373095c290b559c74b5e8338995b629..644ab029ebf7d9fcd61cc39a14bb7c2dfa2f5c14 100644
+--- a/dist/utils/index.d.ts
++++ b/dist/utils/index.d.ts
+@@ -208,7 +208,7 @@ type Experimental_BridgeUserMessageResponse = {
+     };
+ };
+ type Experimental_BridgeUserMessageSubmitter = {
+-    submit(text: string): Promise<void>;
++    submit(text: string, messageId?: string): Promise<void>;
+     close(error?: unknown): void;
+ };
+ declare function experimental_createBridgeUserMessageSubmitter(options: {
+diff --git a/dist/utils/index.js b/dist/utils/index.js
+index f5284ca1da386c1731a6a071242b51316ebde0c5..87bd2031c76132990a8977c49ab465391cb8849a 100644
+--- a/dist/utils/index.js
++++ b/dist/utils/index.js
+@@ -547,13 +547,13 @@ function experimental_createBridgeUserMessageSubmitter(options) {
+     for (const entry of pending.values()) send(entry.request);
+   });
+   return {
+-    submit: (text) => {
++    submit: (text, suppliedMessageId) => {
+       if (closed) {
+         return Promise.reject(
+           new Error("The bridge turn is no longer accepting user messages.")
+         );
+       }
+-      const messageId = crypto.randomUUID();
++      const messageId = suppliedMessageId ?? crypto.randomUUID();
+       const request = {
+         type: "user-message",
+         messageId,
+diff --git a/src/agent/harness-agent-session.ts b/src/agent/harness-agent-session.ts
+index 2ea9e483f715749c3112662248433274546b9ec2..9aa691beac34b38119e0fd88891f11497dd8784f 100644
+--- a/src/agent/harness-agent-session.ts
++++ b/src/agent/harness-agent-session.ts
+@@ -426,7 +426,7 @@ export class HarnessAgentSession {
+    * The runtime accepts the message for its next safe input boundary. Output
+    * caused by the message remains part of the active turn's result stream.
+    */
+-  async experimental_steerTurn(text: string): Promise<void> {
++  async experimental_steerTurn(text: string, messageId?: string): Promise<void> {
+     this.requireReusableSession();
+     const activePromptControl = this.activePromptControl;
+     if (
+@@ -460,7 +460,7 @@ export class HarnessAgentSession {
+       });
+     }
+ 
+-    await control.submitUserMessage(text);
++    await control.submitUserMessage(text, messageId);
+   }
+ 
+   /**
+diff --git a/src/agent/harness-agent.ts b/src/agent/harness-agent.ts
+index 8cb11d646d2b9388764b84db462c3dd9c9983219..5439a7a1acebec9c9f1877027e07fc8bcf0f0969 100644
+--- a/src/agent/harness-agent.ts
++++ b/src/agent/harness-agent.ts
+@@ -720,8 +720,9 @@ export class HarnessAgent<
+   async experimental_steer(options: {
+     session: HarnessAgentSession;
+     text: string;
++    messageId?: string;
+   }): Promise<void> {
+-    await options.session.experimental_steerTurn(options.text);
++    await options.session.experimental_steerTurn(options.text, options.messageId);
+   }
+ 
+   // ─── Internals ──────────────────────────────────────────────────────
+diff --git a/src/utils/bridge-user-message-submitter.ts b/src/utils/bridge-user-message-submitter.ts
+index 96737b2cab0d88f800e01d7b532b31d2d0a4621d..181c7f94dce799a9150a92c88221d1c4faea0669 100644
+--- a/src/utils/bridge-user-message-submitter.ts
++++ b/src/utils/bridge-user-message-submitter.ts
+@@ -12,7 +12,7 @@ export type Experimental_BridgeUserMessageResponse = {
+ };
+ 
+ export type Experimental_BridgeUserMessageSubmitter = {
+-  submit(text: string): Promise<void>;
++  submit(text: string, messageId?: string): Promise<void>;
+   close(error?: unknown): void;
+ };
+ 
+@@ -63,13 +63,13 @@ export function experimental_createBridgeUserMessageSubmitter(options: {
+   });
+ 
+   return {
+-    submit: text => {
++    submit: (text, suppliedMessageId) => {
+       if (closed) {
+         return Promise.reject(
+           new Error('The bridge turn is no longer accepting user messages.'),
+         );
+       }
+-      const messageId = crypto.randomUUID();
++      const messageId = suppliedMessageId ?? crypto.randomUUID();
+       const request: Experimental_BridgeUserMessageRequest = {
+         type: 'user-message',
+         messageId,
+diff --git a/src/v1/harness-v1-prompt-control.ts b/src/v1/harness-v1-prompt-control.ts
+index a46d248fed0ca831ca60d2403c813bb5e7fb9b0c..27b7394b0edbaf7d9cb5ce3150352ea0802d0d97 100644
+--- a/src/v1/harness-v1-prompt-control.ts
++++ b/src/v1/harness-v1-prompt-control.ts
+@@ -34,7 +34,7 @@ export type HarnessV1PromptControl = {
+    * Inject a fresh user message into a turn that is still in flight.
+    * Supported only by runtimes that accept interactive input.
+    */
+-  submitUserMessage?(text: string): PromiseLike<void>;
++  submitUserMessage?(text: string, messageId?: string): PromiseLike<void>;
+ 
+   /**
+    * Resolves when the adapter has finished the turn (success or failure).

@@ -1,0 +1,54 @@
+diff --git a/dist/bridge/index.mjs b/dist/bridge/index.mjs
+index 166eb4a48acfabf9c1f31b1ca5465be3258f1158..c5946bf7a29449bed7a2d6bed11331b47ad7dff7 100644
+--- a/dist/bridge/index.mjs
++++ b/dist/bridge/index.mjs
+@@ -1676,6 +1676,7 @@ async function runTurn(start, turn) {
+       const type = msg.type;
+       if (type === "command_lifecycle") {
+         queryInput.handleLifecycle(msg);
++        emit({ type: "raw", rawValue: { type: "vgent-steer-lifecycle", messageId: msg.command_uuid, state: msg.state } });
+       }
+       const sessionId = msg.session_id;
+       if (typeof sessionId === "string" && sessionId.length > 0) {
+diff --git a/dist/index.js b/dist/index.js
+index 3f065ce398459410d4fcd2a0b61f5ec99f8669cc..5ded43a4cd7d9f906270583f8bb539193dcfe8a8 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -1716,8 +1716,8 @@ function createSession({
+         });
+       },
+       ...userMessageSubmitter == null ? {} : {
+-        submitUserMessage: async (text) => {
+-          await userMessageSubmitter.submit(text);
++        submitUserMessage: async (text, messageId) => {
++          await userMessageSubmitter.submit(text, messageId);
+         }
+       },
+       done
+diff --git a/src/bridge/index.ts b/src/bridge/index.ts
+index cbaab3f65a3a072779fbedbe8a4aa9be47640a08..20821b1347bb290d92b254df7267a10914bd2205 100644
+--- a/src/bridge/index.ts
++++ b/src/bridge/index.ts
+@@ -605,6 +605,7 @@ async function runTurn(start: StartMessage, turn: BridgeTurn): Promise<void> {
+ 
+       if (type === 'command_lifecycle') {
+         queryInput.handleLifecycle(msg);
++        emit({ type: 'raw', rawValue: { type: 'vgent-steer-lifecycle', messageId: msg.command_uuid, state: msg.state } });
+       }
+ 
+       // Every SDK message carries the session id of the conversation it
+diff --git a/src/claude-code-harness.ts b/src/claude-code-harness.ts
+index 263dc1de4d39d7eded6bcc79e1d51c16ee98438a..83cb4ecfcd71735d5c3b3f5f87a3b80f478dd0ae 100644
+--- a/src/claude-code-harness.ts
++++ b/src/claude-code-harness.ts
+@@ -1712,8 +1712,8 @@ function createSession({
+       ...(userMessageSubmitter == null
+         ? {}
+         : {
+-            submitUserMessage: async (text: string) => {
+-              await userMessageSubmitter.submit(text);
++            submitUserMessage: async (text: string, messageId?: string) => {
++              await userMessageSubmitter.submit(text, messageId);
+             },
+           }),
+       done,

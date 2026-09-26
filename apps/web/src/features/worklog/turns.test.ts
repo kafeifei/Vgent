@@ -122,3 +122,32 @@ describe("compactedOf", () => {
     expect(compactedOf(user("u2", "普通消息"))).toBeUndefined();
   });
 });
+
+describe("pending steer reconciliation", () => {
+  const pending = { id: "s1", text: "调整方向", mode: "steer" as const, accepted: true, createdAt: "2026-09-26" };
+  const receipt = { type: "data-steer", id: "s1", data: { text: "调整方向", messageId: "s1", receipt: true } } as unknown as UIMessage["parts"][number];
+  it("shows a submitted steer before its stream receipt, keeping next-turn messages outside the log", () => {
+    const turns = buildTurns([user("u1", "工作")], [pending, { ...pending, id: "q1", mode: "queue" }], true);
+    expect(turns[0]?.blocks).toMatchObject([{ kind: "steer", messageId: "s1", pending: true, interrupt: true }]);
+  });
+  it("updates the same bubble on receipt and keeps its action until applied", () => {
+    const messages = [user("u1", "工作"), assistant("a1", [receipt])];
+    expect(buildTurns(messages, [pending], true)[0]?.blocks).toMatchObject([{ messageId: "s1", pending: true }]);
+    expect(buildTurns(messages, [{ ...pending, applied: true }], true)[0]?.blocks).toMatchObject([{ messageId: "s1", pending: false }]);
+    expect(buildTurns(messages, [pending], false)[0]?.blocks).toMatchObject([{ messageId: "s1", interrupt: false }]);
+  });
+  it("reconciles an older random receipt id once, and drops the embedded copy when promoted", () => {
+    const legacy = { type: "data-steer", id: "old-random-id", data: { text: pending.text } } as unknown as UIMessage["parts"][number];
+    expect(buildTurns([user("u1", "工作"), assistant("a1", [legacy])], [pending], true)[0]?.blocks).toMatchObject([{ messageId: "s1", pending: true }]);
+    expect(buildTurns([user("u1", "工作"), assistant("a1", [receipt]), user("s1", pending.text)], [], true).flatMap(turn => turn.blocks)).toEqual([]);
+  });
+});
+
+it("does not attach a new identical steer to an earlier stable receipt", () => {
+  const old = { type: "data-steer", id: "old", data: { text: "again", messageId: "old" } } as UIMessage["parts"][number];
+  const queue = [{ id: "new", text: "again", mode: "steer" as const, createdAt: "2026-09-26" }];
+  const blocks = buildTurns([user("u1", "work"), assistant("a1", [old])], queue, true)[0]!.blocks;
+  expect(blocks).toHaveLength(2);
+  expect(blocks[0]).not.toHaveProperty("pending");
+  expect(blocks[1]).toMatchObject({ messageId: "new", pending: true });
+});

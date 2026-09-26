@@ -188,15 +188,19 @@ export function TaskItem({
   };
   const unread = thread.unread === true;
   const state =
-    thread.status === "awaiting-approval"
-      ? "等待审批"
-      : thread.status === "awaiting-input"
-        ? "等待回答"
-        : thread.status === "error"
-          ? "失败"
-          : thread.status === "interrupted"
-            ? "已中断"
-            : undefined;
+    thread.workspaceState === "creating"
+      ? "创建 worktree 中"
+      : thread.workspaceState === "failed"
+        ? "worktree 创建失败"
+        : thread.status === "awaiting-approval"
+          ? "等待审批"
+          : thread.status === "awaiting-input"
+            ? "等待回答"
+            : thread.status === "error"
+              ? "失败"
+              : thread.status === "interrupted"
+                ? "已中断"
+                : undefined;
   // The gutter left of the title is where a row says it needs a look. A turn in
   // flight or parked on the human shows its state for as long as that lasts; one
   // that has settled — done, failed, stopped — is marked only until it is read,
@@ -252,12 +256,12 @@ export function TaskItem({
           </span>
         )}
         <span className={cn("min-w-0 flex-1 truncate", unread && "font-medium", archived && "text-fg-faint")}>
-          {thread.status === "running" && chat != null ? <LiveTitle chat={chat} title={thread.title} /> : thread.title}
+          {thread.workspaceState != null ? `${thread.title} · ${state}` : thread.status === "running" && chat != null ? <LiveTitle chat={chat} title={thread.title} /> : thread.title}
         </span>
         <OutcomeBadge outcome={thread.outcome} pr={thread.pr} />
         {/* The stamp gives way to the row's menu on hover, so the two never fight for the corner. */}
         <span className="flex flex-none items-center gap-xs text-fg-faint text-sm group-hover:invisible group-has-[[aria-expanded=true]]:invisible">
-          {thread.workspace != null && <GitFork className="size-md" aria-label="在 worktree 里" />}
+          {(thread.workspace != null || thread.workspaceState != null) && <GitFork className="size-md" aria-label="在 worktree 里" />}
           {thread.transition != null ? (
             <Shimmer as="span">{TRANSITION_LABELS[thread.transition]}</Shimmer>
           ) : (

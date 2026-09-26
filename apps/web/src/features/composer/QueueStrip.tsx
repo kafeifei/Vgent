@@ -55,7 +55,7 @@ export function QueueStrip({
       {items.map((item, index) => (
         <div key={item.id} className="group flex h-row-file items-center gap-2xs rounded-sm px-3xs hover:bg-bg-hover">
           <span className={cn("w-24 flex-none truncate text-xs", item.mode === "steer" ? "text-brand" : "text-fg-muted")}>
-            {item.mode === "steer" ? (item.applied === true ? "引导已送入" : item.accepted === true ? "引导已接收" : "引导待送入") : `排队 ${items.filter((entry) => entry.mode !== "steer").length}`}
+            {item.mode === "steer" ? (item.applied === true ? "引导已送入" : item.accepted === true ? "引导已接收" : "引导待送入") : `排队 ${index + 1}`}
           </span>
           {index === 0 && note != null && <span className="max-w-[40%] flex-none truncate text-fg-faint text-xs">{note}</span>}
           {editing?.id === item.id ? (

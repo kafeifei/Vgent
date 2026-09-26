@@ -17,13 +17,15 @@ export const STEER_PART_TYPE = "data-steer";
 
 export interface SteerData {
   text: string;
+  /** Push receipt: display alone does not prove runtime consumption. */
+  receipt?: boolean;
   messageId?: string;
 }
 
-export const steerChunk = (text: string, messageId?: string): UIMessageChunk => ({
+export const steerChunk = (text: string, messageId?: string, receipt = false): UIMessageChunk => ({
   type: STEER_PART_TYPE,
   id: messageId ?? randomUUID(),
-  data: { text, ...(messageId ? { messageId } : {}) } satisfies SteerData,
+  data: { text, ...(receipt ? { receipt: true } : {}), ...(messageId ? { messageId } : {}) } satisfies SteerData,
 });
 
 /** The text of a `data-steer` part; `undefined` for any other part. */
@@ -32,6 +34,28 @@ export function steerTextOf(part: UIMessage["parts"][number]): string | undefine
   const data = (part as { data?: unknown }).data;
   const text = typeof data === "object" && data !== null ? (data as { text?: unknown }).text : undefined;
   return typeof text === "string" ? text : undefined;
+}
+
+/** Promoting a pending input replaces its receipt with the real user message. */
+export function withoutPromotedSteers(messages: readonly UIMessage[], promoted: readonly UIMessage[]): UIMessage[] {
+  const ids = new Set(promoted.map(message => message.id));
+  const legacy = new Map(promoted.map(message => [message.id,
+    message.parts.flatMap(part => part.type === "text" ? [part.text] : []).join("")]));
+  // Old builds used random receipt ids; only replace the latest matching receipt.
+  return [...messages].reverse().map(message => ({
+    ...message,
+    parts: [...message.parts].reverse().filter(part => {
+      if (part.type !== STEER_PART_TYPE) return true;
+      const receipt = part as { id?: string; data?: SteerData };
+      const id = receipt.data?.messageId ?? receipt.id;
+      if (id && ids.has(id)) { legacy.delete(id); return false; }
+      if (receipt.data?.messageId != null) return true;
+      const match = [...legacy].find(([, text]) => text === steerTextOf(part));
+      if (!match) return true;
+      legacy.delete(match[0]);
+      return false;
+    }).reverse(),
+  })).reverse();
 }
 
 /** Parts that say something. A slice holding only `step-start` markers is not a message. */
@@ -45,7 +69,7 @@ const hasContent = (parts: UIMessage["parts"]): boolean => parts.some((part) => 
  * The cut pieces get derived ids. Nothing stores them — this is only ever the
  * input of a conversion to model messages, a transcript or a summary.
  */
-export function expandSteers(messages: readonly UIMessage[]): UIMessage[] {
+export function expandSteers(messages: readonly UIMessage[], pendingIds: ReadonlySet<string> = new Set()): UIMessage[] {
   const expanded: UIMessage[] = [];
   for (const message of messages) {
     if (message.role !== "assistant" || !message.parts.some((part) => part.type === STEER_PART_TYPE)) {
@@ -60,13 +84,16 @@ export function expandSteers(messages: readonly UIMessage[]): UIMessage[] {
       cut += 1;
     };
     for (const part of message.parts) {
+      const sourceId = (part as { data?: SteerData }).data?.messageId;
+      // A displayed push receipt still in the queue will be delivered by the
+      // runner. Including it in history too would submit the same input twice.
+      if (part.type === STEER_PART_TYPE && sourceId && pendingIds.has(sourceId)) continue;
       const text = steerTextOf(part);
       if (text == null) {
         if (part.type !== STEER_PART_TYPE) slice.push(part);
         continue;
       }
       flush();
-      const sourceId = (part as { data?: SteerData }).data?.messageId;
       expanded.push({ id: sourceId ?? `${message.id}~${cut}`, role: "user", parts: [{ type: "text", text }] });
       cut += 1;
     }

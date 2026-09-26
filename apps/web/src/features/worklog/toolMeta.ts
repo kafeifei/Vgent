@@ -153,10 +153,10 @@ export function outputText(output: unknown): string | undefined {
  * A subagent tool's output is the child's own `UIMessage`, streamed part by
  * part. Anything else — a plain object, a string — is not one.
  */
-export function asChildMessage(output: unknown): UIMessage["parts"] | undefined {
+export function asChildMessage(output: unknown): Pick<UIMessage, "parts" | "metadata"> | undefined {
   if (typeof output !== "object" || output === null) return undefined;
   const parts = (output as { parts?: unknown }).parts;
-  return Array.isArray(parts) ? (parts as UIMessage["parts"]) : undefined;
+  return Array.isArray(parts) ? (output as Pick<UIMessage, "parts" | "metadata">) : undefined;
 }
 
 /** A child transcript part that is a tool call, as opposed to text or reasoning. */

@@ -184,7 +184,8 @@ export class DraftSync {
    * The message really went out, so the draft goes now rather than on the next
    * timer — a pending write would otherwise put the sent text back.
    */
-  clear(): void {
+  clear(expected?: DraftValue): boolean {
+    if (expected && (this.text !== expected.text || this.attachments !== expected.attachments)) return false;
     this.typed = true;
     this.touchedFiles = true;
     if (this.text !== "" || this.attachments.length > 0) {
@@ -194,6 +195,7 @@ export class DraftSync {
       writeCache(this.key, "");
     }
     this.flush();
+    return true;
   }
 
   /** Write what is pending. `keepalive` is for a page that is going away. */
@@ -249,7 +251,9 @@ export interface Draft {
   /** A file added or a tile removed. */
   setAttachments: (attachments: DraftAttachment[]) => void;
   /** The message went out: drop text and files here and on the server, right now. */
-  clear: () => void;
+  clear: (expected?: DraftValue) => void;
+  /** Reconcile after an in-flight first send was refused and saved as this task's draft. */
+  refresh: () => void;
 }
 
 /**
@@ -296,11 +300,13 @@ export function useDraft(key: string, transport: DraftTransport): Draft {
     sync.current?.setAttachments(next);
   }, []);
 
-  const clear = useCallback(() => {
+  const clear = useCallback((expected?: DraftValue) => {
+    if (sync.current && !sync.current.clear(expected)) return;
     setValue("");
     setAttachmentsState([]);
-    sync.current?.clear();
   }, []);
 
-  return { value, attachments, edit, setAttachments, clear };
+  const refresh = useCallback(() => { void sync.current?.start(); }, []);
+
+  return { value, attachments, edit, setAttachments, clear, refresh };
 }

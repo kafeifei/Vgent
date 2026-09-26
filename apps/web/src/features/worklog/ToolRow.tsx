@@ -1,6 +1,7 @@
 import type { UIMessage } from "ai";
 import { useState } from "react";
 import { Bot, ChevronDown } from "lucide-react";
+import { RichMarkdown } from "@/components/RichMarkdown";
 import { baseName } from "@/lib/format";
 import { planItemsOf } from "@/features/plan/plan";
 import { PlanList } from "@/features/plan/PlanList";
@@ -49,7 +50,7 @@ export function FileChip({
  */
 export function ChildTranscript({ parts, preliminary }: { parts: UIMessage["parts"]; preliminary: boolean }) {
   return (
-    <div className="mt-2xs ml-lg border-border border-l pl-sm">
+    <div className="min-w-0">
       {parts.map((part, index) => {
         const tool = asChildToolPart(part);
         if (tool != null) {
@@ -61,6 +62,18 @@ export function ChildTranscript({ parts, preliminary }: { parts: UIMessage["part
             </div>
           );
         }
+        if (part.type === "reasoning") {
+          const text = part.text.trim();
+          return <details key={index} className="group/child-thought min-w-0 py-3xs">
+            <summary className="flex min-h-row-tool cursor-pointer list-none items-center gap-xs text-sm text-fg-muted hover:text-fg [&::-webkit-details-marker]:hidden">
+              <span>{preliminary && part.state === "streaming" ? "思考中…" : "思考"}</span>
+              <ChevronDown className="size-sm -rotate-90 transition-transform group-open/child-thought:rotate-0" />
+            </summary>
+            <div className="max-h-figure overflow-y-auto pb-xs text-sm text-fg-muted">
+              {text === "" ? <p className="text-xs text-fg-faint">没有可展示的思考内容。</p> : <RichMarkdown className="text-sm">{text}</RichMarkdown>}
+            </div>
+          </details>;
+        }
         if (part.type === "text" && part.text.trim() !== "") {
           return (
             <p key={index} className="whitespace-pre-wrap py-3xs text-fg-muted text-sm">
@@ -70,6 +83,7 @@ export function ChildTranscript({ parts, preliminary }: { parts: UIMessage["part
         }
         return null;
       })}
+      {!preliminary && !parts.some((part) => part.type === "reasoning") && <p className="py-xs text-xs text-fg-faint">没有可展示的思考记录。</p>}
       {preliminary && <div className="py-3xs text-fg-faint text-sm">进行中…</div>}
     </div>
   );

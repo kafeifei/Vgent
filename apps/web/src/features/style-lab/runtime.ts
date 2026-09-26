@@ -138,9 +138,9 @@ export class StyleSession {
     this.thread = { ...this.thread, ...patch, updatedAt: new Date().toISOString() } as ThreadSummary;
     for (const listener of this.listeners) listener();
   };
-  async send(text: string, files: UIMessage["parts"] = []) {
+  async send(text: string, files: UIMessage["parts"] = [], id?: string) {
     if (this.disposed) return false;
-    await this.chat.sendMessage({ role: "user", parts: [textPart(text), ...files] });
+    await this.chat.sendMessage({ ...(id ? { id } : {}), role: "user", parts: [textPart(text), ...files] });
     return this.chat.status !== "error";
   }
   stop = async () => {

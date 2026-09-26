@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { getToolName } from "ai";
-import { Check, ChevronDown, Copy, FileText, Split } from "lucide-react";
+import { Check, ChevronDown, Copy, FileText, Send, Split } from "lucide-react";
 import { UrlFigure } from "@/components/Figure";
 import { RichMarkdown, TurnDrawingProvider } from "@/components/RichMarkdown";
 import { type AskUserQuestionsInput, type AskUserQuestionsOutput } from "@/lib/types";
@@ -29,6 +29,7 @@ export interface TurnActions {
   fork: (messageId: string) => void;
   /** 回到最新, for a task an older build left standing at an earlier checkpoint. */
   restoreLatest: () => void;
+  sendSteer?: (messageId: string, interrupt: boolean) => Promise<unknown> | void;
 }
 
 /** Sticks the newest user box to the top of the log and shadows it once stuck. */
@@ -130,7 +131,7 @@ export function Turn({
       )}
 
       {items.length > 0 &&
-        (settled && steps > 0 ? (
+        (settled && steps > 0 && !turn.blocks.some(block => block.kind === "steer" && block.pending) ? (
           <div className="px-chat-inset">
             <Fold steps={steps}>
               <ProcessList items={items} actions={actions} allowlist={allowlist} thinkingKey={thinkingKey} />
@@ -334,14 +335,7 @@ function BlockView({
   }
 
   if (block.kind === "steer") {
-    // The same box a turn's opening message gets — it is the same speaker —
-    // pulled out to the log's full width like that one is.
-    return (
-      <div className="-mx-chat-inset rounded-xl border border-border bg-bg-elevated px-chat-inset py-sm shadow-xs">
-        <p className="mb-2xs text-fg-faint text-xs">引导消息</p>
-        <p className="m-0 whitespace-pre-wrap">{block.text}</p>
-      </div>
-    );
+    return <SteerMessage block={block} actions={actions} />;
   }
 
   if (block.kind === "text") {
@@ -385,4 +379,29 @@ function BlockView({
   }
 
   return <ToolRow part={part} onOpenFile={actions.openFile} onInspect={actions.inspect} />;
+}
+
+/** A submitted steer looks like any other user message; only available actions reveal its state. */
+function SteerMessage({ block, actions }: { block: Extract<Block, { kind: "steer" }>; actions: TurnActions }) {
+  const [sending, setSending] = useState(false);
+  const active = useRef(false);
+  const label = block.interrupt ? "立即打断并发送" : "立即发送";
+  return (
+    <div className="group/steer relative -mx-chat-inset rounded-xl border border-border bg-bg-elevated px-chat-inset py-sm shadow-xs" data-steer-id={block.messageId}>
+      <p className="m-0 whitespace-pre-wrap">{block.text}</p>
+      {block.pending && block.messageId && actions.sendSteer && (
+        <div className="absolute -top-3 right-xs opacity-0 transition-opacity group-hover/steer:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
+          <button type="button" aria-label={label} disabled={sending || block.busy}
+            onClick={() => {
+              if (active.current || block.busy) return;
+              active.current = true; setSending(true);
+              void Promise.resolve(actions.sendSteer!(block.messageId!, !!block.interrupt)).finally(() => { active.current = false; setSending(false); });
+            }}
+            className="inline-flex items-center gap-3xs rounded-md border border-border-strong bg-bg-elevated px-xs py-3xs text-fg-muted text-xs shadow-xs hover:bg-bg-hover hover:text-fg disabled:opacity-50">
+            <Send className="size-sm" />{sending || block.busy ? "正在发送…" : label}
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }

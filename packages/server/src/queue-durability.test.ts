@@ -61,3 +61,24 @@ it("normal queue claims remain durable until the input starts its turn", async (
   expect(recovered!.messages[0]!.id).toBe(item.id);
   expect(recovered!.queue ?? []).toHaveLength(0);
 });
+
+it("keeps a displayed push receipt pending, reserves manual sending, and never regresses applied", async () => {
+  const { threads, thread, queue } = await setup();
+  const record = await queue.append(thread.id, "guide", "steer");
+  const item = record.queue![0]!;
+  await queue.beginDelivery(thread.id, item.id);
+  await expect(queue.remove(thread.id, item.id)).rejects.toThrow();
+  await threads.saveMessages(thread.id, [{ id: "assistant", role: "assistant", parts: [
+    { type: "data-steer", id: item.id, data: { text: item.text, messageId: item.id, receipt: true } },
+  ] }]);
+  await queue.markAccepted(thread.id, item.id, true);
+  expect((await threads.get(thread.id))?.queue?.[0]).toMatchObject({ accepted: true, applied: false });
+  await queue.reserveSend(thread.id, item.id, true);
+  await expect(queue.reserveSend(thread.id, item.id, true)).rejects.toThrow();
+  await expect(queue.edit(thread.id, item.id, "replacement")).rejects.toThrow();
+  await queue.markApplied(thread.id, item.id);
+  await queue.markAccepted(thread.id, item.id, false);
+  expect((await threads.get(thread.id))?.queue?.[0]).toMatchObject({ accepted: true, applied: true });
+  await queue.settleSteers(thread.id, [item.id], true);
+  expect((await threads.get(thread.id))?.queue ?? []).toHaveLength(0);
+});

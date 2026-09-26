@@ -31,6 +31,7 @@ export function Shell({ token }: { token: string }) {
     client,
     engines,
     thread,
+    visibleThreads,
     changes,
     selectedThreadId,
     activeProjectId,
@@ -40,6 +41,7 @@ export function Shell({ token }: { token: string }) {
     palette,
     grouping,
     settingsOpen,
+    failedFirstSend,
     actions,
   } = workbench;
   const { toggleTheme, toggleDensity } = usePrefs();
@@ -65,7 +67,7 @@ export function Shell({ token }: { token: string }) {
     () => [
       { id: "style-lab", label: "聊天样式 · 所有场景", run: openStyleLab },
       { id: "new", label: "新任务", hint: "⌘N", run: actions.newTask },
-      ...state.threads.map((entry) => ({
+      ...visibleThreads.map((entry) => ({
         id: `thread-${entry.id}`,
         label: `切换到任务 ${oneLine(entry.title, 50)}`,
         run: () => actions.selectThread(entry.id),
@@ -89,7 +91,7 @@ export function Shell({ token }: { token: string }) {
         ? [{ id: "compact", label: "压缩上下文", hint: "/compact", run: () => void actions.compactThread(thread.id) }]
         : []),
     ],
-    [actions, openStyleLab, engines, left, right.open, state.threads, thread, toggleDensity, toggleTheme],
+    [actions, openStyleLab, engines, left, right.open, visibleThreads, thread, toggleDensity, toggleTheme],
   );
 
   // The right pane belongs to a task: without one open there is nothing for it to list.
@@ -150,7 +152,7 @@ export function Shell({ token }: { token: string }) {
         <Sidebar
           projects={state.projects}
           projectId={activeProjectId}
-          threads={state.threads}
+          threads={visibleThreads}
           grouping={grouping}
           onGrouping={actions.setGrouping}
           selectedThreadId={selectedThreadId}
@@ -175,6 +177,7 @@ export function Shell({ token }: { token: string }) {
           {view === "thread" && thread != null ? (
             <ThreadView
               thread={thread}
+              failedFirstSend={failedFirstSend === thread.id}
               actions={actions}
               client={client}
               changes={changes}

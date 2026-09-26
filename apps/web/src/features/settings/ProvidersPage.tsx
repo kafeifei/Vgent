@@ -667,6 +667,7 @@ export function ProvidersPage({
   const [subscriptions, setSubscriptions] = useState<SubscriptionAccount[]>([]);
   const [catalog, setCatalog] = useState<ProviderCatalog>();
   const [loadError, setLoadError] = useState<string>();
+  const [addedReady, setAddedReady] = useState(false);
   const [open, setOpen] = useState<Open>();
   const [reloading, setReloading] = useState(false);
   /** 提供商排序 as last dragged; `Settings.providerOrder`. */
@@ -679,22 +680,28 @@ export function ProvidersPage({
   const agentLabel = useCallback<AgentLabel>((agent) => engines.find((engine) => engine.id === agent)?.label ?? agent, [engines]);
 
   useEffect(() => {
-    void client
-      .listProviders()
-      .then(setProviders)
-      .catch((cause: Error) => setLoadError(cause.message));
+    let active = true;
+    setAddedReady(false);
+    setProviders([]);
+    setSubscriptions([]);
+    setOrder(undefined);
+    setLoadError(undefined);
+    // The added rows and their saved order must land together; otherwise the
+    // providers appear first and the subscription rows jump ahead of them.
+    void Promise.allSettled([client.listProviders(), client.listSubscriptions(), client.getSettings()]).then(([providerResult, subscriptionResult, settingsResult]) => {
+      if (!active) return;
+      if (providerResult.status === "fulfilled") setProviders(providerResult.value);
+      if (subscriptionResult.status === "fulfilled") setSubscriptions(subscriptionResult.value);
+      if (settingsResult.status === "fulfilled") setOrder(settingsResult.value.providerOrder);
+      const failure = [providerResult, subscriptionResult, settingsResult].find((result) => result.status === "rejected");
+      if (failure?.status === "rejected") setLoadError(failure.reason instanceof Error ? failure.reason.message : String(failure.reason));
+      setAddedReady(true);
+    });
     void client
       .getProviderCatalog()
-      .then(setCatalog)
-      .catch((cause: Error) => setLoadError(cause.message));
-    void client
-      .listSubscriptions()
-      .then(setSubscriptions)
-      .catch((cause: Error) => setLoadError(cause.message));
-    void client
-      .getSettings()
-      .then((settings) => setOrder(settings.providerOrder))
-      .catch((cause: Error) => setLoadError(cause.message));
+      .then((next) => { if (active) setCatalog(next); })
+      .catch((cause: Error) => { if (active) setLoadError(cause.message); });
+    return () => { active = false; };
   }, [client]);
 
   const added = useMemo(() => orderAdded(subscriptions, providers, order), [subscriptions, providers, order]);
@@ -768,7 +775,8 @@ export function ProvidersPage({
   return (
     <SettingsPage title="模型与提供商">
       <SettingsGroup title="已添加">
-        {added.length > 0 && (
+        {!addedReady && <SettingsEmpty>正在读取订阅和提供商…</SettingsEmpty>}
+        {addedReady && added.length > 0 && (
           <Reorder.Group as="div" axis="y" values={added.map((entry) => entry.key)} onReorder={setOrder} className="flex flex-col divide-y divide-border">
             {added.map(({ key, account, provider }) => (
               <DraggableRow key={key} value={key} draggable={added.length > 1} onDrop={saveOrder}>
@@ -819,7 +827,7 @@ export function ProvidersPage({
             ))}
           </Reorder.Group>
         )}
-        {providers.length === 0 && subscriptions.length === 0 && <SettingsEmpty>还没有连接任何提供商。</SettingsEmpty>}
+        {addedReady && added.length === 0 && <SettingsEmpty>还没有连接任何提供商。</SettingsEmpty>}
       </SettingsGroup>
 
       <SettingsGroup

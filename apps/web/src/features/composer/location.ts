@@ -11,7 +11,7 @@ import type { ChangesSnapshot, ThreadSummary } from "@/lib/types";
 
 /** 分支: a worktree task's own branch, otherwise the branch its checkout is on. */
 export function taskBranch(thread: ThreadSummary, snapshot: ChangesSnapshot | null): string | null {
-  return thread.workspace?.branch ?? snapshot?.branch ?? null;
+  return thread.workspaceState != null ? null : (thread.workspace?.branch ?? snapshot?.branch ?? null);
 }
 
 /** 运行位置, spelled out, with the real directory for the tooltip. */
@@ -20,6 +20,7 @@ export function taskLocation(
   snapshot: ChangesSnapshot | null,
 ): { label: string; path: string | null } {
   const workspace = thread.workspace;
+  if (thread.workspaceState != null) return { label: "本机 · worktree", path: null };
   if (workspace != null) {
     return {
       // 已回收 belongs here rather than in a tooltip: the directory named right

@@ -257,9 +257,12 @@ describe("createApp", () => {
     const harnessPath = join(dir, "threads", `${thread.id}.harness.json`);
     await waitForFile(harnessPath);
     expect((await stat(harnessPath)).mode & 0o777).toBe(0o600);
-    // The run entry is gone with it, so a reconnect is a 204. (While the run is
-    // still finalizing the hub is served instead — see runs.test.ts.)
-    expect((await request(app, `/api/chat/${thread.id}/stream`)).status).toBe(204);
+    // Keep serving the old hub until cleanup and the end snapshot complete.
+    await expect.poll(async () => {
+      const response = await request(app, `/api/chat/${thread.id}/stream`);
+      await response.body?.cancel();
+      return response.status;
+    }).toBe(204);
   });
 
   it("refuses a second run on a thread that is already running", async () => {
@@ -1285,6 +1288,26 @@ describe("createApp", () => {
     });
     const updated = await request(app, "/api/settings", { method: "PUT", body: JSON.stringify({ runMode: "allow-edits" }) });
     expect(await updated.json()).toMatchObject({ runMode: "allow-edits" });
+  });
+
+  it("remembers the selected workspace across settings writes and restarts", async () => {
+    const dir = await tempDir();
+    const app = makeApp(dir);
+    const put = (body: unknown) => request(app, "/api/settings", { method: "PUT", body: JSON.stringify(body) });
+
+    expect(((await (await request(app, "/api/settings")).json()) as Settings).defaultWorkspace).toBeUndefined();
+    expect(((await (await put({ defaultWorkspace: "worktree" })).json()) as Settings).defaultWorkspace).toBe("worktree");
+    expect(((await (await put({ runMode: "allow-edits" })).json()) as Settings).defaultWorkspace).toBe("worktree");
+    const rejected = await put({ defaultWorkspace: "other", runMode: "allow-all" });
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toMatchObject({ error: { code: "invalid_default_workspace" } });
+    expect(((await (await request(app, "/api/settings")).json()) as Settings).runMode).toBe("allow-edits");
+
+    await app.shutdown();
+    const restarted = makeApp(dir);
+    expect(((await (await request(restarted, "/api/settings")).json()) as Settings).defaultWorkspace).toBe("worktree");
+    expect(((await (await request(restarted, "/api/settings", { method: "PUT", body: JSON.stringify({ defaultWorkspace: "project" }) })).json()) as Settings).defaultWorkspace).toBe("project");
+    expect(((await (await request(restarted, "/api/settings", { method: "PUT", body: JSON.stringify({ defaultWorkspace: null }) })).json()) as Settings).defaultWorkspace).toBeUndefined();
   });
 
   it("系统通知默认开：只有明确关掉才落盘，再打开就把这个字段去掉", async () => {

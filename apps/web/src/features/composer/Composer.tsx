@@ -647,7 +647,12 @@ export function Composer({
             )}
           />
           {big && <span className="flex-1" />}
-          {/* A typed follow-up is sent as guidance. An empty composer keeps Stop. */}
+          {/* Stop remains available while writing a follow-up. */}
+          {live && showSend && onStop != null && (
+            <button type="button" aria-label="停止" onClick={onStop} className="grid size-7 flex-none place-items-center rounded-full bg-bg-active text-fg hover:opacity-85">
+              <Square className="size-sm fill-current" />
+            </button>
+          )}
           <button
             type="button"
             aria-label={showSend ? (live ? "发送引导" : "发送") : "停止"}

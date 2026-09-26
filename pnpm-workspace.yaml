@@ -1,3 +1,6 @@
 packages:
   - "packages/*"
   - "apps/*"
+patchedDependencies:
+  '@ai-sdk/harness-claude-code@1.0.125': patches/@ai-sdk__harness-claude-code@1.0.125.patch
+  '@ai-sdk/harness@1.0.121': patches/@ai-sdk__harness@1.0.121.patch

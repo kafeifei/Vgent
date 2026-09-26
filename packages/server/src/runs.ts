@@ -23,17 +23,17 @@ import type { ChunkHub } from "./chunk-hub.js";
 import { createChunkHub } from "./chunk-hub.js";
 import { BadRequestError, ConflictError, NotFoundError, TurnResumeFailedError, VgentServerError } from "./errors.js";
 import { effectivePermission } from "./engines/capabilities.js";
-import type { EngineRegistry, EngineRunner } from "./engines/registry.js";
+import type { EngineContext, EngineRegistry, EngineRunner } from "./engines/registry.js";
 import { statelessEngines } from "./engines/registry.js";
 import type { QueueStore } from "./queue.js";
 import { forkNote } from "./fork.js";
 import { projectOfThread } from "./no-project.js";
 import { restoreNote } from "./restore.js";
 import { compactionChunk, isCompactionPart } from "./compaction.js";
-import { expandSteers, steerChunk } from "./steer.js";
+import { expandSteers, steerChunk, withoutPromotedSteers } from "./steer.js";
 import type { ProjectStore } from "./store/projects.js";
 import type { SettingsStore } from "./store/settings.js";
-import { DEFAULT_THREAD_TITLE, type ThreadStore } from "./store/threads.js";
+import { DEFAULT_THREAD_TITLE, type ThreadStore, type ThreadPatch } from "./store/threads.js";
 import type {
   ChangeStats,
   EngineId,
@@ -183,10 +183,16 @@ interface LiveRun {
   deliveringSteers: Set<string>;
   steerCalls: Set<Promise<void>>;
   completedNormally: boolean;
+  retired?: boolean;
+  recordSteer?: (item: QueuedMessage) => Promise<void>;
+  flush?: () => Promise<void>;
 }
 
 /** A runner kept alive between requests because its turn is waiting on the human. */
+type RunHooks = Pick<EngineContext, "takeSteers" | "steerApplied" | "saveTaskState" | "saveHarnessState">;
+
 interface ParkedEngine {
+  hooks: { current: RunHooks };
   runner: EngineRunner;
   /** Its engine's `statelessTurns`: whether the pending answer outlives this process. */
   stateless: boolean;
@@ -226,6 +232,8 @@ export function createRunManager(options: {
   dataDir: string;
   log?: Logger;
   stopTimeoutMs?: number;
+  /** Wait for a deferred worktree before setup or any turn can start. */
+  whenWorkspaceReady?: (id: string) => Promise<void>;
   /**
    * The task's diff against its baseline, recomputed for the thread record when
    * a turn ends. Injected because the git plumbing belongs to the app, not here;
@@ -262,6 +270,8 @@ export function createRunManager(options: {
   const log = options.log ?? silentLogger;
   const stopTimeoutMs = options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS;
   const runs = new Map<string, LiveRun>();
+  const owners = new Map<string, LiveRun>();
+  const writing = new Map<string, Promise<void>>();
   /** Serialize only turn startup, not the turn itself or queue writes. */
   const starting = new Map<string, Promise<void>>();
   const dispatching = new Map<string, Promise<void>>();
@@ -287,14 +297,21 @@ export function createRunManager(options: {
     if (run == null || run.stopped || run.hub.closed || runner?.steer == null || run.deliveringSteers.has(itemId)) return false;
     run.deliveringSteers.add(itemId);
     const call = (async () => {
+      const item = await options.queue?.beginDelivery(threadId, itemId);
+      if (!item) { run.deliveringSteers.delete(itemId); return; }
       try {
+        // Save the original identity before any asynchronous runtime acceptance.
+        await run.recordSteer?.(item);
+        if (run.stopped || run.retired) return;
         await runner.steer!(text, itemId);
+        if (run.retired || owners.get(threadId) !== run) return;
         await options.queue?.markAccepted(threadId, itemId, true);
         run.acceptedSteers.add(itemId);
-        run.hub.publish(steerChunk(text));
       } catch (error) {
         log.warn(`线程 ${threadId} 的引导没能送进当前回合，保留待发送消息`, error);
       } finally {
+        if (!run.retired && owners.get(threadId) === run && !run.acceptedSteers.has(itemId))
+          await options.queue?.markAccepted(threadId, itemId, false);
         run.deliveringSteers.delete(itemId);
       }
     })();
@@ -302,11 +319,7 @@ export function createRunManager(options: {
     await call.finally(() => run.steerCalls.delete(call));
     return run.acceptedSteers.has(itemId);
   };
-  /**
-   * A finished run releases its slot before it stops its engine, so a crash in
-   * cleanup can never wedge a thread. The next turn still has to wait for that
-   * cleanup, or it would start from stale resume state.
-   */
+  /** Cleanup remains visible until the runner can no longer write resume state. */
   const finishing = new Map<string, Promise<void>>();
   /**
    * Engines whose turn ended waiting on the human. They are *not* stopped: the
@@ -547,8 +560,13 @@ export function createRunManager(options: {
       startedAt: new Date().toISOString(),
       stopReason: "running",
     };
+    const owns = () => owners.get(thread.id) === run && !run.retired;
+    const writeRun = <T>(work: () => Promise<T>): Promise<T | undefined> =>
+      locked(writing, thread.id, async () => owns() ? work() : undefined);
+    const updateRun = (patch: ThreadPatch) => writeRun(() => threads.update(thread.id, patch));
     let messages = withRunRecord(incoming, runRecord);
     const durableSteers = new Map<string, QueuedMessage>();
+    const pushedSteers = new Set<string>();
     let runner: EngineRunner | undefined;
     let assistant: UIMessage | undefined;
     let lastPersistedAt = 0;
@@ -574,7 +592,7 @@ export function createRunManager(options: {
         const parts = [...value.parts];
         for (const item of durableSteers.values()) {
           if (!parts.some((part) => part.type === "data-steer" && (part as { id?: string }).id === item.id)) {
-            parts.push({ type: "data-steer", id: item.id, data: { text: item.text, messageId: item.id } });
+            parts.push({ type: "data-steer", id: item.id, data: { text: item.text, messageId: item.id, ...(pushedSteers.has(item.id) ? { receipt: true } : {}) } });
           }
         }
         value = { ...value, parts };
@@ -583,9 +601,18 @@ export function createRunManager(options: {
     };
     const persist = async (message: UIMessage) => {
       if (message.parts.length === 0) return;
-      const save = () => threads.saveMessages(thread.id, withAssistant(message));
-      if (options.queue) await options.queue.locked(thread.id, save);
-      else await save();
+      const save = () => writeRun(() => threads.saveMessages(thread.id, withAssistant(message)));
+      await save();
+    };
+
+    run.recordSteer = async (item) => {
+      durableSteers.set(item.id, item);
+      pushedSteers.add(item.id);
+      run.hub.publish(steerChunk(item.text, item.id, true));
+      await writeRun(() => threads.saveMessages(thread.id, withAssistant(assistant)));
+    };
+    run.flush = async () => {
+      await updateRun({ messages: withTurnEnd(withAssistant(assistant), { status: "interrupted", reason: STOP_INTERRUPT_TEXT }) });
     };
 
     // A turn that continues the last assistant message (an approval answer, a
@@ -623,10 +650,42 @@ export function createRunManager(options: {
       }
     })();
 
+    const runHooks: RunHooks = {
+      // 插话, pulled: the engine drains the queue between its steps. Each
+      // message shows up in the log at the point it went in.
+      takeSteers: async () => {
+        if (options.queue == null || run.stopped || !owns()) return [];
+        const added: string[] = [];
+        let items: QueuedMessage[];
+        try {
+          items = (await writeRun(() => options.queue!.takeSteers(thread.id, (taken) => {
+            for (const item of taken) {
+              durableSteers.set(item.id, item);
+              added.push(item.id);
+            }
+            return withAssistant(assistant);
+          }))) ?? [];
+        } catch (error) {
+          for (const id of added) durableSteers.delete(id);
+          throw error;
+        }
+        for (const item of items) run.hub.publish(steerChunk(item.text, item.id));
+        return items.map((item) => item.text);
+      },
+      steerApplied: async (messageId) => {
+        await writeRun(async () => { await options.queue?.markApplied(thread.id, messageId); });
+      },
+      saveTaskState: async (state) => {
+        await updateRun({ taskState: state });
+      },
+      saveHarnessState: async (state) => { await writeRun(() => threads.saveHarnessState(thread.id, state)); },
+    };
+    let hookBinding = { current: runHooks };
+
     try {
       // Include the durable start in the same cleanup boundary as the stream.
       // A disk failure must release this run's slot too.
-      await threads.saveMessages(thread.id, messages);
+      await writeRun(() => threads.saveMessages(thread.id, messages));
       // 恢复之后的第一轮: the note rides on the converted history rather than on
       // the stored message, so the log still shows what the user typed.
       // 附件: the stored messages keep their `file` parts for the log; the
@@ -637,17 +696,20 @@ export function createRunManager(options: {
       });
       // 插话 parts are read back as the user messages they were.
       const convert = async (tools?: ToolSet) =>
-        withRestoreNote(await convertToModelMessages(expandSteers(readable), ...(tools != null ? [{ tools }] : [])), note);
+        withRestoreNote(await convertToModelMessages(expandSteers(readable, new Set(thread.queue?.filter(item => item.mode === "steer" && !item.applied).map(item => item.id))), ...(tools != null ? [{ tools }] : [])), note);
       let modelMessages = await convert();
       // The harness itself decides "continue the open turn" vs "start a new
       // one" by whether the last model message is `role: 'tool'` (approval
       // responses / tool results), so the run manager reads it the same way.
       const continuesTurn = modelMessages.at(-1)?.role === "tool";
-      const parkedRunner = parked.get(thread.id)?.runner;
+      const parkedEntry = parked.get(thread.id);
+      const parkedRunner = parkedEntry?.runner;
 
       if (parkedRunner != null && continuesTurn) {
         parked.delete(thread.id);
         runner = parkedRunner;
+        hookBinding = parkedEntry!.hooks;
+        hookBinding.current = runHooks;
       } else {
         if (parkedRunner != null) {
           // A fresh prompt abandons the parked turn. The session cannot take a
@@ -661,7 +723,7 @@ export function createRunManager(options: {
           // trailing message stays `user` and the harness starts a prompt turn.
           parked.delete(thread.id);
           await parkedRunner.destroy().catch((error) => log.warn(`销毁挂起的引擎失败 (thread ${thread.id})`, error));
-          await clearContinueFrom(thread.id);
+          await writeRun(() => clearContinueFrom(thread.id));
           messages = closePendingToolParts(messages, ABANDONED_TURN_TEXT);
           modelMessages = await convert();
         }
@@ -683,34 +745,10 @@ export function createRunManager(options: {
           // A parked runner was reused above, so reaching here with
           // `continuesTurn` means the open turn lives in another process.
           continuesTurn,
-          // 插话, pulled: the engine drains the queue between its steps. Each
-          // message shows up in the log at the point it went in.
-          takeSteers: async () => {
-            if (options.queue == null || run.stopped) return [];
-            const added: string[] = [];
-            let items: QueuedMessage[];
-            try {
-              items = await options.queue.takeSteers(thread.id, (taken) => {
-                for (const item of taken) {
-                  durableSteers.set(item.id, item);
-                  added.push(item.id);
-                }
-                return withAssistant(assistant);
-              });
-            } catch (error) {
-              for (const id of added) durableSteers.delete(id);
-              throw error;
-            }
-            for (const item of items) run.hub.publish(steerChunk(item.text, item.id));
-            return items.map((item) => item.text);
-          },
-          steerApplied: async (messageId) => {
-            await options.queue?.markApplied(thread.id, messageId).catch(() => {});
-          },
-          saveTaskState: async (state) => {
-            await threads.update(thread.id, { taskState: state });
-          },
-          saveHarnessState: (state) => threads.saveHarnessState(thread.id, state),
+          takeSteers: () => hookBinding.current.takeSteers(),
+          steerApplied: (id) => hookBinding.current.steerApplied(id),
+          saveTaskState: (state) => hookBinding.current.saveTaskState!(state),
+          saveHarnessState: (state) => hookBinding.current.saveHarnessState(state),
           log,
         });
       }
@@ -724,6 +762,9 @@ export function createRunManager(options: {
 
       const result = await runner.stream({ messages: modelMessages, abortSignal: run.abort.signal });
       run.runner = runner;
+      for (const item of (await threads.get(thread.id))?.queue ?? []) {
+        if (item.mode === "steer" && item.accepted) run.acceptedSteers.add(item.id);
+      }
       // Messages submitted while the engine was still starting belong to this
       // turn. Explicit queue items never pass through this path.
       if (runner.steer != null && options.queue != null) {
@@ -828,14 +869,13 @@ export function createRunManager(options: {
       // open parts — its step is still running inside the engine.
       const settled = park || run.stopped ? assistant : settleStreamingToolParts(assistant, seed?.dropped);
 
-      if (!run.stopped) {
+      if (!run.stopped && owns()) {
         const stats = await measureChanges(thread);
         // 计划回合的最终回复就是计划文档。Only a turn that really ended writes it:
         // one parked on a question is still mid-research, and an interrupted or
         // failed one has no plan to speak of.
-        if (thread.mode === "plan" && status === "idle") await savePlanFrom(thread.id, settled);
-        await threads
-          .update(thread.id, {
+        if (thread.mode === "plan" && status === "idle") await writeRun(() => savePlanFrom(thread.id, settled));
+        await updateRun({
             messages: withTurnEnd(
               withAssistant(settled),
               streamError != null
@@ -855,15 +895,14 @@ export function createRunManager(options: {
             // Never let a failed final write leave the thread stuck `running`.
             log.error(`保存线程 ${thread.id} 的最终状态失败`, error);
             park = false;
-            await threads
-              .update(thread.id, { status: "error", error: getHarnessErrorMessage(error), unread: true })
+            await updateRun({ status: "error", error: getHarnessErrorMessage(error), unread: true })
               .catch((fallback) => log.error(`记录线程 ${thread.id} 的错误状态也失败`, fallback));
           });
       } else {
         // 停止: recorded even when the turn had produced nothing yet, or the
         // question would sit in the log as if it had never been answered.
         Object.assign(runRecord, { endedAt: new Date().toISOString(), stopReason: "cancelled" });
-        await threads.update(thread.id, {
+        await updateRun({
           messages: withTurnEnd(withAssistant(settled), { status: "interrupted", reason: STOP_INTERRUPT_TEXT }),
         });
       }
@@ -879,7 +918,7 @@ export function createRunManager(options: {
         stopReason: run.stopped ? "cancelled" : resumeFailed ? "unknown" : "error",
         errorClass: classifyFailure(error),
       });
-      if (resumeFailed) await clearContinueFrom(thread.id);
+      if (resumeFailed) await writeRun(() => clearContinueFrom(thread.id));
       if (!run.stopped && !resumeFailed) reportTurn(thread.engine, false, assistant);
       const message = error instanceof VgentServerError ? error.message : getHarnessErrorMessage(error);
       // The masked `message` above is what the client sees; the thread record
@@ -892,8 +931,7 @@ export function createRunManager(options: {
       run.hub.interrupt(message);
       run.hub.close();
       await reader.catch(() => {});
-      await threads
-        .update(thread.id, {
+      await updateRun({
           messages: withTurnEnd(
             resumeFailed
               ? closePendingToolParts(withAssistant(assistant), RESUME_FAILED_TEXT)
@@ -910,30 +948,12 @@ export function createRunManager(options: {
         .catch((updateError) => log.error(`记录线程 ${thread.id} 的错误状态失败`, updateError));
     } finally {
       await Promise.allSettled([...run.steerCalls]);
-      if (options.queue != null && run.acceptedSteers.size > 0) {
-        const ids = [...run.acceptedSteers];
-        if (!run.completedNormally || run.stopped) {
-          await Promise.allSettled(
-            ids.map(async (id) => {
-              await options.queue!.markAccepted(thread.id, id, false);
-            }),
-          );
-        } else {
-          await options.queue
-            .removeAccepted(thread.id, ids)
-            .catch((error) => log.warn(`清理已接收的引导失败 (thread ${thread.id})`, error));
-        }
-      }
-      // Release the slot first: whatever happens to the engine, the thread must
-      // be startable again.
-      delete run.runner;
-      runs.delete(thread.id);
       run.hub.close();
-      if (runner != null) {
-        if (park && !run.stopped) {
+      if (runner != null && !run.retired) {
+        if (park && !run.stopped && owns()) {
           // Alive on purpose, and no harness file is written: `<id>.harness.json`
           // must keep the last *finished* turn's state.
-          parked.set(thread.id, { runner, stateless: factory.statelessTurns === true });
+          parked.set(thread.id, { runner, hooks: hookBinding, stateless: factory.statelessTurns === true });
         } else {
           // `finish()` persists resume state, which only a runtime with no turn
           // in flight can produce; anything else is torn down and the previous
@@ -947,15 +967,22 @@ export function createRunManager(options: {
           if (finishing.get(thread.id) === cleanup) finishing.delete(thread.id);
         }
       }
+      if (!park) await writeRun(async () => {
+        await options.queue?.settleSteers(thread.id,
+          [...new Set([...run.acceptedSteers, ...durableSteers.keys()])], !run.completedNormally || run.stopped);
+      }).catch(error => log.warn(`清理引导状态失败 (thread ${thread.id})`, error));
       // 回合结束后的快照, once the engine really is down and can write no more.
       // A parked turn is not over — its own continuation takes the snapshot when
       // it ends — so it is the one case with nothing to record yet.
-      if (!park) await snapshotTurnEnd(thread.id);
+      if (!park && owns()) await writeRun(() => snapshotTurnEnd(thread.id))
+        .catch(error => log.warn(`保存回合结束快照失败 (thread ${thread.id})`, error));
       // 排队: the slot is free and the engine is put away, so the thread can
       // take its next queued message. `dispatchQueue` re-reads the record and
       // only acts on a clean `idle`, so a parked, stopped or failed turn here
       // simply leaves the queue where it is.
-      scheduleDispatch(thread.id);
+      delete run.runner;
+      if (runs.get(thread.id) === run) runs.delete(thread.id);
+      if (owns()) scheduleDispatch(thread.id);
     }
   };
 
@@ -968,6 +995,7 @@ export function createRunManager(options: {
   const startTurnUnlocked = async (threadId: string, uiMessages: unknown): Promise<ChunkHub> => {
     const active = runs.get(threadId);
     if (active != null) {
+      if (active.stopped) throw new ConflictError("引擎仍在停止，请稍后重试", "thread_stopping");
       if (!active.hub.closed) throw new ConflictError(`线程已在运行: ${threadId}`, "thread_running");
       // The turn is over — the client saw the stream close — and the run is
       // only finishing its bookkeeping. Answering an approval that fast is
@@ -977,6 +1005,7 @@ export function createRunManager(options: {
     // A fresh worktree may still be installing dependencies: the user could
     // submit their first message the moment the task appeared. A *failed*
     // setup does not hold the turn back — the task simply runs without it.
+    await options.whenWorkspaceReady?.(threadId);
     await whenSetupSettled(threadId);
     // The previous turn's engine may still be persisting its resume state.
     await finishing.get(threadId);
@@ -987,6 +1016,9 @@ export function createRunManager(options: {
     // 归档中 / 恢复中: the worktree is being taken apart or put back.
     if (thread.transition != null) {
       throw new ConflictError(`任务正在${thread.transition === "archiving" ? "归档" : "恢复"}，稍等`, "thread_transitioning");
+    }
+    if (thread.workspaceState != null) {
+      throw new ConflictError(thread.error ?? "工作目录尚未就绪，请稍后重试", "workspace_not_ready");
     }
     if (thread.workspace?.reclaimed === true) {
       throw new ConflictError("此任务的工作目录已回收，请先恢复后再运行", "workspace_reclaimed");
@@ -1016,7 +1048,11 @@ export function createRunManager(options: {
     // A turn picked back up (an approval answered after a stop, say) is no
     // longer ended; a new user message has no ending to clear.
     const messages = withTurnEnd(
-      withAfterFallback(withToolInputs(mergeIncoming(thread.messages, withCheckpoint(validated, checkpoint))), checkpoint),
+      withAfterFallback(withToolInputs(mergeIncoming(
+        withoutPromotedSteers(thread.messages, validated.filter(input => input.role === "user" &&
+          thread.queue?.some(item => item.mode === "steer" && item.id === input.id))),
+        withCheckpoint(validated, checkpoint),
+      )), checkpoint),
       undefined,
     );
     // 从恢复点继续: the marker goes away with this message — the task is moving
@@ -1058,6 +1094,7 @@ export function createRunManager(options: {
       completedNormally: false,
     };
     runs.set(threadId, run);
+    owners.set(threadId, run);
     // Detached on purpose: an HTTP client disconnecting must not cancel the turn.
     run.done = runTurn(updated, messages, run, note);
     run.done.catch((error) => log.error(`线程 ${threadId} 的运行崩溃`, error));
@@ -1137,7 +1174,12 @@ export function createRunManager(options: {
     steer: deliverSteer,
 
     async stop(threadId) {
+      const hadParked = parked.has(threadId);
       await releaseParked(threadId, STOP_INTERRUPT_TEXT);
+      if (hadParked) {
+        const items = (await threads.get(threadId))?.queue?.filter(item => item.mode === "steer") ?? [];
+        await options.queue?.settleSteers(threadId, items.map(item => item.id), true);
+      }
       const run = runs.get(threadId);
       if (run == null) return;
       run.stopped = true;
@@ -1156,7 +1198,11 @@ export function createRunManager(options: {
         new Promise<boolean>((resolve) => setTimeout(() => resolve(true), stopTimeoutMs).unref?.()),
       ]);
       if (timedOut) {
-        log.warn(`线程 ${threadId} 在 ${stopTimeoutMs}ms 内没有停下，强制释放槽位`);
+        log.warn(`线程 ${threadId} 在 ${stopTimeoutMs}ms 内没有停下，关闭引擎并隔离旧回合`);
+        await run.runner?.destroy();
+        await run.flush?.();
+        await locked(writing, threadId, async () => { run.retired = true; });
+        await options.queue?.settleSteers(threadId, [...new Set([...run.acceptedSteers, ...run.deliveringSteers])], true);
         if (runs.get(threadId) === run) runs.delete(threadId);
       }
     },
@@ -1259,7 +1305,7 @@ export async function recoverInterruptedThreads(threads: ThreadStore, registry: 
   const stateless = statelessEngines(registry);
   const summaries = await threads.list();
   for (const summary of summaries) {
-    const accepted = summary.queue?.filter((item) => item.accepted === true) ?? [];
+    const accepted = summary.queue?.filter((item) => item.accepted || item.delivering || item.promoting) ?? [];
     if (accepted.length > 0 && !UNFINISHED_STATUSES.includes(summary.status)) {
       const record = await threads.get(summary.id);
       if (record != null) {
@@ -1269,8 +1315,8 @@ export async function recoverInterruptedThreads(threads: ThreadStore, registry: 
               summary.status === "idle"
                 ? record.queue
                     ?.filter((item) => item.claimed === true || item.accepted !== true)
-                    .map((item) => (item.claimed === true ? { ...item, accepted: false, claimed: false } : item))
-                : record.queue?.map((item) => (item.accepted === true ? { ...item, accepted: false, applied: false } : item)),
+                    .map((item) => ({ ...item, accepted: false, claimed: false, delivering: false, promoting: false }))
+                : record.queue?.filter(item => !item.applied).map(item => ({ ...item, accepted: false, delivering: false, promoting: false })),
           })
           .catch((error) => log.warn(`恢复线程 ${summary.id} 的待处理引导失败`, error));
       }
@@ -1303,13 +1349,13 @@ export async function recoverInterruptedThreads(threads: ThreadStore, registry: 
         queue: record.queue
           ?.filter(
             (item) =>
-              !record.messages.some(
+              !item.applied && !record.messages.some(
                 (message) =>
                   message.id === item.id ||
-                  message.parts.some((part) => part.type === "data-steer" && (part as { id?: string }).id === item.id),
+                  (item.mode !== "steer" && message.parts.some((part) => part.type === "data-steer" && (part as { id?: string }).id === item.id)),
               ),
           )
-          .map((item) => (item.accepted === true ? { ...item, accepted: false, applied: false } : item)),
+          .map((item) => ({ ...item, accepted: false, delivering: false, promoting: false, claimed: false })),
         status: "interrupted",
         error: RESTART_INTERRUPT_TEXT,
       })

@@ -361,7 +361,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
    * vanished, a directory that is not a repo.
    */
   const changeStatsFor = async (thread: ThreadRecord): Promise<ChangeStats | undefined> => {
-    if (thread.workspace?.reclaimed === true) return undefined;
+    if (thread.workspace?.reclaimed === true || thread.workspaceState != null) return undefined;
     const project = await projectOfThread(projects, dataDir, thread);
     if (project == null) return undefined;
     const target = taskTarget(thread, project);
@@ -381,7 +381,17 @@ export function createApp(options: CreateAppOptions): VgentApp {
         ),
     });
 
+  const pendingWorkspaces = new Map<string, Promise<void>>();
+  const whenWorkspaceReady = async (id: string): Promise<void> => {
+    await pendingWorkspaces.get(id);
+    const record = await threads.get(id);
+    if (record?.workspaceState != null) {
+      throw new ConflictError(record.error ?? "工作目录创建被中断，请重新创建任务", "workspace_not_ready");
+    }
+  };
+
   const runs = createRunManager({
+    whenWorkspaceReady,
     threads,
     projects,
     settings,
@@ -405,7 +415,18 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   // Nothing on disk can be mid-turn at boot; this process has no runs yet — and
   // a setup that was `running` died with the process that owned it.
-  const recovered = recoverInterruptedThreads(threads, registry, log)
+  const recovered = threads.list()
+    .then(async (summaries) => {
+      for (const summary of summaries) {
+        if (summary.workspaceState === "creating") {
+          await threads.update(summary.id, {
+            workspaceState: "failed",
+            error: "工作目录创建因服务重启中断，请删除任务后重新创建",
+          });
+        }
+      }
+    })
+    .then(() => recoverInterruptedThreads(threads, registry, log))
     .then(() => failInterruptedSetups(threads, log))
     .catch((error) => log.warn("恢复中断线程失败", error));
   /**
@@ -880,26 +901,6 @@ export function createApp(options: CreateAppOptions): VgentApp {
   };
 
   /**
-   * The project's `include-files` and setup, in the background, on a worktree
-   * that has just come to be — made new or put back. A turn waits for it
-   * through `whenSetupSettled`.
-   */
-  const beginSetup = (threadId: string, workspacePath: string, project: Project): void => {
-    startSetup({
-      dataDir,
-      threadId,
-      workspacePath,
-      projectPath: project.repoPath,
-      log,
-      onStatus: async (setup) => {
-        const current = await threads.get(threadId);
-        if (current?.workspace == null) return;
-        await threads.update(threadId, { workspace: { ...current.workspace, setup } });
-      },
-    });
-  };
-
-  /**
    * The other direction: the worktree back and the record saying so, then
    * what 归档 did not keep — the ignored files — rebuilt by the project's
    * setup, as on creation. `undefined` when the directory is already there.
@@ -913,9 +914,8 @@ export function createApp(options: CreateAppOptions): VgentApp {
       ...patch,
       workspace: { mode: "worktree", path: workspace.path, branch, baseCommit: workspace.baseCommit },
     });
-    beginSetup(thread.id, workspace.path, project);
+    if (record.workspace != null) setupWorkspace(thread.id, record.workspace, project);
     void discardSnapshot(dataDir, thread.id, workspace.snapshotPath).catch((error: unknown) => log.warn(`线程 ${thread.id} 用过的归档快照没删掉`, error));
-    void trimWorktrees();
     return record;
   };
 
@@ -994,6 +994,27 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   // --- threads ----------------------------------------------------------
 
+  /**
+   * The project's `include-files` and setup, in the background, on a worktree
+   * that has just come to be — made new or put back by 取消归档. A turn waits
+   * for it through `whenSetupSettled`.
+   */
+  const setupWorkspace = (id: string, workspace: ThreadWorkspace, project: Project): void => {
+    startSetup({
+      dataDir,
+      threadId: id,
+      workspacePath: workspace.path,
+      projectPath: project.repoPath,
+      log,
+      onStatus: async (setup) => {
+        const current = await threads.get(id);
+        if (current?.workspace == null) return;
+        await threads.update(id, { workspace: { ...current.workspace, setup } });
+      },
+    });
+    void trimWorktrees();
+  };
+
   app.get("/api/threads", async (c) => {
     const projectId = c.req.query("projectId");
     const all = await threads.list();
@@ -1001,6 +1022,8 @@ export function createApp(options: CreateAppOptions): VgentApp {
   });
 
   app.post("/api/threads", async (c) => {
+    // Recovery only sees boot records, never a worktree being created here.
+    await recovered;
     const body = (await c.req.json().catch(() => undefined)) as Record<string, unknown> | undefined;
     const projectId = body?.projectId;
     if (typeof projectId !== "string") throw new BadRequestError("缺少 projectId", "invalid_project");
@@ -1011,6 +1034,12 @@ export function createApp(options: CreateAppOptions): VgentApp {
       throw new BadRequestError("workspace 只能是 project 或 worktree", "invalid_workspace");
     }
     if (project == null && body?.workspace === "worktree") throw new BadRequestError("无项目的任务没有仓库，开不了 worktree", "invalid_workspace");
+    if (body?.deferWorkspace != null && typeof body.deferWorkspace !== "boolean") {
+      throw new BadRequestError("deferWorkspace 必须是布尔值", "invalid_workspace");
+    }
+    if (body?.deferWorkspace === true && body.workspace !== "worktree") {
+      throw new BadRequestError("只有 worktree 可以延迟创建工作目录", "invalid_workspace");
+    }
     const defaults = await settings.get();
     const engine = asEngine(body?.engine) ?? defaults.defaultEngine;
     // `defaultModel` is the last choice, made under `defaultEngine`; another
@@ -1033,6 +1062,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
       ...(serviceTier != null ? { serviceTier } : {}),
       ...(contextWindow != null ? { contextWindow } : {}),
       mode,
+      ...(body?.deferWorkspace === true ? { workspaceState: "creating" as const } : {}),
     });
     // 记住上一次选择: the next task starts on what this one was started with.
     // Not a setting anyone edits — the composer's chip is the only place it shows.
@@ -1043,15 +1073,30 @@ export function createApp(options: CreateAppOptions): VgentApp {
       ...(project != null ? { defaultWorkspace: body?.workspace === "worktree" ? "worktree" : "project" } : {}),
     }));
     if (body?.workspace !== "worktree" || project == null) return c.json(record);
-    // The worktree is named after the thread, so the record has to exist
-    // first — and must not survive a worktree that failed to materialize.
+    // Register the nonthrowing task before responding: sends and deletes both wait on it.
+    if (body?.deferWorkspace === true) {
+      const pending = (async () => {
+        try {
+          const workspace = await createWorktree({ dataDir, project, threadId: record.id });
+          await threads.update(record.id, { workspace, workspaceState: undefined });
+          setupWorkspace(record.id, workspace, project);
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          await threads.update(record.id, { workspaceState: "failed", error: reason }).catch((failure: unknown) =>
+            log.warn(`记录线程 ${record.id} 工作目录创建失败状态失败`, failure),
+          );
+          log.warn(`线程 ${record.id} 创建工作目录失败`, error);
+        }
+      })();
+      pendingWorkspaces.set(record.id, pending);
+      void pending.finally(() => pendingWorkspaces.delete(record.id));
+      return c.json(record);
+    }
+    // Legacy callers still wait for creation and lose the thread if it fails.
     try {
       const workspace = await createWorktree({ dataDir, project, threadId: record.id });
       const withWorkspace = await threads.update(record.id, { workspace });
-      // Detached: a `pnpm install` must not hold up the response, and the first
-      // message can be typed while it runs — `runs.start()` waits for it.
-      beginSetup(record.id, workspace.path, project);
-      void trimWorktrees();
+      setupWorkspace(record.id, workspace, project);
       return c.json(withWorkspace);
     } catch (error) {
       await threads.remove(record.id).catch((failure) => log.warn(`回滚线程 ${record.id} 失败`, failure));
@@ -1128,6 +1173,10 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const lifecycle: ThreadPatch = {};
     if ("archived" in (body ?? {})) {
       if (typeof body?.archived !== "boolean") throw new BadRequestError("archived 只能是布尔值", "invalid_archived");
+      // A pending worktree cannot be archived before it has a record to reclaim.
+      if (body.archived && current.workspaceState === "creating") {
+        throw new ConflictError("工作目录正在创建，稍后再归档", "workspace_not_ready");
+      }
       // Archiving reclaims the worktree, so it needs the same guard 收口 does.
       assertNotLive(current);
       assertSettled(current);
@@ -1243,20 +1292,17 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const body = (await c.req.json().catch(() => undefined)) as { interrupt?: unknown } | undefined;
     const thread = await threadOf(id);
     assertNotArchived(thread);
-    if (body?.interrupt === true && isLive(thread)) {
-      // Checked before stopping: a stale item id must not cost the user their turn.
-      const item = thread.queue?.find((entry) => entry.id === itemId);
-      if (item == null) {
-        throw new NotFoundError("这条排队消息不存在", "queue_item_not_found");
-      }
-      if (item.applied === true) {
-        throw new ConflictError("这条引导已进入当前回合", "steer_already_applied");
-      }
-      await runs.stop(id);
-    } else {
-      assertNotLive(thread);
+    await queue.reserveSend(id, itemId, true);
+    try {
+      if (body?.interrupt === true && isLive(thread)) await runs.stop(id);
+      else assertNotLive(thread);
+      // A started event may have arrived while the old turn was stopping.
+      const current = (await threadOf(id)).queue?.find(item => item.id === itemId);
+      if (!current || current.applied) throw new ConflictError("这条引导已进入当前回合", "steer_already_applied");
+      await runs.sendQueued(id, itemId);
+    } finally {
+      await queue.reserveSend(id, itemId, false);
     }
-    await runs.sendQueued(id, itemId);
     return c.json(await threadOf(id));
   });
 
@@ -1345,7 +1391,8 @@ export function createApp(options: CreateAppOptions): VgentApp {
   app.delete("/api/threads/:id", async (c) => {
     const id = c.req.param("id");
     await runs.stop(id);
-    // 归档中 is still moving the worktree; deleting under it would race it.
+    // A pending worktree or archive move must finish before removal can inspect its directory.
+    await pendingWorkspaces.get(id);
     await transitions.get(id)?.done;
     const thread = await threads.get(id);
     // A failed ownership check aborts the delete: a thread record is the only
@@ -1376,6 +1423,9 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   app.put("/api/settings", async (c) => {
     const body = (await c.req.json().catch(() => undefined)) as Record<string, unknown> | undefined;
+    if ("defaultWorkspace" in (body ?? {}) && body?.defaultWorkspace != null && body.defaultWorkspace !== "project" && body.defaultWorkspace !== "worktree") {
+      throw new BadRequestError('defaultWorkspace 只能是 "project" 或 "worktree"', "invalid_default_workspace");
+    }
     const patch: SettingsPatch = {
       ...(asEngine(body?.defaultEngine) != null ? { defaultEngine: asEngine(body?.defaultEngine)! } : {}),
       ...(asPermissionMode(body?.runMode) != null ? { runMode: asPermissionMode(body?.runMode)! } : {}),
@@ -1397,6 +1447,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
         ? { computerUseProvider: readComputerUseProvider(body?.computerUseProvider) }
         : {}),
       ...("worktreeMaxCount" in (body ?? {}) ? { worktreeMaxCount: readWorktreeMaxCount(body?.worktreeMaxCount) } : {}),
+      ...("defaultWorkspace" in (body ?? {}) ? { defaultWorkspace: body?.defaultWorkspace as SettingsPatch["defaultWorkspace"] } : {}),
       // 界面偏好: the title bar's two toggles write them here, so they survive
       // the desktop shell's per-launch origin.
       ...("theme" in (body ?? {}) ? { theme: readTheme(body?.theme) } : {}),

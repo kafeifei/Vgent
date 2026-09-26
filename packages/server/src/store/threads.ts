@@ -53,6 +53,7 @@ export interface CreateThreadInput {
   contextWindow?: number;
   /** 模式 of the first turn. Omitted (or `agent`) leaves the field off the record. */
   mode?: ThreadMode;
+  workspaceState?: ThreadRecord["workspaceState"];
   /** 分叉: the history the task starts with, and where it was cut from. */
   messages?: UIMessage[];
   forkedFrom?: ThreadForkOrigin;
@@ -74,6 +75,8 @@ export type ThreadPatch = Partial<{
   error: string | undefined;
   /** 未读. `false` is 已读, which is the absence of the field. */
   unread: boolean | undefined;
+  /** Deferred worktree creation state; undefined once ready. */
+  workspaceState: ThreadRecord["workspaceState"] | undefined;
   /** Attached right after the worktree is created, cleared when it is removed. */
   workspace: ThreadWorkspace | undefined;
   /** 任务基线 of a main-checkout task: set on its first turn, moved forward by 提交. */
@@ -279,6 +282,7 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
         ...(input.contextWindow != null ? { contextWindow: input.contextWindow } : {}),
         ...(input.mode === "plan" ? { mode: "plan" as const } : {}),
         status: "idle",
+        ...(input.workspaceState != null ? { workspaceState: input.workspaceState } : {}),
         createdAt: now,
         updatedAt: now,
         messages: input.messages ?? [],
@@ -348,6 +352,10 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
           if (patch.unread !== true) delete next.unread;
           else next.unread = true;
         }
+        if ("workspaceState" in patch) {
+          if (patch.workspaceState == null) delete next.workspaceState;
+          else next.workspaceState = patch.workspaceState;
+        }
         if ("workspace" in patch) {
           if (patch.workspace == null) delete next.workspace;
           else next.workspace = patch.workspace;
@@ -388,7 +396,7 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
               next.messages.flatMap((message) => [
                 ...(message.role === "user" ? [message.id] : []),
                 ...message.parts.flatMap((part) =>
-                  part.type === "data-steer" && typeof (part as { id?: unknown }).id === "string" ? [(part as { id: string }).id] : [],
+                  part.type === "data-steer" && (part as { data?: { receipt?: boolean } }).data?.receipt !== true && typeof (part as { id?: unknown }).id === "string" ? [(part as { id: string }).id] : [],
                 ),
               ]),
             );

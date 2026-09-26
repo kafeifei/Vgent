@@ -1,5 +1,5 @@
 import { getToolName, isToolUIPart, type UIMessage } from "ai";
-import type { ThreadMessageMetadata } from "@/lib/types";
+import type { QueuedMessage, ThreadMessageMetadata } from "@/lib/types";
 import type { ToolPart } from "./toolMeta";
 
 export type TextPart = Extract<UIMessage["parts"][number], { type: "text" }>;
@@ -10,7 +10,7 @@ export type Block =
   | { kind: "text"; key: string; part: TextPart }
   | { kind: "tool"; key: string; part: ToolPart }
   /** 插话: what the user said while this turn was running, at the point it went in. */
-  | { kind: "steer"; key: string; text: string }
+  | { kind: "steer"; key: string; text: string; messageId?: string; pending?: boolean; legacy?: boolean; busy?: boolean; interrupt?: boolean }
   /** 压缩: the runtime compacted its context here (see `compaction.ts` on the server). */
   | { kind: "compaction"; key: string; data: CompactionData };
 
@@ -73,7 +73,11 @@ function blocksOf(message: UIMessage): Block[] {
     const key = `${message.id}:${index}`;
     const steer = steerTextOf(part);
     const compaction = compactionOf(part);
-    if (steer != null) blocks.push({ kind: "steer", key, text: steer });
+    if (steer != null) {
+      const data = (part as { id?: string; data?: { messageId?: string } });
+      const messageId = data.data?.messageId ?? data.id;
+      blocks.push({ kind: "steer", key, text: steer, ...(messageId ? { messageId } : {}), ...(data.data?.messageId == null ? { legacy: true } : {}) });
+    }
     else if (compaction != null) blocks.push({ kind: "compaction", key, data: compaction });
     // Blank text is not a reply: some models open a step with a lone space, and
     // one that ends there has said nothing (the turn's `answered` covers that).
@@ -107,7 +111,7 @@ function blocksOf(message: UIMessage): Block[] {
  * with an assistant message (a resumed thread) gets a leading turn with no user
  * box.
  */
-export function buildTurns(messages: readonly UIMessage[]): Turn[] {
+export function buildTurns(messages: readonly UIMessage[], queue: readonly QueuedMessage[] = [], live = false): Turn[] {
   const turns: Turn[] = [];
   for (const message of messages) {
     if (message.role === "user") {
@@ -122,6 +126,27 @@ export function buildTurns(messages: readonly UIMessage[]): Turn[] {
     }
     turn.answered = true;
     turn.blocks.push(...blocksOf(message));
+  }
+  const unmatched = new Map(queue.filter(item => item.mode === "steer").map(item => [item.id, item]));
+  const userIds = new Set(messages.filter(message => message.role === "user").map(message => message.id));
+  for (const turn of [...turns].reverse()) {
+    turn.blocks = turn.blocks.filter(block => block.kind !== "steer" || !block.messageId || !userIds.has(block.messageId));
+    for (const block of [...turn.blocks].reverse()) {
+      if (block.kind !== "steer") continue;
+      // Older builds assigned a different data-part id. Match those receipts once.
+      const item = (block.messageId ? unmatched.get(block.messageId) : undefined)
+        ?? (block.legacy ? [...unmatched.values()].find(item => item.text === block.text) : undefined);
+      if (!item) continue;
+      unmatched.delete(item.id);
+      Object.assign(block, { messageId: item.id, pending: !item.applied, busy: !!(item.delivering || item.promoting || item.claimed), interrupt: live });
+    }
+  }
+  for (const item of unmatched.values()) {
+    if (userIds.has(item.id)) continue;
+    let turn = turns.at(-1);
+    if (!turn) { turn = { key: `pending-${item.id}`, blocks: [], answered: false }; turns.push(turn); }
+    turn.blocks.push({ kind: "steer", key: item.id, messageId: item.id, text: item.text,
+      pending: !item.applied, busy: !!(item.delivering || item.promoting || item.claimed), interrupt: live });
   }
   return turns;
 }

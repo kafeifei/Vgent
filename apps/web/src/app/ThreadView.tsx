@@ -30,6 +30,7 @@ export type ThreadViewActions = Pick<WorkbenchActions,
 /** Waits for the thread's history to land before mounting the chat view. */
 export function ThreadView(props: {
   thread: ThreadSummary;
+  failedFirstSend: boolean;
   actions: ThreadViewActions;
   client: ApiClient;
   changes: ChangesView;
@@ -77,6 +78,7 @@ export function ThreadView(props: {
 
 function ThreadChatView({
   thread,
+  failedFirstSend,
   actions,
   client,
   changes,
@@ -92,6 +94,7 @@ function ThreadChatView({
   chat,
 }: {
   thread: ThreadSummary;
+  failedFirstSend: boolean;
   actions: ThreadViewActions;
   client: ApiClient;
   changes: ChangesView;
@@ -114,6 +117,9 @@ function ThreadChatView({
    * message really went out: sent and accepted, or accepted onto the queue.
    */
   const draft = useDraft(thread.id, client);
+  useEffect(() => {
+    if (failedFirstSend) draft.refresh();
+  }, [draft.refresh, failedFirstSend]);
 
   // The smoke client's wiring, minus what moved onto the shared `Chat` itself:
   // `sendAutomaticallyWhen` lives in `ThreadChats` (see the note there), and so
@@ -179,6 +185,7 @@ function ThreadChatView({
       },
       fork: (messageId) => actions.forkThread(thread.id, messageId),
       restoreLatest: () => restoreCheckpoint({ latest: true }),
+      sendSteer: (itemId, interrupt) => actions.sendQueued(thread.id, itemId, { interrupt }),
     }),
     [actions, addToolApprovalResponse, addToolOutput, openFile, restoreCheckpoint, thread.id],
   );
@@ -229,11 +236,15 @@ function ThreadChatView({
   // 附件 belong to the message being written, like the text, and are kept in
   // the same draft — a file dropped in before a task switch is still there.
   const { attachments, setAttachments } = draft;
-  const submit = () => {
+  const submit = (delivery: "steer" | "queue" = "steer") => {
+    const submittedDraft = { text: draft.value, attachments };
     const text = draft.value.trim();
     if ((text === "" && attachments.length === 0) || sending.current) return;
-    // 运行中按 Enter = 排队。The server holds it and starts it itself once this
-    // turn settles idle, so the draft may only be dropped once it took it.
+    if (thread.workspaceState != null || (thread.workspace?.setup?.status === "running" && thread.messageCount === 0)) {
+      actions.toast(thread.workspaceState === "failed" ? "worktree 创建失败，请新建任务" : "正在准备 worktree，请稍候");
+      return;
+    }
+    // Enter steers the active turn; Command+Enter explicitly waits for the next turn.
     if (live) {
       // The queue holds text only; a message with files waits for the turn to end.
       if (attachments.length > 0) {
@@ -241,9 +252,9 @@ function ThreadChatView({
         return;
       }
       sending.current = true;
-      void actions.queueMessage(thread.id, text).then((queued) => {
+      void actions.queueMessage(thread.id, text, delivery).then((queued) => {
         sending.current = false;
-        if (queued) draft.clear();
+        if (queued) draft.clear(submittedDraft);
       });
       return;
     }
@@ -259,7 +270,7 @@ function ThreadChatView({
     sending.current = true;
     void actions.send(thread.id, text, toFileParts(attachments)).then((accepted) => {
       sending.current = false;
-      if (accepted) draft.clear();
+      if (accepted) draft.clear(submittedDraft);
     });
   };
 
@@ -273,7 +284,7 @@ function ThreadChatView({
    * Why the 排队条 says the queue is not moving. A turn that is still running
    * needs no explanation — it is about to take the next one.
    */
-  const queued = thread.queue ?? [];
+  const queued = (thread.queue ?? []).filter(item => item.mode !== "steer");
   const queueNote =
     thread.status === "interrupted"
       ? "已停止，排队暂停"
@@ -313,6 +324,7 @@ function ThreadChatView({
           error={(thread.status === "error" ? thread.error : undefined) ?? (error != null ? transportErrorText(error.message) : undefined)}
           actions={turnActions}
           allowlist={allowlist ?? []}
+          client={client}
         />
       </FileAccessProvider>
 
@@ -376,7 +388,7 @@ function ThreadChatView({
             onSteerQueued={(itemId) => actions.steerQueued(thread.id, itemId)}
             {...(branch != null ? { branch } : {})}
             branchTitle={
-              thread.workspace == null ? "主目录当前分支，任务直接改这里的文件" : "这个任务自己的分支"
+              thread.workspace == null && thread.workspaceState == null ? "主目录当前分支，任务直接改这里的文件" : "这个任务自己的分支"
             }
             // 运行位置 is settled once the task exists, so here it is a label and
             // not a picker; the directory itself is one hover away.

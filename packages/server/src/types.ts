@@ -254,6 +254,10 @@ export interface QueuedMessage {
   mode?: "queue" | "steer";
   /** A push engine acknowledged receipt, but has not confirmed model consumption. */
   accepted?: boolean;
+  /** Persisted before calling the runtime, to block editing during delivery. */
+  delivering?: boolean;
+  /** A manual send has reserved this item while the old turn stops. */
+  promoting?: boolean;
   /** Normal queued input reserved before its user message is atomically committed. */
   claimed?: boolean;
   /** The runtime reported this message entered the active turn. */
@@ -310,6 +314,8 @@ export interface ThreadRecord {
    * never sets it, because the user is the one who pressed it.
    */
   unread?: boolean;
+  /** Deferred worktree creation; absent once the worktree is ready. */
+  workspaceState?: "creating" | "failed";
   /** Present only for a task running in its own git worktree. */
   workspace?: ThreadWorkspace;
   /**

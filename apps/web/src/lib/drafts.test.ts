@@ -182,6 +182,21 @@ describe("DraftSync 写回", () => {
     expect(transport.puts).toHaveLength(1);
   });
 
+  it("does not clear newer typing or attachments when an older send finishes", () => {
+    const sync = new DraftSync(KEY, fakeTransport(), () => {});
+    sync.edit("第一条");
+    const sent = sync.current;
+    sync.edit("后来写的");
+    expect(sync.clear(sent)).toBe(false);
+    expect(sync.current.text).toBe("后来写的");
+    const second = sync.current;
+    sync.setAttachments([PNG]);
+    expect(sync.clear(second)).toBe(false);
+    expect(sync.current.attachments).toEqual([PNG]);
+    expect(sync.clear(sync.current)).toBe(true);
+    expect(sync.current.text).toBe("");
+  });
+
   it("sends a new file at once with its bytes, then names it by id, and clears it with the text", async () => {
     const transport = fakeTransport();
     const sync = new DraftSync(KEY, transport, () => {});

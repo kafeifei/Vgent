@@ -34,7 +34,8 @@ export interface SettingsPatch {
   mcpServers?: McpServerConfig[] | undefined;
   computerUseProvider?: "cua" | undefined;
   worktreeMaxCount?: number | undefined;
-  defaultWorkspace?: "project" | "worktree" | undefined;
+  /** Absent leaves it unchanged; `undefined` restores the project default. */
+  defaultWorkspace?: Settings["defaultWorkspace"] | undefined;
   /** 界面偏好. `undefined` puts the built-in default back. */
   theme?: UiTheme | undefined;
   density?: UiDensity | undefined;
@@ -121,7 +122,7 @@ const isSettings = (value: unknown): value is Settings =>
  * engine-per-model map (`modelEngines`) became part of `modelPicks` the same way.
  */
 export function migrateSettings(stored: Settings & { defaultPermissionMode?: PermissionMode; modelEngines?: unknown }): Settings {
-  const { defaultPermissionMode, hiddenModels, providerOrder, modelEngines, modelPicks, computerUseProvider, ...rest } = stored;
+  const { defaultPermissionMode, hiddenModels, providerOrder, modelEngines, modelPicks, computerUseProvider, defaultWorkspace, ...rest } = stored;
   // Read on every model listing, so a hand-edited file must not be able to make it throw.
   const hidden = Object.entries(typeof hiddenModels === "object" && hiddenModels !== null ? hiddenModels : {}).flatMap(([engine, ids]) =>
     Array.isArray(ids) ? [[engine, ids.filter((id) => typeof id === "string")] as const] : [],
@@ -130,6 +131,7 @@ export function migrateSettings(stored: Settings & { defaultPermissionMode?: Per
   return {
     ...rest,
     ...(computerUseProvider === "cua" ? { computerUseProvider } : {}),
+    ...(defaultWorkspace === "project" || defaultWorkspace === "worktree" ? { defaultWorkspace } : {}),
     ...(hidden.length > 0 ? { hiddenModels: Object.fromEntries(hidden) } : {}),
     ...(Array.isArray(providerOrder) ? { providerOrder: providerOrder.filter((id) => typeof id === "string") } : {}),
     ...(Object.keys(picks).length > 0 ? { modelPicks: picks } : {}),

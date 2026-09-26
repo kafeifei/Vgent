@@ -302,6 +302,7 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
     ],
   });
   const subagents = options.subagents !== false;
+  const subagentModel = subagents ? (options.subagentModel == null ? model : resolveModel(options.subagentModel, options.providers)) : undefined;
 
   const plan = options.plan === true;
 
@@ -330,7 +331,9 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
       ...(subagents
         ? createSubagentTools({
             ...setupOptions,
-            model: options.subagentModel == null ? model : resolveModel(options.subagentModel, options.providers),
+            model: subagentModel!,
+            // Expose supported reasoning summaries; retain the child's default effort.
+            providerOptions: reasoningProviderOptions(subagentModel!, options.reasoning?.summary === false ? { summary: false } : {}),
             contextTokenBudget,
             taskContext: () => JSON.stringify(planState.get() ?? {}),
           })

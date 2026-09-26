@@ -5,6 +5,7 @@ import type { RemoteAccessState } from "@/lib/types";
 import { useToast } from "@/lib/toast";
 import { BUTTON_SECONDARY, SettingsEmpty, SettingsGroup, SettingsPage, SettingsRow, Switch, Tag } from "./layout";
 import { INPUT_CLASS } from "./styles";
+import { RemoteConnect } from "./RemoteConnect";
 
 const STATUS = { disabled: "已关闭", connecting: "连接中…", online: "在线", offline: "离线，正在重试" };
 const ERROR = {
@@ -100,6 +101,7 @@ export function RemotePage({ client }: { client: ApiClient }) {
             <a href={state.url} className={BUTTON_SECONDARY} target="_blank" rel="noreferrer">打开<ExternalLink className="size-md" /></a>
           </SettingsRow>}
         </SettingsGroup>
+        <RemoteConnect onCopy={copy} />
         <SettingsGroup title="我的设备">
           {state.devices.length === 0 ? <SettingsEmpty>{state.account ? "还没有启用远程访问的设备。" : "登录后查看你的设备。"}</SettingsEmpty> : state.devices.map((device) => (
             <SettingsRow key={device.id} title={<><span className="truncate">{device.name}</span>{device.current && <Tag>本机</Tag>}</>} help={device.online == null ? "状态未知" : device.online ? "在线" : "离线"}>

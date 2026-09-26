@@ -9,7 +9,6 @@ import type { DraftTransport } from "@/lib/drafts";
 import { NEW_TASK_DRAFT, useDraft } from "@/lib/drafts";
 import { useToast } from "@/lib/toast";
 import { NO_PROJECT_NAME, isNoProject } from "@/lib/noProject";
-import type { NewTaskSeed } from "@/app/useWorkbench";
 import type { EngineDescriptor, EngineId, Project, Settings, ThreadMode, WorkspaceMode } from "@/lib/types";
 
 /**
@@ -37,7 +36,6 @@ export function EmptyState({
   projectId,
   engines,
   settings,
-  seed,
   client,
   onSelectProject,
   onAddProject,
@@ -49,11 +47,6 @@ export function EmptyState({
   projectId: string | null;
   engines: EngineDescriptor[];
   settings: Settings | null;
-  /**
-   * The task 新任务 was pressed on top of, if any: its engine and model are
-   * the 临时默认值 here, ahead of the last started choice the server keeps.
-   */
-  seed: NewTaskSeed | null;
   /**
    * The draft routes — this screen's draft lives on the server like every
    * other — plus the project's current branch, for the row above the composer.
@@ -122,9 +115,9 @@ export function EmptyState({
     };
   }, [client, projectId]);
 
-  const engine = picked?.engine ?? seed?.engine ?? settings?.defaultEngine ?? engines[0]?.id;
+  const engine = picked?.engine ?? settings?.defaultEngine ?? engines[0]?.id;
   // `null` means「用默认」: the server falls back to `settings.defaultModel`.
-  const model = picked?.model ?? (picked == null ? ((seed != null ? seed.model : settings?.defaultModel) ?? null) : null);
+  const model = picked?.model ?? (picked == null ? (settings?.defaultModel ?? null) : null);
 
   /** One in-flight start at a time: the text stays until the task really exists. */
   const starting = useRef(false);

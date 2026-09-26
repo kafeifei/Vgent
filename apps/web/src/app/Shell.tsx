@@ -162,8 +162,8 @@ export function Shell({ token }: { token: string }) {
           onOpenPalette={actions.openPalette}
           onOpenSettings={actions.openSettings}
           onToggle={actions.toggleLeft}
-          onSelectProject={actions.selectProject}
-          onAddProject={actions.addProject}
+          onOpenProject={actions.openProject}
+          onOpenFolder={actions.openFolder}
           onPickFolder={actions.pickFolder}
           settingsOpen={settingsOpen}
           getChat={actions.getChat}

@@ -12,6 +12,8 @@ export const GROUPING_LABELS: Record<Grouping, string> = {
 export interface ThreadGroup {
   key: string;
   title: string;
+  /** A workspace row can start a task even when it has no tasks yet. */
+  projectId?: string;
   /** Shown after the title when the grouping is count-bearing. */
   count?: number;
   /** 已归档 comes in folded; every other group is always open. */
@@ -98,12 +100,11 @@ export function groupThreads(
     }
     return withArchived(
       projects
-        .filter((project) => byProject.has(project.id))
-        .map((project) => ({ key: project.id, title: project.name, threads: byProject.get(project.id) ?? [] }))
+        .map((project): ThreadGroup => ({ key: project.id, projectId: project.id, title: project.name, threads: byProject.get(project.id) ?? [] }))
         .concat(
           [...byProject.entries()]
             .filter(([id]) => !projects.some((project) => project.id === id))
-            .map(([id, list]) => ({ key: id, title: isNoProject(id) ? NO_PROJECT_NAME : "未知项目", threads: list })),
+            .map(([id, list]) => ({ key: id, ...(isNoProject(id) ? { projectId: id } : {}), title: isNoProject(id) ? NO_PROJECT_NAME : "未知项目", threads: list })),
         ),
     );
   }

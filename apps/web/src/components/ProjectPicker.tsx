@@ -1,4 +1,4 @@
-import { Folder } from "lucide-react";
+import { FolderOpen } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { PopItem, PopTitle, Popover } from "./Popover";
 import { ApiError } from "@/lib/api";
@@ -8,7 +8,7 @@ import { isImeKeyEvent } from "@/lib/ime";
 import { NO_PROJECT_ID, NO_PROJECT_NAME, isNoProject } from "@/lib/noProject";
 
 /**
- * The project switcher, shared by the window bar and the empty state. Adding a
+ * The workspace opener and new-task project selector share folder picking. Adding a
  * project opens the native folder chooser — typing a path is only the fallback
  * for a host that has no picker.
  */
@@ -20,6 +20,7 @@ export function ProjectPicker({
   onPickFolder,
   trigger,
   align = "start",
+  purpose = "task",
 }: {
   projects: Project[];
   selectedId: string | null;
@@ -29,6 +30,7 @@ export function ProjectPicker({
   onPickFolder: () => Promise<string | null>;
   trigger: (props: Parameters<Parameters<typeof Popover>[0]["trigger"]>[0]) => ReactNode;
   align?: "start" | "end";
+  purpose?: "task" | "workspace";
 }) {
   return (
     <Popover align={align} trigger={trigger}>
@@ -40,6 +42,7 @@ export function ProjectPicker({
           onAdd={onAdd}
           onPickFolder={onPickFolder}
           close={close}
+          purpose={purpose}
         />
       )}
     </Popover>
@@ -53,6 +56,7 @@ function ProjectPanel({
   onAdd,
   onPickFolder,
   close,
+  purpose,
 }: {
   projects: Project[];
   selectedId: string | null;
@@ -60,6 +64,7 @@ function ProjectPanel({
   onAdd: (repoPath: string) => Promise<void>;
   onPickFolder: () => Promise<string | null>;
   close: () => void;
+  purpose: "task" | "workspace";
 }) {
   const toast = useToast();
   const [typing, setTyping] = useState(false);
@@ -104,11 +109,13 @@ function ProjectPanel({
 
   return (
     <>
-      <PopTitle>项目</PopTitle>
+      <PopTitle>{purpose === "workspace" ? "打开工作区" : "新任务所属项目"}</PopTitle>
       {projects.map((project) => (
         <PopItem
           key={project.id}
-          selected={project.id === selectedId}
+          selected={purpose === "task" && project.id === selectedId}
+          disabled={busy}
+          title={project.repoPath}
           onClick={() => {
             onSelect(project.id);
             close();
@@ -120,21 +127,25 @@ function ProjectPanel({
       ))}
 
       {/* 无项目: ask something, or do throwaway work, without pointing at a codebase. */}
-      <PopItem
-        selected={isNoProject(selectedId)}
-        onClick={() => {
-          onSelect(NO_PROJECT_ID);
-          close();
-        }}
-      >
-        <span className="block truncate">{NO_PROJECT_NAME}</span>
-        <span className="block truncate text-2xs text-fg-faint">不指向任何仓库，在任务自己的临时目录里跑</span>
-      </PopItem>
+      {purpose === "task" && (
+        <PopItem
+          selected={isNoProject(selectedId)}
+          disabled={busy}
+          onClick={() => {
+            onSelect(NO_PROJECT_ID);
+            close();
+          }}
+        >
+          <span className="block truncate">{NO_PROJECT_NAME}</span>
+          <span className="block truncate text-2xs text-fg-faint">在独立临时目录中开始任务</span>
+        </PopItem>
+      )}
 
-      <PopItem onClick={pick}>
+      {projects.length > 0 && <div role="separator" className="my-2xs border-border border-t" />}
+      <PopItem onClick={pick} disabled={busy}>
         <span className="inline-flex items-center gap-xs">
-          <Folder className="size-md" />
-          {busy ? "选择中…" : "选择文件夹…"}
+          <FolderOpen className="size-md" />
+          {busy ? "打开中…" : "打开文件夹…"}
         </span>
       </PopItem>
 
@@ -143,6 +154,7 @@ function ProjectPanel({
           <input
             autoFocus
             value={path}
+            aria-label="文件夹路径"
             placeholder="/absolute/repo/path"
             onChange={(event) => setPath(event.target.value)}
             onKeyDown={(event) => {
@@ -155,11 +167,11 @@ function ProjectPanel({
           {error != null && <div className="mt-2xs text-danger text-xs">{error}</div>}
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || path.trim() === ""}
             onClick={submit}
             className="mt-2xs inline-flex h-lg items-center rounded-sm border border-brand bg-brand px-xs font-semibold text-2xs text-brand-fg hover:bg-brand-hover disabled:opacity-50"
           >
-            添加
+            打开
           </button>
         </div>
       )}

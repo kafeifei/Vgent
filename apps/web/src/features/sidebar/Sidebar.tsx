@@ -1,7 +1,7 @@
 import { useState, type ComponentType } from "react";
 import type { Chat } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
-import { ChevronRight, FolderOpen, FolderPlus, ListFilter, PanelLeft, Search, Settings, SquarePen } from "lucide-react";
+import { ChevronRight, FolderOpen, FolderPlus, ListFilter, PanelLeft, Plus, Search, Settings, SquarePen } from "lucide-react";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ProjectPicker } from "@/components/ProjectPicker";
 import { BUILD_DETAIL, BUILD_LABEL } from "@/lib/build";
@@ -61,8 +61,8 @@ export function Sidebar({
   onOpenPalette,
   onOpenSettings,
   onToggle,
-  onSelectProject,
-  onAddProject,
+  onOpenProject,
+  onOpenFolder,
   onPickFolder,
   settingsOpen,
   getChat,
@@ -73,7 +73,7 @@ export function Sidebar({
   onRename,
 }: {
   projects: Project[];
-  /** The project a new task would start in; the add-folder picker marks it. */
+  /** The project of the current task or new-task draft. */
   projectId: string | null;
   threads: ThreadSummary[];
   grouping: Grouping;
@@ -87,8 +87,8 @@ export function Sidebar({
   onOpenSettings: () => void;
   /** 收起侧栏 ⌘B. */
   onToggle: () => void;
-  onSelectProject: (projectId: string) => void;
-  onAddProject: (repoPath: string) => Promise<void>;
+  onOpenProject: (projectId: string) => void;
+  onOpenFolder: (repoPath: string) => Promise<void>;
   onPickFolder: () => Promise<string | null>;
   settingsOpen: boolean;
   /** Live chats only: the sidebar reads the current action off them. */
@@ -126,8 +126,7 @@ export function Sidebar({
         <TopEntry icon={Search} label="搜索" shortcut="⌘K" onClick={onOpenPalette} />
       </div>
 
-      {/* 工作区 with its two icons: how the list is grouped, and adding a
-          folder. Both are settings of the list, so they sit on its header. */}
+      {/* Group the list, or open a workspace and start a task in it. */}
       <div className="mt-section-gap flex h-row flex-none items-center pr-sm pl-[calc(var(--spacing-sm)+var(--spacing-row-pad))]">
         <span className="min-w-0 flex-1 truncate text-fg-muted text-xs">工作区</span>
         <Popover
@@ -165,12 +164,13 @@ export function Sidebar({
         <ProjectPicker
           projects={projects}
           selectedId={projectId}
-          onSelect={onSelectProject}
-          onAdd={onAddProject}
+          onSelect={onOpenProject}
+          onAdd={onOpenFolder}
           onPickFolder={onPickFolder}
+          purpose="workspace"
           align="end"
           trigger={(props) => (
-            <button type="button" {...props} aria-label="添加项目" title="项目：切换、添加文件夹" className={SIDEBAR_ICON_BUTTON}>
+            <button type="button" {...props} aria-label="打开工作区" title="打开工作区" className={SIDEBAR_ICON_BUTTON}>
               <FolderPlus className="size-lg" />
             </button>
           )}
@@ -205,6 +205,17 @@ export function Sidebar({
                 >
                   {title}
                 </button>
+              ) : group.projectId != null ? (
+                <button
+                  type="button"
+                  title={`在 ${group.title} 中新建任务`}
+                  aria-label={`在 ${group.title} 中新建任务`}
+                  onClick={() => onOpenProject(group.projectId!)}
+                  className={cn(rowClass, "hover:bg-bg-hover", selectedThreadId == null && group.projectId === projectId && "bg-bg-active")}
+                >
+                  {title}
+                  <Plus className="ml-auto size-md flex-none text-fg-faint" />
+                </button>
               ) : (
                 <div className={rowClass}>{title}</div>
               )}
@@ -226,7 +237,7 @@ export function Sidebar({
             </div>
           );
         })}
-        {threads.length === 0 && <p className="px-row-pad py-sm text-fg-faint text-sm">还没有任务。</p>}
+        {groups.length === 0 && <p className="px-row-pad py-sm text-fg-faint text-sm">还没有任务。</p>}
       </nav>
 
       <div className="flex h-foot flex-none items-center gap-sm pr-sm pl-[calc(var(--spacing-sm)+var(--spacing-row-pad))]">

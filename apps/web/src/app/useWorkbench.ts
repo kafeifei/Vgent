@@ -7,7 +7,7 @@ import { pruneDrafts } from "@/lib/drafts";
 import { ThreadChats } from "@/lib/threadChats";
 import { useServerState } from "@/lib/useServerState";
 import { useToast } from "@/lib/toast";
-import type { EngineDescriptor, EngineId, ThreadMessageMetadata, ThreadMode, ThreadStatus, ThreadSummary, WorkspaceMode } from "@/lib/types";
+import type { EngineDescriptor, EngineId, Project, ThreadMessageMetadata, ThreadMode, ThreadStatus, ThreadSummary, WorkspaceMode } from "@/lib/types";
 import { LIVE_STATUSES } from "@/lib/types";
 import { repoRelative } from "@/features/changes/paths";
 import { toFileParts, type Attachment } from "@/features/composer/attachments";
@@ -78,9 +78,20 @@ export function useWorkbench(token: string) {
    */
   const [pendingArchive, setPendingArchive] = useState<PendingArchive>(() => new Map());
   useEffect(() => setPendingArchive((pending) => settledPendingArchive(pending, server.threads)), [server.threads]);
+  // The create response can arrive before SSE. Show the opened workspace now,
+  // then let the server snapshot take ownership as soon as it includes it.
+  const [justAddedProject, setJustAddedProject] = useState<Project | null>(null);
+  useEffect(() => {
+    if (justAddedProject != null && server.projects.some((project) => project.id === justAddedProject.id)) setJustAddedProject(null);
+  }, [justAddedProject, server.projects]);
   const state = useMemo(
-    () => (pendingArchive.size === 0 ? server : { ...server, threads: withPendingArchive(server.threads, pendingArchive) }),
-    [pendingArchive, server],
+    () => ({
+      ...server,
+      projects: justAddedProject != null && !server.projects.some((project) => project.id === justAddedProject.id)
+        ? [...server.projects, justAddedProject] : server.projects,
+      threads: pendingArchive.size === 0 ? server.threads : withPendingArchive(server.threads, pendingArchive),
+    }),
+    [justAddedProject, pendingArchive, server],
   );
 
   const chats = useMemo(() => new ThreadChats(token, (error) => toast(error.message)), [token, toast]);
@@ -167,6 +178,21 @@ export function useWorkbench(token: string) {
     setSettingsOpen(false);
   }, []);
 
+  // Opening a workspace is navigation. Clear the current task so its project
+  // cannot override the chosen workspace, and reveal the workspace in the list.
+  const openProject = useCallback((id: string) => {
+    setProjectId(id);
+    selectThread(null);
+    setGrouping("project");
+  }, [selectThread]);
+
+  const addProject = useCallback(async (repoPath: string) => {
+    const project = await client.createProject(repoPath);
+    if (project.note != null) toast(project.note);
+    setJustAddedProject(project);
+    setProjectId(project.id);
+  }, [client, toast]);
+
   /**
    * 未读 clears when the task is really on screen: selected, in a window that is
    * visible and focused. A transition that lands while it is already open in a
@@ -244,6 +270,12 @@ export function useWorkbench(token: string) {
     () => ({
       selectThread,
       selectProject: (id: string) => setProjectId(id),
+      openProject,
+      openFolder: async (repoPath: string) => {
+        await addProject(repoPath);
+        selectThread(null);
+        setGrouping("project");
+      },
       newTask: () => {
         // The model is not taken from the task being looked at: the empty state
         // starts from the last *started* choice, which the server keeps.
@@ -293,11 +325,7 @@ export function useWorkbench(token: string) {
       openPalette: () => setPalette(true),
       closePalette: () => setPalette(false),
 
-      addProject: async (repoPath: string) => {
-        const project = await client.createProject(repoPath);
-        if (project.note != null) toast(project.note);
-        setProjectId(project.id);
-      },
+      addProject,
 
       /** Native folder chooser: the desktop shell's own dialog, or the server's. */
       pickFolder: () => client.pickFolder(),
@@ -552,7 +580,7 @@ export function useWorkbench(token: string) {
       whenReady: (threadId: string) => chats.whenReady(threadId),
       toast,
     }),
-    [activeProjectId, chats, client, selectChange, selectThread, selectedThreadId, state.projects, state.threads, thread, toast],
+    [activeProjectId, addProject, openProject, chats, client, selectChange, selectThread, selectedThreadId, state.projects, state.threads, thread, toast],
   );
 
   // ⌘K / ⌘N / ⌘J / ⌘B / ⌘,

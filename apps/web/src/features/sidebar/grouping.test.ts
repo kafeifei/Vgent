@@ -32,6 +32,15 @@ const threads = [
 ];
 
 describe("groupThreads", () => {
+  it("keeps opened workspaces visible before their first task and after archiving their last task", () => {
+    const empty = groupThreads([], projects, "project", NOW);
+    expect(empty.map((group) => [group.projectId, group.threads.length])).toEqual([["p1", 0], ["p2", 0]]);
+    const archived = { ...threads[0]!, archivedAt: ago(HOUR) };
+    const groups = groupThreads([archived], projects, "project", NOW);
+    expect(groups.slice(0, -1)).toEqual(empty);
+    expect(groups.at(-1)?.threads).toEqual([archived]);
+  });
+
   it("files 无项目 tasks under one heading of their own, after the projects", () => {
     const groups = groupThreads([...threads, thread("n1", "no-project", "idle", ago(HOUR)), thread("n2", "no-project", "idle", ago(DAY))], projects, "project", NOW);
     expect(groups.map((group) => group.title)).toEqual(["vgent", "freecode", "无项目"]);
@@ -111,6 +120,7 @@ describe("groupThreads", () => {
 
   it("keeps threads whose project the server no longer lists", () => {
     const groups = groupThreads([thread("t9", "gone", "idle", ago(HOUR))], projects, "project", NOW);
-    expect(groups).toEqual([expect.objectContaining({ title: "未知项目" })]);
+    expect(groups.at(-1)).toMatchObject({ title: "未知项目", threads: [expect.objectContaining({ id: "t9" })] });
+    expect(groups.at(-1)?.projectId).toBeUndefined();
   });
 });

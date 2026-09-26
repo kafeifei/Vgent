@@ -5,29 +5,55 @@ import { OutcomeBadge } from "@/components/OutcomeBadge";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { TRANSITION_LABELS, type ThreadSummary, type ThreadTransition, type ThreadWorkspace } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { UncommittedConfirm, useUncommittedGate } from "@/features/workspace/UncommittedConfirm";
 
-/** The worktree glyph's popover: where the task's files are, and reclaim / restore. */
+/**
+ * The worktree glyph's popover: where the task's files are, and reclaim /
+ * restore. Reclaiming a worktree with uncommitted changes asks first, in place.
+ */
 function WorkspaceMenu({
   workspace,
   running,
   transition,
   onReclaim,
   onRestore,
+  onCheckUncommitted,
   close,
 }: {
   workspace: ThreadWorkspace;
   running: boolean;
   /** 归档中 / 恢复中 is doing exactly this already. */
   transition: ThreadTransition | undefined;
-  onReclaim: () => Promise<void>;
+  onReclaim: (preserveChanges: boolean) => Promise<void>;
   onRestore: () => Promise<void>;
+  onCheckUncommitted: () => Promise<number>;
   close: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const act = (work: () => Promise<void>): void => {
+    setBusy(true);
+    void work().finally(() => {
+      setBusy(false);
+      close();
+    });
+  };
+  const reclaim = useUncommittedGate(onCheckUncommitted, (preserveChanges) => act(() => onReclaim(preserveChanges)));
   const reclaimed = workspace.reclaimed === true;
   // Only a live run holds the directory open, which is the very condition the
   // server refuses a reclaim on (`runs.isRunning`).
-  const blocked = busy || transition != null || (!reclaimed && running);
+  const blocked = busy || transition != null || (!reclaimed && running) || reclaim.phase === "checking";
+
+  if (typeof reclaim.phase === "object") {
+    return (
+      <UncommittedConfirm
+        files={reclaim.phase.files}
+        verb="回收"
+        comeBack="恢复工作目录"
+        onConfirm={() => act(() => onReclaim(true))}
+        onCancel={reclaim.cancel}
+      />
+    );
+  }
 
   return (
     <>
@@ -44,13 +70,7 @@ function WorkspaceMenu({
       <PopItem
         disabled={blocked}
         {...(transition != null ? { hint: TRANSITION_LABELS[transition] } : !reclaimed && running ? { hint: "任务运行中" } : {})}
-        onClick={() => {
-          setBusy(true);
-          void (reclaimed ? onRestore() : onReclaim()).finally(() => {
-            setBusy(false);
-            close();
-          });
-        }}
+        onClick={() => (reclaimed ? act(onRestore) : reclaim.start())}
       >
         {reclaimed ? "恢复工作目录" : "回收工作目录"}
       </PopItem>
@@ -107,13 +127,15 @@ export function TaskHeader({
   rightOpen,
   onReclaimWorkspace,
   onRestoreWorkspace,
+  onCheckUncommitted,
   onToggleLeft,
 }: {
   thread: ThreadSummary;
   leftOpen: boolean;
   rightOpen: boolean;
-  onReclaimWorkspace: () => Promise<void>;
+  onReclaimWorkspace: (preserveChanges: boolean) => Promise<void>;
   onRestoreWorkspace: () => Promise<void>;
+  onCheckUncommitted: () => Promise<number>;
   onToggleLeft: () => void;
 }) {
   const workspace = thread.workspace;
@@ -152,6 +174,7 @@ export function TaskHeader({
               transition={thread.transition}
               onReclaim={onReclaimWorkspace}
               onRestore={onRestoreWorkspace}
+              onCheckUncommitted={onCheckUncommitted}
               close={close}
             />
           )}

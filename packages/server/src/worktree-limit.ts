@@ -3,12 +3,15 @@
  *
  * Every worktree is a full checkout plus whatever its setup installed, so a
  * month of tasks is tens of gigabytes nobody asked for. Over the cap, the
- * oldest tasks that are not mid-turn give their directory back — through the
- * ordinary reclaim, which keeps their changes in git first, so 「恢复工作目录」
- * brings them back and reruns the setup for the rest.
+ * oldest clean tasks that are not mid-turn give their directory back — through
+ * the ordinary reclaim, and 「恢复工作目录」 reruns the setup for them. A task
+ * with uncommitted changes is never reclaimed behind the user's back: that
+ * takes their confirmation, which only 归档 / 回收 asks for (as Fumie's disk
+ * budget reclaims clean checkouts only).
  */
 import type { ProjectStore } from "./store/projects.js";
 import type { ThreadStore } from "./store/threads.js";
+import { ConflictError } from "./errors.js";
 import type { Logger, ThreadStatus } from "./types.js";
 import { silentLogger } from "./types.js";
 import { reclaimWorktree } from "./workspace.js";
@@ -24,10 +27,12 @@ export interface EnforceWorktreeLimitOptions {
   projects: ProjectStore;
   /** `settings.worktreeMaxCount`, already defaulted. */
   max: number;
+  /** A task just made or restored: skipping the dirty ones must not land on it. */
+  keep?: string;
   log?: Logger;
 }
 
-/** Reclaims oldest-first until the number of live worktrees is within the cap. */
+/** Reclaims clean worktrees oldest-first until the number of live ones is within the cap. */
 export async function enforceWorktreeLimit(options: EnforceWorktreeLimitOptions): Promise<number> {
   const { dataDir, threads, projects, max } = options;
   const log = options.log ?? silentLogger;
@@ -39,7 +44,7 @@ export async function enforceWorktreeLimit(options: EnforceWorktreeLimitOptions)
 
   const candidates = live
     // 归档中 is reclaiming it already.
-    .filter((summary) => !LIVE.includes(summary.status) && summary.transition == null)
+    .filter((summary) => !LIVE.includes(summary.status) && summary.transition == null && summary.id !== options.keep)
     .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
 
   let reclaimed = 0;
@@ -57,7 +62,8 @@ export async function enforceWorktreeLimit(options: EnforceWorktreeLimitOptions)
       count -= 1;
       reclaimed += 1;
     } catch (error) {
-      log.warn(`回收 worktree 失败: ${thread.title}`, error);
+      if (error instanceof ConflictError && error.code === "archive_needs_confirmation") log.info(`worktree 有没提交的改动，不自动回收: ${thread.title}`);
+      else log.warn(`回收 worktree 失败: ${thread.title}`, error);
     }
   }
   return reclaimed;

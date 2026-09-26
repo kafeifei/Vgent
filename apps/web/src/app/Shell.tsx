@@ -168,6 +168,7 @@ export function Shell({ token }: { token: string }) {
           settingsOpen={settingsOpen}
           getChat={actions.getChat}
           onArchive={actions.archiveThread}
+          onCheckUncommitted={actions.countUncommitted}
           onUnread={actions.markUnread}
           onDelete={actions.deleteThread}
           onRename={actions.rename}

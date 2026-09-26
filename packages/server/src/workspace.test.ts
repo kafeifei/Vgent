@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Project, ThreadRecord, ThreadWorkspace } from "./types.js";
-import { createWorktree, inventory, reclaimWorktree, removeWorktree, restoreWorktree, verifyOwnership } from "./workspace.js";
+import { countUncommitted, createWorktree, inventory, reclaimWorktree, removeWorktree, restoreWorktree, verifyOwnership } from "./workspace.js";
 
 const exec = promisify(execFile);
 const hasGit = spawnSync("git", ["--version"]).status === 0;
@@ -116,7 +116,8 @@ describe.skipIf(!hasGit)("workspace", () => {
     await writeFile(join(workspace.path, "staged.txt"), "暂存之后又改了\n");
     const before = await inventory(workspace.path);
 
-    const { snapshotPath } = await reclaimWorktree({ dataDir, project, thread: threadOf(id, workspace) });
+    expect(await countUncommitted(workspace.path)).toBe(3);
+    const { snapshotPath } = await reclaimWorktree({ dataDir, project, thread: threadOf(id, workspace), preserveChanges: true });
     // The changes live in git now, not in a copy of the directory.
     const archive = (await run(repo, "rev-parse", `refs/vgent/archive/${id}`)).stdout.trim();
     expect(JSON.parse(await readFile(join(snapshotPath, "manifest.json"), "utf8"))).toMatchObject({ version: 2, archive, branch: workspace.branch });
@@ -137,6 +138,23 @@ describe.skipIf(!hasGit)("workspace", () => {
     // Consumed once the changes are back.
     await expect(run(repo, "rev-parse", "--verify", `refs/vgent/archive/${id}`)).rejects.toBeDefined();
     expect(await status(repo)).toBe("");
+  });
+
+  it("takes uncommitted changes only when told to, and touches nothing otherwise", async () => {
+    const dataDir = await tempDir("vgent-ws-data-");
+    const repo = await seededRepo();
+    const id = "confirm0-0000-0000-0000-000000000001";
+    const project = projectOf(repo);
+    const workspace = await createWorktree({ dataDir, project, threadId: id });
+    await writeFile(join(workspace.path, "tracked.txt"), "line1\n改了\n");
+    await run(workspace.path, "mv", "tracked.txt", "renamed.txt");
+    // A rename is one file, not its two paths.
+    expect(await countUncommitted(workspace.path)).toBe(1);
+
+    await expect(reclaimWorktree({ dataDir, project, thread: threadOf(id, workspace) })).rejects.toMatchObject({ code: "archive_needs_confirmation" });
+    expect(await readFile(join(workspace.path, "renamed.txt"), "utf8")).toBe("line1\n改了\n");
+    expect((await run(repo, "worktree", "list", "--porcelain")).stdout).toContain(workspace.path);
+    await expect(run(repo, "rev-parse", "--verify", `refs/vgent/archive/${id}`)).rejects.toBeDefined();
   });
 
   it("leaves ignored files behind and keeps no archive for a clean worktree", async () => {
@@ -176,6 +194,7 @@ describe.skipIf(!hasGit)("workspace", () => {
         dataDir,
         project,
         thread: threadOf(id, workspace),
+        preserveChanges: true,
         onCaptured: () => writeFile(join(workspace.path, "busy.txt"), "外部编辑\n"),
       }),
     ).rejects.toMatchObject({ code: "workspace_changed_during_snapshot" });
@@ -193,9 +212,9 @@ describe.skipIf(!hasGit)("workspace", () => {
     const workspace = await createWorktree({ dataDir, project, threadId: id });
     await writeFile(join(workspace.path, "work.txt"), "没提交\n");
 
-    const first = await reclaimWorktree({ dataDir, project, thread: threadOf(id, workspace) });
+    const first = await reclaimWorktree({ dataDir, project, thread: threadOf(id, workspace), preserveChanges: true });
     // The process died before recording the reclaim: the record still points at a live directory.
-    const again = await reclaimWorktree({ dataDir, project, thread: threadOf(id, workspace) });
+    const again = await reclaimWorktree({ dataDir, project, thread: threadOf(id, workspace), preserveChanges: true });
     expect(again.snapshotPath).toBe(first.snapshotPath);
   });
 
@@ -206,7 +225,7 @@ describe.skipIf(!hasGit)("workspace", () => {
     const project = projectOf(repo);
     const workspace = await createWorktree({ dataDir, project, threadId: id });
     await writeFile(join(workspace.path, "work.txt"), "没提交\n");
-    const { snapshotPath } = await reclaimWorktree({ dataDir, project, thread: threadOf(id, workspace) });
+    const { snapshotPath } = await reclaimWorktree({ dataDir, project, thread: threadOf(id, workspace), preserveChanges: true });
     const reclaimed = threadOf(id, { ...workspace, reclaimed: true, snapshotPath });
 
     const ref = `refs/vgent/archive/${id}`;

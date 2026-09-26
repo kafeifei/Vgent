@@ -97,6 +97,8 @@ export type ThreadPatch = Partial<{
   archivedAt: string | undefined;
   /** 归档中 / 恢复中. `undefined` once the worktree side of it is done — or taken back. */
   transition: ThreadTransition | undefined;
+  /** Goes with `transition: "archiving"`, and away once the move is done or taken back. */
+  archivePreserveChanges: true | undefined;
   messages: UIMessage[];
 }>;
 
@@ -411,6 +413,10 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
         if ("transition" in patch) {
           if (patch.transition == null) delete next.transition;
           else next.transition = patch.transition;
+        }
+        if ("archivePreserveChanges" in patch) {
+          if (patch.archivePreserveChanges == null) delete next.archivePreserveChanges;
+          else next.archivePreserveChanges = patch.archivePreserveChanges;
         }
         await writeJsonAtomic(recordPath(id), next);
         return next;

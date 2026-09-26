@@ -153,6 +153,7 @@ export {
 } from "./instance-lock.js";
 export { DEFAULT_DATA_DIR, resolveDataDir } from "./paths.js";
 export {
+  countUncommitted,
   createWorktree,
   discardSnapshot,
   inventory,

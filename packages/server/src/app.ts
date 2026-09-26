@@ -81,7 +81,7 @@ import type {
   UiTheme,
 } from "./types.js";
 import { silentLogger } from "./types.js";
-import { createWorktree, discardSnapshot, reclaimWorktree, removeWorktree, restoreWorktree } from "./workspace.js";
+import { countUncommitted, createWorktree, discardSnapshot, reclaimWorktree, removeWorktree, restoreWorktree } from "./workspace.js";
 import { DEFAULT_WORKTREE_MAX_COUNT, enforceWorktreeLimit } from "./worktree-limit.js";
 import { failInterruptedSetups, readSetupLog, startSetup } from "./worktree-setup.js";
 
@@ -187,6 +187,13 @@ function readReasoningEffort(value: unknown): string | undefined {
     throw new BadRequestError("reasoningEffort 必须是非空短字符串", "invalid_reasoning_effort");
   }
   return trimmed;
+}
+
+/** 归档 / 回收's confirmation that uncommitted changes go along. Absent is「没确认」. */
+function readPreserveChanges(value: unknown): boolean {
+  if (value == null) return false;
+  if (typeof value !== "boolean") throw new BadRequestError("preserveChanges 只能是布尔值", "invalid_preserve_changes");
+  return value;
 }
 
 /** 模式 from a request body. Absent means「不改」; anything but the two words is a 400. */
@@ -407,9 +414,10 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   /** `settings.worktreeMaxCount`, defaulted. */
   const worktreeCap = async (): Promise<number> => (await settings.get()).worktreeMaxCount ?? DEFAULT_WORKTREE_MAX_COUNT;
-  const trimWorktrees = (): Promise<void> =>
+  /** `keep`: the task whose worktree just came to be, never the one to give it back. */
+  const trimWorktrees = (keep?: string): Promise<void> =>
     worktreeCap()
-      .then((max) => enforceWorktreeLimit({ dataDir, threads, projects, max, log }))
+      .then((max) => enforceWorktreeLimit({ dataDir, threads, projects, max, log, ...(keep != null ? { keep } : {}) }))
       .then(() => {})
       .catch((error: unknown) => log.warn("回收超额 worktree 失败", error));
 
@@ -463,7 +471,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
   // must not also wait on housekeeping.
   void recovered
     .then(() => resumeTransitions())
-    .then(trimWorktrees)
+    .then(() => trimWorktrees())
     .then(backfillChangeStats)
     .then(dispatchQueuesAtBoot)
     .catch((error: unknown) => log.warn("补算改动统计失败", error));
@@ -886,15 +894,18 @@ export function createApp(options: CreateAppOptions): VgentApp {
   /**
    * Keep the task's changes in git and remove its worktree. `undefined` means
    * there was nothing to do — no worktree, or it is already gone — so the
-   * caller leaves the record alone. Archiving shares this with the explicit route.
+   * caller leaves the record alone. Archiving shares this with the explicit
+   * route. Uncommitted changes go along only with `preserveChanges` — the user
+   * confirmed them; without it a dirty worktree is refused and left as it is.
    */
-  const reclaimFor = async (thread: ThreadRecord): Promise<ThreadWorkspace | undefined> => {
+  const reclaimFor = async (thread: ThreadRecord, preserveChanges: boolean): Promise<ThreadWorkspace | undefined> => {
     const workspace = thread.workspace;
     if (workspace == null || workspace.reclaimed === true) return undefined;
     const { snapshotPath } = await reclaimWorktree({
       dataDir,
       project: await projectOf(thread),
       thread,
+      preserveChanges,
       ...(options.beforeWorktreeSnapshot != null ? { onCaptured: options.beforeWorktreeSnapshot } : {}),
     });
     return { ...workspace, reclaimed: true, snapshotPath };
@@ -929,16 +940,22 @@ export function createApp(options: CreateAppOptions): VgentApp {
     try {
       const thread = await threadOf(id);
       if (direction === "archiving") {
-        const workspace = await reclaimFor(thread);
+        const workspace = await reclaimFor(thread, thread.archivePreserveChanges === true);
         // 撤销带回 is an offer about a task the user is still looking at.
         // Archiving says they are done with it, so the offer goes away.
-        return await threads.update(id, { ...(workspace != null ? { workspace } : {}), applyUndo: undefined, transition: undefined });
+        return await threads.update(id, {
+          ...(workspace != null ? { workspace } : {}),
+          applyUndo: undefined,
+          transition: undefined,
+          archivePreserveChanges: undefined,
+        });
       }
       return (await restoreFor(thread, { transition: undefined })) ?? (await threads.update(id, { transition: undefined }));
     } catch (error) {
       await threads
         .update(id, {
           transition: undefined,
+          archivePreserveChanges: undefined,
           archivedAt: direction === "archiving" ? undefined : (archivedBefore ?? new Date().toISOString()),
         })
         .catch((failure: unknown) => log.warn(`线程 ${id} 的归档状态没能退回`, failure));
@@ -964,11 +981,22 @@ export function createApp(options: CreateAppOptions): VgentApp {
   app.post("/api/threads/:id/workspace/reclaim", async (c) => {
     const id = c.req.param("id");
     if (runs.isRunning(id)) throw new ConflictError(`线程正在运行，无法回收工作目录: ${id}`, "thread_running");
+    const body = (await c.req.json().catch(() => undefined)) as { preserveChanges?: unknown } | undefined;
     const thread = await threadOf(id);
     assertSettled(thread);
     if (thread.workspace == null) throw new ConflictError("此任务没有独立工作目录", "workspace_not_worktree");
-    const workspace = await reclaimFor(thread);
+    const workspace = await reclaimFor(thread, readPreserveChanges(body?.preserveChanges));
     return c.json(workspace == null ? thread : await threads.update(id, { workspace }));
+  });
+
+  // How many files the worktree has that git has not committed: what 归档 /
+  // 回收 would take along, and so what the user confirms first.
+  app.get("/api/threads/:id/workspace/uncommitted", async (c) => {
+    const thread = await threadOf(c.req.param("id"));
+    const workspace = thread.workspace;
+    if (workspace == null || workspace.reclaimed === true) return c.json({ files: 0 });
+    assertSettled(thread);
+    return c.json({ files: await countUncommitted(workspace.path) });
   });
 
   // What the project's setup script printed. The 终端 tab shows it as the
@@ -1012,7 +1040,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
         await threads.update(id, { workspace: { ...current.workspace, setup } });
       },
     });
-    void trimWorktrees();
+    void trimWorktrees(id);
   };
 
   app.get("/api/threads", async (c) => {
@@ -1186,6 +1214,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
           lifecycle.archivedAt = new Date().toISOString();
           if (workspace != null && workspace.reclaimed !== true) {
             lifecycle.transition = "archiving";
+            if (readPreserveChanges(body.preserveChanges)) lifecycle.archivePreserveChanges = true;
           } else {
             // Nothing to reclaim, so the move is complete now — see `finishTransition`.
             lifecycle.applyUndo = undefined;

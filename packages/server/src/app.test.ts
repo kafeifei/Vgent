@@ -979,7 +979,7 @@ describe("createApp", () => {
     expect(afterTurn.applyUndo).toBeDefined();
 
     const archived = (await (
-      await request(app, `/api/threads/${thread.id}`, { method: "PATCH", body: JSON.stringify({ archived: true }) })
+      await request(app, `/api/threads/${thread.id}`, { method: "PATCH", body: JSON.stringify({ archived: true, preserveChanges: true }) })
     ).json()) as ThreadRecord;
     expect(archived.pr).toEqual(pr);
     expect(archived.applyUndo).toBeUndefined();
@@ -1149,9 +1149,22 @@ describe("createApp", () => {
 
     const patch = (body: unknown) => request(app, `/api/threads/${thread.id}`, { method: "PATCH", body: JSON.stringify(body) });
 
-    const archived = (await (await patch({ archived: true })).json()) as ThreadRecord;
+    // Uncommitted work goes along only once the user says so; until then nothing moves.
+    expect(await (await request(app, `/api/threads/${thread.id}/workspace/uncommitted`)).json()).toEqual({ files: 1 });
+    const unconfirmed = await patch({ archived: true });
+    expect(unconfirmed.status).toBe(409);
+    expect(await unconfirmed.json()).toMatchObject({ error: { code: "archive_needs_confirmation" } });
+    const kept = (await (await request(app, `/api/threads/${thread.id}`)).json()) as ThreadRecord;
+    expect(kept.archivedAt).toBeUndefined();
+    expect(kept.transition).toBeUndefined();
+    expect(await readFile(join(workspacePath, "未提交.txt"), "utf8")).toBe("任务留下的\n");
+    expect((await postJson(app, `/api/threads/${thread.id}/workspace/reclaim`, {})).status).toBe(409);
+
+    const archived = (await (await patch({ archived: true, preserveChanges: true })).json()) as ThreadRecord;
     expect(archived.archivedAt).toEqual(expect.any(String));
     expect(archived.workspace?.reclaimed).toBe(true);
+    expect(archived.archivePreserveChanges).toBeUndefined();
+    expect(await (await request(app, `/api/threads/${thread.id}/workspace/uncommitted`)).json()).toEqual({ files: 0 });
     await expect(stat(workspacePath)).rejects.toMatchObject({ code: "ENOENT" });
     // The summary the sidebar groups on carries it too.
     const listed = (await (await request(app, "/api/threads")).json()) as { threads: ThreadSummary[] };
@@ -1165,6 +1178,9 @@ describe("createApp", () => {
     const wrong = await patch({ archived: "yes" });
     expect(wrong.status).toBe(400);
     expect(await wrong.json()).toMatchObject({ error: { code: "invalid_archived" } });
+    const wrongReceipt = await patch({ archived: true, preserveChanges: "yes" });
+    expect(wrongReceipt.status).toBe(400);
+    expect(await wrongReceipt.json()).toMatchObject({ error: { code: "invalid_preserve_changes" } });
   });
 
   it("归档先换状态：worktree 还在回收时任务已经在已归档里，显示归档中", async () => {
@@ -1225,7 +1241,7 @@ describe("createApp", () => {
     const workspacePath = thread.workspace?.path ?? "";
     await writeFile(join(workspacePath, "未提交.txt"), "任务留下的\n");
 
-    const failed = await request(app, `/api/threads/${thread.id}`, { method: "PATCH", body: JSON.stringify({ archived: true }) });
+    const failed = await request(app, `/api/threads/${thread.id}`, { method: "PATCH", body: JSON.stringify({ archived: true, preserveChanges: true }) });
     expect(failed.status).toBe(409);
     expect(await failed.json()).toMatchObject({ error: { code: "workspace_changed_during_snapshot" } });
 
@@ -1258,6 +1274,40 @@ describe("createApp", () => {
     expect(record?.archivedAt).toEqual(expect.any(String));
     expect(record?.workspace?.reclaimed).toBe(true);
     await expect(stat(thread.workspace?.path ?? "")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("没确认的脏归档做到一半进程退了：重启后退回原处，确认过的照常做完", async () => {
+    const repo = await gitRepo();
+    const dir = await tempDir();
+    const first = makeApp(dir);
+    const project = (await (await postJson(first, "/api/projects", { repoPath: repo })).json()) as Project;
+    const create = async () =>
+      (await (await postJson(first, "/api/threads", { projectId: project.id, workspace: "worktree" })).json()) as ThreadRecord;
+    const unconfirmed = await create();
+    const confirmed = await create();
+    for (const thread of [unconfirmed, confirmed]) await writeFile(join(thread.workspace?.path ?? "", "未提交.txt"), "任务留下的\n");
+    // A move recorded before the receipt existed, and one that carries it.
+    const store = createThreadStore(dir);
+    await store.update(unconfirmed.id, { archivedAt: new Date().toISOString(), transition: "archiving" });
+    await store.update(confirmed.id, { archivedAt: new Date().toISOString(), transition: "archiving", archivePreserveChanges: true });
+
+    const second = makeApp(dir);
+    const settled = async (id: string): Promise<ThreadRecord> => {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const record = (await (await request(second, `/api/threads/${id}`)).json()) as ThreadRecord;
+        if (record.transition == null) return record;
+        await sleep(50);
+      }
+      throw new Error("归档一直没有做完");
+    };
+    const back = await settled(unconfirmed.id);
+    expect(back.archivedAt).toBeUndefined();
+    expect(back.workspace?.reclaimed).toBeUndefined();
+    expect(await readFile(join(unconfirmed.workspace?.path ?? "", "未提交.txt"), "utf8")).toBe("任务留下的\n");
+    const done = await settled(confirmed.id);
+    expect(done.archivedAt).toEqual(expect.any(String));
+    expect(done.workspace?.reclaimed).toBe(true);
+    expect(done.archivePreserveChanges).toBeUndefined();
   });
 
   it("回合结束时记下改动统计", async () => {

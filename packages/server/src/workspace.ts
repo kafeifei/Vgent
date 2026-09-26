@@ -476,6 +476,23 @@ async function latestArchive(dataDir: string, threadId: string): Promise<string 
 
 // --- reclaim / restore --------------------------------------------------
 
+/**
+ * How many paths `git status` lists in the worktree: the uncommitted work
+ * 归档 would have to take along. Ignored files are not counted — 归档 never keeps them.
+ */
+export async function countUncommitted(workspacePath: string): Promise<number> {
+  const entries = (await git(workspacePath, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])).split("\0");
+  let count = 0;
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index] ?? "";
+    if (entry === "") continue;
+    count += 1;
+    // A rename or copy names its source in the next field.
+    if (/^[RC]|^.[RC]/.test(entry)) index += 1;
+  }
+  return count;
+}
+
 export interface WorkspaceTaskOptions {
   dataDir: string;
   project: Project;
@@ -487,8 +504,13 @@ export interface WorkspaceTaskOptions {
  * anchor ref stay: this gives the disk space back, it does not throw history
  * away. Ignored files go with the directory; the project's `worktrees.json`
  * rebuilds them on restore.
+ *
+ * A worktree with uncommitted changes is only taken with `preserveChanges`:
+ * the user confirmed it, or nobody did and the directory stays as it is.
  */
-export async function reclaimWorktree(options: WorkspaceTaskOptions & { onCaptured?: () => Promise<void> | void }): Promise<{ snapshotPath: string }> {
+export async function reclaimWorktree(
+  options: WorkspaceTaskOptions & { preserveChanges?: boolean; onCaptured?: () => Promise<void> | void },
+): Promise<{ snapshotPath: string }> {
   const { dataDir, project, thread } = options;
   const workspacePath = thread.workspace?.path;
   if (workspacePath == null) throw new ConflictError("此任务没有独立工作目录", "workspace_not_worktree");
@@ -504,6 +526,9 @@ export async function reclaimWorktree(options: WorkspaceTaskOptions & { onCaptur
       }
 
       const trees = await captureTrees(workspacePath);
+      if (hasChanges(trees) && options.preserveChanges !== true) {
+        throw new ConflictError("有没提交的改动，确认保留后才能归档；工作目录原样保留。", "archive_needs_confirmation");
+      }
       const branch = await currentBranch(workspacePath);
       await options.onCaptured?.();
       const ref = archiveRef(thread.id);

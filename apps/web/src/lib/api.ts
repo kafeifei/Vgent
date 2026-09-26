@@ -338,15 +338,20 @@ export function createClient(token: string) {
         mode?: ThreadMode;
         /** 归档 also reclaims the task's worktree; un-archiving restores it. */
         archived?: boolean;
+        /** With `archived: true`: the user confirmed that the worktree's uncommitted changes go along. Without it a dirty worktree is refused. */
+        preserveChanges?: boolean;
         /** 未读. The one field a running task still takes, because reading is not editing. */
         unread?: boolean;
       },
     ) => api<ThreadRecord>(`/threads/${id}`, token, { method: "PATCH", json: patch }),
     deleteThread: (id: string) => api<void>(`/threads/${id}`, token, { method: "DELETE" }),
 
-    /** Snapshots a task's worktree and removes the directory; reversible. */
-    reclaimWorkspace: (id: string) =>
-      api<ThreadRecord>(`/threads/${id}/workspace/reclaim`, token, { method: "POST" }),
+    /** Keeps a task's changes in git and removes the directory; reversible. A dirty one needs `preserveChanges`. */
+    reclaimWorkspace: (id: string, preserveChanges: boolean) =>
+      api<ThreadRecord>(`/threads/${id}/workspace/reclaim`, token, { method: "POST", json: { preserveChanges } }),
+    /** How many files the task's worktree has not committed — what 归档 / 回收 would take along. */
+    uncommittedFiles: (id: string) =>
+      api<{ files: number }>(`/threads/${id}/workspace/uncommitted`, token).then((body) => body.files),
     restoreWorkspace: (id: string) =>
       api<ThreadRecord>(`/threads/${id}/workspace/restore`, token, { method: "POST" }),
 

@@ -477,12 +477,13 @@ export function useWorkbench(token: string) {
 
       // 归档 also reclaims the task's worktree, and un-archiving restores it.
       // The row moves at once; the PATCH answers when the worktree is done, and
-      // a failure puts the task back where it was.
-      archiveThread: (threadId: string, archived: boolean) => {
+      // a failure puts the task back where it was. `preserveChanges` is the
+      // user's confirmation, asked for by the menu when the worktree is dirty.
+      archiveThread: (threadId: string, archived: boolean, preserveChanges = false) => {
         setPendingArchive((pending) => new Map(pending).set(threadId, archived));
         const workspace = state.threads.find((entry) => entry.id === threadId)?.workspace;
         const reclaims = workspace != null && workspace.reclaimed !== true;
-        void client.patchThread(threadId, { archived }).then(
+        void client.patchThread(threadId, { archived, ...(archived && preserveChanges ? { preserveChanges: true } : {}) }).then(
           () => toast(archived ? (reclaims ? "已归档，worktree 已回收" : "已归档") : "已取消归档"),
           (error: Error) => {
             setPendingArchive((pending) => {
@@ -516,13 +517,16 @@ export function useWorkbench(token: string) {
         );
       },
 
-      // Reclaim snapshots the worktree before removing it, so both directions
-      // are recoverable and neither asks for a confirmation.
-      reclaimWorkspace: (threadId: string): Promise<void> =>
-        client.reclaimWorkspace(threadId).then(
-          () => toast("已回收，快照已保存"),
+      // Reclaim keeps the worktree's changes in git before removing it, so
+      // both directions are recoverable; a dirty worktree is confirmed first.
+      reclaimWorkspace: (threadId: string, preserveChanges = false): Promise<void> =>
+        client.reclaimWorkspace(threadId, preserveChanges).then(
+          () => toast("已回收，改动已保存"),
           (error: Error) => toast(error.message),
         ),
+
+      /** Asked before 归档 / 回收: how many files the worktree has not committed. */
+      countUncommitted: (threadId: string): Promise<number> => client.uncommittedFiles(threadId),
 
       restoreWorkspace: (threadId: string): Promise<void> =>
         client.restoreWorkspace(threadId).then(

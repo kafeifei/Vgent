@@ -611,6 +611,15 @@ build 84 定的「日志里的图只有一种样子」只覆盖了回复里内�
 - **归档**（`workspace.ts` 的 `reclaimWorktree`）：`captureTrees` 用临时 index 写出四棵树——HEAD 的、暂存区的（`write-tree`）、已跟踪文件磁盘上的样子（`diff-files` 列出的路径 `add -f -A` 进以暂存区为底的临时 index）、没被忽略的未跟踪文件（`ls-files --others --exclude-standard` 进空 index）；真 index 和 HEAD 不碰。有改动就用 `commit-tree` 拼成 stash 形状的提交（工作树为 tree，父是 HEAD、暂存区提交、可选的未跟踪提交）挂在 `refs/vgent/archive/<threadId>`，干净的不建 ref。再抓一次四棵树，对不上就 `workspace_changed_during_snapshot`、删掉刚建的 ref、目录不动。子模块改动（gitlink）和 Git 表示不了的脏状态照旧拒绝回收。`snapshots/<id>/<uuid>/manifest.json` 升到 `version: 2`，只记 head、branch 和 archive 提交，几百字节。删目录走带重试的 `removeRegistered`（`index.lock` / "Directory not empty" 这类竞争退避重试 5 次，以 git 不再登记为准）。进程在删完目录、没来得及记账时退出，重做归档会认出最新的 v2 manifest 直接返回。
 - **恢复**：分支规则照旧（没人动过就用原分支，否则在 head 上另起 `-restored-`），`worktree add` 之后校验 ref 和 manifest 对得上、HEAD 就是归档时的提交，`git stash apply --index` 应用，再抓一次四棵树必须和归档提交里的一致；失败就把刚建的 worktree（和另起的分支）删掉，改动还在 ref 里，下次重来是干净的。成功后删 ref，`app.ts` 记账后删掉用过的快照目录。v1 的旧快照（本机那 11 个、5.3GB）走原来的逐字节恢复，恢复成功同样删掉。
 - **被忽略的文件不进归档**，照 Fumie 的约定由 `worktrees.json` 重建，新建和恢复同一条路（`app.ts` 的 `beginSetup`）：先按 `include-files`（git glob pathspec，只挑项目目录里被忽略的文件）从项目目录复制，再跑 `setup-worktree`。**碰 `node_modules` 的规则一律忽略**（Fumie 原话：可以带小的被忽略配置，永远不带依赖树），列出来的路径里带 `node_modules` 的也跳过。恢复之后 setup 状态重新从 running 走一遍，第一轮照旧等它。恢复之后顺带按上限整理一次 worktree（Fumie 在重建后也做磁盘预算）。
-- 没照搬的：Fumie 归档脏任务前要用户确认一次（`preserveChanges`），Vgent 的改动总会存下来，没加这一步；Fumie 删任务时会删掉没推送的分支，Vgent 仍只删停在基线上的分支（仓库常没有 remote，照搬会删掉有提交的分支）；Fumie 的磁盘预算按字节、只回收孤儿目录，Vgent 保留按个数的上限。
+- 没照搬的：Fumie 删任务时会删掉没推送的分支，Vgent 仍只删停在基线上的分支（仓库常没有 remote，照搬会删掉有提交的分支）；Fumie 的磁盘预算按字节、只回收孤儿目录，Vgent 保留按个数的上限。
 - 同一天合入 09-24 做完没进 main 的「归档 / 取消归档先换状态再干活」（`transition: archiving | unarchiving`，行上「归档中 / 恢复中」，失败退回，重启接着做）。
 - 测试：`workspace.test.ts` 往返（未跟踪 / 已改 / 暂存后又改）、被忽略文件留不下来且干净任务不建 ref、归档途中文件变了、重做已完成的归档、恢复失败退干净后能重来、v1 旧快照照样恢复；`worktree-setup.test.ts` 的 `include-files` 过滤和「新建复制 `.env`、不带 `node_modules`，取消归档后 `.env` 重新复制、setup 重跑」。
+
+## 2026-09-27：有改动的 worktree 归档前要确认（Fumie 的 `preserveChanges`）
+
+用户：「这个需要加，因为不干净的归档问题很大」。照 Fumie 分两层，前端先问、服务端兜底：
+
+- **服务端**：`reclaimWorktree({ preserveChanges })` 抓完四棵树，有改动又没有 `preserveChanges` 就 409 `archive_needs_confirmation`，不建 ref、不动目录。`PATCH /api/threads/:id` 的 `{ archived: true, preserveChanges: true }` 把确认记成 `ThreadRecord.archivePreserveChanges`，跟 `transition: "archiving"` 一起落盘、做完或退回时清掉，所以重启后 `resumeTransitions` 照原样接着做；没这个标记的（包括这之前的版本留下的）遇到有改动就退回活动列表、目录原样——和 Fumie 对旧记录的处理一样。`POST .../workspace/reclaim` 收同样的 `preserveChanges`。新增 `GET .../workspace/uncommitted` → `{ files }`，数的是 `git status --porcelain -uall`（改名算一个），被忽略的不算。
+- **上限回收只收干净的**（Fumie 的磁盘预算也只收 `!dirty`）：有改动的跳过记一条 info；刚新建 / 刚恢复触发整理的那个任务也不收（`enforceWorktreeLimit({ keep })`，对应 Fumie 把当前会话标成 running），否则跳过脏的之后会轮到它。
+- **前端**：`features/workspace/UncommittedConfirm.tsx` 的 `useUncommittedGate` + `UncommittedConfirm`，侧栏行菜单的「归档」（A）和标题栏工作目录菜单的「回收工作目录」共用：先问文件数，0 就直接做，否则菜单原地换成第二步「带着没提交的改动归档？ / N 个文件没提交。改动随任务保存，取消归档时放回；被 git 忽略的文件不保留。」+「确认归档」（↵）/「取消」，和删除的两步同一个样子；数不出来按有改动处理（Fumie：破坏性的界面失败时要保守）。确认之后才挪行、才发请求。主目录任务和已回收的不问。
+- 验证：`workspace.test.ts`（没确认就拒、目录和 ref 都不动、改名只算一个），`app.test.ts`（没确认 409 且任务不动、确认后归档并清掉标记、重启后没确认的退回而确认过的做完、`preserveChanges` 非布尔 400），`worktree-setup.test.ts`（上限不收脏的也不收刚建的）。临时数据目录起 server，无头 Chrome 右键脏任务 → 归档 → 出确认 → 取消后没动 → A 再 ↵ 归档完成；干净任务直接归档不出确认；页面无报错。

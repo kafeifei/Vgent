@@ -356,6 +356,12 @@ export interface ThreadRecord {
    * worktree is still being snapshotted away or put back. Absent once that is done.
    */
   transition?: ThreadTransition;
+  /**
+   * The user's say-so that 归档 takes the worktree's uncommitted changes along
+   * — Fumie's `preserveChanges` receipt. Stored with the move, so a restart
+   * finishes it the same way; a move without it touches nothing dirty.
+   */
+  archivePreserveChanges?: true;
   createdAt: string;
   updatedAt: string;
   messages: UIMessage[];

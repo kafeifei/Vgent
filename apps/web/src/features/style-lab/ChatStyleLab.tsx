@@ -149,6 +149,7 @@ function Scene({ session, right, setRight, left, toggleLeft, onReset, onEmpty }:
     reclaimWorkspace: async () => { const workspace = session.snapshot().workspace; if (workspace) session.patch({ workspace: { ...workspace, reclaimed: true } }); },
     restoreWorkspace: async () => { const workspace = session.snapshot().workspace; if (workspace) session.patch({ workspace: { ...workspace, reclaimed: false } }); },
     archiveThread: (_id, archived) => session.patch({ archivedAt: archived ? new Date().toISOString() : undefined }),
+    countUncommitted: async () => 0,
   }), [session, toast, toggleLeft, onEmpty, setRight]);
   const openFile = useCallback((path: string) => {
     const kind = previewKindOf(path);

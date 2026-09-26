@@ -67,6 +67,7 @@ export function Sidebar({
   settingsOpen,
   getChat,
   onArchive,
+  onCheckUncommitted,
   onUnread,
   onDelete,
   onRename,
@@ -92,7 +93,10 @@ export function Sidebar({
   settingsOpen: boolean;
   /** Live chats only: the sidebar reads the current action off them. */
   getChat: (threadId: string) => Chat<UIMessage>;
-  onArchive: (threadId: string, archived: boolean) => void;
+  /** `preserveChanges`: the row's menu confirmed the worktree's uncommitted changes go along. */
+  onArchive: (threadId: string, archived: boolean, preserveChanges?: boolean) => void;
+  /** How many files a task's worktree has not committed, asked before archiving it. */
+  onCheckUncommitted: (threadId: string) => Promise<number>;
   /** 标为未读 / 标为已读 from the row's menu. */
   onUnread: (threadId: string, unread: boolean) => void;
   onDelete: (threadId: string) => void;
@@ -212,7 +216,8 @@ export function Sidebar({
                     selected={thread.id === selectedThreadId}
                     chat={thread.status === "running" ? getChat(thread.id) : undefined}
                     onSelect={() => onSelect(thread.id)}
-                    onArchive={(archived) => onArchive(thread.id, archived)}
+                    onArchive={(archived, preserveChanges) => onArchive(thread.id, archived, preserveChanges)}
+                    onCheckUncommitted={() => onCheckUncommitted(thread.id)}
                     onUnread={(unread) => onUnread(thread.id, unread)}
                     onDelete={() => onDelete(thread.id)}
                     onRename={(title) => onRename(thread.id, title)}

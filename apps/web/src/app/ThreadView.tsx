@@ -24,7 +24,7 @@ import type { EngineDescriptor, ModelPick, PermissionMode, ThreadSummary } from 
 import { isLiveThread, type WorkbenchActions } from "./useWorkbench";
 
 export type ThreadViewActions = Pick<WorkbenchActions,
-  "whenReady" | "getChat" | "toast" | "allowTools" | "openPreview" | "openChanges" | "focusTerminal" | "inspectTool" | "forkThread" | "setRightTab" | "openRight" | "toggleLeft" | "compactThread" | "newTask" | "queueMessage" | "send" | "stop" | "rememberModelPick" | "setModel" | "setReasoningEffort" | "setContextWindow" | "setServiceTier" | "setMode" | "sendQueued" | "editQueued" | "deleteQueued" | "reorderQueue" | "steerQueued" | "reclaimWorkspace" | "restoreWorkspace" | "archiveThread"
+  "whenReady" | "getChat" | "toast" | "allowTools" | "openPreview" | "openChanges" | "focusTerminal" | "inspectTool" | "forkThread" | "setRightTab" | "openRight" | "toggleLeft" | "compactThread" | "newTask" | "queueMessage" | "send" | "stop" | "rememberModelPick" | "setModel" | "setReasoningEffort" | "setContextWindow" | "setServiceTier" | "setMode" | "sendQueued" | "editQueued" | "deleteQueued" | "reorderQueue" | "steerQueued" | "reclaimWorkspace" | "restoreWorkspace" | "archiveThread" | "countUncommitted"
 >;
 
 /** Waits for the thread's history to land before mounting the chat view. */
@@ -302,7 +302,8 @@ function ThreadChatView({
           thread={thread}
           leftOpen={leftOpen}
           rightOpen={rightOpen}
-          onReclaimWorkspace={() => actions.reclaimWorkspace(thread.id)}
+          onReclaimWorkspace={(preserveChanges) => actions.reclaimWorkspace(thread.id, preserveChanges)}
+          onCheckUncommitted={() => actions.countUncommitted(thread.id)}
           onRestoreWorkspace={() => actions.restoreWorkspace(thread.id)}
           onToggleLeft={actions.toggleLeft}
         />

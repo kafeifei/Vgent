@@ -246,7 +246,8 @@ describe.skipIf(!hasGit)("include-files 和取消归档", () => {
     expect(existsSync(join(path, "node_modules"))).toBe(false);
     await writeFile(join(path, "work.txt"), "任务的改动\n");
 
-    const patch = (archived: boolean) => request(app, `/api/threads/${created.id}`, { method: "PATCH", body: JSON.stringify({ archived }) });
+    const patch = (archived: boolean) =>
+      request(app, `/api/threads/${created.id}`, { method: "PATCH", body: JSON.stringify({ archived, ...(archived ? { preserveChanges: true } : {}) }) });
     expect((await patch(true)).status).toBe(200);
     expect(existsSync(path)).toBe(false);
     await writeFile(join(repo, ".env"), "SECRET=2\n");
@@ -280,6 +281,23 @@ describe.skipIf(!hasGit)("worktree 上限", () => {
     // The newest task keeps its files.
     expect((await getThread(app, second.id)).workspace?.reclaimed).toBeUndefined();
     expect(existsSync(second.workspace!.path)).toBe(true);
+  });
+
+  it("never reclaims a worktree with uncommitted changes, nor the one just made", async () => {
+    const repo = await gitRepo();
+    const app = makeApp(await tempDir());
+    await request(app, "/api/settings", { method: "PUT", body: JSON.stringify({ worktreeMaxCount: 1 }) });
+
+    const dirty = await worktreeThread(app, repo);
+    await writeFile(join(dirty.workspace!.path, "未提交.txt"), "任务留下的\n");
+    const fresh = await worktreeThread(app, repo);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    // Over the cap, and nothing to take: the dirty one needs a confirmation, the new one is in use.
+    expect(existsSync(join(dirty.workspace!.path, "未提交.txt"))).toBe(true);
+    expect((await getThread(app, dirty.id)).workspace?.reclaimed).toBeUndefined();
+    expect(existsSync(fresh.workspace!.path)).toBe(true);
+    expect((await getThread(app, fresh.id)).workspace?.reclaimed).toBeUndefined();
   });
 
   it("rejects a cap that is not a positive integer", async () => {

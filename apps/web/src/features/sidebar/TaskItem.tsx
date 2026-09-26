@@ -12,6 +12,7 @@ import { CHAT_THROTTLE_MS } from "@/lib/threadChats";
 import { LIVE_REASON, LIVE_STATUSES, TRANSITION_LABELS, type ThreadStatus, type ThreadSummary, type ThreadTransition } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { describeTool } from "@/features/worklog/toolMeta";
+import { UncommittedConfirm, useUncommittedGate } from "@/features/workspace/UncommittedConfirm";
 
 /** Shape, not just colour: 「等人」 is a hollow ring, 「在跑 / 结束」 is a solid dot. */
 export function StatusDot({ status }: { status: ThreadStatus }) {
@@ -51,7 +52,11 @@ type RowMenuActions = {
   live: boolean;
   /** The last 归档 / 取消归档 is still moving the worktree; another waits for it. */
   transition: ThreadTransition | undefined;
-  onArchive: (archived: boolean) => void;
+  /** A worktree still on disk: archiving it asks about uncommitted changes first. */
+  worktree: boolean;
+  /** `preserveChanges`: the user confirmed the worktree's uncommitted changes go along. */
+  onArchive: (archived: boolean, preserveChanges?: boolean) => void;
+  onCheckUncommitted: () => Promise<number>;
   onUnread: (unread: boolean) => void;
   onDelete: () => void;
   /** Turns the row's title into a field. */
@@ -62,20 +67,42 @@ type RowMenuActions = {
  * What the row's menu holds: 重命名, 标为未读 / 已读, 归档 / 取消归档 and a two-step
  * 删除任务. Each answers to a letter while the menu is open (R / U / A / D), and the
  * second step of deleting to ↵ — two different keys, so a double tap deletes
- * nothing. Mounted per opening, so the menu never reopens on that second step.
+ * nothing. 归档 of a worktree with uncommitted changes gets the same second
+ * step. Mounted per opening, so the menu never reopens on that second step.
  */
 function RowMenuItems({
   archived,
   unread,
   live,
   transition,
+  worktree,
   close,
   onArchive,
+  onCheckUncommitted,
   onUnread,
   onDelete,
   onStartRename,
 }: RowMenuActions & { close: () => void }) {
   const [confirming, setConfirming] = useState(false);
+  const archive = useUncommittedGate(onCheckUncommitted, (preserveChanges) => {
+    close();
+    onArchive(true, preserveChanges);
+  });
+
+  if (typeof archive.phase === "object") {
+    return (
+      <UncommittedConfirm
+        files={archive.phase.files}
+        verb="归档"
+        comeBack="取消归档"
+        onConfirm={() => {
+          close();
+          onArchive(true, true);
+        }}
+        onCancel={archive.cancel}
+      />
+    );
+  }
 
   if (confirming) {
     return (
@@ -120,9 +147,13 @@ function RowMenuItems({
       </PopItem>
       <PopItem
         shortcut="a"
-        disabled={live || transition != null}
+        disabled={live || transition != null || archive.phase === "checking"}
         {...(transition != null ? { hint: TRANSITION_LABELS[transition] } : live ? { hint: "进行中", title: LIVE_REASON } : {})}
         onClick={() => {
+          if (!archived && worktree) {
+            archive.start();
+            return;
+          }
           close();
           onArchive(!archived);
         }}
@@ -164,6 +195,7 @@ export function TaskItem({
   chat,
   onSelect,
   onArchive,
+  onCheckUncommitted,
   onUnread,
   onDelete,
   onRename,
@@ -173,7 +205,8 @@ export function TaskItem({
   /** Only supplied for running threads, so idle ones cost nothing. */
   chat: Chat<UIMessage> | undefined;
   onSelect: () => void;
-  onArchive: (archived: boolean) => void;
+  onArchive: (archived: boolean, preserveChanges?: boolean) => void;
+  onCheckUncommitted: () => Promise<number>;
   onUnread: (unread: boolean) => void;
   onDelete: () => void;
   onRename: (title: string) => void;
@@ -274,8 +307,10 @@ export function TaskItem({
         unread={unread}
         live={(LIVE_STATUSES as readonly string[]).includes(thread.status)}
         transition={thread.transition}
+        worktree={thread.workspace != null && thread.workspace.reclaimed !== true}
         openRef={openMenu}
         onArchive={onArchive}
+        onCheckUncommitted={onCheckUncommitted}
         onUnread={onUnread}
         onDelete={onDelete}
         onStartRename={() => setRenaming(thread.title)}

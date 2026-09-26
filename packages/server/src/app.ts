@@ -246,7 +246,9 @@ function readDraftAttachments(value: unknown): DraftAttachmentInput[] {
 /** 界面偏好 from a settings body. `null` puts the default back; anything unknown is a 400. */
 function readTheme(value: unknown): UiTheme | undefined {
   if (value == null) return undefined;
-  if (value !== "dark" && value !== "light") throw new BadRequestError('theme 只能是 "dark" 或 "light"', "invalid_theme");
+  if (value !== "dark" && value !== "light" && value !== "system") {
+    throw new BadRequestError('theme 只能是 "dark"、"light" 或 "system"', "invalid_theme");
+  }
   return value;
 }
 

@@ -4,6 +4,7 @@ import { Segmented, SettingsGroup, SettingsRow } from "./layout";
 const THEMES: ReadonlyArray<{ id: Theme; label: string }> = [
   { id: "dark", label: "深色" },
   { id: "light", label: "浅色" },
+  { id: "system", label: "跟随系统" },
 ];
 
 const DENSITIES: ReadonlyArray<{ id: Density; label: string; title: string }> = [

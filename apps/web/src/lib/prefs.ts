@@ -9,7 +9,8 @@ import type { Settings, UiDensity, UiTheme } from "./types";
  * so the bootstrap script in `index.html` can paint the right theme before the
  * first server response.
  *
- * Dark is the default and is never written; only `"light"` is stored.
+ * `data-theme-preference` keeps the selected mode; `data-theme` is its resolved
+ * appearance. Dark is the default; the local cache stores light and system.
  */
 export type Theme = UiTheme;
 export type Density = UiDensity;
@@ -34,7 +35,19 @@ let push: ((prefs: { theme: Theme; density: Density }) => void) | undefined;
 const root = () => document.documentElement;
 
 function readTheme(): Theme {
+  const preference = root().dataset.themePreference;
+  if (preference === "system" || preference === "light" || preference === "dark") return preference;
+  return readResolvedTheme();
+}
+
+function readResolvedTheme(): "light" | "dark" {
   return root().dataset.theme === "light" ? "light" : "dark";
+}
+
+function applyTheme(theme: Theme): void {
+  const light = theme === "light" || (theme === "system" && window.matchMedia("(prefers-color-scheme: light)").matches);
+  if (light) root().dataset.theme = "light";
+  else delete root().dataset.theme;
 }
 
 function readDensity(): Density {
@@ -48,10 +61,10 @@ function persist(): void {
 }
 
 export function setTheme(theme: Theme): void {
-  if (theme === "light") root().dataset.theme = "light";
-  else delete root().dataset.theme;
+  root().dataset.themePreference = theme;
+  applyTheme(theme);
   try {
-    if (theme === "light") localStorage.setItem(THEME_KEY, "light");
+    if (theme !== "dark") localStorage.setItem(THEME_KEY, theme);
     else localStorage.removeItem(THEME_KEY);
   } catch {
     /* private mode: the in-memory attribute is still correct */
@@ -79,7 +92,7 @@ export function usePrefs(): {
 } {
   const theme = useSyncExternalStore(subscribe, readTheme, () => "dark" as Theme);
   const density = useSyncExternalStore(subscribe, readDensity, () => "comfortable" as Density);
-  const toggleTheme = useCallback(() => setTheme(readTheme() === "light" ? "dark" : "light"), []);
+  const toggleTheme = useCallback(() => setTheme(readResolvedTheme() === "light" ? "dark" : "light"), []);
   const toggleDensity = useCallback(
     () => setDensity(readDensity() === "compact" ? "comfortable" : "compact"),
     [],
@@ -103,6 +116,18 @@ export function usePrefsSync(settings: Settings | null, write: (prefs: { theme: 
     return () => {
       push = undefined;
     };
+  }, []);
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-color-scheme: light)");
+    const onChange = () => {
+      if (readTheme() !== "system") return;
+      // OS changes affect the appearance, never the stored preference.
+      applyTheme("system");
+    };
+    media.addEventListener("change", onChange);
+    onChange();
+    return () => media.removeEventListener("change", onChange);
   }, []);
 
   // The snapshot object is new on every SSE event, so the effect watches the

@@ -5,12 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Vgent</title>
     <script>
-      // 深色优先：默认永远深色，只有存过 vgent.theme === 'light' 才切浅色。不跟随系统。
+      // 默认深色；选择跟随系统时，在首帧按系统外观解析。
       // 内联执行，避免首帧闪一下别的主题。
       try {
         var t = localStorage.getItem('vgent.theme');
         var d = localStorage.getItem('vgent.density');
-        if (t === 'light') document.documentElement.dataset.theme = 'light';
+        document.documentElement.dataset.themePreference = t === 'light' || t === 'system' ? t : 'dark';
+        if (t === 'light' || (t === 'system' && matchMedia('(prefers-color-scheme: light)').matches)) {
+          document.documentElement.dataset.theme = 'light';
+        }
         document.documentElement.dataset.density = d || 'comfortable';
       } catch (e) {}
     </script>

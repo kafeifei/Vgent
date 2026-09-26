@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { UIMessage } from "ai";
-import { X, RotateCcw, Play, PanelLeft, Sun, Moon, Search } from "lucide-react";
+import { X, RotateCcw, Play, PanelLeft, Sun, Moon, Monitor, Search } from "lucide-react";
 import { ThreadView, type ThreadViewActions } from "@/app/ThreadView";
 import { isLiveThread, type InspectRequest, type PreviewRequest } from "@/app/useWorkbench";
 import { ModelCatalogClientContext } from "@/components/ModelPicker";
@@ -69,7 +69,7 @@ export default function ChatStyleLab({ onClose }: { onClose: () => void }) {
         <select aria-label="预览宽度" className="rounded-md bg-bg-elevated px-xs py-xs text-xs" value={width} onChange={(event) => setWidth(event.target.value)}>
           <option value="full">填满窗口</option><option value="1280">1280 px</option><option value="1024">1024 px</option><option value="768">768 px</option>
         </select>
-        <button className={button} onClick={toggleTheme} title="切换应用主题">{theme === "dark" ? <Moon className="size-sm" /> : <Sun className="size-sm" />}{theme === "dark" ? "深色" : "浅色"}</button>
+        <button className={button} onClick={toggleTheme} title="切换应用主题">{theme === "system" ? <Monitor className="size-sm" /> : theme === "dark" ? <Moon className="size-sm" /> : <Sun className="size-sm" />}{theme === "system" ? "跟随系统" : theme === "dark" ? "深色" : "浅色"}</button>
         <button className={button} onClick={toggleDensity} title="切换应用密度">{density === "compact" ? "紧凑" : "舒适"}</button>
         <button className={button} onClick={onClose} aria-label="关闭聊天样式" title="返回工作台"><X className="size-md" /></button>
       </header>

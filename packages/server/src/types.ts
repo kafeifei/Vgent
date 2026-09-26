@@ -439,8 +439,8 @@ export interface ModelPick {
   contextWindow?: number;
 }
 
-/** 主题: dark is the default and the app never follows the system. */
-export type UiTheme = "dark" | "light";
+/** 主题: dark remains the default; system follows the OS appearance. */
+export type UiTheme = "dark" | "light" | "system";
 /** 密度 of the list rows and the log. */
 export type UiDensity = "comfortable" | "compact";
 

@@ -275,58 +275,7 @@
   --shadow-popover: 0 8px 24px oklch(0.305 0.007 75 / 0.18), 0 0 0 1px var(--color-border);
 }
 
-/* 深色优先：默认永远深色，不跟随系统浅色/深色偏好。
- * 只有显式 :root[data-theme="light"]（见上面）才会切换成浅色。
- * 产品阶段如果要恢复"跟随系统"，可以引入 data-theme="system"，
- * 再在这里用 @media (prefers-color-scheme: light) 配合
- * :root[data-theme="system"] 选择器启用，而不是像下面这样默认生效。
- *
- * @media (prefers-color-scheme: light) {
- *   :root:not([data-theme="dark"]):not([data-theme="light"]) {
- *     --color-bg:           var(--neutral-25);
- *     --color-bg-elevated:  var(--neutral-0);
- *     --color-bg-inset:     var(--neutral-50);
- *     --color-bg-hover:     oklch(0.400 0.007 75 / 0.065);
- *     --color-bg-active:    oklch(0.400 0.007 75 / 0.115);
- *     --color-bg-scrim:     oklch(0.305 0.007 75 / 0.30);
- *
- *     --color-border:        oklch(0.895 0.005 75);
- *     --color-border-strong: oklch(0.800 0.006 75);
- *
- *     --color-fg:       oklch(0.245 0.008 75);
- *     --color-fg-muted: oklch(0.495 0.008 75);
- *     --color-fg-faint: oklch(0.630 0.007 75);
- *
- *     --color-accent:       var(--amber-700);
- *     --color-accent-hover: var(--amber-800);
- *     --color-accent-fg:    var(--neutral-0);
- *     --color-accent-bg:    oklch(0.630 0.160 60 / 0.13);
- *
- *     --color-success:    var(--green-600);
- *     --color-success-bg: oklch(0.545 0.120 150 / 0.13);
- *     --color-warning:    var(--yellow-600);
- *     --color-warning-bg: oklch(0.595 0.105 88 / 0.16);
- *     --color-danger:     var(--red-600);
- *     --color-danger-bg:  oklch(0.545 0.170 27 / 0.11);
- *     --color-info:       var(--blue-600);
- *     --color-info-bg:    oklch(0.545 0.110 245 / 0.11);
- *
- *     --color-diff-add-bg: oklch(0.660 0.125 152 / 0.18);
- *     --color-diff-add-fg: oklch(0.430 0.110 150);
- *     --color-diff-del-bg: oklch(0.620 0.165 27 / 0.15);
- *     --color-diff-del-fg: oklch(0.455 0.150 27);
- *
- *     --color-selection:  oklch(0.630 0.160 60 / 0.22);
- *     --color-focus-ring: oklch(0.560 0.155 55 / 0.75);
- *
- *     --shadow-xs:      0 1px 1px oklch(0.305 0.007 75 / 0.08);
- *     --shadow-sm:      0 1px 3px oklch(0.305 0.007 75 / 0.12);
- *     --shadow-md:      0 4px 12px oklch(0.305 0.007 75 / 0.13);
- *     --shadow-lg:      0 12px 32px oklch(0.305 0.007 75 / 0.16);
- *     --shadow-popover: 0 8px 24px oklch(0.305 0.007 75 / 0.18), 0 0 0 1px var(--color-border);
- *   }
- * }
- */
+/* 默认深色。主题逻辑将最终外观映射为 data-theme="light" 来启用浅色色板。 */
 
 /* ══════════════════════════════════════════════════════════════════════════
  * 密度

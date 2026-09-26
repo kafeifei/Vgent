@@ -216,17 +216,17 @@ describe("草稿 routes", () => {
 });
 
 describe("界面偏好", () => {
-  it("stores theme and density in settings and hands them back after a restart", async () => {
+  it.each(["dark", "light", "system"] as const)("stores %s theme and density and hands them back after a restart", async (theme) => {
     const dir = await tempDir();
     const first = makeApp(dir);
 
-    const saved = (await (await putJson(first, "/api/settings", { theme: "light", density: "compact" })).json()) as Settings;
-    expect(saved).toMatchObject({ theme: "light", density: "compact" });
+    const saved = (await (await putJson(first, "/api/settings", { theme, density: "compact" })).json()) as Settings;
+    expect(saved).toMatchObject({ theme, density: "compact" });
     await first.shutdown();
 
     const second = makeApp(dir);
     const reread = (await (await request(second, "/api/settings")).json()) as Settings;
-    expect(reread).toMatchObject({ theme: "light", density: "compact" });
+    expect(reread).toMatchObject({ theme, density: "compact" });
 
     // `null` puts the built-in default back, which is what「深色 / 舒适」means.
     const cleared = (await (await putJson(second, "/api/settings", { theme: null, density: null })).json()) as Settings;

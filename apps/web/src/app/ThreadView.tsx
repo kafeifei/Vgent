@@ -23,10 +23,14 @@ import { CHAT_THROTTLE_MS, transportErrorText } from "@/lib/threadChats";
 import type { EngineDescriptor, ModelPick, PermissionMode, ThreadSummary } from "@/lib/types";
 import { isLiveThread, type WorkbenchActions } from "./useWorkbench";
 
+export type ThreadViewActions = Pick<WorkbenchActions,
+  "whenReady" | "getChat" | "toast" | "allowTools" | "openPreview" | "openChanges" | "focusTerminal" | "inspectTool" | "forkThread" | "setRightTab" | "openRight" | "toggleLeft" | "compactThread" | "newTask" | "queueMessage" | "send" | "stop" | "rememberModelPick" | "setModel" | "setReasoningEffort" | "setContextWindow" | "setServiceTier" | "setMode" | "sendQueued" | "editQueued" | "deleteQueued" | "reorderQueue" | "steerQueued" | "reclaimWorkspace" | "restoreWorkspace" | "archiveThread"
+>;
+
 /** Waits for the thread's history to land before mounting the chat view. */
 export function ThreadView(props: {
   thread: ThreadSummary;
-  actions: WorkbenchActions;
+  actions: ThreadViewActions;
   client: ApiClient;
   changes: ChangesView;
   rightOpen: boolean;
@@ -88,7 +92,7 @@ function ThreadChatView({
   chat,
 }: {
   thread: ThreadSummary;
-  actions: WorkbenchActions;
+  actions: ThreadViewActions;
   client: ApiClient;
   changes: ChangesView;
   rightOpen: boolean;

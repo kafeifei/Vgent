@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { createClient, getToken, type ModelPickPatch } from "@/lib/api";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createClient, getToken, type ApiClient, type ModelPickPatch } from "@/lib/api";
 import type { EngineDescriptor, EngineId, ModelCatalog, ModelEntry, ModelPick } from "@/lib/types";
 import { CascadeLevel, type CascadeNode } from "./CascadeMenu";
 import {
@@ -15,6 +15,8 @@ import {
 import { Popover } from "./Popover";
 import { reasoningLabel } from "./reasoningLabels";
 import { SourceIcon } from "./SourceIcon";
+
+export const ModelCatalogClientContext = createContext<Pick<ApiClient, "listModels"> | null>(null);
 
 export const modelLabel = (model: string | undefined): string => model ?? "默认";
 
@@ -70,6 +72,7 @@ function useAllCatalogs(
   selected: EngineId,
   onCatalog?: (catalog: ModelCatalog) => void,
 ): Record<string, CatalogState> {
+  const injectedClient = useContext(ModelCatalogClientContext);
   const [states, setStates] = useState<Record<string, CatalogState>>({});
   const notify = useRef(onCatalog);
   notify.current = onCatalog;
@@ -77,9 +80,9 @@ function useAllCatalogs(
 
   useEffect(() => {
     const token = getToken();
-    if (token == null || ids === "") return;
+    const client = injectedClient ?? (token == null ? null : createClient(token));
+    if (client == null || ids === "") return;
     let cancelled = false;
-    const client = createClient(token);
     setStates(Object.fromEntries(ids.split(",").map((id) => [id, { status: "loading" } as CatalogState])));
     for (const id of ids.split(",") as EngineId[]) {
       client.listModels(id).then(
@@ -98,7 +101,7 @@ function useAllCatalogs(
     return () => {
       cancelled = true;
     };
-  }, [ids, selected]);
+  }, [ids, selected, injectedClient]);
 
   return states;
 }

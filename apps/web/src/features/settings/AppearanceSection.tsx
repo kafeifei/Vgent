@@ -21,7 +21,7 @@ const DENSITIES: ReadonlyArray<{ id: Density; label: string; title: string }> = 
  * snapshot from when it was opened, and sending it back would undo a theme
  * picked since.
  */
-export function AppearanceSection() {
+export function AppearanceSection({ onOpenStyleLab }: { onOpenStyleLab?: (() => void) | undefined }) {
   const { theme, density } = usePrefs();
 
   return (
@@ -32,6 +32,9 @@ export function AppearanceSection() {
       <SettingsRow title="密度" help="紧凑：一屏更多信息。">
         <Segmented label="密度" value={density} options={DENSITIES} onChange={setDensity} />
       </SettingsRow>
+      {onOpenStyleLab && <SettingsRow title="聊天样式" help="在真实聊天布局中调试消息、工具和各类任务状态。">
+        <button type="button" onClick={onOpenStyleLab} className="rounded-md bg-bg-hover px-md py-xs text-sm hover:bg-bg-active">打开样式页面</button>
+      </SettingsRow>}
     </SettingsGroup>
   );
 }

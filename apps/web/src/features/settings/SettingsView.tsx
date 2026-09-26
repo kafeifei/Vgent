@@ -174,12 +174,14 @@ export function SettingsView({
   engines,
   client,
   onClose,
+  onOpenStyleLab,
 }: {
   settings: Settings | null;
   /** 引擎能力表, for the grouped 默认模型 picker. */
   engines: EngineDescriptor[];
   client: ApiClient;
   onClose: () => void;
+  onOpenStyleLab?: () => void;
 }) {
   const toast = useToast();
   const [draft, setDraft] = useState<Settings | null>(settings);
@@ -298,7 +300,7 @@ export function SettingsView({
 
     appearance: (
       <SettingsPage title="外观">
-        <AppearanceSection />
+        <AppearanceSection onOpenStyleLab={onOpenStyleLab} />
       </SettingsPage>
     ),
 

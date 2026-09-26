@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { UIMessage } from "ai";
 import { X } from "lucide-react";
 import { ResizeHandle } from "@/components/ResizeHandle";
@@ -20,6 +20,8 @@ import { usePrefs, usePrefsSync } from "@/lib/prefs";
 import { RightPaneToggle } from "@/features/taskheader/TaskHeader";
 import { ThreadView } from "./ThreadView";
 import { isLiveThread, useWorkbench } from "./useWorkbench";
+
+const ChatStyleLab = lazy(() => import("@/features/style-lab/ChatStyleLab"));
 
 /** The three-column grid. Widths come from the spacing tokens until a column is dragged to one of its own. */
 export function Shell({ token }: { token: string }) {
@@ -47,6 +49,8 @@ export function Shell({ token }: { token: string }) {
     state.settings,
     useCallback((prefs) => void client.putSettings(prefs).catch(() => undefined), [client]),
   );
+  const [styleLabOpen, setStyleLabOpen] = useState(false);
+  const openStyleLab = useCallback(() => { actions.closeSettings(); actions.closePalette(); setStyleLabOpen(true); }, [actions]);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [messages, setMessages] = useState<UIMessage[]>([]);
   const [picture, setPicture] = useState<{ threadId: string; path: string } | null>(null);
@@ -60,6 +64,7 @@ export function Shell({ token }: { token: string }) {
 
   const commands = useMemo<Command[]>(
     () => [
+      { id: "style-lab", label: "聊天样式 · 所有场景", run: openStyleLab },
       { id: "new", label: "新任务", hint: "⌘N", run: actions.newTask },
       ...state.threads.map((entry) => ({
         id: `thread-${entry.id}`,
@@ -85,7 +90,7 @@ export function Shell({ token }: { token: string }) {
         ? [{ id: "compact", label: "压缩上下文", hint: "/compact", run: () => void actions.compactThread(thread.id) }]
         : []),
     ],
-    [actions, engines, left, right.open, state.threads, thread, toggleDensity, toggleTheme],
+    [actions, openStyleLab, engines, left, right.open, state.threads, thread, toggleDensity, toggleTheme],
   );
 
   // The right pane belongs to a task: without one open there is nothing for it to list.
@@ -132,6 +137,7 @@ export function Shell({ token }: { token: string }) {
     // No window bar of its own: like Cursor's Agents Window the three columns
     // run the full height, and each column's top strip is the title bar.
     <div className="relative h-full overflow-hidden">
+      <div inert={styleLabOpen || undefined} className="h-full">
       <div
         ref={grid}
         className={
@@ -305,11 +311,13 @@ export function Shell({ token }: { token: string }) {
               <X className="size-md" />
             </button>
             <div className="min-h-0 flex-1">
-              <SettingsView settings={state.settings} engines={engines} client={client} onClose={actions.closeSettings} />
+              <SettingsView onOpenStyleLab={openStyleLab} settings={state.settings} engines={engines} client={client} onClose={actions.closeSettings} />
             </div>
           </div>
         </div>
       )}
+      </div>
+      {styleLabOpen && <Suspense fallback={<div className="absolute inset-0 z-30 grid place-items-center bg-bg">加载聊天样式…</div>}><ChatStyleLab onClose={() => setStyleLabOpen(false)} /></Suspense>}
     </div>
   );
 }

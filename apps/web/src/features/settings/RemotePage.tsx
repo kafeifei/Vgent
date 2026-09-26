@@ -67,16 +67,16 @@ export function RemotePage({ client }: { client: ApiClient }) {
     void navigator.clipboard.writeText(value).then(() => toast("已复制")).catch(() => setError("复制失败，请手动选择并复制。"));
   };
 
-  if (client.remoteSession) return <SettingsPage title="远程控制"><p className="text-fg-muted text-sm">当前已远程连接到这台电脑。登录、设备命名和远程开关请在主机上管理。</p></SettingsPage>;
+  if (client.remoteSession) return <SettingsPage title="远程访问"><p className="text-fg-muted text-sm">当前已远程连接到这台电脑。登录、设备命名和远程开关请在主机上管理。</p></SettingsPage>;
   const busy = pending != null;
   const authorizing = state?.authorization != null || pending === "signIn" || (pending === "setEnabled" && state?.account == null);
   return (
-    <SettingsPage title="远程控制" actions={
+    <SettingsPage title="远程访问" actions={
       <button className={BUTTON_SECONDARY} disabled={busy || state == null} onClick={() => void act("refresh")}><RefreshCw className="size-md" />刷新</button>
     }>
       <p className="text-fg-muted text-sm">在其他电脑或手机的浏览器中使用这台电脑上的 Vgent。远程访问时需登录同一个 GitHub 账户。</p>
       {(error || state?.error) && <p role="alert" className="text-danger text-sm">{error ?? (state?.error ? ERROR[state.error] : null)}</p>}
-      {!state ? <SettingsEmpty>{error ? "远程控制暂不可用。" : "正在读取远程状态…"}</SettingsEmpty> : <>
+      {!state ? <SettingsEmpty>{error ? "远程访问暂不可用。" : "正在读取远程状态…"}</SettingsEmpty> : <>
         <SettingsGroup title="账户">
           <SettingsRow title={state.account ? `@${state.account.username}` : "GitHub"} help={state.account?.name ?? "登录后即可开启远程访问。"}>
             {authorizing ? <button className={BUTTON_SECONDARY} onClick={() => void act("cancelSignIn")}>取消登录</button> :

@@ -766,7 +766,7 @@ export function ProvidersPage({
   const close = () => setOpen(undefined);
 
   return (
-    <SettingsPage title="模型提供商">
+    <SettingsPage title="模型与提供商">
       <SettingsGroup title="已添加">
         {added.length > 0 && (
           <Reorder.Group as="div" axis="y" values={added.map((entry) => entry.key)} onReorder={setOrder} className="flex flex-col divide-y divide-border">

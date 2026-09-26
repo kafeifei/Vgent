@@ -30,9 +30,11 @@ export function RuntimesSection({
   client,
   autoUpgrade,
   onAutoUpgrade,
+  disabled,
 }: {
   client: ApiClient;
   autoUpgrade: boolean;
+  disabled?: boolean;
   onAutoUpgrade: (next: boolean) => void;
 }) {
   const toast = useToast();
@@ -85,7 +87,7 @@ export function RuntimesSection({
       }
     >
       <SettingsRow title="自动升级" help="没有任务在跑时自动装最新版；装完验证不过、或者第一轮跑不起来，会自动退回上一版。">
-        <Switch checked={autoUpgrade} onChange={onAutoUpgrade} label="自动升级引擎运行时" />
+        <Switch checked={autoUpgrade} onChange={onAutoUpgrade} label="自动升级引擎运行时" disabled={disabled === true} />
       </SettingsRow>
 
       {(runtimes ?? []).map((runtime) => {

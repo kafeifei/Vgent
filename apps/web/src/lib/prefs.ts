@@ -86,18 +86,20 @@ export function setDensity(density: Density): void {
 
 export function usePrefs(): {
   theme: Theme;
+  resolvedTheme: "light" | "dark";
   density: Density;
   toggleTheme: () => void;
   toggleDensity: () => void;
 } {
   const theme = useSyncExternalStore(subscribe, readTheme, () => "dark" as Theme);
+  const resolvedTheme = useSyncExternalStore(subscribe, readResolvedTheme, () => "dark" as const);
   const density = useSyncExternalStore(subscribe, readDensity, () => "comfortable" as Density);
   const toggleTheme = useCallback(() => setTheme(readResolvedTheme() === "light" ? "dark" : "light"), []);
   const toggleDensity = useCallback(
     () => setDensity(readDensity() === "compact" ? "comfortable" : "compact"),
     [],
   );
-  return { theme, density, toggleTheme, toggleDensity };
+  return { theme, resolvedTheme, density, toggleTheme, toggleDensity };
 }
 
 /**
@@ -124,6 +126,7 @@ export function usePrefsSync(settings: Settings | null, write: (prefs: { theme: 
       if (readTheme() !== "system") return;
       // OS changes affect the appearance, never the stored preference.
       applyTheme("system");
+      emit();
     };
     media.addEventListener("change", onChange);
     onChange();

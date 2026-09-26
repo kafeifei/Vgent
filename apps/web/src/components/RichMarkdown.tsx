@@ -3,8 +3,10 @@ import { code } from "@streamdown/code";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { createContext, type ComponentProps, type ReactNode, memo, useContext, useMemo, useState } from "react";
-import { CodeBlock, type CustomRendererProps, defaultRehypePlugins } from "streamdown";
-import { MessageResponse } from "@/components/ai-elements/message";
+import { Streamdown, CodeBlock, type CustomRendererProps, defaultRehypePlugins } from "streamdown";
+import { RICH_CONTENT, mermaidAppearance } from "./richContent";
+import { usePrefs } from "@/lib/prefs";
+import { cn } from "@/lib/utils";
 import { Figure, PictureDialogContent, RemoteFigure } from "@/components/Figure";
 import { Dialog } from "@/components/ui/dialog";
 import { DrawnPicture, TaskPicture } from "@/features/files/TaskPicture";
@@ -84,9 +86,9 @@ function TaskFileLink({ path, children }: { path?: string; children?: ReactNode 
   );
 }
 
-const COMPONENTS = { img: MarkdownImage, [TASK_FILE_TAG]: TaskFileLink } as NonNullable<ComponentProps<typeof MessageResponse>["components"]>;
+const COMPONENTS = { img: MarkdownImage, [TASK_FILE_TAG]: TaskFileLink } as NonNullable<ComponentProps<typeof Streamdown>["components"]>;
 
-type RehypePlugins = NonNullable<ComponentProps<typeof MessageResponse>["rehypePlugins"]>;
+type RehypePlugins = NonNullable<ComponentProps<typeof Streamdown>["rehypePlugins"]>;
 
 /** The stock pipeline, with our element let through its sanitizer. */
 const REHYPE = ((): RehypePlugins => {
@@ -105,10 +107,14 @@ const REHYPE = ((): RehypePlugins => {
  * points at one of the task's files loaded from that task.
  */
 export const RichMarkdown = memo(function RichMarkdown({ children, className }: { children: string; className?: string }) {
+  const { resolvedTheme, density } = usePrefs();
   const text = useMemo(() => normalizeMathDelimiters(fenceBareSvg(children)), [children]);
+  const hasMermaid = /^\s*(?:`{3,}|~{3,})mermaid\b/m.test(text);
+  const mermaidOptions = useMemo(() => hasMermaid ? mermaidAppearance() : {}, [hasMermaid, resolvedTheme, density]);
+  // Streamdown caches unchanged blocks; an appearance change must also redraw their SVGs.
   return (
-    <MessageResponse plugins={PLUGINS} components={COMPONENTS} rehypePlugins={REHYPE} {...(className != null ? { className } : {})}>
+    <Streamdown key={hasMermaid ? `${resolvedTheme}-${density}` : "text"} plugins={PLUGINS} mermaid={mermaidOptions} components={COMPONENTS} rehypePlugins={REHYPE} className={cn(RICH_CONTENT, className)}>
       {text}
-    </MessageResponse>
+    </Streamdown>
   );
 });

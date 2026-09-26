@@ -6,7 +6,7 @@ import { UrlFigure } from "@/components/Figure";
 const PAGE = 20;
 const TEXT_PAGE = 2000;
 const LABELS: Record<string, string> = {
-  node: "节点", include: "检查项", spacing: "间距", tokens: "样式变量", warnings: "警告",
+  node: "节点", include: "包含", spacing: "间距", warnings: "警告",
   path: "路径", file_path: "文件", filePath: "文件", filename: "文件名", command: "命令", cwd: "工作目录",
   stdout: "标准输出", stderr: "错误输出", exitCode: "退出码", exit_code: "退出码",
   content: "内容", text: "文本", description: "说明", error: "错误", message: "消息",

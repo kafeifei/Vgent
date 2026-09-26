@@ -4,6 +4,7 @@ import { ChevronLeft, FileDiff, FolderTree, ListChecks, ListTodo, Terminal } fro
 import { ChangesPanel } from "@/features/changes/ChangesPanel";
 import type { ChangesView } from "@/features/changes/useChanges";
 import { FilesPanel } from "@/features/files/FilesPanel";
+import { FileAccessProvider } from "@/features/files/fileAccess";
 import { PlanDocument } from "@/features/plan/PlanDocument";
 import { PlanPanel } from "@/features/plan/PlanPanel";
 import { TerminalPanel } from "@/features/terminal/TerminalPanel";
@@ -197,7 +198,9 @@ export function RightPane({
         ) : tab === "files" ? (
           <FilesPanel client={client} threadId={threadId} active={open} refreshKey={refreshKey} preview={preview} onPreviewTaken={onPreviewTaken} onOpenPicture={onOpenPicture} />
         ) : tab === "tool" ? (
-          <ToolDetail part={findToolPart(messages, inspect?.toolCallId)} onOpenFile={onOpenFile} />
+          <FileAccessProvider value={threadId == null ? null : { client, threadId, refreshKey, openFile: onOpenFile }}>
+            <ToolDetail part={findToolPart(messages, inspect?.toolCallId)} onOpenFile={onOpenFile} />
+          </FileAccessProvider>
         ) : tab === "term" ? (
           <TerminalPanel messages={messages} client={client} threadId={threadId} refreshKey={refreshKey} focus={inspect} />
         ) : (

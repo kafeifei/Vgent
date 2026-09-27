@@ -266,3 +266,29 @@ describe("pruneDrafts", () => {
     expect([...cache.keys()].sort()).toEqual(["vgent.draft.alive", `vgent.draft.${NEW_TASK_DRAFT}`, "vgent.theme"].sort());
   });
 });
+
+it("clears a second text-only send when the view has its own empty attachment list", async () => {
+  const transport = fakeTransport();
+  const sync = new DraftSync(KEY, transport, () => {});
+  sync.edit("第一条");
+  expect(sync.clear(sync.current)).toBe(true);
+  // useDraft paints a separate empty array after clear. This is still the
+  // same empty attachment set, and the second send must clear it too.
+  sync.edit("重画了？");
+  const submitted = { text: "重画了？", attachments: [] };
+  expect(sync.clear(submitted)).toBe(true);
+  expect(sync.current).toEqual(value(""));
+  expect(transport.payloads.at(-1)).toEqual(value(""));
+});
+
+it("accepts copied attachment metadata but preserves an attachment changed during sending", () => {
+  const sync = new DraftSync(KEY, fakeTransport(), () => {});
+  sync.edit("看这张图");
+  sync.setAttachments([PNG]);
+  const submitted = structuredClone(sync.current);
+  sync.setAttachments([{ ...PNG, url: "data:image/png;base64,BAEC" }]);
+  expect(sync.clear(submitted)).toBe(false);
+  expect(sync.current.attachments[0]!.url).toBe("data:image/png;base64,BAEC");
+  expect(sync.clear(structuredClone(sync.current))).toBe(true);
+  expect(sync.current).toEqual(value(""));
+});

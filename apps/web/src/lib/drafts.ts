@@ -91,6 +91,16 @@ export interface DraftValue {
   attachments: DraftAttachment[];
 }
 
+/** React and the synchronizer can hold separate copies of the same draft. */
+function sameDraft(current: DraftValue, expected: DraftValue): boolean {
+  return current.text === expected.text && current.attachments.length === expected.attachments.length &&
+    current.attachments.every((file, index) => {
+      const other = expected.attachments[index]!;
+      return file.id === other.id && file.name === other.name && file.mediaType === other.mediaType &&
+        file.size === other.size && file.url === other.url;
+    });
+}
+
 export interface DraftPayload {
   text: string;
   attachments: DraftAttachmentUpload[];
@@ -185,7 +195,7 @@ export class DraftSync {
    * timer — a pending write would otherwise put the sent text back.
    */
   clear(expected?: DraftValue): boolean {
-    if (expected && (this.text !== expected.text || this.attachments !== expected.attachments)) return false;
+    if (expected && !sameDraft(this.current, expected)) return false;
     this.typed = true;
     this.touchedFiles = true;
     if (this.text !== "" || this.attachments.length > 0) {
@@ -302,8 +312,9 @@ export function useDraft(key: string, transport: DraftTransport): Draft {
 
   const clear = useCallback((expected?: DraftValue) => {
     if (sync.current && !sync.current.clear(expected)) return;
-    setValue("");
-    setAttachmentsState([]);
+    const cleared = sync.current?.current ?? { text: "", attachments: [] };
+    setValue(cleared.text);
+    setAttachmentsState(cleared.attachments);
   }, []);
 
   const refresh = useCallback(() => { void sync.current?.start(); }, []);

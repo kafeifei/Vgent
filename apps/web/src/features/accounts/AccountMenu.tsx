@@ -36,17 +36,17 @@ function Quota({ window: w }: { window: UsageWindow }) {
   </div>;
 }
 function AccountPanel({ client, manage }: { client: ApiClient; manage: (id: AccountSummary["id"]) => void }) {
-  const { snapshot, loading, error, refresh } = useAccounts(client, true);
+  const { snapshot, refreshing, error, refresh } = useAccounts(client);
   const [expanded, setExpanded] = useState(false);
   return <div className="flex h-[min(38rem,calc(100dvh-var(--spacing-3xl)))] flex-col" aria-label="账号与用量">
-    <div className="flex items-center justify-between px-md py-sm"><span className="font-medium text-body">账号与用量</span><button type="button" aria-label="刷新账号与用量" disabled={loading} onClick={() => void refresh()} className="grid size-xl place-items-center rounded-md text-fg-muted hover:bg-bg-hover disabled:opacity-50"><RefreshCw className={cn("size-md", loading && "animate-spin")} /></button></div>
+    <div className="flex items-center justify-between px-md py-sm"><span className="font-medium text-body">账号与用量</span><button type="button" aria-label="刷新账号与用量" title={error ?? "刷新账号与用量"} aria-busy={refreshing} disabled={refreshing} onClick={() => void refresh()} className="grid size-xl place-items-center rounded-md text-fg-muted hover:bg-bg-hover disabled:opacity-50"><RefreshCw className={cn("size-md", refreshing && "animate-spin")} /></button></div>
     <div className="min-h-0 overflow-y-auto px-md">
-      {error && <p role="status" className="py-sm text-xs text-danger">{error}</p>}
-      {!snapshot && loading && <p className="py-lg text-xs text-fg-muted">正在读取账号与用量…</p>}
+      {!snapshot && error && <p role="status" className="py-sm text-xs text-danger">{error}</p>}
+      {!snapshot && refreshing && <p className="py-lg text-xs text-fg-muted">正在读取账号与用量…</p>}
       {snapshot?.accounts.map(account => <section key={account.id} className="space-y-md border-t border-border py-md">
         <div className="flex items-center gap-sm"><AccountIcon account={account} /><div className="min-w-0 flex-1"><div className="flex items-center gap-xs text-body font-medium">{account.name}{account.plan && <span className="rounded-sm bg-bg-inset px-2xs text-2xs font-normal text-fg-muted">{account.plan}</span>}</div><p className="truncate text-xs text-fg-muted" title={account.email ?? account.username}>{account.username ? `@${account.username}` : account.email ?? (account.loggedIn === true ? "已登录" : account.loggedIn === false ? "未登录" : "无法确认登录状态")}</p></div><button type="button" onClick={() => manage(account.id)} className="flex flex-none items-center text-xs text-fg-muted hover:text-fg">{account.loggedIn === false ? "登录" : "管理"}<ChevronRight className="size-sm" /></button></div>
         {account.method ? <p className="text-xs text-fg-muted">{account.method} · 使用该渠道计费，不显示订阅额度</p> : account.loggedIn && <>
-          {account.usage?.status === "ready" ? <div className="space-y-md">{(expanded ? account.usage.windows : account.usage.windows.slice(0, 2)).map(w => <Quota key={w.id} window={w} />)}{account.usage.balance && <p className="text-xs text-fg-muted">{account.usage.balance}</p>}</div> : <p className="text-xs text-fg-muted">{account.usage?.message ?? (loading ? "正在读取额度…" : "尚未读取额度")}</p>}
+          {account.usage?.status === "ready" ? <div className="space-y-md">{(expanded ? account.usage.windows : account.usage.windows.slice(0, 2)).map(w => <Quota key={w.id} window={w} />)}{account.usage.balance && <p className="text-xs text-fg-muted">{account.usage.balance}</p>}</div> : <p className="text-xs text-fg-muted">{account.usage?.message ?? "尚未读取额度"}</p>}
           <p className="text-2xs text-fg-faint">{account.id === "github" ? "同一账号用于远程访问和 Copilot 模型" : `可用于 ${account.engines.join("、")} 引擎`}{account.usage?.fetchedAt && <span title={new Date(account.usage.fetchedAt).toLocaleString()}> · {new Date(account.usage.fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} 更新</span>}</p>
         </>}
       </section>)}

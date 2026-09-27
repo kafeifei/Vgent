@@ -1,65 +1,108 @@
 import { afterEach, expect, it, vi } from "vitest";
 import type { AccountSnapshot } from "@/lib/types";
-import { onAccountsChanged } from "@/lib/accountEvents";
+import { accountsChanged, onAccountsChanged } from "@/lib/accountEvents";
 import { createAccountStore } from "./accountStore";
 
-const snapshot = (email = "first@example.com", usage = false): AccountSnapshot => ({ revision: 1, accounts: [{
+const snapshot = (usedPercent = 20, email = "first@example.com"): AccountSnapshot => ({ revision: 1, accounts: [{
   id: "codex", name: "Codex", email, loggedIn: true, engines: ["Codex"],
-  ...(usage ? { usage: { status: "ready" as const, fetchedAt: new Date().toISOString(), windows: [{ id: "week", label: "每周", usedPercent: 20 }] } } : {}),
+  usage: { status: "ready", fetchedAt: new Date().toISOString(), windows: [{ id: "week", label: "每周", usedPercent }] },
 }] });
 function deferred<T>() { let resolve!: (v: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
-it("waits for a complete quota snapshot, then reopens without refetching or losing quotas", async () => {
-  const full = deferred<AccountSnapshot>();
-  const client = { getAccounts: vi.fn().mockResolvedValueOnce(snapshot()).mockReturnValueOnce(full.promise) };
+it("starts a full read at app mount and opening the panel never starts another request", async () => {
+  const first = deferred<AccountSnapshot>();
+  const client = { getAccounts: vi.fn().mockReturnValueOnce(first.promise) };
+  const store = createAccountStore(client);
+  const closeApp = store.mount();
+  expect(client.getAccounts).toHaveBeenCalledExactlyOnceWith(true, false);
+  expect(store.get()).toEqual({ refreshing: true, error: undefined });
+  const closePanel = store.mount();
+  const initialRead = store.refresh();
+  first.resolve(snapshot()); await initialRead;
+  closePanel();
+  const closeReopenedPanel = store.mount();
+  expect(store.get().snapshot?.accounts[0]?.usage?.windows[0]?.usedPercent).toBe(20);
+  expect(store.get().refreshing).toBe(false);
+  expect(client.getAccounts).toHaveBeenCalledTimes(1);
+  closeReopenedPanel(); closeApp();
+});
+
+it("polls every minute with the panel closed, preserving the old snapshot until the new one arrives", async () => {
+  vi.useFakeTimers();
+  const next = deferred<AccountSnapshot>();
+  const client = { getAccounts: vi.fn().mockResolvedValueOnce(snapshot()).mockReturnValueOnce(next.promise) };
+  const store = createAccountStore(client);
+  const closeApp = store.mount();
+  await store.refresh();
+  const before = store.get().snapshot;
+  await vi.advanceTimersByTimeAsync(59_999);
+  expect(client.getAccounts).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(client.getAccounts).toHaveBeenNthCalledWith(2, true, true);
+  expect(store.get().refreshing).toBe(true);
+  expect(store.get().snapshot).toBe(before);
+  const closePanel = store.mount();
+  const reading = store.refresh(true);
+  expect(client.getAccounts).toHaveBeenCalledTimes(2);
+  next.resolve(snapshot(35)); await reading;
+  expect(store.get().refreshing).toBe(false);
+  expect(store.get().snapshot?.accounts[0]?.usage?.windows[0]?.usedPercent).toBe(35);
+  closePanel(); closeApp();
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(client.getAccounts).toHaveBeenCalledTimes(2);
+});
+
+it("coalesces manual refreshes and keeps the last complete view if the refresh fails", async () => {
+  const next = deferred<AccountSnapshot>();
+  const client = { getAccounts: vi.fn().mockResolvedValueOnce(snapshot()).mockReturnValueOnce(next.promise).mockRejectedValueOnce(Error("offline")) };
   const store = createAccountStore(client);
   await store.refresh();
-  const load = store.refresh(true);
-  expect(store.get().usageSnapshot).toBeUndefined();
-  full.resolve(snapshot(undefined, true)); await load;
-  const complete = store.get().usageSnapshot;
+  const before = store.get().snapshot;
+  const read = store.refresh(true);
+  expect(store.refresh(true)).toBe(read);
+  expect(store.get().snapshot).toBe(before);
+  next.resolve(snapshot(40)); await read;
+  const complete = store.get().snapshot;
   await store.refresh(true);
-  expect(client.getAccounts).toHaveBeenCalledTimes(2);
-  client.getAccounts.mockResolvedValueOnce(snapshot());
-  await store.refresh(false, true);
-  expect(store.get().usageSnapshot).toBe(complete);
-});
-
-it("coalesces duplicate refreshes and upgrades an in-flight identity request only once", async () => {
-  const first = deferred<AccountSnapshot>(), full = deferred<AccountSnapshot>();
-  const client = { getAccounts: vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(full.promise) };
-  const store = createAccountStore(client);
-  const reads = [store.refresh(), store.refresh(true), store.refresh(true, true)];
-  first.resolve(snapshot());
-  await vi.waitFor(() => expect(client.getAccounts).toHaveBeenCalledTimes(2));
-  full.resolve(snapshot(undefined, true)); await Promise.all(reads);
-  expect(client.getAccounts).toHaveBeenNthCalledWith(2, true, false);
-});
-
-it("keeps the complete panel visible during refresh and ignores a late response from an old login", async () => {
-  const old = deferred<AccountSnapshot>();
-  const client = { getAccounts: vi.fn().mockResolvedValueOnce(snapshot(undefined, true)).mockReturnValueOnce(old.promise).mockResolvedValueOnce(snapshot("new@example.com", true)) };
-  const store = createAccountStore(client);
-  const changed = vi.fn(); onAccountsChanged(client, changed);
-  await store.refresh(true);
-  const before = store.get().usageSnapshot;
-  const pending = store.refresh(true, true);
-  expect(store.get().usageSnapshot).toBe(before);
-  store.invalidate(); await store.refresh(true, true);
-  old.resolve(snapshot(undefined, true)); await pending;
-  expect(store.get().usageSnapshot?.accounts[0]?.email).toBe("new@example.com");
-  expect(changed).toHaveBeenCalledExactlyOnceWith("snapshot");
-});
-
-it("never associates old quotas with a changed identity and keeps data on transient errors", async () => {
-  const client = { getAccounts: vi.fn().mockResolvedValueOnce(snapshot(undefined, true)).mockRejectedValueOnce(Error("offline")).mockResolvedValueOnce(snapshot("new@example.com")) };
-  const store = createAccountStore(client);
-  await store.refresh(true);
-  await store.refresh(true, true);
-  expect(store.get().usageSnapshot?.accounts[0]?.usage?.windows).toHaveLength(1);
+  expect(store.get().snapshot).toBe(complete);
+  expect(store.get().refreshing).toBe(false);
   expect(store.get().error).toBeTruthy();
-  await store.refresh(false, true);
-  expect(store.get().usageSnapshot).toBeUndefined();
+});
+
+it("replaces a switched account atomically and ignores late results from the previous login", async () => {
+  const old = deferred<AccountSnapshot>();
+  const client = { getAccounts: vi.fn().mockResolvedValueOnce(snapshot()).mockReturnValueOnce(old.promise).mockResolvedValueOnce(snapshot(5, "new@example.com")) };
+  const store = createAccountStore(client);
+  const closeApp = store.mount();
+  const changed = vi.fn(); onAccountsChanged(client, changed);
+  await store.refresh();
+  const before = store.get().snapshot;
+  const pending = store.refresh(true);
+  expect(store.get().snapshot).toBe(before);
+  accountsChanged(client); await store.refresh();
+  old.resolve(snapshot()); await pending;
+  expect(store.get().snapshot?.accounts[0]?.email).toBe("new@example.com");
+  expect(changed).toHaveBeenCalledTimes(2);
+  expect(changed).toHaveBeenLastCalledWith("snapshot");
+  expect(client.getAccounts).toHaveBeenCalledTimes(3);
+  closeApp();
+});
+
+
+it("keeps a platform's last successful quota on an upstream error but never after its account changes", async () => {
+  const unavailable = (email = "first@example.com"): AccountSnapshot => ({ revision: 1, accounts: [{
+    id: "codex", name: "Codex", email, loggedIn: true, engines: ["Codex"],
+    usage: { status: "unavailable", fetchedAt: new Date().toISOString(), windows: [], message: "offline" },
+  }] });
+  const client = { getAccounts: vi.fn().mockResolvedValueOnce(snapshot()).mockResolvedValueOnce(unavailable()).mockResolvedValueOnce(unavailable("new@example.com")) };
+  const store = createAccountStore(client);
+  await store.refresh();
+  const before = store.get().snapshot?.accounts[0]?.usage;
+  await store.refresh(true);
+  expect(store.get().snapshot?.accounts[0]?.usage).toBe(before);
+  expect(store.get().error).toContain("上次结果");
+  await store.refresh(true);
+  expect(store.get().snapshot?.accounts[0]?.usage?.status).toBe("unavailable");
   expect(store.get().snapshot?.accounts[0]?.email).toBe("new@example.com");
 });

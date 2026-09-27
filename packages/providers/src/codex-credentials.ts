@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { chmod, mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
@@ -53,6 +54,7 @@ export type CodexKeyring = {
 /** Resolved token handed to the request layer. Never logged, never persisted. */
 export type CodexAccessToken = {
   readonly accessToken: string;
+  readonly email?: string;
   readonly accountId: string | undefined;
   readonly expiresAt: number;
   readonly source: SubscriptionCredentialSource;
@@ -236,13 +238,14 @@ export class CodexSubscriptionAuthError extends Error {
 }
 
 /**
- * Per-factory token holder: caches the access token in memory, refreshes it
- * when it is about to expire, and single-flights concurrent refreshes so a
- * burst of requests produces at most one token exchange.
+ * Store-backed token owner: rereads the original login on each request so an
+ * external CLI logout or account switch takes effect. Concurrent consumers
+ * share one refresh and stale responses cannot restore a replaced login.
  */
 export class CodexTokenProvider {
   readonly #options: CodexCredentialOptions;
-  #cached: CodexAccessToken | undefined;
+  #revision = 0;
+  #changing = false;
   #inflight: Promise<CodexAccessToken> | undefined;
 
   constructor(options: CodexCredentialOptions = {}) {
@@ -250,28 +253,35 @@ export class CodexTokenProvider {
   }
 
   async getAccessToken({ forceRefresh = false }: { forceRefresh?: boolean } = {}): Promise<CodexAccessToken> {
-    if (forceRefresh) {
-      this.#cached = undefined;
-    } else {
-      const cached = this.#cached;
-      if (cached != null && !isAccessTokenExpiringSoon({ expiresAt: cached.expiresAt })) return cached;
-    }
+    if (this.#changing) throw new CodexSubscriptionAuthError("Codex account is changing");
 
     const inflight = this.#inflight;
     if (inflight != null) return inflight;
 
-    const pending = this.#resolve(forceRefresh);
+    const revision = this.#revision;
+    const pending = this.#resolve(forceRefresh, revision);
     this.#inflight = pending;
     try {
       const token = await pending;
-      this.#cached = token;
+      if (revision !== this.#revision) throw new CodexSubscriptionAuthError("Codex account changed");
       return token;
     } finally {
       this.#inflight = undefined;
     }
   }
 
-  async #resolve(forceRefresh: boolean): Promise<CodexAccessToken> {
+  /** Block consumers and drain refresh before the original CLI changes its store. */
+  async changeAccount(action: () => Promise<void>): Promise<void> {
+    if (this.#changing) throw new CodexSubscriptionAuthError("Codex account is changing");
+    this.#changing = true;
+    this.#revision++;
+    try {
+      await this.#inflight?.catch(() => undefined);
+      await action();
+    } finally { this.#changing = false; }
+  }
+
+  async #resolve(forceRefresh: boolean, revision: number): Promise<CodexAccessToken> {
     const supplied = this.#options.accessToken;
     if (supplied != null) {
       const expiresAt = (await getJwtExpiresAt({ token: supplied })) ?? Number.POSITIVE_INFINITY;
@@ -299,6 +309,7 @@ export class CodexTokenProvider {
         accountId: credential.accountId,
         expiresAt: credential.expiresAt,
         source: stored.source,
+        ...codexAccountOf(stored.value),
       };
     }
 
@@ -307,8 +318,14 @@ export class CodexTokenProvider {
       clientId: OPENAI_CLIENT_ID,
       refreshToken: credential.refreshToken,
       requestFormat: "json",
-      ...(this.#options.fetch == null ? {} : { fetch: this.#options.fetch }),
+      fetch: (input, init) => (this.#options.fetch ?? fetch)(input, { ...init, signal: init?.signal ?? AbortSignal.timeout(15_000) }),
     });
+    // The CLI may have signed out or switched accounts during this network call.
+    const current = await readCodexAuthStore(this.#options);
+    const currentCredential = current == null ? undefined : await toCodexCredential(current.value);
+    if (revision !== this.#revision || currentCredential?.accessToken !== credential.accessToken || currentCredential?.refreshToken !== credential.refreshToken) {
+      throw new CodexSubscriptionAuthError("Codex account changed during refresh; retry with the current login");
+    }
     const tokens = isRecord(stored.value.tokens) ? stored.value.tokens : {};
     await stored.write({
       ...stored.value,
@@ -324,6 +341,7 @@ export class CodexTokenProvider {
       accountId: credential.accountId,
       expiresAt: refreshed.expiresAt,
       source: stored.source,
+      ...codexAccountOf(stored.value),
     };
   }
 }
@@ -384,4 +402,16 @@ async function describeCodexAuth(options: CodexCredentialOptions): Promise<Subsc
   } catch {
     return { available: false, source: null };
   }
+}
+
+/** One refresh owner per original credential store, shared by quota, catalog and Engines. */
+const sharedCodexTokens = new Map<string, CodexTokenProvider>();
+export function getCodexTokenProvider(options: CodexCredentialOptions = {}): CodexTokenProvider {
+  // Explicit injected transports/credentials belong to their caller (including tests).
+  if (options.fetch || options.keyring || options.accessToken || options.platform) return new CodexTokenProvider(options);
+  let key = resolveCodexHome(options);
+  try { key = realpathSync(key); } catch { /* A missing home is handled by the owner. */ }
+  let owner = sharedCodexTokens.get(key);
+  if (!owner) { owner = new CodexTokenProvider({ ...options, env: { ...(options.env ?? process.env), CODEX_HOME: key } }); sharedCodexTokens.set(key, owner); }
+  return owner;
 }

@@ -2,7 +2,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { defaultSettingsMiddleware, wrapLanguageModel } from "ai";
 import type { LanguageModel } from "ai";
 import type { CodexCredentialOptions } from "./codex-credentials.js";
-import { CHATGPT_CODEX_BASE_URL, CodexTokenProvider } from "./codex-credentials.js";
+import { CHATGPT_CODEX_BASE_URL, getCodexTokenProvider } from "./codex-credentials.js";
 import { createCodexFetch } from "./codex-fetch.js";
 
 /**
@@ -34,7 +34,7 @@ export function createCodexSubscriptionModel(
   modelId: string,
   options: CodexSubscriptionModelOptions = {},
 ): LanguageModel {
-  const tokens = new CodexTokenProvider(options);
+  const tokens = getCodexTokenProvider(options);
   const provider = createOpenAI({
     name: "codex-subscription",
     apiKey: UNUSED_API_KEY,

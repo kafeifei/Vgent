@@ -1,3 +1,4 @@
+import type { VgentEngineFactoryOptions } from "./vgent.js";
 import type { EngineOutcome, TaskState } from "@vgent/engine";
 import type { ModelMessage, TextStreamPart, ToolSet } from "ai";
 import type { EngineId, HarnessState, Logger, PermissionMode, Project, ThreadRecord } from "../types.js";
@@ -157,13 +158,13 @@ export function engineDescriptors(registry: EngineRegistry): EngineDescriptor[] 
 export type EngineFactoryOverride = Omit<EngineFactory, "descriptor"> & { descriptor?: EngineDescriptor };
 
 /** All three engines, each backed by its real runtime. */
-export function createEngineRegistry(overrides?: Partial<Record<EngineId, EngineFactoryOverride>>): EngineRegistry {
+export function createEngineRegistry(overrides?: Partial<Record<EngineId, EngineFactoryOverride>>, options: VgentEngineFactoryOptions = {}): EngineRegistry {
   // Insertion order is the order every list shows the agents in — the model
   // picker's groups, the settings tables' columns: Codex, Claude Code, Vgent.
   const base: EngineRegistry = {
     codex: createCodexEngineFactory(),
     "claude-code": createClaudeCodeEngineFactory(),
-    vgent: createVgentEngineFactory(),
+    vgent: createVgentEngineFactory(options),
   };
   if (overrides == null) return base;
   for (const id of engineIds(base)) {

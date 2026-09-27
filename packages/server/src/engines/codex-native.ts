@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { CHATGPT_CODEX_BASE_URL, CodexTokenProvider } from "@vgent/providers";
+import { CHATGPT_CODEX_BASE_URL, getCodexTokenProvider } from "@vgent/providers";
 import { DEFAULT_CODEX_DATA_DIR, type CodexAuthEnvironment } from "@vgent/engines";
 import type { ModelMessage, TextStreamPart, ToolSet } from "ai";
 import { CodexAppServer, type CodexNotification } from "./codex-app-server.js";
@@ -39,7 +39,7 @@ export async function createNativeCodexRunner(
   options: { model?: string; effort?: string; serviceTier?: string; codexConfig?: Obj; auth?: CodexAuthEnvironment },
 ): Promise<EngineRunner> {
   const home = await mkdir(join(DEFAULT_CODEX_DATA_DIR, "codex-home"), { recursive: true }).then(() => join(DEFAULT_CODEX_DATA_DIR, "codex-home"));
-  const credential = options.auth == null ? await new CodexTokenProvider().getAccessToken() : undefined;
+  const credential = options.auth == null ? await getCodexTokenProvider().getAccessToken() : undefined;
   const baseUrl = options.auth?.OPENAI_BASE_URL ?? CHATGPT_CODEX_BASE_URL;
   const key = options.auth?.OPENAI_API_KEY ?? credential?.accessToken;
   if (key == null) throw new Error("Codex credential is unavailable");

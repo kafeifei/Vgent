@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { CODEX_SUBSCRIPTION_PREFIX } from "@vgent/engine";
-import { CHATGPT_CODEX_BASE_URL, CodexTokenProvider, createCodexFetch, describeSubscriptionAuth } from "@vgent/providers";
+import { CHATGPT_CODEX_BASE_URL, getCodexTokenProvider, createCodexFetch, describeSubscriptionAuth } from "@vgent/providers";
 import { gateway as defaultGateway } from "ai";
 import type { EngineId, Logger } from "./types.js";
 import { silentLogger } from "./types.js";
@@ -176,6 +176,7 @@ export interface ModelCatalog {
 }
 
 export interface ModelCatalogService {
+  invalidate?(): void;
   list(engine: EngineId, options?: { refresh?: boolean }): Promise<ModelCatalog>;
 }
 
@@ -416,7 +417,7 @@ async function fetchCodexRemoteCatalog(
   input: { clientVersion: string; signal: AbortSignal },
   env: NodeJS.ProcessEnv,
 ): Promise<CodexCatalogModel[]> {
-  const codexFetch = createCodexFetch({ tokens: new CodexTokenProvider({ env }) });
+  const codexFetch = createCodexFetch({ tokens: getCodexTokenProvider({ env }) });
   const url = `${CHATGPT_CODEX_BASE_URL}/models?client_version=${encodeURIComponent(input.clientVersion)}`;
   const response = await codexFetch(url, {
     method: "GET",
@@ -460,6 +461,7 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
   const fetchCodexRemote = options.fetchCodexRemote ?? ((input) => fetchCodexRemoteCatalog(input, env));
 
   const cached = new Map<EngineId, { at: number; catalog: ModelCatalog }>();
+  let revision = 0;
 
   /** Best-effort like every other source: no catalog means no levels and no choice of window, not a failed list. */
   const catalogModelOf = async () =>
@@ -629,11 +631,13 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
   };
 
   return {
+    invalidate() { revision++; cached.clear(); },
     async list(engine, listOptions) {
+      const generation = revision;
       const hit = cached.get(engine);
       if (listOptions?.refresh !== true && hit != null && now() - hit.at < CATALOG_TTL_MS) return hit.catalog;
       const catalog = await build(engine);
-      cached.set(engine, { at: now(), catalog });
+      if (generation === revision) cached.set(engine, { at: now(), catalog });
       return catalog;
     },
   };

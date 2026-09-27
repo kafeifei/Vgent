@@ -1,3 +1,5 @@
+import { useAccounts } from "@/features/accounts/useAccounts";
+import { onAccountsChanged } from "@/lib/accountEvents";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, Copy, ExternalLink, GripVertical, Plus, Search } from "lucide-react";
 import { Reorder, useDragControls } from "motion/react";
@@ -651,10 +653,12 @@ type Open =
  * catalog the server caches — so a new vendor shows up without a release.
  */
 export function ProvidersPage({
+  onManageGitHub,
   client,
   engines,
   onChanged,
 }: {
+  onManageGitHub?: () => void;
   client: ApiClient;
   /** 引擎能力表: which agents can take a provider at all, and what they are called. */
   engines: EngineDescriptor[];
@@ -663,6 +667,8 @@ export function ProvidersPage({
   onChanged?: (() => void) | undefined;
 }) {
   const toast = useToast();
+  const { snapshot: accounts } = useAccounts(client);
+  const github = accounts?.accounts.find(a => a.id === "github");
   const [providers, setProviders] = useState<RedactedProviderConfig[]>([]);
   const [subscriptions, setSubscriptions] = useState<SubscriptionAccount[]>([]);
   const [catalog, setCatalog] = useState<ProviderCatalog>();
@@ -674,6 +680,10 @@ export function ProvidersPage({
   const [order, setOrder] = useState<string[]>();
   const orderRef = useRef(order);
   orderRef.current = order;
+
+  useEffect(() => onAccountsChanged(client, () => {
+    void client.listSubscriptions().then(setSubscriptions).catch(() => {});
+  }), [client]);
 
   const usable = useMemo(() => engines.filter((engine) => engine.capabilities.customProviders).map((engine) => engine.id as ProviderAgent), [engines]);
   const unusable = engines.filter((engine) => !engine.capabilities.customProviders);
@@ -775,6 +785,9 @@ export function ProvidersPage({
   return (
     <SettingsPage title="模型与提供商">
       <SettingsGroup title="已添加">
+        {onManageGitHub && <SettingsRow leading={<LetterAvatar name="GitHub" />} title="GitHub Copilot" help={github?.loggedIn ? `@${github.username} · 与远程访问共用登录，Copilot 模型可在 Vgent 引擎中选择` : "与远程访问共用一个 GitHub 账号"}>
+          <button type="button" onClick={onManageGitHub} className={BUTTON_SECONDARY}>{github?.loggedIn ? "管理账号" : "登录"}</button>
+        </SettingsRow>}
         {!addedReady && <SettingsEmpty>正在读取订阅和提供商…</SettingsEmpty>}
         {addedReady && added.length > 0 && (
           <Reorder.Group as="div" axis="y" values={added.map((entry) => entry.key)} onReorder={setOrder} className="flex flex-col divide-y divide-border">

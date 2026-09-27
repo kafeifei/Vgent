@@ -143,3 +143,5 @@ export const TRANSITION_LABELS: Record<ThreadTransition, string> = {
 export type UIMessagePart = UIMessage["parts"][number];
 
 export type { RemoteAccessState, RemoteDevice } from "@vgent/server";
+
+export type { AccountId, AccountSummary, AccountSnapshot, AccountUsage, UsageWindow } from "@vgent/server";

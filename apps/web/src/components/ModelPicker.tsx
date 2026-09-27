@@ -1,3 +1,4 @@
+import { onAccountsChanged } from "@/lib/accountEvents";
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { createClient, getToken, type ApiClient, type ModelPickPatch } from "@/lib/api";
 import type { EngineDescriptor, EngineId, ModelCatalog, ModelEntry, ModelPick } from "@/lib/types";
@@ -73,6 +74,8 @@ function useAllCatalogs(
   onCatalog?: (catalog: ModelCatalog) => void,
 ): Record<string, CatalogState> {
   const injectedClient = useContext(ModelCatalogClientContext);
+  const [accountRevision, setAccountRevision] = useState(0);
+  useEffect(() => injectedClient ? onAccountsChanged(injectedClient, () => setAccountRevision(n => n + 1)) : undefined, [injectedClient]);
   const [states, setStates] = useState<Record<string, CatalogState>>({});
   const notify = useRef(onCatalog);
   notify.current = onCatalog;
@@ -101,7 +104,7 @@ function useAllCatalogs(
     return () => {
       cancelled = true;
     };
-  }, [ids, selected, injectedClient]);
+  }, [ids, selected, injectedClient, accountRevision]);
 
   return states;
 }

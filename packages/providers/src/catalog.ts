@@ -50,7 +50,7 @@ const NPM_TO_PROTOCOL = new Map<string, ProviderProtocol>([
 ]);
 
 function unsupportedReason(id: string, npm: string): string {
-  if (id.startsWith("github-copilot")) return "要走 GitHub 的登录流程，还没做";
+  if (id.startsWith("github-copilot")) return "使用应用的统一 GitHub 登录，请在账号与用量中管理";
   if (npm.startsWith("@ai-sdk/google-vertex")) return "要用 Google Cloud 的账号凭据，还没做";
   return `要用第三方适配包 ${npm}，还没接`;
 }

@@ -51,6 +51,7 @@ export function createClaudeLogin(options: {
   command?: () => Promise<string>;
   env?: NodeJS.ProcessEnv;
   timeout?: number;
+  changed?: () => void;
 } = {}) {
   let attempt: ClaudeLoginAttempt = { state: "idle" };
   let child: ChildProcess | undefined;
@@ -60,6 +61,7 @@ export function createClaudeLogin(options: {
     child?.kill("SIGTERM");
     child = undefined;
     attempt = { state: "idle" };
+    options.changed?.();
   };
   return {
     status: (): ClaudeLoginAttempt => ({ ...attempt }),
@@ -67,6 +69,7 @@ export function createClaudeLogin(options: {
     async start(): Promise<ClaudeLoginAttempt> {
       if (attempt.state === "running") return { ...attempt };
       attempt = { state: "running" };
+      options.changed?.();
       const current = ++generation;
       try {
         const command = await (options.command ?? claudeCommand)();
@@ -79,6 +82,7 @@ export function createClaudeLogin(options: {
         }, (error) => {
           if (current !== generation) return;
           child = undefined;
+          options.changed?.();
           attempt = error == null ? { state: "succeeded" } : {
             state: "failed",
             error: (error as NodeJS.ErrnoException).code === "ENOENT"

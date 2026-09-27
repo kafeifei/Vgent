@@ -75,12 +75,14 @@ export function createRemoteController(deps: Dependencies) {
   }
   let credential: GitHubCredential | undefined
   let credentialReadAttempted = false
+  let credentialWrites = Promise.resolve()
   let account: Account | undefined
   let host: Connection | undefined
   let login: AbortController | undefined
   let hosting: AbortController | undefined
   let revision = 0
   let authentication = 0
+  let signingOut = false
   let disposed = false
   let refresh: { generation: number; promise: Promise<GitHubCredential> } | undefined
   let hostStopping = Promise.resolve()
@@ -95,7 +97,7 @@ export function createRemoteController(deps: Dependencies) {
     if (disposed || generation !== revision) throw new Error("Remote operation cancelled")
   }
   const token = async () => {
-    if (!credential || disposed) throw new Error("Authentication required")
+    if (!credential || disposed || signingOut) throw new Error("Authentication required")
     if (!credential.expiresAt || credential.expiresAt > Date.now() + 60_000) return credential.accessToken
     const generation = authentication
     if (!refresh || refresh.generation !== generation) {
@@ -106,9 +108,14 @@ export function createRemoteController(deps: Dependencies) {
     }
     const next = await refresh.promise
     if (disposed || generation !== authentication) throw new Error("Authentication cancelled")
-    await deps.credentials.write(next)
+    credentialWrites = credentialWrites.catch(() => {}).then(async () => {
+      if (disposed || generation !== authentication || signingOut) throw new Error("Authentication cancelled")
+      if (credential !== next) await deps.credentials.write(next)
+      if (disposed || generation !== authentication || signingOut) throw new Error("Authentication cancelled")
+      credential = next
+    })
+    await credentialWrites
     if (disposed || generation !== authentication) throw new Error("Authentication cancelled")
-    credential = next
     return next.accessToken
   }
   const records = () => {
@@ -149,7 +156,7 @@ export function createRemoteController(deps: Dependencies) {
     const identity = await deps.account(await token())
     check(generation)
     account = identity
-    publish({ account: { name: identity.name, username: identity.username }, error: null })
+    publish({ account: { name: identity.name, username: identity.username, avatarUrl: `https://avatars.githubusercontent.com/u/${identity.id}?s=80` }, error: null })
   }
   const list = async (generation: number) => {
     check(generation)
@@ -231,7 +238,7 @@ export function createRemoteController(deps: Dependencies) {
       check(generation)
       credential = next
       account = identity
-      publish({ account: { name: identity.name, username: identity.username }, authorization: null })
+      publish({ account: { name: identity.name, username: identity.username, avatarUrl: `https://avatars.githubusercontent.com/u/${identity.id}?s=80` }, authorization: null })
     } finally {
       if (login === controller) login = undefined
       if (generation === revision) publish({ authorization: null })
@@ -258,6 +265,13 @@ export function createRemoteController(deps: Dependencies) {
   }
   return {
     getState: async () => state,
+    /** Internal account adapter. Never serialize credentials into an API response. */
+    githubAccess: async () => {
+      const generation = authentication;
+      const accessToken = await token();
+      if (!account || generation !== authentication) throw new Error("GitHub account changed");
+      return { accessToken, accountId: String(account.id), revision: generation };
+    },
     initialize: () => {
       if (disposed) return Promise.resolve(state)
       timer ??= setInterval(() => {
@@ -291,13 +305,15 @@ export function createRemoteController(deps: Dependencies) {
       })
     },
     signOut: () => {
+      signingOut = true
       revision++
       authentication++
       login?.abort()
       hosting?.abort()
       return run("signOut", async () => {
         await halt()
-        await deps.credentials.clear()
+        await credentialWrites.catch(() => undefined)
+        try { await deps.credentials.clear() } finally { signingOut = false }
         deps.settings.set("remoteEnabled", false)
         credential = undefined
         account = undefined

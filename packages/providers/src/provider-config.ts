@@ -120,7 +120,7 @@ export type RedactedProviderConfig = Omit<ProviderConfig, "apiKey"> & { hasKey: 
  * `*-subscription` ids are the logins the settings page lists next to the
  * connected providers.
  */
-export const RESERVED_PROVIDER_IDS: readonly string[] = ["codex-subscription", "claude-subscription", "gateway"];
+export const RESERVED_PROVIDER_IDS: readonly string[] = ["codex-subscription", "claude-subscription", "github-copilot", "gateway"];
 
 /** The `:` every registry model id is split on. */
 export const PROVIDER_MODEL_SEPARATOR = ":";

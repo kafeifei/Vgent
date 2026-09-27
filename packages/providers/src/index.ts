@@ -5,6 +5,7 @@ export {
   CHATGPT_CODEX_BASE_URL,
   CodexSubscriptionAuthError,
   CodexTokenProvider,
+  getCodexTokenProvider,
   describeSubscriptionAuth,
 } from "./codex-credentials.js";
 export type {
@@ -63,3 +64,4 @@ export {
   summarizeCatalogProvider,
 } from "./catalog.js";
 export type { CatalogEndpoint, CatalogModelMatch, CatalogProvider, CatalogProviderSummary, FetchCatalogOptions } from "./catalog.js";
+export { createCopilotModel } from "./copilot-model.js";

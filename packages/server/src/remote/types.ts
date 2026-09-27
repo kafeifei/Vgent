@@ -8,7 +8,7 @@ export type RemoteDevice = {
 
 export type RemoteAccessState = {
   configured: boolean
-  account: { name: string; username: string } | null
+  account: { name: string; username: string; avatarUrl?: string } | null
   authorization: { userCode: string; verificationUri: string; expiresAt: number } | null
   enabled: boolean
   status: "disabled" | "connecting" | "online" | "offline"

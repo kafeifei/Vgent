@@ -14,7 +14,7 @@ type TriggerProps = {
   ref: RefObject<HTMLButtonElement | null>;
   onClick: () => void;
   "aria-expanded": boolean;
-  "aria-haspopup": "menu";
+  "aria-haspopup": "menu" | "dialog";
 };
 
 type ShortcutEvent = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "repeat" | "isComposing" | "keyCode">;
@@ -43,9 +43,13 @@ export function Popover({
   side = "bottom",
   className,
   openRef,
+  popupRole = "menu",
+  ariaLabel,
 }: {
   trigger: (props: TriggerProps) => ReactNode;
   children: (close: () => void) => ReactNode;
+  popupRole?: "menu" | "dialog";
+  ariaLabel?: string;
   align?: "start" | "end";
   side?: "bottom" | "top";
   className?: string;
@@ -69,17 +73,24 @@ export function Popover({
 
   useLayoutEffect(() => {
     if (!open) return;
-    const anchor = triggerRef.current?.getBoundingClientRect();
-    const panel = panelRef.current?.getBoundingClientRect();
-    if (anchor == null) return;
-    const width = panel?.width ?? 0;
-    const height = panel?.height ?? 0;
-    const left = align === "end" ? anchor.right - width : anchor.left;
-    const top = side === "top" ? anchor.top - height - 4 : anchor.bottom + 4;
-    setPosition({
-      left: Math.max(4, Math.min(left, window.innerWidth - width - 4)),
-      top: Math.max(4, Math.min(top, window.innerHeight - height - 4)),
-    });
+    const positionPanel = () => {
+      const anchor = triggerRef.current?.getBoundingClientRect();
+      const panel = panelRef.current?.getBoundingClientRect();
+      if (anchor == null) return;
+      const width = panel?.width ?? 0;
+      const height = panel?.height ?? 0;
+      const left = align === "end" ? anchor.right - width : anchor.left;
+      const top = side === "top" ? anchor.top - height - 4 : anchor.bottom + 4;
+      setPosition({
+        left: Math.max(4, Math.min(left, window.innerWidth - width - 4)),
+        top: Math.max(4, Math.min(top, window.innerHeight - height - 4)),
+      });
+    };
+    positionPanel();
+    const observer = new ResizeObserver(positionPanel);
+    if (panelRef.current) observer.observe(panelRef.current);
+    window.addEventListener("resize", positionPanel);
+    return () => { observer.disconnect(); window.removeEventListener("resize", positionPanel); };
   }, [open, align, side]);
 
   useEffect(() => {
@@ -124,12 +135,13 @@ export function Popover({
         ref: triggerRef,
         onClick: () => setOpen((value) => !value),
         "aria-expanded": open,
-        "aria-haspopup": "menu",
+        "aria-haspopup": popupRole,
       })}
       {open && (
         <div
           ref={panelRef}
-          role="menu"
+          role={popupRole}
+          aria-label={ariaLabel}
           style={{ left: position?.left ?? -9999, top: position?.top ?? -9999 }}
           className={cn(
             "fixed z-40 min-w-[calc(var(--spacing-3xl)*3.4)] max-w-[calc(var(--spacing-3xl)*6)] rounded-md bg-bg-elevated p-2xs shadow-popover",

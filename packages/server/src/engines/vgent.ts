@@ -61,6 +61,7 @@ export interface VgentEngineFactoryOptions {
    * probe, since an injected model needs no credential.
    */
   model?: LanguageModel;
+  copilot?: { available(): Promise<void>; model(id: string): LanguageModel };
 }
 
 /** How much of a chosen window the history may fill before pruning; the rest is the reply's and the tools'. */
@@ -91,6 +92,7 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
     async ensureAvailable({ thread, dataDir }) {
       if (override != null) return;
       const spec = thread.model ?? DEFAULT_VGENT_MODEL;
+      if (spec.startsWith("github-copilot:") && options.copilot) { await options.copilot.available(); return; }
       const described = describeModelSpec(spec, await createProviderStore(dataDir).list());
       if (described.kind === "invalid") {
         throw new BadRequestError(`模型标识不合法: ${JSON.stringify(spec)}，${described.reason}`, "invalid_model");
@@ -143,7 +145,8 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
       let engine: ReturnType<typeof createVgentEngine>;
       try {
         mcp = await connectMcpServers(settings.mcpServers ?? [], { log: ctx.log });
-        const model = override ?? ctx.thread.model ?? DEFAULT_VGENT_MODEL;
+        const spec = ctx.thread.model ?? DEFAULT_VGENT_MODEL;
+        const model = override ?? (spec.startsWith("github-copilot:") && options.copilot ? options.copilot.model(spec.slice("github-copilot:".length)) : spec);
         const { workspace } = ctx.thread;
         engine = createVgentEngine({
           model,

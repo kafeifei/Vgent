@@ -4,7 +4,9 @@ import type { UIMessage } from "ai";
 import { ChevronRight, FolderOpen, FolderPlus, ListFilter, PanelLeft, Plus, Search, Settings, SquarePen } from "lucide-react";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ProjectPicker } from "@/components/ProjectPicker";
-import { BUILD_DETAIL, BUILD_LABEL } from "@/lib/build";
+import { AccountMenu } from "@/features/accounts/AccountMenu";
+import type { ApiClient } from "@/lib/api";
+import type { AccountId } from "@/lib/types";
 import { hasTrafficLights } from "@/lib/host";
 import type { Project, ThreadSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -49,6 +51,8 @@ function TopEntry({
 
 /** Left column: the window strip, the top entries, the grouped task list, the foot. */
 export function Sidebar({
+  client,
+  onManageAccount,
   projects,
   projectId,
   threads,
@@ -72,6 +76,8 @@ export function Sidebar({
   onDelete,
   onRename,
 }: {
+  client: ApiClient;
+  onManageAccount: (id: AccountId) => void;
   projects: Project[];
   /** The project of the current task or new-task draft. */
   projectId: string | null;
@@ -241,18 +247,7 @@ export function Sidebar({
       </nav>
 
       <div className="flex h-foot flex-none items-center gap-sm pr-sm pl-[calc(var(--spacing-sm)+var(--spacing-row-pad))]">
-        <span className="grid size-avatar flex-none place-items-center rounded-full bg-bg-strong font-medium text-fg-secondary text-sm">
-          V
-        </span>
-        <div className="flex min-w-0 flex-1 flex-col justify-center">
-          <span className="truncate text-body text-fg leading-tight">本机</span>
-          <span
-            className={cn("truncate text-2xs leading-tight", connected ? "text-fg-faint" : "text-danger")}
-            title={BUILD_DETAIL}
-          >
-            {connected ? BUILD_LABEL : "连接断开"}
-          </span>
-        </div>
+        <AccountMenu client={client} connected={connected} onManage={onManageAccount} />
         <button
           type="button"
           title="设置 ⌘,"

@@ -1,3 +1,5 @@
+import { accountsChanged } from "./accountEvents";
+import type { AccountSnapshot } from "./types";
 import type {
   RemoteAccessState,
   HarnessEngineId,
@@ -195,12 +197,22 @@ async function apiBlob(path: string, token: string): Promise<Blob> {
 
 /** One typed call per route in `packages/server/src/app.ts`. */
 export function createClient(token: string) {
-  return {
+  const notify = <T,>(value: T): T => { accountsChanged(client); return value; };
+  let claudeLoginState = "idle";
+  let accountIdentity: string | undefined;
+  const client = {
     token,
     remoteSession: token === "vgent-remote-session",
+    getAccounts: (usage = false, refresh = false) => api<AccountSnapshot>(`/accounts?usage=${usage ? "1" : "0"}&refresh=${refresh ? "1" : "0"}`, token).then(snapshot => {
+      const identity = JSON.stringify(snapshot.accounts.map(a => [a.id, a.loggedIn, a.username, a.email, a.method]));
+      const changed = accountIdentity != null && accountIdentity !== identity;
+      accountIdentity = identity;
+      if (changed) notify(snapshot);
+      return snapshot;
+    }),
     getRemote: () => api<RemoteAccessState>("/remote", token),
     remoteAction: (action: "signIn" | "cancelSignIn" | "signOut" | "refresh" | "setEnabled" | "rename", input: { enabled?: boolean; name?: string } = {}) =>
-      api<RemoteAccessState>("/remote", token, { method: "POST", json: { action, ...input } }),
+      api<RemoteAccessState>("/remote", token, { method: "POST", json: { action, ...input } }).then(notify),
     health: () => api<{ ok: boolean; version: string }>("/health", token),
 
     listProjects: () => api<{ projects: Project[] }>("/projects", token).then((body) => body.projects),
@@ -437,12 +449,12 @@ export function createClient(token: string) {
     deleteProvider: (id: string) => api<void>(`/providers/${encodeURIComponent(id)}`, token, { method: "DELETE" }),
     /** 拉模型清单. With `providerId` and no `apiKey`, the server uses the key it has stored. */
     /** 订阅: the Claude and Codex logins, with whether each is signed in. `refresh` re-asks the vendors for their model lists. */
-    startClaudeLogin: () => api<ClaudeLoginAttempt>("/subscriptions/claude-subscription/login", token, { method: "POST" }),
-    getClaudeLogin: () => api<ClaudeLoginAttempt>("/subscriptions/claude-subscription/login", token),
+    startClaudeLogin: () => api<ClaudeLoginAttempt>("/subscriptions/claude-subscription/login", token, { method: "POST" }).then(state => { claudeLoginState = state.state; return state; }),
+    getClaudeLogin: () => api<ClaudeLoginAttempt>("/subscriptions/claude-subscription/login", token).then(state => { if (state.state === "succeeded" && claudeLoginState !== "succeeded") notify(state); claudeLoginState = state.state; return state; }),
     cancelClaudeLogin: () => api<ClaudeLoginAttempt>("/subscriptions/claude-subscription/login", token, { method: "DELETE" }),
-    logoutSubscription: (id: SubscriptionId) => api<{ ok: boolean }>(`/subscriptions/${encodeURIComponent(id)}/logout`, token, { method: "POST" }),
+    logoutSubscription: (id: SubscriptionId) => api<{ ok: boolean }>(`/subscriptions/${encodeURIComponent(id)}/logout`, token, { method: "POST" }).then(notify),
     listSubscriptions: (refresh = false) =>
-      api<{ subscriptions: SubscriptionAccount[] }>(`/subscriptions${refresh ? "?refresh=1" : ""}`, token).then((body) => body.subscriptions),
+      api<{ subscriptions: SubscriptionAccount[] }>(`/subscriptions${refresh ? "?refresh=1" : ""}`, token).then((body) => { if (refresh) notify(body); return body.subscriptions; }),
     /** One switch of a subscription's model table, or a column of them. Answers with the table as it now stands. */
     setSubscriptionModels: (id: SubscriptionId, input: { agent: EngineId; models: string[]; enabled: boolean }) =>
       api<{ models: SubscriptionModel[] }>(`/subscriptions/${encodeURIComponent(id)}/models`, token, { method: "PUT", json: input }).then((body) => body.models),
@@ -485,6 +497,7 @@ export function createClient(token: string) {
 
     stopChat: (threadId: string) => api<void>(`/chat/${threadId}/stop`, token, { method: "POST" }),
   };
+  return client;
 }
 
 export type ApiClient = ReturnType<typeof createClient>;

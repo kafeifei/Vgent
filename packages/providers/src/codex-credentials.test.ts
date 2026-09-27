@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   CodexSubscriptionAuthError,
   CodexTokenProvider,
+  getCodexTokenProvider,
   describeSubscriptionAuth,
   parseCodexAuthJson,
   toCodexCredential,
@@ -136,7 +137,7 @@ describe("CodexTokenProvider", () => {
     await expect(provider.getAccessToken()).rejects.toBeInstanceOf(CodexSubscriptionAuthError);
   });
 
-  it("caches the token so a second call does not hit the store again", async () => {
+  it("rereads the original store so an external logout takes effect immediately", async () => {
     const home = await codexHomeWith(authFixture(Date.now() + 5 * hour));
     const provider = new CodexTokenProvider({
       env: { CODEX_HOME: home },
@@ -144,10 +145,9 @@ describe("CodexTokenProvider", () => {
         throw new Error("must not refresh");
       },
     });
-    const first = await provider.getAccessToken();
+    await provider.getAccessToken();
     await writeFile(join(home, "auth.json"), "{}");
-    const second = await provider.getAccessToken();
-    expect(second.accessToken).toBe(first.accessToken);
+    await expect(provider.getAccessToken()).rejects.toBeInstanceOf(CodexSubscriptionAuthError);
   });
 
   it("refreshes an expiring token once for concurrent callers and writes it back", async () => {
@@ -238,5 +238,49 @@ describe("CodexTokenProvider", () => {
     expect(token.source).toBe("keychain");
     expect(writes).toHaveLength(1);
     expect(await readFile(join(home, "auth.json"), "utf8")).toContain("apikey");
+  });
+});
+
+
+describe("shared Codex account lifecycle", () => {
+  it("returns the same owner for every consumer of a home and separates homes", () => {
+    const env = { CODEX_HOME: "/tmp/vgent-owner-a" };
+    expect(getCodexTokenProvider({ env })).toBe(getCodexTokenProvider({ env: { ...env } }));
+    expect(getCodexTokenProvider({ env })).not.toBe(getCodexTokenProvider({ env: { CODEX_HOME: "/tmp/vgent-owner-b" } }));
+  });
+  it("does not overwrite a switched account with a late OAuth response", async () => {
+    const home = await codexHomeWith(authFixture(Date.now()));
+    let finish!: () => void;
+    let started!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    const provider = new CodexTokenProvider({ env: { CODEX_HOME: home }, fetch: async () => {
+      started(); await new Promise<void>(resolve => { finish = resolve; });
+      return Response.json({ access_token: fakeJwt(Date.now() + hour), refresh_token: "late", expires_in: 3600 });
+    } });
+    const pending = provider.getAccessToken();
+    const rejected = expect(pending).rejects.toThrow("account changed");
+    await ready;
+    const next = authFixture(Date.now() + 2 * hour);
+    next.tokens.account_id = "different-account";
+    await writeFile(join(home, "auth.json"), JSON.stringify(next));
+    finish(); await rejected;
+    expect(JSON.parse(await readFile(join(home, "auth.json"), "utf8")).tokens.account_id).toBe("different-account");
+    expect((await provider.getAccessToken()).accountId).toBe("different-account");
+  });
+  it("blocks requests during logout and drains a pending refresh before clearing", async () => {
+    const home = await codexHomeWith(authFixture(Date.now()));
+    let finish!: () => void, started!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    const provider = new CodexTokenProvider({ env: { CODEX_HOME: home }, fetch: async () => {
+      started(); await new Promise<void>(resolve => { finish = resolve; });
+      return Response.json({ access_token: fakeJwt(Date.now() + hour), expires_in: 3600 });
+    } });
+    const pending = provider.getAccessToken();
+    const rejected = expect(pending).rejects.toThrow("account changed");
+    await ready;
+    const logout = provider.changeAccount(() => writeFile(join(home, "auth.json"), "{}"));
+    await expect(provider.getAccessToken()).rejects.toThrow("changing");
+    finish(); await rejected; await logout;
+    expect(await readFile(join(home, "auth.json"), "utf8")).toBe("{}");
   });
 });

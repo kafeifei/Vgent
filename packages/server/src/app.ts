@@ -1,3 +1,4 @@
+import { createAccountService } from "./accounts/service.js";
 import { registerRemoteRoutes } from "./remote/routes.js";
 import type { RemoteService } from "./remote/service.js";
 import { createClaudeLogin } from "./claude-login.js";
@@ -340,7 +341,9 @@ export function createApp(options: CreateAppOptions): VgentApp {
   const providers = createProviderStore(dataDir, log);
   const catalog = createCatalogStore(dataDir, { log, ...(options.catalogFetch != null ? { fetch: options.catalogFetch } : {}) });
   const queue = createQueueStore(threads);
-  const registry = options.registry ?? createEngineRegistry();
+  let invalidateModels = () => {};
+  const accounts = createAccountService({ ...(options.remote ? { remote: options.remote } : {}), ...(options.probeClaudeLogin ? { probeClaude: options.probeClaudeLogin } : {}), changed: () => invalidateModels() });
+  const registry = options.registry ?? createEngineRegistry(undefined, { copilot: accounts.copilot });
   const git = options.git ?? createGit();
   const files = options.files ?? createFiles();
   const integrator = options.integrator ?? createIntegrator({ log });
@@ -511,7 +514,11 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   app.get("/api/health", (c) => c.json({ ok: true, version: VGENT_SERVER_VERSION }));
 
-  registerRemoteRoutes(app, options.remote);
+  registerRemoteRoutes(app, options.remote, accounts.invalidate);
+  app.get("/api/accounts", async (c) => {
+    c.header("Cache-Control", "no-store");
+    return c.json(await accounts.list({ usage: c.req.query("usage") === "1", refresh: c.req.query("refresh") === "1" }));
+  });
 
   // --- projects ---------------------------------------------------------
 
@@ -1410,7 +1417,8 @@ export function createApp(options: CreateAppOptions): VgentApp {
       return c.json(await threadOf(id));
     }
 
-    const model = options.compactModel ?? resolveModel(thread.model ?? DEFAULT_VGENT_MODEL, await providers.list());
+    const spec = thread.model ?? DEFAULT_VGENT_MODEL;
+    const model = options.compactModel ?? (spec.startsWith("github-copilot:") ? accounts.copilot.model(spec.slice("github-copilot:".length)) : resolveModel(spec, await providers.list()));
     const { messages } = await compactThread({ thread, model }).catch((error: unknown) => {
       throw new UpstreamModelError(`压缩失败: ${error instanceof Error ? error.message : String(error)}`);
     });
@@ -1676,6 +1684,8 @@ export function createApp(options: CreateAppOptions): VgentApp {
     catalogModelOf: async () => createModelIndex((await catalog.get()).providers),
   });
 
+  invalidateModels = () => modelCatalog.invalidate?.();
+
   /**
    * One engine's catalog with the user's provider models merged in, and the
    * model a task with none named would run on. The list is cached per engine;
@@ -1717,7 +1727,8 @@ export function createApp(options: CreateAppOptions): VgentApp {
         )
       : [];
     // What the 模型 table switched off stays in the list, marked: see `ModelEntry.hidden`.
-    const models = orderBySource([...markHidden(listing.models, current.hiddenModels?.[engine]), ...fromProviders], current.providerOrder);
+    const copilotModels = engine === "vgent" ? await accounts.copilot.models(refresh).catch(() => []) : [];
+    const models = orderBySource([...markHidden([...listing.models, ...copilotModels], current.hiddenModels?.[engine]), ...fromProviders], current.providerOrder);
     const usable = models.filter((entry) => entry.hidden !== true);
     const defaultModel =
       remembered != null && usable.some((entry) => entry.id === remembered)
@@ -1745,11 +1756,12 @@ export function createApp(options: CreateAppOptions): VgentApp {
     ...(options.probeClaudeLogin != null ? { probeClaude: options.probeClaudeLogin } : {}),
   });
 
-  app.get("/api/subscriptions", async (c) =>
-    c.json({ subscriptions: await subscriptions.list(await settings.get(), { refresh: c.req.query("refresh") === "1" }) }),
-  );
+  app.get("/api/subscriptions", async (c) => {
+    if (c.req.query("refresh") === "1") accounts.invalidate();
+    return c.json({ subscriptions: await subscriptions.list(await settings.get(), { refresh: c.req.query("refresh") === "1" }) });
+  });
 
-  const claudeLogin = createClaudeLogin();
+  const claudeLogin = createClaudeLogin({ changed: accounts.invalidate });
   app.post("/api/subscriptions/claude-subscription/login", async (c) => c.json(await claudeLogin.start()));
   app.get("/api/subscriptions/claude-subscription/login", (c) => c.json(claudeLogin.status()));
   app.delete("/api/subscriptions/claude-subscription/login", (c) => {
@@ -1762,7 +1774,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     if (!SUBSCRIPTION_IDS.includes(id)) throw new NotFoundError(`没有订阅 ${JSON.stringify(id)}`, "subscription_not_found");
     if (id === "claude-subscription") claudeLogin.cancel();
     try {
-      await (options.logoutSubscription ?? logoutSubscription)(id);
+      await accounts.change(id === "codex-subscription" ? "codex" : "claude", () => (options.logoutSubscription ?? logoutSubscription)(id));
     } catch (cause) {
       const name = id === "claude-subscription" ? "Claude" : "Codex";
       throw new VgentServerError({ message: `${name} 退出失败，请检查命令行工具后重试`, status: 502, code: "subscription_logout_failed" });

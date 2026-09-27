@@ -26,7 +26,8 @@ const TABS: ReadonlyArray<{ id: SettingsTab; label: string; icon: typeof Cpu }> 
 ];
 
 /** Simple preferences save on change; complex forms own their save/cancel flow. */
-export function SettingsView({ settings, engines, client, onClose, onOpenStyleLab }: {
+export function SettingsView({ initialTab = "general", settings, engines, client, onClose, onOpenStyleLab }: {
+  initialTab?: SettingsTab;
   settings: Settings | null;
   engines: EngineDescriptor[];
   client: ApiClient;
@@ -37,7 +38,7 @@ export function SettingsView({ settings, engines, client, onClose, onOpenStyleLa
   const [current, setCurrent] = useState(settings);
   const [saving, setSaving] = useState(false);
   const pending = useRef(false);
-  const [tab, setTab] = useState<SettingsTab>("general");
+  const [tab, setTab] = useState<SettingsTab>(initialTab);
 
   useEffect(() => { setCurrent(settings); }, [settings]);
   useEffect(() => {
@@ -100,7 +101,7 @@ export function SettingsView({ settings, engines, client, onClose, onOpenStyleLa
           onAutoUpgrade={(value) => { void save({ autoUpgradeRuntimes: value }); }} />
       </SettingsPage>
     ),
-    providers: <ProvidersPage client={client} engines={engines} />,
+    providers: <ProvidersPage client={client} engines={engines} onManageGitHub={() => setTab("remote")} />,
     tools: (
       <SettingsPage title="工具与扩展">
         <McpSection client={client} servers={current.mcpServers ?? []}

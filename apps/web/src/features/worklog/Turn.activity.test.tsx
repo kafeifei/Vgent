@@ -23,6 +23,8 @@ const bash = (id: string, command: string, state = "output-available") =>
   ({ type: "tool-Bash", toolCallId: id, state, input: { command } }) as unknown as UIMessage["parts"][number];
 const reasoning = (text: string, state: "streaming" | "done" = "done") =>
   ({ type: "reasoning", text, state }) as UIMessage["parts"][number];
+const steer = (id: string, text: string) =>
+  ({ type: "data-steer", id, data: { text, messageId: id, receipt: true } }) as UIMessage["parts"][number];
 
 const htmlOf = (parts: UIMessage["parts"], live = false) => {
   const turn = buildTurns([{ id: "u", role: "user", parts: [{ type: "text", text: "问" }] }, { id: "a", role: "assistant", parts }])[0]!;
@@ -105,6 +107,66 @@ describe("a running turn", () => {
 });
 
 describe("a finished turn", () => {
+  it.each([false, true])("keeps a waiting steer actionable outside the fold (applied: %s)", (applied) => {
+    const turn = buildTurns([
+      { id: "u", role: "user", parts: [{ type: "text", text: "问" }] },
+      { id: "a", role: "assistant", parts: [bash("c1", "earlier-work"), steer("s1", "待处理的补充")] },
+    ], [{ id: "s1", text: "待处理的补充", mode: "steer", accepted: true, applied, createdAt: "2026-09-27" }], false)[0]!;
+    const html = renderToStaticMarkup(createElement(Turn, {
+      turn, isLast: true, live: false, dimmed: false,
+      actions: { ...actions, sendSteer: () => {} }, allowlist: [], drawings: new Map(),
+    }));
+    expect(html).toContain("待处理的补充");
+    expect(html).toContain("工作了 1 步");
+    expect(html).not.toContain("earlier-work");
+    expect(html.includes("立即发送")).toBe(!applied);
+  });
+
+  it("keeps an accepted user interjection visible after completion and reload, folding only the work around it", () => {
+    const parts = [
+      bash("before", "inspect-before-steer"),
+      steer("s1", "交付规矩存在哪里？"),
+      bash("after1", "inspect-after-steer"),
+      tool("after2", "Read"),
+      { type: "text", text: "规矩存储位置如下" } as UIMessage["parts"][number],
+    ];
+    expect(htmlOf(parts, true)).toContain("交付规矩存在哪里？");
+    // Rebuild from serialized history, with no live queue left after completion.
+    const html = htmlOf(JSON.parse(JSON.stringify(parts)) as UIMessage["parts"]);
+    expect(html.match(/交付规矩存在哪里？/g)).toHaveLength(1);
+    expect(html).toContain('data-steer-id="s1"');
+    expect(html).not.toContain("inspect-before-steer");
+    expect(html).not.toContain("inspect-after-steer");
+    expect(html).not.toContain("after2.ts");
+    expect(html.indexOf("工作了 1 步")).toBeLessThan(html.indexOf("交付规矩存在哪里？"));
+    expect(html.indexOf("交付规矩存在哪里？")).toBeLessThan(html.indexOf("工作了 2 步"));
+    expect(html.indexOf("工作了 2 步")).toBeLessThan(html.indexOf("规矩存储位置如下"));
+    expect(html).not.toContain("立即发送");
+    expect(html).not.toContain("引导消息");
+  });
+
+  it("preserves consecutive interjections, including legacy history, in their original order", () => {
+    const html = htmlOf([
+      steer("first", "最前面追加"),
+      tool("c1", "Read"),
+      { type: "data-steer", data: { text: "以前追加的消息" } } as UIMessage["parts"][number],
+      steer("last", "连续追加的消息"),
+      { type: "text", text: "最终回复" },
+    ]);
+    const labels = ["最前面追加", "工作了 1 步", "以前追加的消息", "连续追加的消息", "最终回复"];
+    for (const label of labels) expect(html.split(label)).toHaveLength(2);
+    for (let i = 1; i < labels.length; i++) {
+      expect(html.indexOf(labels[i - 1]!)).toBeLessThan(html.indexOf(labels[i]!));
+    }
+  });
+
+  it("keeps an interjection visible when the turn stops on a tool without a final reply", () => {
+    const html = htmlOf([tool("c1", "Read"), steer("s1", "停在这里"), bash("c2", "unfinished-command", "input-available")]);
+    expect(html).toContain("停在这里");
+    expect(html).not.toContain("unfinished-command");
+    expect(html.match(/工作了 1 步/g)).toHaveLength(2);
+  });
+
   it("folds the whole process behind 工作了 N 步 and shows the reply under it", () => {
     const html = htmlOf(steps);
     expect(html).toContain("工作了 3 步");

@@ -19,6 +19,25 @@ export type ProcessItem =
   | { kind: "explore"; key: string; tools: ToolBlock[] }
   | { kind: "block"; key: string; block: RowBlock };
 
+type ProcessSection =
+  | { kind: "steer"; key: string; block: Extract<Block, { kind: "steer" }> }
+  | { kind: "activity"; key: string; blocks: Block[] };
+
+/** User interjections stay visible between the stretches of work they separate. */
+export function processSectionsOf(blocks: readonly Block[]): ProcessSection[] {
+  const sections: ProcessSection[] = [];
+  for (const block of blocks) {
+    if (block.kind === "steer") {
+      sections.push({ kind: "steer", key: block.key, block });
+    } else {
+      const previous = sections.at(-1);
+      if (previous?.kind === "activity") previous.blocks.push(block);
+      else sections.push({ kind: "activity", key: block.key, blocks: [block] });
+    }
+  }
+  return sections;
+}
+
 /** A call that is waiting on the human, or that is drawn as a card: never a plain row. */
 function isCard(block: Block): boolean {
   if (block.kind !== "tool") return false;
@@ -66,8 +85,8 @@ export function processItemsOf(blocks: readonly Block[]): ProcessItem[] {
 }
 
 /**
- * A finished turn: the trailing text is the reply, everything before it is
- * the process that folds away behind 「工作了 N 步」.
+ * A finished turn: the trailing text is the reply. The process before it folds
+ * behind 「工作了 N 步」 in sections, with user interjections kept outside.
  */
 export function splitReply(blocks: readonly Block[]): { process: Block[]; reply: Block[] } {
   let end = blocks.length;

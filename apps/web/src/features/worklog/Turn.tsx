@@ -10,7 +10,7 @@ import { QuestionCard } from "./QuestionCard";
 import { Spinner, ToolRow } from "./ToolRow";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { TurnOutputs } from "./TurnOutputs";
-import { processItemsOf, splitReply, stepCount, thoughtText, type ProcessItem, type RowBlock } from "./activity";
+import { processItemsOf, processSectionsOf, splitReply, stepCount, thoughtText, type ProcessItem, type RowBlock } from "./activity";
 import { exploreCounts, exploreLabel } from "./explore";
 import { isToolStreaming, type ToolPart } from "./toolMeta";
 import type { Block, Turn as TurnModel } from "./turns";
@@ -72,8 +72,7 @@ export function Turn({
   const settled = !(isLast && live);
   // While it runs the whole turn is process; once it settles the trailing text is the reply.
   const { process, reply } = settled ? splitReply(turn.blocks) : { process: turn.blocks, reply: [] };
-  const items = processItemsOf(process);
-  const steps = stepCount(process);
+  const sections = processSectionsOf(process);
   // A thought at the very end of a live turn is the one still going.
   const thinkingKey = !settled && turn.blocks.at(-1)?.kind === "reasoning" ? turn.blocks.at(-1)!.key : undefined;
   // A `/compact` summary is an ordinary user message apart from this marker.
@@ -130,18 +129,26 @@ export function Turn({
         </div>
       )}
 
-      {items.length > 0 &&
-        (settled && steps > 0 && !turn.blocks.some(block => block.kind === "steer" && block.pending) ? (
-          <div className="px-chat-inset">
+      {sections.map((section) => {
+        if (section.kind === "steer") return (
+          <div key={section.key} className="px-chat-inset">
+            <BlockView block={section.block} actions={actions} allowlist={allowlist} />
+          </div>
+        );
+        const items = processItemsOf(section.blocks);
+        const steps = stepCount(section.blocks);
+        return settled && steps > 0 ? (
+          <div key={section.key} className="px-chat-inset">
             <Fold steps={steps}>
               <ProcessList items={items} actions={actions} allowlist={allowlist} thinkingKey={thinkingKey} />
             </Fold>
           </div>
         ) : (
-          <div className="flex flex-col gap-block-gap px-chat-inset">
+          <div key={section.key} className="flex flex-col gap-block-gap px-chat-inset">
             <ProcessList items={items} actions={actions} allowlist={allowlist} thinkingKey={thinkingKey} />
           </div>
-        ))}
+        );
+      })}
       {reply.map((block) => (
         <div key={block.key} className="px-chat-inset">
           <BlockView block={block as RowBlock} actions={actions} allowlist={allowlist} />
@@ -229,7 +236,7 @@ function ProcessList({
   );
 }
 
-/** 「工作了 N 步」: a finished turn's process, closed by default, the same list behind it. */
+/** 「工作了 N 步」: one finished stretch of work, closed by default. */
 function Fold({ steps, children }: { steps: number; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   return (

@@ -237,7 +237,6 @@ function ThreadChatView({
   // the same draft — a file dropped in before a task switch is still there.
   const { attachments, setAttachments } = draft;
   const submit = (delivery: "steer" | "queue" = "steer") => {
-    const submittedDraft = { text: draft.value, attachments };
     const text = draft.value.trim();
     if ((text === "" && attachments.length === 0) || sending.current) return;
     if (thread.workspaceState != null || (thread.workspace?.setup?.status === "running" && thread.messageCount === 0)) {
@@ -252,9 +251,8 @@ function ThreadChatView({
         return;
       }
       sending.current = true;
-      void actions.queueMessage(thread.id, text, delivery).then((queued) => {
+      void draft.submit(() => actions.queueMessage(thread.id, text, delivery)).finally(() => {
         sending.current = false;
-        if (queued) draft.clear(submittedDraft);
       });
       return;
     }
@@ -268,9 +266,8 @@ function ThreadChatView({
     // 发送失败不吞草稿: the text only leaves the composer once the server took
     // it; the error itself is already toasted by the chat registry.
     sending.current = true;
-    void actions.send(thread.id, text, toFileParts(attachments)).then((accepted) => {
+    void draft.submit(() => actions.send(thread.id, text, toFileParts(attachments))).finally(() => {
       sending.current = false;
-      if (accepted) draft.clear(submittedDraft);
     });
   };
 

@@ -380,9 +380,9 @@ export function useWorkbench(token: string) {
         // A rejected send still belongs to this task, even if the user has
         // switched away while its worktree was being created.
         if (!accepted) {
-          await client.putDraft(record.id, { text, attachments: [...attachments] }).then(
-            () => setFailedFirstSend(record.id),
-            (error: Error) => toast(error.message),
+          return client.putDraft(record.id, { text, attachments: [...attachments] }).then(
+            () => { setFailedFirstSend(record.id); return true; },
+            (error: Error) => { toast(error.message); return false; },
           );
         }
         return true;

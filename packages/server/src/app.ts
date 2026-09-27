@@ -1363,9 +1363,14 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   app.put("/api/drafts/:key", async (c) => {
     const key = readDraftKey(c.req.param("key"));
-    const body = (await c.req.json().catch(() => undefined)) as { text?: unknown; attachments?: unknown } | undefined;
+    const body = (await c.req.json().catch(() => undefined)) as { text?: unknown; attachments?: unknown; writeId?: { clientId?: unknown; sequence?: unknown } } | undefined;
     const text = readDraftText(body?.text);
-    const attachments = await drafts.put(key, text, readDraftAttachments(body?.attachments)).catch((error: unknown) => {
+    const order = body?.writeId;
+    if (order != null && (!isDraftKey(order.clientId) || !Number.isSafeInteger(order.sequence) || (order.sequence as number) < 1)) {
+      throw new BadRequestError("草稿写入序号不合法", "invalid_draft");
+    }
+    const writeId = order == null ? undefined : { clientId: order.clientId as string, sequence: order.sequence as number };
+    const attachments = await drafts.put(key, text, readDraftAttachments(body?.attachments), writeId).catch((error: unknown) => {
       if (error instanceof UnknownDraftAttachmentError) throw new BadRequestError(error.message, "unknown_draft_attachment");
       throw error;
     });

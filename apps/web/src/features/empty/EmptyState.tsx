@@ -134,9 +134,8 @@ export function EmptyState({
     }
     starting.current = true;
     // A worktree is cut from a repository; 无项目 has none.
-    void onStart(text, engine, noProject ? "project" : workspace, model, reasoningEffort, mode, attachments, serviceTier, contextWindow).then((started) => {
+    void draft.submit(() => onStart(text, engine, noProject ? "project" : workspace, model, reasoningEffort, mode, attachments, serviceTier, contextWindow)).finally(() => {
       starting.current = false;
-      if (started) draft.clear();
     });
   };
 

@@ -104,6 +104,8 @@ function sameDraft(current: DraftValue, expected: DraftValue): boolean {
 export interface DraftPayload {
   text: string;
   attachments: DraftAttachmentUpload[];
+  /** Orders this client's writes even when requests reach the server out of order. */
+  writeId?: { clientId: string; sequence: number };
 }
 
 /** The two draft routes, as `ApiClient` implements them. */
@@ -112,10 +114,17 @@ export interface DraftTransport {
   putDraft(key: string, draft: DraftPayload, options?: { keepalive?: boolean }): Promise<void>;
 }
 
+const writers = new WeakMap<DraftTransport, { clientId: string; sequence: number }>();
+function nextWrite(transport: DraftTransport): NonNullable<DraftPayload["writeId"]> {
+  let writer = writers.get(transport);
+  if (writer == null) { writer = { clientId: crypto.randomUUID(), sequence: 0 }; writers.set(transport, writer); }
+  return { clientId: writer.clientId, sequence: ++writer.sequence };
+}
+
 /**
  * One draft's lifetime, without React: the cache, the reconcile, the debounce
- * and the flush. `onRemote` is called only when the server's copy replaces what
- * is on screen.
+ * and the flush. `onRemote` paints server reconciliation and accepted-send
+ * clearing into any view currently showing this draft.
  */
 export class DraftSync {
   private text: string;
@@ -131,6 +140,9 @@ export class DraftSync {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private ceiling: ReturnType<typeof setTimeout> | undefined;
   private disposed = false;
+  private revision = 0;
+  private readonly writing = new Set<Promise<void>>();
+  private acknowledged = 0;
 
   constructor(
     private readonly key: string,
@@ -165,13 +177,17 @@ export class DraftSync {
     }
     // Whatever the server holds it already has the bytes of.
     for (const entry of remote.attachments) this.uploaded.add(entry.id);
-    if (changed) this.onRemote(this.current);
+    if (changed) {
+      this.revision++;
+      this.onRemote(this.current);
+    }
   }
 
   /** A keystroke: cached at once, sent to the server on the debounce. */
   edit(text: string): void {
     if (text === this.text) return;
     this.text = text;
+    this.revision++;
     this.typed = true;
     this.dirty = true;
     writeCache(this.key, text);
@@ -185,6 +201,7 @@ export class DraftSync {
    */
   setAttachments(attachments: DraftAttachment[]): void {
     this.attachments = attachments;
+    this.revision++;
     this.touchedFiles = true;
     this.dirty = true;
     this.flush();
@@ -201,12 +218,29 @@ export class DraftSync {
     if (this.text !== "" || this.attachments.length > 0) {
       this.text = "";
       this.attachments = [];
+      this.revision++;
       this.dirty = true;
       writeCache(this.key, "");
+      this.onRemote(this.current);
     }
     this.flush();
     return true;
   }
+
+  /** The accepted send consumes this revision, even if its input view has left. */
+  async submit(send: () => Promise<boolean>): Promise<boolean> {
+    const revision = this.revision;
+    const accepted = await send();
+    if (accepted && revision === this.revision) this.clear();
+    return accepted;
+  }
+
+  /** Keep the shared draft alive until its last write has reached the server. */
+  async settled(): Promise<void> {
+    while (this.writing.size > 0) await Promise.all(this.writing);
+  }
+
+  get unsaved(): boolean { return this.dirty || this.writing.size > 0; }
 
   /** Write what is pending. `keepalive` is for a page that is going away. */
   flush(options?: { keepalive?: boolean }): void {
@@ -214,21 +248,31 @@ export class DraftSync {
     if (!this.dirty) return;
     this.dirty = false;
     const sent = this.attachments;
+    const writeId = nextWrite(this.transport);
     const payload: DraftPayload = {
       text: this.text,
-      attachments: sent.map(({ url, ...meta }) => (this.uploaded.has(meta.id) ? meta : { ...meta, url })),
+      attachments: sent.map(({ url, ...meta }) => (this.writing.size === 0 && this.uploaded.has(meta.id) ? meta : { ...meta, url })),
+      writeId,
     };
-    void this.transport.putDraft(this.key, payload, options).then(
+    // Start immediately, including pagehide's keepalive write. The server
+    // rejects older sequence numbers; waiting for an earlier PUT here would
+    // strand the newest text when the page closes before that PUT resolves.
+    const writing = this.transport.putDraft(this.key, payload, options).then(
       () => {
+        if (writeId.sequence < this.acknowledged) return;
+        this.acknowledged = writeId.sequence;
+        this.uploaded.clear();
         for (const entry of sent) this.uploaded.add(entry.id);
       },
       () => {
+        if (writeId.sequence < this.acknowledged) return;
         // The cache still holds the text, and the next keystroke retries — with
         // the bytes again, since it is unknown how far this write got.
         this.dirty = true;
         this.uploaded.clear();
       },
-    );
+    ).then(() => { this.writing.delete(writing); });
+    this.writing.add(writing);
   }
 
   /** Task switch or unmount: one last write, then this instance is inert. */
@@ -253,6 +297,65 @@ export class DraftSync {
   }
 }
 
+interface DraftLease {
+  sync: DraftSync;
+  submit: (send: () => Promise<boolean>) => Promise<boolean>;
+  release: () => void;
+}
+
+interface DraftSession {
+  sync: DraftSync;
+  listeners: Set<(value: DraftValue) => void>;
+  references: number;
+}
+
+const sessions = new WeakMap<DraftTransport, Map<string, DraftSession>>();
+
+/** A view and its outstanding sends share ownership of the same draft. */
+export function acquireDraft(key: string, transport: DraftTransport, paint: (value: DraftValue) => void): DraftLease {
+  let drafts = sessions.get(transport);
+  if (drafts == null) { drafts = new Map(); sessions.set(transport, drafts); }
+  let session = drafts.get(key);
+  if (session == null) {
+    const listeners = new Set<(value: DraftValue) => void>();
+    const instance = new DraftSync(key, transport, value => { for (const listener of listeners) listener(value); });
+    session = { sync: instance, listeners, references: 0 };
+    drafts.set(key, session);
+    void instance.start();
+  }
+  const held = session;
+  held.references++;
+  held.listeners.add(paint);
+  paint(held.sync.current);
+  // A prior failed save/clear is retried on reopening, before remote data can
+  // replace the newer local value.
+  if (held.sync.unsaved) held.sync.flush();
+  const release = () => {
+    held.references--;
+    held.sync.flush();
+    void held.sync.settled().then(() => {
+      if (held.references !== 0 || held.sync.unsaved || drafts.get(key) !== held) return;
+      held.sync.dispose();
+      drafts.delete(key);
+    });
+  };
+  let released = false;
+  return {
+    sync: held.sync,
+    async submit(send) {
+      held.references++;
+      try { return await held.sync.submit(send); }
+      finally { release(); }
+    },
+    release() {
+      if (released) return;
+      released = true;
+      held.listeners.delete(paint);
+      release();
+    },
+  };
+}
+
 export interface Draft {
   value: string;
   attachments: DraftAttachment[];
@@ -260,8 +363,8 @@ export interface Draft {
   edit: (text: string) => void;
   /** A file added or a tile removed. */
   setAttachments: (attachments: DraftAttachment[]) => void;
-  /** The message went out: drop text and files here and on the server, right now. */
-  clear: (expected?: DraftValue) => void;
+  /** Bind acceptance and consumption before the async action can unmount this view. */
+  submit: (send: () => Promise<boolean>) => Promise<boolean>;
   /** Reconcile after an in-flight first send was refused and saved as this task's draft. */
   refresh: () => void;
 }
@@ -273,17 +376,16 @@ export interface Draft {
 export function useDraft(key: string, transport: DraftTransport): Draft {
   const [value, setValue] = useState(() => readCache(key));
   const [attachments, setAttachmentsState] = useState<DraftAttachment[]>([]);
-  const sync = useRef<DraftSync | null>(null);
+  const lease = useRef<DraftLease | null>(null);
 
   useEffect(() => {
     const paint = (draft: DraftValue) => {
       setValue(draft.text);
       setAttachmentsState(draft.attachments);
     };
-    const instance = new DraftSync(key, transport, paint);
-    sync.current = instance;
-    paint(instance.current);
-    void instance.start();
+    const held = acquireDraft(key, transport, paint);
+    const instance = held.sync;
+    lease.current = held;
     // A tab being hidden or torn down is the one moment a debounced write would
     // be lost, so it goes out with `keepalive`.
     const onHide = () => {
@@ -295,29 +397,23 @@ export function useDraft(key: string, transport: DraftTransport): Draft {
     return () => {
       window.removeEventListener("pagehide", onPageHide);
       document.removeEventListener("visibilitychange", onHide);
-      instance.dispose();
-      if (sync.current === instance) sync.current = null;
+      held.release();
+      if (lease.current === held) lease.current = null;
     };
   }, [key, transport]);
 
   const edit = useCallback((text: string) => {
     setValue(text);
-    sync.current?.edit(text);
+    lease.current?.sync.edit(text);
   }, []);
 
   const setAttachments = useCallback((next: DraftAttachment[]) => {
     setAttachmentsState(next);
-    sync.current?.setAttachments(next);
+    lease.current?.sync.setAttachments(next);
   }, []);
 
-  const clear = useCallback((expected?: DraftValue) => {
-    if (sync.current && !sync.current.clear(expected)) return;
-    const cleared = sync.current?.current ?? { text: "", attachments: [] };
-    setValue(cleared.text);
-    setAttachmentsState(cleared.attachments);
-  }, []);
+  const submit = useCallback((send: () => Promise<boolean>) => lease.current?.submit(send) ?? Promise.resolve(false), []);
+  const refresh = useCallback(() => { void lease.current?.sync.start(); }, []);
 
-  const refresh = useCallback(() => { void sync.current?.start(); }, []);
-
-  return { value, attachments, edit, setAttachments, clear, refresh };
+  return { value, attachments, edit, setAttachments, submit, refresh };
 }

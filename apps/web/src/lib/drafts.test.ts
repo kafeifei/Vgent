@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DraftSync, NEW_TASK_DRAFT, pruneDrafts, type DraftAttachment, type DraftPayload, type DraftValue } from "./drafts";
+import { acquireDraft, DraftSync, NEW_TASK_DRAFT, pruneDrafts, type DraftAttachment, type DraftPayload, type DraftValue } from "./drafts";
 
 const KEY = "t1";
 
@@ -43,7 +43,7 @@ function fakeTransport(remote: string | DraftValue = "") {
         return Promise.reject(new Error("离线"));
       }
       puts.push({ key, text: draft.text, keepalive: options?.keepalive === true });
-      payloads.push(draft);
+      payloads.push({ text: draft.text, attachments: draft.attachments });
       return Promise.resolve();
     },
   };
@@ -150,7 +150,7 @@ describe("DraftSync 写回", () => {
     expect(transport.puts[0]?.text).toBe("第 9 下");
   });
 
-  it("flushes what is pending on task switch, with keepalive when the page is leaving", () => {
+  it("flushes what is pending on task switch, with keepalive when the page is leaving", async () => {
     const transport = fakeTransport();
     const sync = new DraftSync(KEY, transport, () => {});
 
@@ -164,6 +164,7 @@ describe("DraftSync 写回", () => {
 
     sync.edit("切任务之前又敲了");
     sync.dispose();
+    await sync.settled();
     expect(transport.puts).toHaveLength(2);
     expect(transport.puts[1]).toEqual({ key: KEY, text: "切任务之前又敲了", keepalive: false });
   });
@@ -205,13 +206,14 @@ describe("DraftSync 写回", () => {
     sync.setAttachments([PNG]);
     // Not on the debounce: the file is on the server before the timer would fire.
     expect(transport.payloads).toEqual([{ text: "看这张", attachments: [PNG] }]);
-    await Promise.resolve();
+    await sync.settled();
 
     sync.edit("看这张图");
     vi.advanceTimersByTime(300);
     expect(transport.payloads.at(-1)).toEqual({ text: "看这张图", attachments: [PNG_META] });
 
     sync.clear();
+    await sync.settled();
     expect(transport.payloads.at(-1)).toEqual({ text: "", attachments: [] });
     expect(sync.current).toEqual(value(""));
   });
@@ -222,7 +224,7 @@ describe("DraftSync 写回", () => {
 
     transport.failNext();
     sync.setAttachments([PNG]);
-    await Promise.resolve();
+    await sync.settled();
     expect(transport.payloads).toEqual([]);
 
     sync.edit("再试");
@@ -246,7 +248,7 @@ describe("DraftSync 写回", () => {
     transport.failNext();
     sync.edit("第一次写不上去");
     vi.advanceTimersByTime(300);
-    await Promise.resolve();
+    await sync.settled();
     expect(transport.puts).toEqual([]);
 
     sync.edit("第一次写不上去，再敲一个字");
@@ -291,4 +293,180 @@ it("accepts copied attachment metadata but preserves an attachment changed durin
   expect(sync.current.attachments[0]!.url).toBe("data:image/png;base64,BAEC");
   expect(sync.clear(structuredClone(sync.current))).toBe(true);
   expect(sync.current).toEqual(value(""));
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+/** A real changing remote value, not a fixed GET response. */
+function savedTransport() {
+  const saved = new Map<string, DraftValue>();
+  const heads = new Map<string, number>();
+  return {
+    saved,
+    getDraft: async (key: string) => structuredClone(saved.get(key) ?? value("")),
+    putDraft: async (key: string, draft: DraftPayload) => {
+      if (draft.writeId) {
+        const writer = `${key}:${draft.writeId.clientId}`;
+        if (draft.writeId.sequence <= (heads.get(writer) ?? 0)) return;
+        heads.set(writer, draft.writeId.sequence);
+      }
+      saved.set(key, { text: draft.text, attachments: draft.attachments.map(file => ({ ...file, url: file.url ?? saved.get(key)?.attachments.find(old => old.id === file.id)?.url ?? "" })) });
+    },
+  };
+}
+
+describe("draft consumption survives navigation", () => {
+  it.each([NEW_TASK_DRAFT, KEY])("clears accepted %s text and files after its input view unmounts", async key => {
+    const transport = savedTransport();
+    const first = acquireDraft(key, transport, () => {});
+    first.sync.edit("这句已发送");
+    first.sync.setAttachments([PNG]);
+    const accept = deferred<boolean>();
+    const sending = first.submit(() => accept.promise);
+    first.release();
+    accept.resolve(true);
+    await sending;
+    await first.sync.settled();
+    expect(transport.saved.get(key)).toEqual(value(""));
+    expect(cache.has(`vgent.draft.${key}`)).toBe(false);
+    const reopened = acquireDraft(key, transport, () => {});
+    await reopened.sync.start();
+    expect(reopened.sync.current).toEqual(value(""));
+    reopened.release();
+  });
+
+  it("clears a reopened view when acceptance arrives, and does not touch another task", async () => {
+    const transport = savedTransport();
+    const first = acquireDraft(KEY, transport, () => {});
+    first.sync.edit("待确认");
+    const accept = deferred<boolean>();
+    const sending = first.submit(() => accept.promise);
+    first.release();
+    const paints: DraftValue[] = [];
+    const reopened = acquireDraft(KEY, transport, draft => paints.push(draft));
+    const other = acquireDraft("other", transport, () => {});
+    other.sync.edit("另一个任务的草稿");
+    accept.resolve(true);
+    await sending;
+    expect(paints.at(-1)).toEqual(value(""));
+    expect(other.sync.current.text).toBe("另一个任务的草稿");
+    reopened.release(); other.release();
+    await Promise.all([reopened.sync.settled(), other.sync.settled()]);
+  });
+
+  it.each(["新的草稿", "原草稿"])("preserves later editing after reopening, even if it ends as %s", async text => {
+    const transport = savedTransport();
+    const first = acquireDraft(NEW_TASK_DRAFT, transport, () => {});
+    first.sync.edit("原草稿");
+    const accept = deferred<boolean>();
+    const sending = first.submit(() => accept.promise);
+    first.release();
+    const reopened = acquireDraft(NEW_TASK_DRAFT, transport, () => {});
+    reopened.sync.edit("");
+    reopened.sync.edit(text);
+    accept.resolve(true);
+    await sending;
+    expect(reopened.sync.current.text).toBe(text);
+    reopened.release();
+    await reopened.sync.settled();
+    expect(transport.saved.get(NEW_TASK_DRAFT)?.text).toBe(text);
+  });
+
+  it("keeps a rejected send for reopening with all its attachments", async () => {
+    const transport = savedTransport();
+    const first = acquireDraft(KEY, transport, () => {});
+    first.sync.edit("发送失败不能丢");
+    first.sync.setAttachments([PNG]);
+    const accept = deferred<boolean>();
+    const sending = first.submit(() => accept.promise);
+    first.release();
+    accept.resolve(false);
+    expect(await sending).toBe(false);
+    await first.sync.settled();
+    expect(transport.saved.get(KEY)).toEqual(value("发送失败不能丢", [PNG]));
+  });
+
+  it("retries a failed clear on reopening instead of resurrecting the sent draft", async () => {
+    const transport = savedTransport();
+    const put = transport.putDraft;
+    let failClear = true;
+    transport.putDraft = async (key, draft) => {
+      if (draft.text === "" && failClear) throw new Error("offline");
+      await put(key, draft);
+    };
+    const first = acquireDraft(KEY, transport, () => {});
+    first.sync.edit("发送成功");
+    first.sync.flush();
+    await first.sync.settled();
+    await first.submit(async () => true);
+    await first.sync.settled();
+    first.release();
+    await first.sync.settled();
+    failClear = false;
+    const reopened = acquireDraft(KEY, transport, () => {});
+    expect(reopened.sync.current).toEqual(value(""));
+    await reopened.sync.settled();
+    expect(transport.saved.get(KEY)).toEqual(value(""));
+    reopened.release();
+  });
+});
+
+it("numbers consumption after an earlier save even when that save completes last", async () => {
+  const firstWrite = deferred<void>();
+  const saved = savedTransport();
+  const puts: DraftPayload[] = [];
+  const transport = {
+    ...saved,
+    putDraft: async (key: string, draft: DraftPayload) => {
+      puts.push(draft);
+      if (puts.length === 1) await firstWrite.promise;
+      await saved.putDraft(key, draft);
+    },
+  };
+  const sync = new DraftSync(KEY, transport, () => {});
+  sync.edit("已发出的旧内容");
+  sync.setAttachments([PNG]);
+  await sync.submit(async () => true);
+  sync.dispose();
+  expect(puts).toHaveLength(2);
+  expect(puts[1]!.writeId!.sequence).toBeGreaterThan(puts[0]!.writeId!.sequence);
+  firstWrite.resolve();
+  await sync.settled();
+  expect(puts).toHaveLength(2);
+  expect(saved.saved.get(KEY)).toEqual(value(""));
+});
+
+it("does not restore a stale GET that arrives after the message was accepted", async () => {
+  const remote = deferred<DraftValue>();
+  const transport = { ...savedTransport(), getDraft: () => remote.promise };
+  const sync = new DraftSync(KEY, transport, () => {});
+  sync.edit("发出去的字");
+  const loading = sync.start();
+  await sync.submit(async () => true);
+  remote.resolve(value("发出去的字", [PNG]));
+  await loading;
+  expect(sync.current).toEqual(value(""));
+  await sync.settled();
+});
+
+it("starts the pagehide save immediately while another save is still pending", async () => {
+  const pending = deferred<void>();
+  const transport = savedTransport();
+  const writes: Array<{ draft: DraftPayload; keepalive: boolean }> = [];
+  const sync = new DraftSync(KEY, {
+    ...transport,
+    putDraft: async (_key, draft, options) => { writes.push({ draft, keepalive: !!options?.keepalive }); await pending.promise; },
+  }, () => {});
+  sync.edit("旧的字");
+  sync.flush();
+  sync.edit("关闭前刚写的新草稿");
+  sync.flush({ keepalive: true });
+  expect(writes).toHaveLength(2);
+  expect(writes[1]).toMatchObject({ draft: { text: "关闭前刚写的新草稿" }, keepalive: true });
+  pending.resolve();
+  await sync.settled();
 });

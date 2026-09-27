@@ -247,3 +247,37 @@ describe("界面偏好", () => {
     expect(after).toMatchObject({ runMode: "allow-edits", theme: "light" });
   });
 });
+
+describe("草稿请求乱序", () => {
+  it.each([NEW_TASK_DRAFT, "thread-1"])("does not resurrect consumed %s text or files when an old save arrives last", async key => {
+    const dir = await tempDir();
+    const app = makeApp(dir);
+    const write = (sequence: number, text: string, attachments: unknown[] = []) => putJson(app, `/api/drafts/${key}`, { text, attachments, writeId: { clientId: "window-1", sequence } });
+    expect((await write(1, "发出去的字", [PNG])).status).toBe(200);
+    expect((await write(3, "")).status).toBe(200);
+    // An older upload completes after the clear, and must leave no copy.
+    expect((await write(2, "发出去的字", [PNG])).status).toBe(200);
+    expect(await readDraft(app, key)).toEqual({ text: "", attachments: [] });
+    expect((await createDraftStore(dir).get(key)).text).toBe("");
+    expect(await exists(join(dir, "drafts", key, PNG.id))).toBe(false);
+    const file = JSON.parse(await readFile(join(dir, "drafts.json"), "utf8"));
+    expect(file.drafts[key]).toBeUndefined();
+    expect((await write(4, "下一条未发送的草稿", [PNG])).status).toBe(200);
+    expect((await write(3, "")).status).toBe(200);
+    expect(await readDraft(app, key)).toEqual({ text: "下一条未发送的草稿", attachments: [PNG] });
+  });
+
+  it("orders each client separately and accepts legacy draft writers", async () => {
+    const store = createDraftStore(await tempDir());
+    await store.put("t1", "第一个窗口", [], { clientId: "one", sequence: 99 });
+    await store.put("t1", "第二个窗口", [], { clientId: "two", sequence: 1 });
+    expect((await store.get("t1")).text).toBe("第二个窗口");
+    await store.put("t1", "首条消息失败后保存的草稿");
+    expect((await store.get("t1")).text).toBe("首条消息失败后保存的草稿");
+  });
+
+  it.each([{clientId:"bad/path",sequence:1},{clientId:"ok",sequence:0},{clientId:"ok",sequence:1.5},{clientId:"ok"}])("rejects malformed write ordering %j", async writeId => {
+    const app = makeApp(await tempDir());
+    expect((await putJson(app, '/api/drafts/new', {text:"字",writeId})).status).toBe(400);
+  });
+});

@@ -72,6 +72,8 @@ export interface Draft {
   attachments: DraftAttachmentOutput[];
 }
 
+export interface DraftWriteId { clientId: string; sequence: number }
+
 interface StoredDraft {
   text: string;
   attachments: DraftAttachment[];
@@ -104,7 +106,7 @@ export interface DraftStore {
    * Replaces it. Attachments not in the list are deleted; a new one must carry
    * its `url`. No text and no attachments deletes the entry.
    */
-  put(key: string, text: string, attachments?: readonly DraftAttachmentInput[]): Promise<DraftAttachment[]>;
+  put(key: string, text: string, attachments?: readonly DraftAttachmentInput[], writeId?: DraftWriteId): Promise<DraftAttachment[]>;
   /** Deleted with the task. */
   remove(key: string): Promise<void>;
 }
@@ -150,6 +152,9 @@ export function createDraftStore(dataDir: string, log: Logger = silentLogger): D
   let drafts: Record<string, StoredDraft> | undefined;
   let ready: Promise<void> | undefined;
   let chain: Promise<unknown> = Promise.resolve();
+  // Requests cannot survive a server restart. Keep heads for deleted drafts
+  // too, so a late save cannot recreate a draft that was just consumed.
+  const writeHeads = new Map<string, number>();
 
   const ensureReady = (): Promise<void> => {
     ready ??= (async () => {
@@ -200,16 +205,19 @@ export function createDraftStore(dataDir: string, log: Logger = silentLogger): D
       return { text: stored.text, attachments };
     },
 
-    put(key, text, attachments = []) {
+    put(key, text, attachments = [], writeId) {
       return serialized(async () => {
         await ensureReady();
         drafts ??= {};
         const before = drafts[key];
+        const writerKey = writeId == null ? undefined : `${key}:${writeId.clientId}`;
+        if (writeId != null && writeId.sequence <= (writeHeads.get(writerKey!) ?? 0)) return before?.attachments ?? [];
         const known = new Set((before?.attachments ?? []).map((entry) => entry.id));
         // Everything the client did not send bytes for must already be on disk.
         for (const entry of attachments) {
           if (entry.url == null && !known.has(entry.id)) throw new UnknownDraftAttachmentError(entry.id);
         }
+        if (writeId != null) writeHeads.set(writerKey!, writeId.sequence);
         const next: DraftAttachment[] = [];
         for (const entry of attachments) {
           const meta: DraftAttachment = { id: entry.id, name: entry.name, mediaType: entry.mediaType, size: entry.size };

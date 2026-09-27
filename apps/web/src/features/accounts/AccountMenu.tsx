@@ -7,10 +7,15 @@ import type { AccountSummary, UsageWindow } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useAccounts } from "./useAccounts";
 
+/** The platform's mark, painted in the text colour. */
+export function AccountLogo({ id, className }: { id: AccountSummary["id"]; className?: string }) {
+  const mask = `url(/account-logos/${id}.svg) center / contain no-repeat`;
+  return <span aria-hidden className={cn("flex-none bg-current", className ?? "size-md")} style={{ mask, WebkitMask: mask }} />;
+}
 function AccountIcon({ account }: { account: Pick<AccountSummary, "id" | "avatarUrl"> }) {
   const [failed, setFailed] = useState<string>();
   return <span className="grid size-2xl flex-none place-items-center overflow-hidden rounded-full border-2 border-bg bg-bg-elevated text-fg shadow-sm">
-    {account.avatarUrl && failed !== account.avatarUrl ? <img src={account.avatarUrl} alt="" referrerPolicy="no-referrer" onError={() => setFailed(account.avatarUrl)} className="size-full object-cover" /> : <span aria-hidden className="size-lg bg-current" style={{ mask: `url(/account-logos/${account.id}.svg) center / contain no-repeat`, WebkitMask: `url(/account-logos/${account.id}.svg) center / contain no-repeat` }} />}
+    {account.avatarUrl && failed !== account.avatarUrl ? <img src={account.avatarUrl} alt="" referrerPolicy="no-referrer" onError={() => setFailed(account.avatarUrl)} className="size-full object-cover" /> : <AccountLogo id={account.id} className="size-lg" />}
   </span>;
 }
 export function resetText(at: string, now = Date.now()): string {

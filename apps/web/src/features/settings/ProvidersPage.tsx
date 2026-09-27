@@ -1,14 +1,19 @@
+import { CascadeLevel, type CascadeNode } from "@/components/CascadeMenu";
+import { Popover } from "@/components/Popover";
+import { SourceIcon } from "@/components/SourceIcon";
+import { AccountLogo } from "@/features/accounts/AccountMenu";
 import { onAccountsChanged } from "@/lib/accountEvents";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Check, Copy, ExternalLink, GripVertical, Plus, Search } from "lucide-react";
+import { Check, Copy, ExternalLink, GripVertical, LayoutGrid, Plus, Server } from "lucide-react";
 import { Reorder, useDragControls } from "motion/react";
 import { ApiError, type ApiClient, type ProviderCatalog } from "@/lib/api";
 import { useToast } from "@/lib/toast";
-import type { CatalogProviderSummary, ClaudeLoginAttempt, EngineDescriptor, ProviderAgent, ProviderModel, RedactedProviderConfig, SubscriptionAccount, SubscriptionId } from "@/lib/types";
+import type { CatalogProviderSummary, ClaudeLoginAttempt, EngineDescriptor, ProviderAgent, ProviderModel, RedactedProviderConfig, RemoteAccessState, SubscriptionAccount, SubscriptionId } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { BUTTON_GHOST, BUTTON_PRIMARY, BUTTON_SECONDARY, Dialog, LetterAvatar, Segmented, SettingsEmpty, SettingsGroup, SettingsPage, SettingsRow, Switch, Tag } from "./layout";
 import { ModelTable } from "./ModelTable";
-import { AGENT_ORDER, EMPTY_CUSTOM_FORM, agentsOf, connectInput, customInput, describeSubscription, filterCatalog, isSignedIn, orderAdded, summarizeEnabled, summarizeSubscription, withAgentChoices, type CustomForm } from "./providerModels";
+import { AGENT_ORDER, EMPTY_CUSTOM_FORM, agentsOf, connectInput, connectableCatalog, customInput, describeSubscription, isSignedIn, orderAdded, summarizeEnabled, summarizeSubscription, toSignIn, withAgentChoices, withShownOrder, type CustomForm } from "./providerModels";
+import { REMOTE_ERROR } from "./RemotePage";
 import { SubscriptionTable } from "./SubscriptionTable";
 import { INPUT_CLASS } from "./styles";
 
@@ -297,60 +302,58 @@ function CustomDialog({
   );
 }
 
-/** 查看全部: the whole catalog behind a search box. What this build cannot connect is listed too, with the reason. */
-function BrowseDialog({
+/**
+ * 添加 → 更多 N 个提供商: the catalog behind a search box, as a submenu. What
+ * this build cannot connect is left out; one already connected can be connected again.
+ */
+function CatalogMenu({
   catalog,
   connectedIds,
-  usable,
-  agentLabel,
+  reloading,
+  onReload,
   onPick,
-  onClose,
 }: {
-  catalog: ProviderCatalog;
+  catalog: ProviderCatalog | undefined;
   connectedIds: ReadonlySet<string>;
-  usable: readonly ProviderAgent[];
-  agentLabel: AgentLabel;
+  reloading: boolean;
+  onReload: () => void;
   onPick: (entry: CatalogProviderSummary) => void;
-  onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const matching = useMemo(
-    () => filterCatalog(catalog.providers, query).sort((a, b) => Number(a.unsupported != null) - Number(b.unsupported != null) || a.name.localeCompare(b.name)),
-    [catalog.providers, query],
+  const nodes = useMemo<CascadeNode[]>(
+    () =>
+      connectableCatalog(catalog?.providers ?? [], query).map((entry) => ({
+        key: entry.id,
+        label: entry.name,
+        icon: <SourceIcon source={{ kind: "provider", name: entry.name, logo: entry.id }} />,
+        ...(connectedIds.has(entry.id) ? { hint: "已连接" } : {}),
+        onPick: () => onPick(entry),
+      })),
+    [catalog, connectedIds, query, onPick],
   );
 
   return (
-    <Dialog title={`全部提供商 · ${catalog.providers.length}`} onClose={onClose} wide>
-      <div className="flex items-center gap-xs border-border border-b px-lg py-xs">
-        <Search className="size-md flex-none text-fg-faint" />
-        <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索提供商" spellCheck={false} className="h-xl min-w-0 flex-1 bg-transparent text-fg text-md outline-none placeholder:text-fg-faint" />
-      </div>
-      <div className="flex min-h-0 flex-1 flex-col divide-y divide-border overflow-y-auto">
-        {matching.map((entry) => {
-          const connected = connectedIds.has(entry.id);
-          return (
-            <SettingsRow
-              key={entry.id}
-              leading={<LetterAvatar name={entry.name} />}
-              title={
-                <>
-                  <span className="truncate">{entry.name}</span>
-                  {connected && <Tag>已连接</Tag>}
-                </>
-              }
-              help={entry.unsupported ?? `${servedAgents(entry, usable, agentLabel)} · ${entry.modelCount} 个模型`}
-              className="px-lg"
-            >
-              <button type="button" disabled={entry.unsupported != null} onClick={() => onPick(entry)} className={BUTTON_SECONDARY}>
-                <Plus className="size-md" />
-                {connected ? "再连一个" : "连接"}
-              </button>
-            </SettingsRow>
-          );
-        })}
-        {matching.length === 0 && <SettingsEmpty>没有匹配「{query}」的提供商。目录里没有的，用「自定义」接。</SettingsEmpty>}
-      </div>
-    </Dialog>
+    <div className="w-[calc(var(--spacing-3xl)*4)]">
+      <input
+        autoFocus
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="搜索提供商"
+        aria-label="搜索提供商"
+        spellCheck={false}
+        className="block w-full border-border border-b bg-transparent px-xs py-2xs text-fg text-sm outline-none placeholder:text-fg-faint"
+      />
+      <CascadeLevel nodes={nodes} className="max-h-[calc(var(--spacing-xl)*14)] overflow-y-auto pt-2xs" />
+      {nodes.length === 0 && <div className="px-xs py-2xs text-fg-faint text-sm">{catalog == null ? "加载中…" : "没有匹配的提供商"}</div>}
+      {catalog?.source === "builtin" && (
+        <div className="flex items-center gap-xs border-border border-t px-xs pt-2xs text-2xs text-fg-faint">
+          <span className="min-w-0 flex-1">连不上 models.dev</span>
+          <button type="button" disabled={reloading} onClick={onReload} className="text-fg-muted hover:text-fg">
+            {reloading ? "重试中…" : "重试"}
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -575,6 +578,87 @@ function ClaudeLoginDialog({ client, onRecheck, onClose }: { client: ApiClient; 
   );
 }
 
+/**
+ * GitHub's device login, the one 远程访问 starts too: remote access and Copilot
+ * share the account. The sign-in request is answered only once the login is
+ * over, so the code to type comes from polling meanwhile.
+ */
+function GitHubLoginDialog({ client, onSignedIn, onClose }: { client: ApiClient; onSignedIn: () => void; onClose: () => void }) {
+  const [authorization, setAuthorization] = useState<RemoteAccessState["authorization"]>(null);
+  const [error, setError] = useState<string>();
+  const [copied, setCopied] = useState(false);
+  const [retry, setRetry] = useState(0);
+  const signingIn = useRef(false);
+  useEffect(() => {
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    signingIn.current = true;
+    const poll = () => {
+      timer = setTimeout(() => {
+        void client
+          .getRemote()
+          .then((state) => { if (!disposed && signingIn.current) setAuthorization(state.authorization); }, () => undefined)
+          .finally(() => { if (!disposed && signingIn.current) poll(); });
+      }, 1000);
+    };
+    poll();
+    void client.remoteAction("signIn").then(
+      (state) => {
+        signingIn.current = false;
+        if (disposed) return;
+        if (state.account != null) onSignedIn();
+        else setError(state.error != null ? REMOTE_ERROR[state.error] : "登录没有完成，请重试。");
+      },
+      (cause: unknown) => {
+        signingIn.current = false;
+        if (!disposed) setError(cause instanceof Error ? cause.message : String(cause));
+      },
+    );
+    return () => { disposed = true; clearTimeout(timer); };
+  }, [client, retry]);
+  const close = () => {
+    if (signingIn.current) void client.remoteAction("cancelSignIn").catch(() => undefined);
+    onClose();
+  };
+  const copy = (code: string) => {
+    void navigator.clipboard
+      ?.writeText(code)
+      .then(() => setCopied(true))
+      .catch(() => undefined);
+  };
+  return (
+    <Dialog title="登录 GitHub" onClose={close}>
+      <div className="flex flex-col gap-md px-lg py-md">
+        <p className="text-fg-muted text-md">复制验证码，在 GitHub 的设备登录页面完成授权，完成后这里会自动更新。</p>
+        {error == null && authorization == null && <p className="text-fg-faint text-sm">正在向 GitHub 申请验证码…</p>}
+        {error == null && authorization != null && (
+          <div className="flex items-center gap-xs rounded-md border border-border bg-bg-inset px-sm py-xs">
+            <code className="min-w-0 flex-1 truncate font-mono text-fg text-md select-text">{authorization.userCode}</code>
+            <button type="button" onClick={() => copy(authorization.userCode)} className={BUTTON_GHOST}>
+              {copied ? <Check className="size-md" /> : <Copy className="size-md" />}
+              {copied ? "已复制" : "复制"}
+            </button>
+          </div>
+        )}
+        {error != null && <p className="text-danger text-sm">{error}</p>}
+        <div className="flex justify-end gap-xs">
+          <button type="button" onClick={close} className={BUTTON_GHOST}>取消</button>
+          {error != null ? (
+            <button type="button" onClick={() => { setError(undefined); setAuthorization(null); setCopied(false); setRetry((value) => value + 1); }} className={BUTTON_PRIMARY}>重新登录</button>
+          ) : (
+            authorization != null && (
+              <a href={authorization.verificationUri} target="_blank" rel="noreferrer" className={BUTTON_PRIMARY}>
+                前往授权
+                <ExternalLink className="size-md" />
+              </a>
+            )
+          )}
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
 function ConfirmActionDialog({ title, message, confirmLabel, onConfirm, onClose }: {
   title: string;
   message: string;
@@ -615,7 +699,7 @@ function ConfirmActionDialog({ title, message, confirmLabel, onConfirm, onClose 
 /**
  * One row of「已添加」that can be dragged by its grip — only by the grip, so the
  * row's buttons still click. The grip sits in the row's left padding and shows
- * on hover, so the list lines up with 热门 below it.
+ * on hover, so the rows line up with the GitHub row above them.
  */
 function DraggableRow({ value, draggable, onDrop, children }: { value: string; draggable: boolean; onDrop: () => void; children: ReactNode }) {
   const controls = useDragControls();
@@ -639,17 +723,21 @@ type Open =
   | { kind: "login"; id: SubscriptionId }
   | { kind: "subscription-models"; id: SubscriptionId }
   | { kind: "connect"; entry: CatalogProviderSummary }
+  | { kind: "github-login" }
   | { kind: "custom" }
-  | { kind: "browse" }
   | { kind: "edit"; provider: RedactedProviderConfig }
   | { kind: "models"; providerId: string }
   | { kind: "disconnect"; providerId: string }
   | { kind: "logout"; id: SubscriptionId };
 
+/** Which platform mark a subscription wears. */
+const SUBSCRIPTION_LOGO = { "codex-subscription": "codex", "claude-subscription": "claude", "github-copilot": "github" } as const;
+
 /**
- * 模型提供商: what is connected, the popular ones a click away, and everything
- * else behind 查看全部. The list of providers is not ours — it is the models.dev
- * catalog the server caches — so a new vendor shows up without a release.
+ * 模型提供商: what is connected, and one 添加 menu for the rest — our own
+ * logins first, then 自定义, then the whole catalog. The catalog is not ours —
+ * it is the models.dev list the server caches — so a new vendor shows up
+ * without a release.
  */
 export function ProvidersPage({
   onManageGitHub,
@@ -715,7 +803,7 @@ export function ProvidersPage({
     return () => { active = false; };
   }, [client]);
 
-  const added = useMemo(() => orderAdded(subscriptions, providers, order), [subscriptions, providers, order]);
+  const added = useMemo(() => orderAdded(subscriptions.filter(isSignedIn), providers, order), [subscriptions, providers, order]);
 
   /** A drag is over: the order it left becomes the model picker's. */
   const saveOrder = () => {
@@ -774,10 +862,7 @@ export function ProvidersPage({
   };
 
   const connectedCatalogIds = useMemo(() => new Set(providers.flatMap((provider) => (provider.presetId != null ? [provider.presetId] : []))), [providers]);
-  const popular = useMemo(
-    () => (catalog?.popular ?? []).flatMap((id) => catalog?.providers.find((entry) => entry.id === id) ?? []).filter((entry) => !connectedCatalogIds.has(entry.id)),
-    [catalog, connectedCatalogIds],
-  );
+  const pickCatalog = useCallback((entry: CatalogProviderSummary) => setOpen({ kind: "connect", entry }), []);
   const modelsOf = open?.kind === "models" ? providers.find((provider) => provider.id === open.providerId) : undefined;
   const disconnectOf = open?.kind === "disconnect" ? providers.find((provider) => provider.id === open.providerId) : undefined;
   const subscriptionOf = (id: SubscriptionId) => subscriptions.find((account) => account.id === id);
@@ -786,12 +871,66 @@ export function ProvidersPage({
   const logoutOf = open?.kind === "logout" ? subscriptionOf(open.id) : undefined;
   const close = () => setOpen(undefined);
 
+  /** 添加: the logins not signed in yet, then 自定义 and the catalog. What is picked opens its own dialog. */
+  const addMenu = (closeMenu: () => void): CascadeNode[] => {
+    const choose = (next: Open) => () => {
+      closeMenu();
+      setOpen(next);
+    };
+    const connectable = catalog == null ? undefined : connectableCatalog(catalog.providers).length;
+    return [
+      // GitHub's login belongs to the host; a remote session cannot start it.
+      ...toSignIn(subscriptions)
+        .filter((account) => account.id !== "github-copilot" || !client.remoteSession)
+        .map((account) => ({
+          key: account.id,
+          label: account.name,
+          icon: <AccountLogo id={SUBSCRIPTION_LOGO[account.id]} />,
+          onPick: choose(account.id === "github-copilot" ? { kind: "github-login" } : { kind: "login", id: account.id }),
+        })),
+      { key: "custom", label: "自定义", icon: <Server className="size-md flex-none" />, separated: true, onPick: choose({ kind: "custom" }) },
+      {
+        key: "catalog",
+        label: connectable == null ? "更多提供商" : `更多 ${connectable} 个提供商`,
+        icon: <LayoutGrid className="size-md flex-none" />,
+        content: (
+          <CatalogMenu
+            catalog={catalog}
+            connectedIds={connectedCatalogIds}
+            reloading={reloading}
+            onReload={reloadCatalog}
+            onPick={(entry) => {
+              closeMenu();
+              pickCatalog(entry);
+            }}
+          />
+        ),
+      },
+    ];
+  };
+
   return (
     <SettingsPage title="模型与提供商">
-      <SettingsGroup title="已添加">
+      <SettingsGroup
+        title="已添加"
+        actions={
+          <Popover
+            align="end"
+            ariaLabel="添加提供商"
+            trigger={(props) => (
+              <button {...props} type="button" className={BUTTON_SECONDARY}>
+                <Plus className="size-md" />
+                添加
+              </button>
+            )}
+          >
+            {(closeMenu) => <CascadeLevel nodes={addMenu(closeMenu)} />}
+          </Popover>
+        }
+      >
         {!addedReady && <SettingsEmpty>正在读取订阅和提供商…</SettingsEmpty>}
         {addedReady && added.length > 0 && (
-          <Reorder.Group as="div" axis="y" values={added.map((entry) => entry.key)} onReorder={setOrder} className="flex flex-col divide-y divide-border">
+          <Reorder.Group as="div" axis="y" values={added.map((entry) => entry.key)} onReorder={(keys: string[]) => setOrder((current) => withShownOrder(current, keys))} className="flex flex-col divide-y divide-border">
             {added.map(({ key, account, provider }) => (
               <DraggableRow key={key} value={key} draggable={added.length > 1} onDrop={saveOrder}>
                 {account != null ? (
@@ -803,13 +942,14 @@ export function ProvidersPage({
                         <Tag>订阅</Tag>
                       </>
                     }
-                    help={isSignedIn(account) ? `${describeSubscription(account, agentLabel)} · 已打开的模型：${summarizeSubscription(account, agentLabel)}` : describeSubscription(account, agentLabel)}
+                    help={`${describeSubscription(account, agentLabel)} · 已打开的模型：${summarizeSubscription(account, agentLabel)}`}
                   >
-                    <button type="button" onClick={() => account.id === "github-copilot" && !isSignedIn(account) ? onManageGitHub?.() : setOpen({ kind: isSignedIn(account) ? "subscription-models" : "login", id: account.id })} className={BUTTON_SECONDARY}>
-                      {isSignedIn(account) ? "选模型" : account.loggedIn === false ? "登录" : "检查登录"}
+                    <button type="button" onClick={() => setOpen({ kind: "subscription-models", id: account.id })} className={BUTTON_SECONDARY}>
+                      选模型
                     </button>
-                    {account.id === "github-copilot" && isSignedIn(account) && <button type="button" onClick={onManageGitHub} className={BUTTON_GHOST}>管理账号</button>}
-                    {account.id !== "github-copilot" && account.loggedIn === true && (
+                    {account.id === "github-copilot" ? (
+                      onManageGitHub != null && <button type="button" onClick={onManageGitHub} className={BUTTON_GHOST}>管理账号</button>
+                    ) : (
                       <button type="button" onClick={() => setOpen({ kind: "logout", id: account.id })} className={BUTTON_GHOST}>
                         退出
                       </button>
@@ -842,41 +982,8 @@ export function ProvidersPage({
             ))}
           </Reorder.Group>
         )}
-        {addedReady && added.length === 0 && <SettingsEmpty>还没有连接任何提供商。</SettingsEmpty>}
+        {addedReady && added.length === 0 && <SettingsEmpty>还没有添加任何提供商。</SettingsEmpty>}
       </SettingsGroup>
-
-      {addedReady && <SettingsGroup
-        title="热门"
-        note={
-          catalog?.source === "builtin" ? (
-            <>
-              连不上 models.dev，这里只有随应用带的几家。
-              <button type="button" disabled={reloading} onClick={reloadCatalog} className="ml-2xs text-fg-muted underline underline-offset-2 hover:text-fg">
-                {reloading ? "重试中…" : "重试"}
-              </button>
-            </>
-          ) : undefined
-        }
-      >
-        {popular.map((entry) => (
-          <SettingsRow key={entry.id} leading={<LetterAvatar name={entry.name} />} title={entry.name} help={`${servedAgents(entry, usable, agentLabel)} · ${entry.modelCount} 个模型`}>
-            <button type="button" onClick={() => setOpen({ kind: "connect", entry })} className={BUTTON_SECONDARY}>
-              <Plus className="size-md" />
-              连接
-            </button>
-          </SettingsRow>
-        ))}
-        <SettingsRow leading={<LetterAvatar name="+" />} title={<>自定义<Tag>OpenAI / Anthropic 兼容</Tag></>} help="公司网关、自己搭的服务、目录里没有的厂商。">
-          <button type="button" onClick={() => setOpen({ kind: "custom" })} className={BUTTON_SECONDARY}>
-            <Plus className="size-md" />
-            连接
-          </button>
-        </SettingsRow>
-      </SettingsGroup>}
-
-      <button type="button" disabled={catalog == null} onClick={() => setOpen({ kind: "browse" })} className="w-fit text-brand text-md hover:underline disabled:opacity-40">
-        {catalog == null ? "正在读取提供商目录…" : `查看全部 ${catalog.providers.length} 个提供商`}
-      </button>
 
       {unusable.length > 0 && <p className="text-fg-faint text-sm">{unusable.map((engine) => engine.label).join("、")} 只能跑在它自己的订阅上，接不了要 key 的提供商。</p>}
       {loadError != null && <p className="text-danger text-sm">{loadError}</p>}
@@ -900,6 +1007,16 @@ export function ProvidersPage({
         />
       )}
 
+      {open?.kind === "github-login" && (
+        <GitHubLoginDialog
+          client={client}
+          onSignedIn={() => {
+            toast("已登录 GitHub");
+            close();
+          }}
+          onClose={close}
+        />
+      )}
       {loginOf?.id === "claude-subscription" && (
         <ClaudeLoginDialog client={client} onClose={close} onRecheck={() => reloadSubscriptions(true).then((next) => {
           const signedIn = next.some((account) => account.id === "claude-subscription" && isSignedIn(account));
@@ -959,9 +1076,6 @@ export function ProvidersPage({
           onProvider={put}
           onClose={close}
         />
-      )}
-      {open?.kind === "browse" && catalog != null && (
-        <BrowseDialog catalog={catalog} connectedIds={connectedCatalogIds} usable={usable} agentLabel={agentLabel} onPick={(entry) => setOpen({ kind: "connect", entry })} onClose={close} />
       )}
       {open?.kind === "edit" && <EditDialog client={client} provider={open.provider} usable={usable} agentLabel={agentLabel} onSaved={put} onClose={close} />}
       {modelsOf != null && (

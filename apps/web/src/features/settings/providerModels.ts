@@ -209,11 +209,18 @@ export function summarizeEnabled(provider: RedactedProviderConfig, label: (agent
   return parts.join(" · ");
 }
 
-/** Matches a provider by name or id, for 查看全部's search box. */
+/** Matches a provider by name or id, for the catalog's search box. */
 export function filterCatalog(providers: readonly CatalogProviderSummary[], query: string): CatalogProviderSummary[] {
   const needle = query.trim().toLowerCase();
   if (needle === "") return [...providers];
   return providers.filter((entry) => entry.name.toLowerCase().includes(needle) || entry.id.toLowerCase().includes(needle));
+}
+
+/** 添加 → 更多 N 个提供商: what this build can connect, by name. The rest is not offered at all. */
+export function connectableCatalog(providers: readonly CatalogProviderSummary[], query = ""): CatalogProviderSummary[] {
+  return filterCatalog(providers, query)
+    .filter((entry) => entry.unsupported == null)
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** `128K` / `1M`, for a model row's context column. */
@@ -225,9 +232,16 @@ export function formatContext(tokens: number | undefined): string {
 
 // --- 订阅 ---------------------------------------------------------------
 
-/** Login state controls the available action, never the subscription’s position. */
+/** Signed in, a subscription is one of「已添加」; otherwise it waits in the 添加 menu. */
 export function isSignedIn(account: SubscriptionAccount): boolean {
   return account.loggedIn === true;
+}
+
+const SIGN_IN_ORDER: readonly SubscriptionAccount["id"][] = ["codex-subscription", "claude-subscription", "github-copilot"];
+
+/** The logins the 添加 menu offers: the ones not signed in — Codex, Claude, then GitHub. */
+export function toSignIn(accounts: readonly SubscriptionAccount[]): SubscriptionAccount[] {
+  return SIGN_IN_ORDER.flatMap((id) => accounts.find((account) => account.id === id && !isSignedIn(account)) ?? []);
 }
 
 /** The line under a subscription's name: whose login, which plan, who can use it. */
@@ -275,4 +289,15 @@ export function orderAdded(accounts: readonly SubscriptionAccount[], providers: 
     .map((entry, at) => ({ entry, at }))
     .sort((a, b) => rankOf(a.entry) - rankOf(b.entry) || a.at - b.at)
     .map(({ entry }) => entry);
+}
+
+/**
+ * 提供商排序 after a drag of the rows on screen. A login that is signed out is
+ * not on screen but keeps its place, so it comes back where it was.
+ */
+export function withShownOrder(saved: readonly string[] | undefined, shown: readonly string[]): string[] {
+  const visible = new Set(shown);
+  const queue = [...shown];
+  const next = (saved ?? []).flatMap((key) => (visible.has(key) ? (queue.shift() ?? []) : key));
+  return [...next, ...queue];
 }

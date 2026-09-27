@@ -8,7 +8,7 @@ import { INPUT_CLASS } from "./styles";
 import { RemoteConnect } from "./RemoteConnect";
 
 const STATUS = { disabled: "已关闭", connecting: "连接中…", online: "在线", offline: "离线，正在重试" };
-const ERROR = {
+export const REMOTE_ERROR = {
   configuration: "远程登录配置不可用。请检查 GitHub 应用是否启用了设备登录。",
   authentication: "GitHub 登录已失效或未完成，请重新登录。",
   connection: "暂时无法连接远程服务。请检查网络后刷新。",
@@ -76,7 +76,7 @@ export function RemotePage({ client }: { client: ApiClient }) {
       <button className={BUTTON_SECONDARY} disabled={busy || state == null} onClick={() => void act("refresh")}><RefreshCw className="size-md" />刷新</button>
     }>
       <p className="text-fg-muted text-sm">在其他电脑或手机的浏览器中使用这台电脑上的 Vgent。远程访问时需登录同一个 GitHub 账户。</p>
-      {(error || state?.error) && <p role="alert" className="text-danger text-sm">{error ?? (state?.error ? ERROR[state.error] : null)}</p>}
+      {(error || state?.error) && <p role="alert" className="text-danger text-sm">{error ?? (state?.error ? REMOTE_ERROR[state.error] : null)}</p>}
       {!state ? <SettingsEmpty>{error ? "远程访问暂不可用。" : "正在读取远程状态…"}</SettingsEmpty> : <>
         <SettingsGroup title="账户">
           <SettingsRow title={state.account ? `@${state.account.username}` : "GitHub"} help={state.account?.name ?? "登录后即可开启远程访问。"}>

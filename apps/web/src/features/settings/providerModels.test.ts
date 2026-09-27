@@ -4,6 +4,7 @@ import {
   EMPTY_CUSTOM_FORM,
   agentsOf,
   connectInput,
+  connectableCatalog,
   customInput,
   describeSubscription,
   filterCatalog,
@@ -15,7 +16,9 @@ import {
   orderAdded,
   summarizeEnabled,
   summarizeSubscription,
+  toSignIn,
   withModels,
+  withShownOrder,
   withSubscriptionSwitch, withAgentChoices } from "./providerModels";
 
 const deepseek: CatalogProviderSummary = {
@@ -159,6 +162,12 @@ describe("filterCatalog / formatContext", () => {
     expect(filterCatalog([deepseek, azure], "").length).toBe(2);
   });
 
+  it("offers only what can be connected, by name", () => {
+    const vertex: CatalogProviderSummary = { ...azure, id: "google-vertex", name: "Vertex", unsupported: "要 Google Cloud 凭据" };
+    expect(connectableCatalog([ollama, vertex, deepseek, azure]).map((entry) => entry.id)).toEqual(["azure", "deepseek", "ollama"]);
+    expect(connectableCatalog([ollama, vertex, deepseek, azure], "o").map((entry) => entry.id)).toEqual(["ollama"]);
+  });
+
   it("writes a context window the short way", () => {
     expect(formatContext(128000)).toBe("128K");
     expect(formatContext(1_000_000)).toBe("1M");
@@ -188,6 +197,20 @@ describe("订阅", () => {
     const keys = (order?: string[]) => orderAdded([codex, claude], [connected, other], order).map((entry) => entry.key);
     expect(keys()).toEqual(["codex-subscription", "claude-subscription", "deepseek", "xd"]);
     expect(keys(["xd", "claude-subscription", "gone"])).toEqual(["xd", "claude-subscription", "codex-subscription", "deepseek"]);
+  });
+
+  it("offers the signed-out logins to sign in to: Codex, Claude, then GitHub", () => {
+    const claude: SubscriptionAccount = { ...codex, id: "claude-subscription", name: "Claude 订阅", loggedIn: false };
+    const { loggedIn: _unknown, ...unknown } = codex;
+    expect(toSignIn([claude, codex]).map((account) => account.id)).toEqual(["claude-subscription"]);
+    const github: SubscriptionAccount = { ...codex, id: "github-copilot", name: "GitHub Copilot", loggedIn: false };
+    expect(toSignIn([github, claude, unknown]).map((account) => account.id)).toEqual(["codex-subscription", "claude-subscription", "github-copilot"]);
+  });
+
+  it("keeps a signed-out login's place when the rows on screen are dragged", () => {
+    expect(withShownOrder(["codex-subscription", "deepseek", "xd"], ["xd", "deepseek"])).toEqual(["codex-subscription", "xd", "deepseek"]);
+    expect(withShownOrder(["deepseek"], ["xd", "deepseek", "claude-subscription"])).toEqual(["xd", "deepseek", "claude-subscription"]);
+    expect(withShownOrder(undefined, ["xd", "deepseek"])).toEqual(["xd", "deepseek"]);
   });
 
   it("says whose login it is, or what is missing, in one line", () => {

@@ -15,7 +15,7 @@ export function createAccountService(options: { remote?: RemoteService; probeCla
   };
   const copilot = createCopilotAccess(githubAccess, fetcher);
   let revision = 0;
-  let cache: { at: number; data: AccountSnapshot; usage: boolean } | undefined;
+  let cache: { at: number; data: AccountSnapshot; usageAt: number } | undefined;
   let pending: { usage: boolean; promise: Promise<AccountSnapshot> } | undefined;
   let identities: string | undefined;
   const invalidate = () => { revision++; cache = undefined; pending = undefined; copilot.invalidate(); options.changed?.(); };
@@ -47,7 +47,7 @@ export function createAccountService(options: { remote?: RemoteService; probeCla
   }
   async function list(input: { usage?: boolean; refresh?: boolean } = {}): Promise<AccountSnapshot> {
     const includeUsage = input.usage === true;
-    if (!input.refresh && cache && (!includeUsage || cache.usage) && Date.now() - cache.at < 60_000) return cache.data;
+    if (!input.refresh && cache && Date.now() - (includeUsage ? cache.usageAt : cache.at) < 60_000) return cache.data;
     if (pending) {
       if (!includeUsage || pending.usage) return pending.promise;
       await pending.promise;
@@ -66,11 +66,19 @@ export function createAccountService(options: { remote?: RemoteService; probeCla
       const identity = JSON.stringify(accounts);
       if (generation !== revision) return list(input);
       if (identities != null && identities !== identity) { copilot.invalidate(); options.changed?.(); }
+      const sameIdentity = identities === identity;
       identities = identity;
+      // A cheap identity read must not evict the complete quota snapshot or
+      // extend its freshness. Only retain usage when all identities still match.
+      if (!includeUsage && sameIdentity && cache) for (const account of accounts) {
+        const previous = cache.data.accounts.find(a => a.id === account.id);
+        if (previous?.usage) account.usage = previous.usage;
+        if (!account.plan && previous?.plan) account.plan = previous.plan;
+      }
       if (includeUsage) await Promise.all(accounts.map(async a => { const u = await usage(a); if (u) a.usage = u; }));
       if (generation !== revision) return list(input);
       const data = { accounts, revision };
-      cache = { at: Date.now(), data, usage: includeUsage };
+      cache = { at: Date.now(), data, usageAt: includeUsage ? Date.now() : sameIdentity ? cache?.usageAt ?? 0 : 0 };
       return data;
     })();
     pending = { usage: includeUsage, promise };

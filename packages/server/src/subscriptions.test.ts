@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ModelCatalog, ModelCatalogService, ModelEntry } from "./models.js";
 import { DEFAULT_SETTINGS } from "./store/settings.js";
 import { createSubscriptionService, markHidden, parseClaudeLoginStatus, withHiddenModels } from "./subscriptions.js";
+import { createAccountService } from "./accounts/service.js";
 import type { EngineId } from "./types.js";
 
 const catalogOf = (lists: Record<EngineId, ModelEntry[]>, warning?: string): ModelCatalogService => ({
@@ -65,7 +66,17 @@ describe("withHiddenModels / markHidden", () => {
 
 describe("createSubscriptionService", () => {
   const service = (probe: () => Promise<{ loggedIn?: boolean; email?: string; plan?: string }>, warning?: string) =>
-    createSubscriptionService({ modelCatalog: catalogOf(LISTS, warning), probeClaude: probe, env: { CODEX_HOME: "/nonexistent-vgent-test" } });
+    createSubscriptionService({ modelCatalog: catalogOf(LISTS, warning), accounts: createAccountService({ probeClaude: probe, probeCodex: async () => ({ codex: { available: false, source: null } }) }) });
+
+  it("uses one identity read for both quota surfaces and model management", async () => {
+    const probe = vi.fn(async () => ({ loggedIn: true, email: "same@example.com" }));
+    const accounts = createAccountService({ probeClaude: probe, probeCodex: async () => ({ codex: { available: false, source: null } }) });
+    const models = createSubscriptionService({ modelCatalog: catalogOf(LISTS), accounts });
+    const [identity, listing] = await Promise.all([accounts.list(), models.list(DEFAULT_SETTINGS)]);
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(listing[0]?.email).toBe(identity.accounts.find(a => a.id === "claude")?.email);
+    expect(listing.map(a => a.id)).toEqual(["claude-subscription", "codex-subscription", "github-copilot"]);
+  });
 
   it("lists the Claude login for Claude Code alone, and says why", async () => {
     const [claude] = await service(async () => ({ loggedIn: true, email: "dev@example.com", plan: "max" })).list(DEFAULT_SETTINGS);

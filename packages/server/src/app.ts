@@ -42,7 +42,7 @@ import { planFork } from "./fork.js";
 import { asIntegrateAction, changeStatsOf, createIntegrator, taskTarget, type Integrator, type TaskTarget } from "./integrate.js";
 import { contextOptionsFor, createModelCatalog, orderBySource, type ModelCatalog, type ModelEntry } from "./models.js";
 import { reasoningFor } from "./reasoning.js";
-import { SUBSCRIPTION_IDS, createSubscriptionService, markHidden, withHiddenModels, type ClaudeLoginStatus, type SubscriptionId } from "./subscriptions.js";
+import { SUBSCRIPTION_IDS, createSubscriptionService, markHidden, withHiddenModels, type ClaudeLoginStatus, type NativeSubscriptionId, type SubscriptionId } from "./subscriptions.js";
 import { logoutSubscription } from "./subscription-logout.js";
 import { createQueueStore, readQueueText } from "./queue.js";
 import { asRestoreTarget, lastTurnPair, planRestore, type RestoreTarget } from "./restore.js";
@@ -123,7 +123,7 @@ export interface CreateAppOptions {
   /** Whether Claude is signed in on this machine. Tests answer; production asks the `claude` CLI. */
   probeClaudeLogin?: () => Promise<ClaudeLoginStatus>;
   /** Test seam; production asks the vendor CLI to sign out. */
-  logoutSubscription?: (id: SubscriptionId) => Promise<void>;
+  logoutSubscription?: (id: NativeSubscriptionId) => Promise<void>;
   /**
    * The keeper of Claude Code's and Codex's CLI + SDK. Tests pass a fake; left
    * unset the real one is built, but it only checks and upgrades on its own
@@ -1418,7 +1418,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     }
 
     const spec = thread.model ?? DEFAULT_VGENT_MODEL;
-    const model = options.compactModel ?? (spec.startsWith("github-copilot:") ? accounts.copilot.model(spec.slice("github-copilot:".length)) : resolveModel(spec, await providers.list()));
+    const model = options.compactModel ?? (spec.startsWith("github-copilot:") ? await accounts.copilot.model(spec.slice("github-copilot:".length)) : resolveModel(spec, await providers.list()));
     const { messages } = await compactThread({ thread, model }).catch((error: unknown) => {
       throw new UpstreamModelError(`压缩失败: ${error instanceof Error ? error.message : String(error)}`);
     });
@@ -1748,16 +1748,13 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   // --- subscriptions ----------------------------------------------------
 
-  // 订阅: the Claude and Codex logins, listed with the providers because that is
-  // what they are to the user. Nothing here signs anyone in or holds a token —
-  // it reports the login the vendor's CLI made, and keeps the model switches.
+  // The three shared accounts bring models; this layer only keeps model switches.
   const subscriptions = createSubscriptionService({
     modelCatalog,
-    ...(options.probeClaudeLogin != null ? { probeClaude: options.probeClaudeLogin } : {}),
+    accounts,
   });
 
   app.get("/api/subscriptions", async (c) => {
-    if (c.req.query("refresh") === "1") accounts.invalidate();
     return c.json({ subscriptions: await subscriptions.list(await settings.get(), { refresh: c.req.query("refresh") === "1" }) });
   });
 
@@ -1772,6 +1769,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
   app.post("/api/subscriptions/:id/logout", async (c) => {
     const id = c.req.param("id") as SubscriptionId;
     if (!SUBSCRIPTION_IDS.includes(id)) throw new NotFoundError(`没有订阅 ${JSON.stringify(id)}`, "subscription_not_found");
+    if (id === "github-copilot") throw new BadRequestError("GitHub 登录由远程访问统一管理", "shared_github_login");
     if (id === "claude-subscription") claudeLogin.cancel();
     try {
       await accounts.change(id === "codex-subscription" ? "codex" : "claude", () => (options.logoutSubscription ?? logoutSubscription)(id));

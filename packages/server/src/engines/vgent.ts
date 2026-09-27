@@ -61,7 +61,7 @@ export interface VgentEngineFactoryOptions {
    * probe, since an injected model needs no credential.
    */
   model?: LanguageModel;
-  copilot?: { available(): Promise<void>; model(id: string): LanguageModel };
+  copilot?: { available(): Promise<void>; model(id: string): Promise<LanguageModel> };
 }
 
 /** How much of a chosen window the history may fill before pruning; the rest is the reply's and the tools'. */
@@ -146,7 +146,7 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
       try {
         mcp = await connectMcpServers(settings.mcpServers ?? [], { log: ctx.log });
         const spec = ctx.thread.model ?? DEFAULT_VGENT_MODEL;
-        const model = override ?? (spec.startsWith("github-copilot:") && options.copilot ? options.copilot.model(spec.slice("github-copilot:".length)) : spec);
+        const model = override ?? (spec.startsWith("github-copilot:") && options.copilot ? await options.copilot.model(spec.slice("github-copilot:".length)) : spec);
         const { workspace } = ctx.thread;
         engine = createVgentEngine({
           model,

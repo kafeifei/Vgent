@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { claudeCommand, claudeLoginEnv } from "./claude-login.js";
-import type { SubscriptionId } from "./subscriptions.js";
+import type { NativeSubscriptionId as SubscriptionId } from "./subscriptions.js";
 
 const execFileAsync = promisify(execFile);
 

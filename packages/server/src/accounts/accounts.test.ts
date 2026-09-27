@@ -81,9 +81,9 @@ describe("Copilot model access", () => {
       return Response.json({ id: "fixture", created: 1, model: "usable", choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } });
     });
     const models = await access.models();
-    expect(models.map(m => m.id)).toEqual(["github-copilot:usable"]);
+    expect(models.map(m => m.id)).toEqual(["github-copilot:usable", "github-copilot:responses-only"]);
     const { generateText } = await import("ai");
-    const result = await generateText({ model: access.model("usable"), prompt: "test", maxRetries: 0 });
+    const result = await generateText({ model: await access.model("usable"), prompt: "test", maxRetries: 0 });
     expect(result.text).toBe("ok");
     expect(sent[0]?.authorization).toBe("Bearer one-github-login");
     expect(sent.at(-1)?.authorization).toBe("Bearer derived");
@@ -91,4 +91,48 @@ describe("Copilot model access", () => {
     await remote.logout();
     await expect(access.available()).rejects.toThrow("signed out");
   });
+});
+
+it("identity-only reads retain quotas without postponing their next refresh", async () => {
+  let now = Date.now();
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const fetcher = vi.fn(async () => Response.json({ copilot_plan: "individual", quota_snapshots: { chat: { unlimited: true } } }));
+    const service = createAccountService({ remote: remoteFixture() as unknown as RemoteService, probeClaude: async () => ({ loggedIn: false }), probeCodex: signedOutCodex, fetch: fetcher });
+    const full = await service.list({ usage: true });
+    now += 61_000;
+    const identity = await service.list();
+    expect(identity.accounts[0]?.usage).toBe(full.accounts[0]?.usage);
+    expect(identity.accounts[0]?.plan).toBe("individual");
+    await service.list({ usage: true });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  } finally { clock.mockRestore(); }
+});
+
+it("executes Responses-only Copilot models, including a tool continuation, using the same login", async () => {
+  const bodies: Record<string, unknown>[] = [], initiators: (string | null)[] = [];
+  const access = createCopilotAccess(remoteFixture().githubAccess, async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("/token")) return Response.json({ token: "derived", expires_at: Date.now() / 1000 + 600 });
+    if (url.endsWith("/models")) return Response.json({ data: [
+      { id: "responses-only", capabilities: { type: "chat", supports: { tool_calls: true } }, supported_endpoints: ["/responses"] },
+      { id: "disabled", capabilities: { type: "chat", supports: { tool_calls: true } }, policy: { state: "disabled" }, supported_endpoints: ["/responses"] },
+    ] });
+    expect(url).toBe("https://api.githubcopilot.com/responses");
+    expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer derived");
+    bodies.push(JSON.parse(String(init?.body)));
+    initiators.push(new Headers(init?.headers).get("X-Initiator"));
+    const output = bodies.length === 1
+      ? [{ type: "function_call", id: "fc_1", call_id: "call_1", name: "read", arguments: "{}", status: "completed" }]
+      : [{ type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: "ok", annotations: [] }] }];
+    return Response.json({ id: `resp_${bodies.length}`, created_at: 1, model: "responses-only", status: "completed", output, usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } });
+  });
+  const { generateText, tool, jsonSchema, stepCountIs } = await import("ai");
+  const result = await generateText({ model: await access.model("responses-only"), prompt: "read it", maxRetries: 0,
+    tools: { read: tool({ inputSchema: jsonSchema<Record<string, never>>({ type: "object", properties: {} }), execute: async () => "file contents" }) }, stopWhen: stepCountIs(2) });
+  expect(result.text).toBe("ok");
+  expect(bodies.map(b => b.store)).toEqual([false, false]);
+  expect(initiators).toEqual(["user", "agent"]);
+  expect(bodies[1]?.input).toContainEqual(expect.objectContaining({ type: "function_call_output", call_id: "call_1", output: "file contents" }));
+  await expect(access.model("disabled")).rejects.toThrow("unavailable");
 });

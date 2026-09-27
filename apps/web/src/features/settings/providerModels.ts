@@ -236,7 +236,7 @@ export function describeSubscription(account: SubscriptionAccount, label: (agent
   if (account.loggedIn == null) return `${served} · 暂时无法确认登录状态`;
   if (!account.loggedIn) return `${served} · 还没登录 · 不用 key`;
   // Signed in, who can use it is said by the model counts that follow; the account is what is worth the room.
-  const parts = [account.email, account.plan != null ? planLabel(account.plan) : undefined, account.method != null ? `登录方式：${account.method}` : undefined].filter((part) => part != null);
+  const parts = [account.username ? `@${account.username}` : account.email, account.plan != null ? planLabel(account.plan) : undefined, account.method != null ? `登录方式：${account.method}` : undefined].filter((part) => part != null);
   return parts.length > 0 ? parts.join(" · ") : "已登录";
 }
 

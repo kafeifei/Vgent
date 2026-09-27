@@ -1,3 +1,4 @@
+import { onModelsChanged } from "@/lib/modelEvents";
 import { onAccountsChanged } from "@/lib/accountEvents";
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { createClient, getToken, type ApiClient, type ModelPickPatch } from "@/lib/api";
@@ -75,7 +76,13 @@ function useAllCatalogs(
 ): Record<string, CatalogState> {
   const injectedClient = useContext(ModelCatalogClientContext);
   const [accountRevision, setAccountRevision] = useState(0);
-  useEffect(() => injectedClient ? onAccountsChanged(injectedClient, () => setAccountRevision(n => n + 1)) : undefined, [injectedClient]);
+  useEffect(() => {
+    if (!injectedClient) return;
+    const refresh = () => setAccountRevision(n => n + 1);
+    const stopAccounts = onAccountsChanged(injectedClient, refresh);
+    const stopModels = onModelsChanged(injectedClient, refresh);
+    return () => { stopAccounts(); stopModels(); };
+  }, [injectedClient]);
   const [states, setStates] = useState<Record<string, CatalogState>>({});
   const notify = useRef(onCatalog);
   notify.current = onCatalog;
@@ -86,7 +93,7 @@ function useAllCatalogs(
     const client = injectedClient ?? (token == null ? null : createClient(token));
     if (client == null || ids === "") return;
     let cancelled = false;
-    setStates(Object.fromEntries(ids.split(",").map((id) => [id, { status: "loading" } as CatalogState])));
+    setStates(current => Object.fromEntries(ids.split(",").map((id) => [id, current[id] ?? { status: "loading" } as CatalogState])));
     for (const id of ids.split(",") as EngineId[]) {
       client.listModels(id).then(
         (catalog) => {

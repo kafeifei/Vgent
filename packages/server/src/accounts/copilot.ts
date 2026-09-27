@@ -6,7 +6,8 @@ export interface GitHubAccess { accessToken: string; accountId: string; revision
 export function createCopilotAccess(access: () => Promise<GitHubAccess>, fetcher = fetch) {
   let cached: { key: string; expires: number; token: string } | undefined;
   let pending: { key: string; promise: Promise<string> } | undefined;
-  let catalog: { key: string; at: number; models: ModelEntry[] } | undefined;
+  let catalog: { key: string; at: number; models: ModelEntry[]; protocols: Map<string, "chat-completions" | "responses"> } | undefined;
+  let catalogPending: { key: string; promise: Promise<ModelEntry[]> } | undefined;
   const keyOf = (a: GitHubAccess) => `${a.accountId}:${a.revision}:${a.accessToken}`;
   const headers = { "User-Agent": "Vgent", "Editor-Version": "vscode/1.99.0", "Editor-Plugin-Version": "copilot/1.300.0", "Copilot-Integration-Id": "vscode-chat" };
   const token = async () => {
@@ -35,7 +36,7 @@ export function createCopilotAccess(access: () => Promise<GitHubAccess>, fetcher
     let initiator = "user";
     try {
       const body = typeof init?.body === "string" ? object(JSON.parse(init.body)) : {};
-      const messages = Array.isArray(body.messages) ? body.messages : [];
+      const messages = Array.isArray(body.messages) ? body.messages : Array.isArray(body.input) ? body.input : [];
       if (messages.length && object(messages.at(-1)).role !== "user") initiator = "agent";
     } catch { /* The SDK validates the request body. */ }
     requestHeaders.set("X-Initiator", initiator);
@@ -43,26 +44,41 @@ export function createCopilotAccess(access: () => Promise<GitHubAccess>, fetcher
     if ([401, 403].includes(response.status)) cached = undefined;
     return response;
   };
-  return {
-    invalidate() { cached = undefined; catalog = undefined; },
+  const result = {
+    invalidate() { cached = undefined; catalog = undefined; catalogPending = undefined; },
     async available() { await token(); },
-    model(id: string) { return createCopilotModel(id, modelFetch); },
+    async model(id: string) {
+      await result.models();
+      const protocol = catalog?.protocols.get(id);
+      if (!protocol) throw new Error("Copilot model unavailable for this GitHub account");
+      return createCopilotModel(id, modelFetch, protocol);
+    },
     async models(refresh = false): Promise<ModelEntry[]> {
       const original = await access(), key = keyOf(original);
       if (!refresh && catalog?.key === key && Date.now() - catalog.at < 60_000) return catalog.models;
-      const response = await modelFetch("https://api.githubcopilot.com/models", { signal: AbortSignal.timeout(12_000) });
-      if (!response.ok) throw new UsageError(response.status);
-      const data = object(await response.json());
-      if (keyOf(await access()) !== key) throw new Error("GitHub account changed");
-      const models: ModelEntry[] = (Array.isArray(data.data) ? data.data : []).flatMap(raw => {
-        const m = object(raw), caps = object(m.capabilities), limits = object(caps.limits), support = object(caps.supports);
-        if (typeof m.id !== "string" || caps.type !== "chat" || support.tool_calls !== true || m.model_picker_enabled === false || object(m.policy).state === "disabled") return [];
-        // Only advertise a protocol this adapter can execute with tools.
-        if (Array.isArray(m.supported_endpoints) && !m.supported_endpoints.includes("/chat/completions")) return [];
-        return [{ id: `github-copilot:${m.id}`, label: typeof m.name === "string" ? m.name : m.id, modelKey: `github-copilot/${m.id}`, source: { kind: "provider", id: "github-copilot", name: "GitHub Copilot", logo: "github-copilot" }, ...(typeof limits.max_context_window_tokens === "number" ? { contextWindow: limits.max_context_window_tokens } : {}) }];
-      });
-      catalog = { key, at: Date.now(), models };
-      return models;
+      if (catalogPending?.key === key) return catalogPending.promise;
+      const promise = (async () => {
+        const protocols = new Map<string, "chat-completions" | "responses">();
+        const response = await modelFetch("https://api.githubcopilot.com/models", { signal: AbortSignal.timeout(12_000) });
+        if (!response.ok) throw new UsageError(response.status);
+        const data = object(await response.json());
+        if (keyOf(await access()) !== key) throw new Error("GitHub account changed");
+        const models: ModelEntry[] = (Array.isArray(data.data) ? data.data : []).flatMap(raw => {
+          const m = object(raw), caps = object(m.capabilities), limits = object(caps.limits), support = object(caps.supports);
+          if (typeof m.id !== "string" || caps.type !== "chat" || support.tool_calls !== true || m.model_picker_enabled === false || object(m.policy).state === "disabled") return [];
+          // Only advertise a protocol this adapter can execute with tools.
+          const endpoints = Array.isArray(m.supported_endpoints) ? m.supported_endpoints : ["/chat/completions"];
+          const protocol = endpoints.includes("/responses") ? "responses" : endpoints.includes("/chat/completions") ? "chat-completions" : undefined;
+          if (!protocol) return [];
+          protocols.set(m.id, protocol);
+          return [{ id: `github-copilot:${m.id}`, label: typeof m.name === "string" ? m.name : m.id, modelKey: `github-copilot/${m.id}`, source: { kind: "provider", id: "github-copilot", name: "GitHub Copilot", logo: "github-copilot" }, ...(typeof limits.max_context_window_tokens === "number" ? { contextWindow: limits.max_context_window_tokens } : {}) }];
+        });
+        catalog = { key, at: Date.now(), models, protocols };
+        return models;
+      })();
+      catalogPending = { key, promise };
+      try { return await promise; } finally { if (catalogPending?.promise === promise) catalogPending = undefined; }
     },
   };
+  return result;
 }

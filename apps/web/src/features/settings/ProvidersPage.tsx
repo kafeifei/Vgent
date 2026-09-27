@@ -1,4 +1,3 @@
-import { useAccounts } from "@/features/accounts/useAccounts";
 import { onAccountsChanged } from "@/lib/accountEvents";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, Copy, ExternalLink, GripVertical, Plus, Search } from "lucide-react";
@@ -667,8 +666,6 @@ export function ProvidersPage({
   onChanged?: (() => void) | undefined;
 }) {
   const toast = useToast();
-  const { snapshot: accounts } = useAccounts(client);
-  const github = accounts?.accounts.find(a => a.id === "github");
   const [providers, setProviders] = useState<RedactedProviderConfig[]>([]);
   const [subscriptions, setSubscriptions] = useState<SubscriptionAccount[]>([]);
   const [catalog, setCatalog] = useState<ProviderCatalog>();
@@ -681,9 +678,16 @@ export function ProvidersPage({
   const orderRef = useRef(order);
   orderRef.current = order;
 
-  useEffect(() => onAccountsChanged(client, () => {
-    void client.listSubscriptions().then(setSubscriptions).catch(() => {});
-  }), [client]);
+  const subscriptionRequest = useRef(0);
+  useEffect(() => {
+    if (!addedReady) return;
+    return onAccountsChanged(client, () => {
+      const ticket = ++subscriptionRequest.current;
+      void client.listSubscriptions().then(next => {
+        if (ticket === subscriptionRequest.current) setSubscriptions(next);
+      }).catch(() => {});
+    });
+  }, [client, addedReady]);
 
   const usable = useMemo(() => engines.filter((engine) => engine.capabilities.customProviders).map((engine) => engine.id as ProviderAgent), [engines]);
   const unusable = engines.filter((engine) => !engine.capabilities.customProviders);
@@ -698,19 +702,16 @@ export function ProvidersPage({
     setLoadError(undefined);
     // The added rows and their saved order must land together; otherwise the
     // providers appear first and the subscription rows jump ahead of them.
-    void Promise.allSettled([client.listProviders(), client.listSubscriptions(), client.getSettings()]).then(([providerResult, subscriptionResult, settingsResult]) => {
+    void Promise.allSettled([client.listProviders(), client.listSubscriptions(), client.getSettings(), client.getProviderCatalog()]).then(([providerResult, subscriptionResult, settingsResult, catalogResult]) => {
       if (!active) return;
       if (providerResult.status === "fulfilled") setProviders(providerResult.value);
       if (subscriptionResult.status === "fulfilled") setSubscriptions(subscriptionResult.value);
       if (settingsResult.status === "fulfilled") setOrder(settingsResult.value.providerOrder);
-      const failure = [providerResult, subscriptionResult, settingsResult].find((result) => result.status === "rejected");
+      if (catalogResult.status === "fulfilled") setCatalog(catalogResult.value);
+      const failure = [providerResult, subscriptionResult, settingsResult, catalogResult].find((result) => result.status === "rejected");
       if (failure?.status === "rejected") setLoadError(failure.reason instanceof Error ? failure.reason.message : String(failure.reason));
       setAddedReady(true);
     });
-    void client
-      .getProviderCatalog()
-      .then((next) => { if (active) setCatalog(next); })
-      .catch((cause: Error) => { if (active) setLoadError(cause.message); });
     return () => { active = false; };
   }, [client]);
 
@@ -732,12 +733,14 @@ export function ProvidersPage({
   };
 
   /** Reads the logins again; `refresh` also re-asks the vendors for their model lists. */
-  const reloadSubscriptions = (refresh: boolean) =>
-    client.listSubscriptions(refresh).then((next) => {
-      setSubscriptions(next);
+  const reloadSubscriptions = (refresh: boolean) => {
+    const ticket = ++subscriptionRequest.current;
+    return client.listSubscriptions(refresh).then((next) => {
+      if (ticket === subscriptionRequest.current) setSubscriptions(next);
       onChanged?.();
       return next;
     });
+  };
 
   const put = (next: RedactedProviderConfig) => {
     setProviders((current) => (current.some((entry) => entry.id === next.id) ? current.map((entry) => (entry.id === next.id ? next : entry)) : [...current, next]));
@@ -752,6 +755,7 @@ export function ProvidersPage({
   };
 
   const logout = async (account: SubscriptionAccount) => {
+    if (account.id === "github-copilot") return;
     await client.logoutSubscription(account.id);
     const next = await reloadSubscriptions(false);
     if (next.some((entry) => entry.id === account.id && isSignedIn(entry))) {
@@ -785,9 +789,6 @@ export function ProvidersPage({
   return (
     <SettingsPage title="模型与提供商">
       <SettingsGroup title="已添加">
-        {onManageGitHub && <SettingsRow leading={<LetterAvatar name="GitHub" />} title="GitHub Copilot" help={github?.loggedIn ? `@${github.username} · 与远程访问共用登录，Copilot 模型可在 Vgent 引擎中选择` : "与远程访问共用一个 GitHub 账号"}>
-          <button type="button" onClick={onManageGitHub} className={BUTTON_SECONDARY}>{github?.loggedIn ? "管理账号" : "登录"}</button>
-        </SettingsRow>}
         {!addedReady && <SettingsEmpty>正在读取订阅和提供商…</SettingsEmpty>}
         {addedReady && added.length > 0 && (
           <Reorder.Group as="div" axis="y" values={added.map((entry) => entry.key)} onReorder={setOrder} className="flex flex-col divide-y divide-border">
@@ -804,10 +805,11 @@ export function ProvidersPage({
                     }
                     help={isSignedIn(account) ? `${describeSubscription(account, agentLabel)} · 已打开的模型：${summarizeSubscription(account, agentLabel)}` : describeSubscription(account, agentLabel)}
                   >
-                    <button type="button" onClick={() => setOpen({ kind: isSignedIn(account) ? "subscription-models" : "login", id: account.id })} className={BUTTON_SECONDARY}>
-                      {isSignedIn(account) ? "选模型" : "登录"}
+                    <button type="button" onClick={() => account.id === "github-copilot" && !isSignedIn(account) ? onManageGitHub?.() : setOpen({ kind: isSignedIn(account) ? "subscription-models" : "login", id: account.id })} className={BUTTON_SECONDARY}>
+                      {isSignedIn(account) ? "选模型" : account.loggedIn === false ? "登录" : "检查登录"}
                     </button>
-                    {account.loggedIn !== false && (
+                    {account.id === "github-copilot" && isSignedIn(account) && <button type="button" onClick={onManageGitHub} className={BUTTON_GHOST}>管理账号</button>}
+                    {account.id !== "github-copilot" && account.loggedIn === true && (
                       <button type="button" onClick={() => setOpen({ kind: "logout", id: account.id })} className={BUTTON_GHOST}>
                         退出
                       </button>
@@ -843,7 +845,7 @@ export function ProvidersPage({
         {addedReady && added.length === 0 && <SettingsEmpty>还没有连接任何提供商。</SettingsEmpty>}
       </SettingsGroup>
 
-      <SettingsGroup
+      {addedReady && <SettingsGroup
         title="热门"
         note={
           catalog?.source === "builtin" ? (
@@ -870,7 +872,7 @@ export function ProvidersPage({
             连接
           </button>
         </SettingsRow>
-      </SettingsGroup>
+      </SettingsGroup>}
 
       <button type="button" disabled={catalog == null} onClick={() => setOpen({ kind: "browse" })} className="w-fit text-brand text-md hover:underline disabled:opacity-40">
         {catalog == null ? "正在读取提供商目录…" : `查看全部 ${catalog.providers.length} 个提供商`}

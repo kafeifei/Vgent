@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, Search } from "lucide-react";
 import type { ApiClient } from "@/lib/api";
 import type { ProviderAgent, SubscriptionAccount, SubscriptionModel } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { INPUT_CLASS } from "./styles";
 import { BUTTON_GHOST } from "./layout";
 import { ModelTableHeader, ModelTableRow } from "./ModelTable";
 import { formatContext, withSubscriptionSwitch } from "./providerModels";
@@ -27,6 +28,9 @@ export function SubscriptionTable({
   /** Asks the vendor for its model list again. */
   onReload: () => Promise<void>;
 }) {
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
+  const rows = account.models.filter(model => `${model.id} ${model.label}`.toLowerCase().includes(needle));
   const [error, setError] = useState<string>();
   const [reloading, setReloading] = useState(false);
 
@@ -72,15 +76,19 @@ export function SubscriptionTable({
           拉取模型
         </button>
       </div>
+      <div className="flex items-center gap-xs border-b border-border px-md py-xs">
+        <Search aria-hidden className="size-md text-fg-faint" />
+        <input aria-label="搜索模型" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索模型名称或 ID" className={cn(INPUT_CLASS, "min-w-0 flex-1")} />
+      </div>
       <ModelTableHeader
         agents={account.agents}
         agentLabel={agentLabel}
-        count={account.models.length}
-        allOn={(agent) => account.models.every((model) => model.agents[agent]?.enabled !== false)}
-        onToggleAll={(agent, on) => save(agent, account.models, on)}
+        count={rows.length}
+        allOn={(agent) => rows.length > 0 && rows.every((model) => model.agents[agent]?.enabled !== false)}
+        onToggleAll={(agent, on) => save(agent, rows, on)}
       />
       <div className="flex flex-col divide-y divide-border">
-        {account.models.map((model) => (
+        {rows.map((model) => (
           <ModelTableRow
             key={model.id}
             label={model.label}
@@ -91,7 +99,7 @@ export function SubscriptionTable({
             onSwitch={(agent, on) => save(agent, [model], on)}
           />
         ))}
-        {account.models.length === 0 && <div className="px-md py-sm text-fg-faint text-md">没有读到模型。</div>}
+        {rows.length === 0 && <div className="px-md py-sm text-fg-faint text-md">{account.models.length === 0 ? "没有读到模型。" : "没有匹配的模型。"}</div>}
       </div>
       {error != null && <p className="border-border border-t px-md py-xs text-danger text-sm">{error}</p>}
     </div>

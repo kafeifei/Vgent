@@ -122,6 +122,7 @@ export {
   type ClaudeLoginStatus,
   type SubscriptionAccount,
   type SubscriptionId,
+  type NativeSubscriptionId,
   type SubscriptionModel,
   type SubscriptionService,
 } from "./subscriptions.js";

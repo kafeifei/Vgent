@@ -16,6 +16,7 @@ const apps: VgentApp[] = [];
 
 afterEach(async () => {
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   await Promise.all(apps.splice(0).map((app) => app.shutdown()));
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 5 })));
 });
@@ -269,6 +270,7 @@ describe("subscription logout route", () => {
     apps.push(app);
     expect((await request(app, "/api/subscriptions/claude-subscription/logout", { method: "POST" })).status).toBe(200);
     expect((await request(app, "/api/subscriptions/codex-subscription/logout", { method: "POST" })).status).toBe(200);
+    expect((await request(app, "/api/subscriptions/github-copilot/logout", { method: "POST" })).status).toBe(400);
     expect((await request(app, "/api/subscriptions/unknown/logout", { method: "POST" })).status).toBe(404);
     expect(ids).toEqual(["claude-subscription", "codex-subscription"]);
     expect((await app.app.request(`${ORIGIN}/api/subscriptions/claude-subscription/logout`, { method: "POST" })).status).toBe(401);
@@ -410,18 +412,45 @@ describe("subscription routes", () => {
   };
   type Listed = { subscriptions: { id: string; loggedIn?: boolean; email?: string; agents: string[]; models: { id: string; agents: Record<string, { spec: string; enabled: boolean }> }[] }[] };
 
-  it("lists the two logins with their state, every model on to begin with", async () => {
+  it("lists all three logins with their state, every model on to begin with", async () => {
     await quietEnv();
     const app = makeSubscribedApp(await tempDir());
     const body = (await (await request(app, "/api/subscriptions")).json()) as Listed;
     expect(body.subscriptions.map((entry) => [entry.id, entry.loggedIn, entry.agents])).toEqual([
       ["claude-subscription", true, ["claude-code"]],
       ["codex-subscription", false, ["vgent", "codex"]],
+      ["github-copilot", false, ["vgent"]],
     ]);
     expect(body.subscriptions[0]?.email).toBe("dev@example.com");
     expect(body.subscriptions[1]?.models).toEqual([
       { id: "gpt-5.5", label: "gpt-5.5", agents: { vgent: { spec: "codex-subscription:gpt-5.5", enabled: true }, codex: { spec: "gpt-5.5", enabled: true } } },
     ]);
+  });
+
+  it("shares Copilot model switches between settings and the Engine picker without another login", async () => {
+    await quietEnv();
+    vi.stubGlobal("fetch", async (input: unknown) => {
+      const url = String(input);
+      if (url.endsWith("/token")) return Response.json({ token: "derived", expires_at: Date.now() / 1000 + 600 });
+      if (url.endsWith("/models")) return Response.json({ data: [{ id: "copilot-model", name: "Copilot Model", capabilities: { type: "chat", supports: { tool_calls: true } }, supported_endpoints: ["/responses"] }] });
+      throw Error("unexpected network call");
+    });
+    const remote = {
+      getState: async () => ({ account: { username: "shared-user" } }),
+      githubAccess: async () => ({ accessToken: "same-github-login", accountId: "1", revision: 0 }),
+      stop: async () => {},
+    } as unknown as import("./remote/service.js").RemoteService;
+    const app = createApp({ dataDir: await tempDir(), token: TOKEN, remote, catalogFetch: offlineCatalog, probeClaudeLogin: async () => ({ loggedIn: false }) });
+    apps.push(app);
+    const read = async () => ((await (await request(app, "/api/subscriptions")).json()) as Listed).subscriptions.find(a => a.id === "github-copilot");
+    expect(await read()).toMatchObject({ loggedIn: true, username: "shared-user", models: [{ id: "copilot-model", agents: { vgent: { enabled: true } } }] });
+    const toggle = (enabled: boolean) => request(app, "/api/subscriptions/github-copilot/models", { method: "PUT", body: { agent: "vgent", models: ["copilot-model"], enabled } });
+    expect((await toggle(false)).status).toBe(200);
+    expect(await read()).toMatchObject({ models: [{ agents: { vgent: { enabled: false } } }] });
+    const listed = await (await request(app, "/api/engines/vgent/models")).json() as { models: { id: string; hidden?: boolean }[] };
+    expect(listed.models.find(m => m.id === "github-copilot:copilot-model")?.hidden).toBe(true);
+    expect((await toggle(true)).status).toBe(200);
+    expect(await read()).toMatchObject({ models: [{ agents: { vgent: { enabled: true } } }] });
   });
 
   it("gives Claude Code every Anthropic model the provider catalog knows, by full id, after the aliases", async () => {

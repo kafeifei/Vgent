@@ -327,6 +327,8 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
   };
   const setup = createAgentSetup({
     ...setupOptions,
+    model: resolvedModel,
+    providers: options.providers,
     plan,
     ...(plan ? { allowedTools: PLAN_TOOL_NAMES } : {}),
     onRead: async (path) => {
@@ -427,7 +429,9 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
         estimateTokens(
           await Promise.all(
             Object.entries(tools)
-              .filter(([, definition]) => !definition.deferLoading)
+              // Hosted search returns loaded schemas in message history, already counted by
+              // fitContext. The deferred catalog is not part of the model's initial context.
+              .filter(([, definition]) => !definition.deferLoading && definition.providerOptions?.openai?.deferLoading !== true)
               .map(async ([name, definition]) => ({
                 name,
                 description: definition.description,

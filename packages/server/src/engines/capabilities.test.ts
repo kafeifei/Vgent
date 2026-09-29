@@ -21,7 +21,7 @@ describe("引擎能力表", () => {
   it("matches 产品文档's table", () => {
     expect(registry["claude-code"].descriptor.capabilities).toEqual({
       approvals: true,
-      askUser: false,
+      askUser: true,
       planMode: true,
       compact: true,
       knownDefaultModel: false,

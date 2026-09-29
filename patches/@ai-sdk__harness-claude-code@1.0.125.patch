@@ -1,8 +1,145 @@
 diff --git a/dist/bridge/index.mjs b/dist/bridge/index.mjs
-index 166eb4a48acfabf9c1f31b1ca5465be3258f1158..c5946bf7a29449bed7a2d6bed11331b47ad7dff7 100644
+index 166eb4a48acfabf9c1f31b1ca5465be3258f1158..8081415af22c895ac21f84b3cdbd8550cd3ae178 100644
 --- a/dist/bridge/index.mjs
 +++ b/dist/bridge/index.mjs
-@@ -1676,6 +1676,7 @@ async function runTurn(start, turn) {
+@@ -215,6 +215,7 @@ async function runBridge(options) {
+   }
+   const pendingToolResults = /* @__PURE__ */ new Map();
+   const bufferedToolResults = [];
++  const expiredToolCallIds = /* @__PURE__ */ new Set();
+   const pendingToolApprovals = /* @__PURE__ */ new Map();
+   const writeBridgeMeta = async (state) => {
+     try {
+@@ -404,11 +405,29 @@ async function runBridge(options) {
+                 bufferedToolResults.splice(bufferedIndex, 1)[0].result
+               );
+             }
+-            return new Promise((resolve) => {
+-              pendingToolResults.set(request.toolCallId, {
+-                resolve,
++            const { abortSignal } = request;
++            if (abortSignal?.aborted) {
++              expiredToolCallIds.add(request.toolCallId);
++              return Promise.reject(abortSignal.reason);
++            }
++            return new Promise((resolve, reject) => {
++              const onAbort = () => {
++                if (pendingToolResults.get(request.toolCallId) !== pending) {
++                  return;
++                }
++                pendingToolResults.delete(request.toolCallId);
++                expiredToolCallIds.add(request.toolCallId);
++                reject(abortSignal.reason);
++              };
++              const pending = {
++                resolve: (result) => {
++                  abortSignal?.removeEventListener("abort", onAbort);
++                  resolve(result);
++                },
+                 matches: request.matches
+-              });
++              };
++              pendingToolResults.set(request.toolCallId, pending);
++              abortSignal?.addEventListener("abort", onAbort, { once: true });
+             });
+           },
+           requestToolApproval: (approvalId) => new Promise((resolve) => {
+@@ -452,6 +471,16 @@ async function runBridge(options) {
+         return;
+       }
+       case "tool-result": {
++        if (expiredToolCallIds.has(msg.toolCallId)) {
++          emitWarning({
++            message: `Dropped a tool result for ${msg.toolCallId}: its request was withdrawn before the result arrived.`
++          });
++          emit({
++            type: "raw",
++            rawValue: { type: "vgent-tool-result-expired", toolCallId: msg.toolCallId }
++          });
++          return;
++        }
+         const result = {
+           output: msg.output,
+           isError: msg.isError,
+@@ -1334,6 +1363,21 @@ var NATIVE_TOOL_KINDS = {
+ function toCommonName(nativeName) {
+   return NATIVE_TO_COMMON[nativeName] ?? nativeName;
+ }
++var DEFAULT_QUESTION_TIMEOUT_SECONDS = 86400;
++var MAX_QUESTION_TIMEOUT_SECONDS = Math.floor((2 ** 31 - 1) / 1e3);
++function resolveQuestionTimeoutSeconds(env) {
++  for (const raw of [
++    env?.HARNESS_QUESTION_TIMEOUT_SECONDS,
++    procEnv2.HARNESS_QUESTION_TIMEOUT_SECONDS
++  ]) {
++    if (raw == null || raw.trim() === "") continue;
++    const seconds = Number(raw);
++    if (Number.isFinite(seconds) && seconds > 0 && seconds <= MAX_QUESTION_TIMEOUT_SECONDS) {
++      return seconds;
++    }
++  }
++  return DEFAULT_QUESTION_TIMEOUT_SECONDS;
++}
+ var args = parseArgs(argv.slice(2));
+ var workdir = args.workdir;
+ var bridgeStateDir = args.bridgeStateDir;
+@@ -1419,7 +1463,7 @@ function createPermissionOptions(input) {
+   };
+ }
+ function createQuestionPreToolUseHook(input) {
+-  return async (hookInput, toolUseID) => {
++  return async (hookInput, toolUseID, options) => {
+     if (hookInput.hook_event_name !== "PreToolUse" || hookInput.tool_name !== "AskUserQuestion") {
+       return {};
+     }
+@@ -1441,13 +1485,27 @@ function createQuestionPreToolUseHook(input) {
+       }
+     });
+     const questionKey = claudeCodeQuestionKey(nativeInput);
+-    const result = await input.turn.requestToolResult({
+-      toolCallId,
+-      matches: (candidate) => {
+-        const nativeRequest = candidate.toolResult?.providerOptions?.["claude-code"]?.nativeRequest;
+-        return nativeRequest != null && claudeCodeQuestionKey(nativeRequest) === questionKey;
+-      }
+-    });
++    const signal = options?.signal;
++    let result;
++    try {
++      result = await input.turn.requestToolResult({
++        toolCallId,
++        matches: (candidate) => {
++          const nativeRequest = candidate.toolResult?.providerOptions?.["claude-code"]?.nativeRequest;
++          return nativeRequest != null && claudeCodeQuestionKey(nativeRequest) === questionKey;
++        },
++        ...signal != null ? { abortSignal: signal } : {}
++      });
++    } catch (error) {
++      if (signal?.aborted !== true) throw error;
++      return {
++        hookSpecificOutput: {
++          hookEventName: "PreToolUse",
++          permissionDecision: "deny",
++          permissionDecisionReason: "The question expired before the user answered it."
++        }
++      };
++    }
+     const nativeResult = toClaudeCodeQuestionResult({
+       nativeInput,
+       output: result.output
+@@ -1603,7 +1661,10 @@ async function runTurn(start, turn) {
+         PreToolUse: [
+           {
+             matcher: "AskUserQuestion",
+-            hooks: [questionPreToolUseHook]
++            hooks: [questionPreToolUseHook],
++            // In seconds. Without it the CLI gives up on the question after
++            // its default hook timeout; see `resolveQuestionTimeoutSeconds`.
++            timeout: resolveQuestionTimeoutSeconds(start.env)
+           }
+         ],
+         PostCompact: [
+@@ -1676,6 +1737,7 @@ async function runTurn(start, turn) {
        const type = msg.type;
        if (type === "command_lifecycle") {
          queryInput.handleLifecycle(msg);
@@ -10,11 +147,279 @@ index 166eb4a48acfabf9c1f31b1ca5465be3258f1158..c5946bf7a29449bed7a2d6bed11331b4
        }
        const sessionId = msg.session_id;
        if (typeof sessionId === "string" && sessionId.length > 0) {
+@@ -1908,4 +1970,3 @@ function emitFatal(message) {
+   stdout2.write(JSON.stringify({ type: "bridge-fatal", message }) + "\n");
+   process.exit(1);
+ }
+-//# sourceMappingURL=index.mjs.map
+\ No newline at end of file
 diff --git a/dist/index.js b/dist/index.js
-index 3f065ce398459410d4fcd2a0b61f5ec99f8669cc..5ded43a4cd7d9f906270583f8bb539193dcfe8a8 100644
+index 3f065ce398459410d4fcd2a0b61f5ec99f8669cc..72e874724401ea9ae137349198d61f8e16f6ba1e 100644
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -1716,8 +1716,8 @@ function createSession({
+@@ -1171,6 +1171,7 @@ function createClaudeCode(settings = {}) {
+         sessionId: startOpts.sessionId
+       });
+       let supportsUserMessageResponses = false;
++      let bridgeState;
+       const buildConnect = (endpoint2) => async ({
+         abortSignal
+       }) => {
+@@ -1178,8 +1179,9 @@ function createClaudeCode(settings = {}) {
+           endpoint: endpoint2,
+           timeoutMs,
+           abortSignal,
+-          onHello: (supportsResponses) => {
++          onHello: (supportsResponses, state) => {
+             supportsUserMessageResponses = supportsResponses;
++            bridgeState = state;
+           }
+         });
+       };
+@@ -1218,6 +1220,11 @@ function createClaudeCode(settings = {}) {
+             isResume: true,
+             continueOnFirstPrompt: false,
+             rerunContinue: false,
++            // The live bridge may hold a suspended turn this session continues;
++            // its hello says whether that turn is still running or already
++            // ended while no host was attached (a bridge too old to say is
++            // taken at its word that the turn is open).
++            bridgeTurnOpen: bridgeState == null || bridgeState === "running",
+             bridgePort: coords.port,
+             bridgeToken: coords.token,
+             sandboxId,
+@@ -1335,6 +1342,8 @@ function createClaudeCode(settings = {}) {
+         continueOnFirstPrompt: respawnStrategy !== void 0,
+         ...resumeSessionId ? { resumeSessionId } : {},
+         rerunContinue: respawnStrategy === "rerun",
++        // A freshly spawned bridge runs no turn until it is sent a `start`.
++        bridgeTurnOpen: false,
+         bridgePort: boundPort,
+         bridgeToken: token,
+         sandboxId,
+@@ -1483,7 +1492,10 @@ function openWebSocketAndWaitForBridgeHello({
+         const value = parsed.value;
+         if (typeof value === "object" && value !== null && !Array.isArray(value) && value.type === "bridge-hello") {
+           const capabilities = value.capabilities;
+-          onHello(capabilities?.experimental_userMessageResponses === true);
++          onHello(
++            capabilities?.experimental_userMessageResponses === true,
++            typeof value.state === "string" ? value.state : void 0
++          );
+           sawBridgeHello = true;
+           tryResolve();
+         }
+@@ -1577,6 +1589,7 @@ function createSession({
+   continueOnFirstPrompt,
+   resumeSessionId,
+   rerunContinue,
++  bridgeTurnOpen: initialBridgeTurnOpen,
+   bridgePort,
+   bridgeToken,
+   sandboxId,
+@@ -1593,6 +1606,69 @@ function createSession({
+   let stopPromise;
+   let pendingResumeFlag = continueOnFirstPrompt;
+   let lastClaudeSessionId = resumeSessionId;
++  /*
++   * Whether the bridge is running a turn that can still take a `tool-result`
++   * or `tool-approval-response` frame. A turn that paused for host input can
++   * end inside the bridge before the host answers — Claude Code gives up on a
++   * question after its hook timeout, an interrupt ends it — and a frame sent
++   * after that reaches no request, so the continuation would wait forever.
++   * Every `start` opens a turn; any turn's `finish` / `error` closes it (a turn
++   * paused for host input keeps its listeners, so it still sees the end), as
++   * do an abort this session sends and the channel closing.
++   */
++  let bridgeTurnOpen = initialBridgeTurnOpen;
++  channel.onClose(() => {
++    bridgeTurnOpen = false;
++  });
++  const lateSubmissionContext = {
++    toolCalls: /* @__PURE__ */ new Map(),
++    approvalToolCallIds: /* @__PURE__ */ new Map()
++  };
++  const recordToolRequest = (event) => {
++    if (event.type === "tool-call") {
++      lateSubmissionContext.toolCalls.set(event.toolCallId, {
++        toolName: event.nativeName ?? event.toolName,
++        input: event.input,
++        nativeRequest: event.providerMetadata?.["claude-code"]?.nativeRequest
++      });
++    } else if (event.type === "tool-approval-request") {
++      lateSubmissionContext.approvalToolCallIds.set(
++        event.approvalId,
++        event.toolCallId
++      );
++    }
++  };
++  const sendStart = ({
++    prompt,
++    turnOpts,
++    continueConversation
++  }) => {
++    const startMessage = {
++      type: "start",
++      prompt,
++      tools: (turnOpts.tools ?? []).map((t) => ({
++        name: t.name,
++        description: t.description,
++        inputSchema: t.inputSchema
++      })),
++      ...turnOpts.responseFormat == null ? {} : { responseFormat: turnOpts.responseFormat },
++      ...turnOpts.instructions ? { instructions: turnOpts.instructions } : {},
++      model: turnOpts.model,
++      maxTurns,
++      ...env !== void 0 ? { env } : {},
++      thinking,
++      ...effort !== void 0 ? { effort } : {},
++      ...turnOpts.skills.length > 0 ? { skills: turnOpts.skills.map((skill) => skill.name) } : {},
++      ...mcpServers == null ? {} : { mcpServers },
++      ...permissionMode ? { permissionMode } : {},
++      ...builtinToolFiltering ? { builtinToolFiltering } : {},
++      ...debug ? { debug } : {},
++      ...lastClaudeSessionId ? { resumeSessionId: lastClaudeSessionId } : continueConversation ? { continue: true } : {}
++    };
++    pendingResumeFlag = false;
++    channel.send(startMessage);
++    bridgeTurnOpen = true;
++  };
+   const wireTurn = (turnOpts) => {
+     let pendingResolve;
+     let pendingReject;
+@@ -1627,6 +1703,50 @@ function createSession({
+       for (const u of unsubs) u();
+       pendingReject(err);
+     };
++    /*
++     * Answers the bridge's current turn can no longer take: a continuation of
++     * a turn that already ended (`late`), or a result the bridge reported as
++     * expired. They go out as the prompt of a new `start`, and until that new
++     * turn begins, a `finish` belongs to the turn that gave up (or to its
++     * replay after an attach) and must not end this one.
++     */
++    const lateSubmissions = [];
++    const sentToolResults = /* @__PURE__ */ new Map();
++    const answeredToolCallIds = /* @__PURE__ */ new Set();
++    let holdFinish = turnOpts.late === true;
++    let lateStartSent = false;
++    let lateTurnStarted = false;
++    let lateFlushScheduled = false;
++    const sendLateStart = () => {
++      if (isSettled || lateStartSent || turnOpts.abortSignal?.aborted) return;
++      lateStartSent = true;
++      try {
++        sendStart({
++          prompt: renderLateSubmissions({
++            submissions: lateSubmissions.splice(0),
++            context: lateSubmissionContext
++          }),
++          turnOpts: turnOpts.startOpts,
++          continueConversation: true
++        });
++      } catch (err) {
++        settleError(err);
++      }
++    };
++    const collectLate = (submission) => {
++      lateSubmissions.push(submission);
++      if (lateFlushScheduled) return;
++      lateFlushScheduled = true;
++      setTimeout(sendLateStart, 0);
++    };
++    const onExpiredToolResult = (toolCallId) => {
++      const submission = sentToolResults.get(toolCallId);
++      if (submission == null || lateStartSent) return;
++      sentToolResults.delete(toolCallId);
++      lateSubmissions.push(submission);
++      holdFinish = true;
++      if (!bridgeTurnOpen) sendLateStart();
++    };
+     const eventTypes = [
+       "stream-start",
+       "text-start",
+@@ -1647,22 +1767,39 @@ function createSession({
+     for (const type of eventTypes) {
+       unsubs.push(
+         channel.on(type, (msg) => {
++          if (type === "raw" && msg.rawValue?.type === "vgent-tool-result-expired") {
++            onExpiredToolResult(msg.rawValue.toolCallId);
++            return;
++          }
++          if (type === "stream-start" && lateStartSent) {
++            lateTurnStarted = true;
++          }
++          if (type === "tool-result" && holdFinish && !lateTurnStarted && (answeredToolCallIds.has(msg.toolCallId) || msg.toolName === "askUserQuestions")) {
++            return;
++          }
++          recordToolRequest(msg);
+           forward(msg);
+         })
+       );
+     }
+     unsubs.push(
+       channel.on("finish", (msg) => {
++        bridgeTurnOpen = false;
+         const metadata = msg.harnessMetadata?.["claude-code"]?.sessionId;
+         if (typeof metadata === "string" && metadata.length > 0) {
+           lastClaudeSessionId = metadata;
+         }
++        if (holdFinish && !lateTurnStarted) {
++          if (lateSubmissions.length > 0) sendLateStart();
++          return;
++        }
+         forward(msg);
+         settleSuccess();
+       })
+     );
+     unsubs.push(
+       channel.on("error", (msg) => {
++        bridgeTurnOpen = false;
+         forward(msg);
+         settleError(msg.error);
+       })
+@@ -1678,12 +1815,14 @@ function createSession({
+       );
+     };
+     channel.onClose(onClose);
++    if (channel.isClosed()) onClose();
+     const onAbort = () => {
+       if (isSettled) return;
+       try {
+         channel.send({ type: "abort" });
+       } catch {
+       }
++      bridgeTurnOpen = false;
+       settleError(
+         turnOpts.abortSignal?.reason ?? new DOMException("Aborted", "AbortError")
+       );
+@@ -1699,6 +1838,11 @@ function createSession({
+     }
+     return {
+       submitToolResult: async (input) => {
++        answeredToolCallIds.add(input.toolCallId);
++        if (turnOpts.late === true && !lateStartSent) {
++          collectLate({ type: "tool-result", ...input });
++          return;
++        }
+         channel.send({
+           type: "tool-result",
+           toolCallId: input.toolCallId,
+@@ -1706,8 +1850,13 @@ function createSession({
+           isError: input.isError,
+           ...input.toolResult !== void 0 ? { toolResult: input.toolResult } : {}
+         });
++        sentToolResults.set(input.toolCallId, { type: "tool-result", ...input });
+       },
+       submitToolApproval: async (input) => {
++        if (turnOpts.late === true && !lateStartSent) {
++          collectLate({ type: "tool-approval", ...input });
++          return;
++        }
+         channel.send({
+           type: "tool-approval-response",
+           approvalId: input.approvalId,
+@@ -1716,14 +1865,14 @@ function createSession({
          });
        },
        ...userMessageSubmitter == null ? {} : {
@@ -25,11 +430,356 @@ index 3f065ce398459410d4fcd2a0b61f5ec99f8669cc..5ded43a4cd7d9f906270583f8bb53919
          }
        },
        done
+     };
+   };
+-  const prepareTurn = async (turnOpts) => {
++  const prepareTurn = async (turnOpts, { late = false } = {}) => {
+     if (turnOpts.responseFormat?.type === "json" && turnOpts.responseFormat.schema == null) {
+       throw new HarnessCapabilityUnsupportedError({
+         message: "Harness 'claude-code' requires a JSON schema for structured output.",
+@@ -1742,7 +1891,9 @@ function createSession({
+     });
+     return wireTurn({
+       emit: turnOpts.emit,
+-      abortSignal: turnOpts.abortSignal
++      abortSignal: turnOpts.abortSignal,
++      startOpts: turnOpts,
++      late
+     });
+   };
+   return {
+@@ -1753,38 +1904,18 @@ function createSession({
+       if (promptOpts.abortSignal?.aborted) {
+         return control;
+       }
+-      const startMessage = {
+-        type: "start",
++      sendStart({
+         prompt: extractUserText(promptOpts.prompt),
+-        tools: (promptOpts.tools ?? []).map((t) => ({
+-          name: t.name,
+-          description: t.description,
+-          inputSchema: t.inputSchema
+-        })),
+-        ...promptOpts.responseFormat == null ? {} : { responseFormat: promptOpts.responseFormat },
+-        ...promptOpts.instructions ? { instructions: promptOpts.instructions } : {},
+-        model: promptOpts.model,
+-        maxTurns,
+-        ...env !== void 0 ? { env } : {},
+-        thinking,
+-        ...effort !== void 0 ? { effort } : {},
+-        ...promptOpts.skills.length > 0 ? { skills: promptOpts.skills.map((skill) => skill.name) } : {},
+-        ...mcpServers == null ? {} : { mcpServers },
+-        ...permissionMode ? { permissionMode } : {},
+-        ...builtinToolFiltering ? { builtinToolFiltering } : {},
+-        ...debug ? { debug } : {},
+-        ...lastClaudeSessionId ? { resumeSessionId: lastClaudeSessionId } : pendingResumeFlag ? { continue: true } : {}
+-      };
+-      pendingResumeFlag = false;
+-      channel.send(startMessage);
++        turnOpts: promptOpts,
++        continueConversation: pendingResumeFlag
++      });
+       return control;
+     },
+     doContinueTurn: async (continueOpts) => {
+-      const control = await prepareTurn(continueOpts);
++      const late = !rerunContinue && !bridgeTurnOpen && !channel.isClosed();
++      const control = await prepareTurn(continueOpts, { late });
+       if (rerunContinue && !continueOpts.abortSignal?.aborted) {
+-        pendingResumeFlag = false;
+-        channel.send({
+-          type: "start",
++        sendStart({
+           /*
+            * A continuation nudge rather than an empty prompt: `continue: true`
+            * rehydrates the prior thread, and this is the new user turn that
+@@ -1793,24 +1924,8 @@ function createSession({
+            * `cache_control`.
+            */
+           prompt: "Continue.",
+-          tools: (continueOpts.tools ?? []).map((t) => ({
+-            name: t.name,
+-            description: t.description,
+-            inputSchema: t.inputSchema
+-          })),
+-          ...continueOpts.responseFormat == null ? {} : { responseFormat: continueOpts.responseFormat },
+-          ...continueOpts.instructions ? { instructions: continueOpts.instructions } : {},
+-          model: continueOpts.model,
+-          maxTurns,
+-          ...env !== void 0 ? { env } : {},
+-          thinking,
+-          ...effort !== void 0 ? { effort } : {},
+-          ...continueOpts.skills.length > 0 ? { skills: continueOpts.skills.map((skill) => skill.name) } : {},
+-          ...mcpServers == null ? {} : { mcpServers },
+-          ...permissionMode ? { permissionMode } : {},
+-          ...builtinToolFiltering ? { builtinToolFiltering } : {},
+-          ...debug ? { debug } : {},
+-          ...lastClaudeSessionId ? { resumeSessionId: lastClaudeSessionId } : { continue: true }
++          turnOpts: continueOpts,
++          continueConversation: true
+         });
+       }
+       return control;
+@@ -1986,12 +2101,135 @@ function extractUserText(prompt) {
+   }
+   return parts.join("\n\n");
+ }
++function renderLateSubmissions({
++  submissions,
++  context
++}) {
++  return submissions.map(
++    (submission) => submission.type === "tool-approval" ? renderLateApproval({ submission, context }) : renderLateToolResult({ submission, context })
++  ).join("\n\n");
++}
++function renderLateApproval({
++  submission,
++  context
++}) {
++  const toolCallId = context.approvalToolCallIds.get(submission.approvalId);
++  const toolName = toolCallId == null ? void 0 : context.toolCalls.get(toolCallId)?.toolName;
++  const request = toolName == null ? "your earlier tool request" : `your earlier ${toolName} request`;
++  const reason = submission.reason?.trim() ? ` (${submission.reason.trim()})` : "";
++  return submission.approved ? `The user approved ${request}${reason} after that turn had ended. Run it again if it is still needed.` : `The user denied ${request}${reason} after that turn had ended.`;
++}
++function renderLateToolResult({
++  submission,
++  context
++}) {
++  const recorded = context.toolCalls.get(submission.toolCallId);
++  const toolName = recorded?.toolName ?? submission.toolResult?.toolName;
++  const nativeRequest = submission.toolResult?.providerOptions?.["claude-code"]?.nativeRequest ?? recorded?.nativeRequest;
++  const isQuestion = nativeRequest != null || toolName === "AskUserQuestion" || toolName === "askUserQuestions";
++  if (isQuestion && !submission.isError) {
++    const questions = toLateQuestions(
++      nativeRequest ?? parseLateJson(recorded?.input)
++    );
++    const answers = questions == null ? void 0 : renderLateAnswers({ questions, output: submission.output });
++    if (answers != null) return answers;
++  }
++  const call = toolName == null ? "your earlier tool call" : `your earlier ${toolName} call`;
++  const output = submission.output;
++  if (output?.type === "execution-denied") {
++    const reason = typeof output.reason === "string" && output.reason.trim() ? ` (${output.reason.trim()})` : "";
++    return `The user denied ${call}${reason} after that turn had ended.`;
++  }
++  return `The result of ${call} arrived after that turn had ended${submission.isError ? " (the call failed)" : ""}:
++${stringifyLateOutput(submission.output)}`;
++}
++function toLateQuestions(source) {
++  const questions = source?.questions;
++  if (!Array.isArray(questions) || questions.length === 0) return void 0;
++  return questions.map((entry) => {
++    const question = entry ?? {};
++    return {
++      question: typeof question.question === "string" ? question.question : "",
++      labels: Array.isArray(question.options) ? question.options.map((option) => {
++        const label = option?.label;
++        return typeof label === "string" ? label : "";
++      }) : [],
++      multiSelect: question.multiSelect === true || question.allowMultiple === true
++    };
++  });
++}
++function renderLateAnswers({
++  questions,
++  output
++}) {
++  const { action, answers } = output ?? {};
++  if (action === "declined" || action === "cancelled") {
++    return "The user declined to answer your earlier questions.";
++  }
++  if (action !== "answered" && action !== "partially-answered") {
++    return void 0;
++  }
++  const answerMap = answers != null && typeof answers === "object" ? answers : {};
++  const answered = [];
++  const unanswered = [];
++  questions.forEach((question, index) => {
++    const answer = toLateAnswerText({
++      question,
++      answer: answerMap[`question-${index + 1}`]
++    });
++    if (answer == null) {
++      unanswered.push(question.question);
++    } else {
++      answered.push(`- ${question.question}: ${answer}`);
++    }
++  });
++  if (answered.length === 0) {
++    return "The user did not answer any of the questions from your earlier AskUserQuestion call.";
++  }
++  return [
++    "The user answered the questions from your earlier AskUserQuestion call after that call had timed out:",
++    ...answered,
++    ...unanswered.length > 0 ? [`The user left these questions unanswered: ${unanswered.join("; ")}`] : []
++  ].join("\n");
++}
++function toLateAnswerText({
++  question,
++  answer
++}) {
++  if (answer == null || typeof answer !== "object") return void 0;
++  const { optionIds, freeform } = answer;
++  if (typeof freeform === "string" && freeform.trim() !== "") return freeform;
++  const labels = (Array.isArray(optionIds) ? optionIds : []).flatMap((id) => {
++    if (typeof id !== "string" || !id.startsWith("option-")) return [];
++    const index = Number(id.slice("option-".length)) - 1;
++    const label = Number.isInteger(index) ? question.labels[index] : void 0;
++    return label ? [label] : [];
++  });
++  const text = question.multiSelect ? labels.join(", ") : labels[0];
++  return text ? text : void 0;
++}
++function parseLateJson(text) {
++  if (text == null) return void 0;
++  try {
++    return JSON.parse(text);
++  } catch {
++    return void 0;
++  }
++}
++function stringifyLateOutput(output) {
++  if (typeof output === "string") return output;
++  try {
++    return JSON.stringify(output ?? null);
++  } catch {
++    return String(output);
++  }
++}
+ 
+ // src/index.ts
+ var claudeCode = createClaudeCode();
+ export {
+   VERSION,
++  createSession as __createClaudeCodeSessionForTesting,
+   claudeCode,
+   createClaudeCode
+ };
+-//# sourceMappingURL=index.js.map
+\ No newline at end of file
 diff --git a/src/bridge/index.ts b/src/bridge/index.ts
-index cbaab3f65a3a072779fbedbe8a4aa9be47640a08..20821b1347bb290d92b254df7267a10914bd2205 100644
+index cbaab3f65a3a072779fbedbe8a4aa9be47640a08..dde9cf596e03359415350a887a19bf0c72a62797 100644
 --- a/src/bridge/index.ts
 +++ b/src/bridge/index.ts
-@@ -605,6 +605,7 @@ async function runTurn(start: StartMessage, turn: BridgeTurn): Promise<void> {
+@@ -122,6 +122,39 @@ function toCommonName(nativeName: string): CommonBuiltinToolName | string {
+   return NATIVE_TO_COMMON[nativeName] ?? nativeName;
+ }
+ 
++/*
++ * How long Claude Code waits for the user to answer an AskUserQuestion, in
++ * seconds. The question rides a PreToolUse hook, and the CLI aborts a hook
++ * after its matcher's timeout — ten minutes when none is given — which ends
++ * the question while the user may simply be away. A day covers that.
++ * `HARNESS_QUESTION_TIMEOUT_SECONDS` overrides it (from the start message's
++ * env, else the bridge's own), mostly for tests. Values above the platform
++ * timer limit would fire at once, so they are ignored with the other invalid
++ * ones.
++ */
++const DEFAULT_QUESTION_TIMEOUT_SECONDS = 86_400;
++const MAX_QUESTION_TIMEOUT_SECONDS = Math.floor((2 ** 31 - 1) / 1000);
++
++function resolveQuestionTimeoutSeconds(
++  env: Readonly<Record<string, string>> | undefined,
++): number {
++  for (const raw of [
++    env?.HARNESS_QUESTION_TIMEOUT_SECONDS,
++    procEnv.HARNESS_QUESTION_TIMEOUT_SECONDS,
++  ]) {
++    if (raw == null || raw.trim() === '') continue;
++    const seconds = Number(raw);
++    if (
++      Number.isFinite(seconds) &&
++      seconds > 0 &&
++      seconds <= MAX_QUESTION_TIMEOUT_SECONDS
++    ) {
++      return seconds;
++    }
++  }
++  return DEFAULT_QUESTION_TIMEOUT_SECONDS;
++}
++
+ const args = parseArgs(argv.slice(2));
+ const workdir = args.workdir;
+ const bridgeStateDir = args.bridgeStateDir;
+@@ -254,7 +287,7 @@ function createQuestionPreToolUseHook(input: {
+   emit: Emit;
+   nativeToolCallNames: Map<string, string>;
+ }): HookCallback {
+-  return async (hookInput, toolUseID): Promise<HookJSONOutput> => {
++  return async (hookInput, toolUseID, options): Promise<HookJSONOutput> => {
+     if (
+       hookInput.hook_event_name !== 'PreToolUse' ||
+       hookInput.tool_name !== 'AskUserQuestion'
+@@ -283,20 +316,42 @@ function createQuestionPreToolUseHook(input: {
+     });
+ 
+     const questionKey = claudeCodeQuestionKey(nativeInput);
+-    const result = await input.turn.requestToolResult({
+-      toolCallId,
+-      matches: candidate => {
+-        const nativeRequest = candidate.toolResult?.providerOptions?.[
+-          'claude-code'
+-        ]?.nativeRequest as
+-          | Parameters<typeof claudeCodeQuestionKey>[0]
+-          | undefined;
+-        return (
+-          nativeRequest != null &&
+-          claudeCodeQuestionKey(nativeRequest) === questionKey
+-        );
+-      },
+-    });
++    /*
++     * The CLI aborts the hook's signal when it stops waiting — the matcher's
++     * timeout, an interrupt, the query closing. Withdraw the request then, so
++     * an answer that arrives afterwards is dropped by the bridge instead of
++     * being buffered for some later identical question, and return at once:
++     * nothing reads this hook's output any more.
++     */
++    const signal = options?.signal;
++    let result: Awaited<ReturnType<BridgeTurn['requestToolResult']>>;
++    try {
++      result = await input.turn.requestToolResult({
++        toolCallId,
++        matches: candidate => {
++          const nativeRequest = candidate.toolResult?.providerOptions?.[
++            'claude-code'
++          ]?.nativeRequest as
++            | Parameters<typeof claudeCodeQuestionKey>[0]
++            | undefined;
++          return (
++            nativeRequest != null &&
++            claudeCodeQuestionKey(nativeRequest) === questionKey
++          );
++        },
++        ...(signal != null ? { abortSignal: signal } : {}),
++      });
++    } catch (error) {
++      if (signal?.aborted !== true) throw error;
++      return {
++        hookSpecificOutput: {
++          hookEventName: 'PreToolUse',
++          permissionDecision: 'deny',
++          permissionDecisionReason:
++            'The question expired before the user answered it.',
++        },
++      };
++    }
+     const nativeResult = toClaudeCodeQuestionResult({
+       nativeInput,
+       output: result.output as Parameters<
+@@ -511,6 +566,9 @@ async function runTurn(start: StartMessage, turn: BridgeTurn): Promise<void> {
+           {
+             matcher: 'AskUserQuestion',
+             hooks: [questionPreToolUseHook],
++            // In seconds. Without it the CLI gives up on the question after
++            // its default hook timeout; see `resolveQuestionTimeoutSeconds`.
++            timeout: resolveQuestionTimeoutSeconds(start.env),
+           },
+         ],
+         PostCompact: [
+@@ -605,6 +663,7 @@ async function runTurn(start: StartMessage, turn: BridgeTurn): Promise<void> {
  
        if (type === 'command_lifecycle') {
          queryInput.handleLifecycle(msg);
@@ -38,10 +788,397 @@ index cbaab3f65a3a072779fbedbe8a4aa9be47640a08..20821b1347bb290d92b254df7267a109
  
        // Every SDK message carries the session id of the conversation it
 diff --git a/src/claude-code-harness.ts b/src/claude-code-harness.ts
-index 263dc1de4d39d7eded6bcc79e1d51c16ee98438a..83cb4ecfcd71735d5c3b3f5f87a3b80f478dd0ae 100644
+index 263dc1de4d39d7eded6bcc79e1d51c16ee98438a..6e9ab4829f7081821adb691d34b54fb7a2f5ca83 100644
 --- a/src/claude-code-harness.ts
 +++ b/src/claude-code-harness.ts
-@@ -1712,8 +1712,8 @@ function createSession({
+@@ -21,6 +21,7 @@ import {
+   type HarnessV1Session,
+   type HarnessV1Skill,
+   type HarnessV1StreamPart,
++  type HarnessV1TurnSettings,
+ } from '@ai-sdk/harness';
+ import {
+   applyCredentialForwarding,
+@@ -50,6 +51,7 @@ import {
+   tool,
+   type Experimental_SandboxSession as SandboxSession,
+   type Experimental_SandboxProcess,
++  type ToolResultPart,
+ } from '@ai-sdk/provider-utils';
+ import { WebSocket } from 'ws';
+ import { z } from 'zod/v4';
+@@ -968,6 +970,8 @@ export function createClaudeCode(
+         sessionId: startOpts.sessionId,
+       });
+       let supportsUserMessageResponses = false;
++      /** The bridge's turn state from its latest hello. */
++      let bridgeState: string | undefined;
+ 
+       // Builds the `connect` thunk a `SandboxChannel` re-invokes on every
+       // (re)connect: open the socket, then wait for `bridge-hello` so the
+@@ -983,8 +987,9 @@ export function createClaudeCode(
+             endpoint,
+             timeoutMs,
+             abortSignal,
+-            onHello: supportsResponses => {
++            onHello: (supportsResponses, state) => {
+               supportsUserMessageResponses = supportsResponses;
++              bridgeState = state;
+             },
+           });
+         };
+@@ -1032,6 +1037,11 @@ export function createClaudeCode(
+             isResume: true,
+             continueOnFirstPrompt: false,
+             rerunContinue: false,
++            // The live bridge may hold a suspended turn this session continues;
++            // its hello says whether that turn is still running or already
++            // ended while no host was attached (a bridge too old to say is
++            // taken at its word that the turn is open).
++            bridgeTurnOpen: bridgeState == null || bridgeState === 'running',
+             bridgePort: coords.port,
+             bridgeToken: coords.token,
+             sandboxId,
+@@ -1184,6 +1194,8 @@ export function createClaudeCode(
+         continueOnFirstPrompt: respawnStrategy !== undefined,
+         ...(resumeSessionId ? { resumeSessionId } : {}),
+         rerunContinue: respawnStrategy === 'rerun',
++        // A freshly spawned bridge runs no turn until it is sent a `start`.
++        bridgeTurnOpen: false,
+         bridgePort: boundPort,
+         bridgeToken: token,
+         sandboxId,
+@@ -1294,7 +1306,7 @@ function openWebSocketAndWaitForBridgeHello({
+   openTimeoutMs: number;
+   getHelloTimeoutMs: () => number;
+   abortSignal: AbortSignal;
+-  onHello: (supportsUserMessageResponses: boolean) => void;
++  onHello: (supportsUserMessageResponses: boolean, state?: string) => void;
+ }): Promise<WebSocket> {
+   return new Promise<WebSocket>((resolve, reject) => {
+     const abortReason = () =>
+@@ -1391,7 +1403,11 @@ function openWebSocketAndWaitForBridgeHello({
+               capabilities?: { experimental_userMessageResponses?: unknown };
+             }
+           ).capabilities;
+-          onHello(capabilities?.experimental_userMessageResponses === true);
++          const state = (value as { state?: unknown }).state;
++          onHello(
++            capabilities?.experimental_userMessageResponses === true,
++            typeof state === 'string' ? state : undefined,
++          );
+           sawBridgeHello = true;
+           tryResolve();
+         }
+@@ -1428,7 +1444,7 @@ async function openBridgeWebSocket({
+   endpoint: HarnessV1PortEndpoint;
+   timeoutMs: number;
+   abortSignal: AbortSignal;
+-  onHello: (supportsUserMessageResponses: boolean) => void;
++  onHello: (supportsUserMessageResponses: boolean, state?: string) => void;
+ }): Promise<WebSocket> {
+   const deadline = Date.now() + timeoutMs;
+   let attempt = 0;
+@@ -1487,7 +1503,7 @@ function formatUnknownError(error: unknown): string {
+   return String(error);
+ }
+ 
+-function createSession({
++export function createSession({
+   sessionId,
+   channel,
+   proc,
+@@ -1499,6 +1515,7 @@ function createSession({
+   continueOnFirstPrompt,
+   resumeSessionId,
+   rerunContinue,
++  bridgeTurnOpen: initialBridgeTurnOpen,
+   bridgePort,
+   bridgeToken,
+   sandboxId,
+@@ -1528,6 +1545,11 @@ function createSession({
+    */
+   resumeSessionId?: string;
+   rerunContinue: boolean;
++  /**
++   * Whether the bridge holds an open turn when the session is created: true
++   * when attaching to a live bridge, false for a freshly spawned one.
++   */
++  bridgeTurnOpen: boolean;
+   bridgePort: number;
+   bridgeToken: string;
+   sandboxId: string | undefined;
+@@ -1559,6 +1581,99 @@ function createSession({
+    */
+   let lastClaudeSessionId = resumeSessionId;
+ 
++  /*
++   * Whether the bridge is running a turn that can still take a `tool-result`
++   * or `tool-approval-response` frame. A turn that paused for host input can
++   * end inside the bridge before the host answers — Claude Code gives up on a
++   * question after its hook timeout, an interrupt ends it — and a frame sent
++   * after that reaches no request, so the continuation would wait forever.
++   * Every `start` opens a turn; any turn's `finish` / `error` closes it (a turn
++   * paused for host input keeps its listeners, so it still sees the end), as
++   * do an abort this session sends and the channel closing.
++   */
++  let bridgeTurnOpen = initialBridgeTurnOpen;
++  channel.onClose(() => {
++    bridgeTurnOpen = false;
++  });
++
++  /*
++   * What each tool call and approval request of this session was about, from
++   * the events the turns forwarded, so an answer that arrives after its
++   * bridge turn ended can still be put to Claude in words.
++   */
++  const lateSubmissionContext: LateSubmissionContext = {
++    toolCalls: new Map(),
++    approvalToolCallIds: new Map(),
++  };
++  const recordToolRequest = (event: OutboundMessage): void => {
++    if (event.type === 'tool-call') {
++      lateSubmissionContext.toolCalls.set(event.toolCallId, {
++        toolName: event.nativeName ?? event.toolName,
++        input: event.input,
++        nativeRequest: event.providerMetadata?.['claude-code']?.nativeRequest,
++      });
++    } else if (event.type === 'tool-approval-request') {
++      lateSubmissionContext.approvalToolCallIds.set(
++        event.approvalId,
++        event.toolCallId,
++      );
++    }
++  };
++
++  /*
++   * The `start` frame that opens a bridge turn. A prompt, a rerun
++   * continuation and late submissions all send the same session and turn
++   * settings; only the prompt and whether to fall back to `continue: true`
++   * when no exact conversation id is known differ.
++   */
++  const sendStart = ({
++    prompt,
++    turnOpts,
++    continueConversation,
++  }: {
++    prompt: string;
++    turnOpts: HarnessV1TurnSettings & {
++      responseFormat?: HarnessV1ResponseFormat;
++    };
++    continueConversation: boolean;
++  }): void => {
++    const startMessage = {
++      type: 'start' as const,
++      prompt,
++      tools: (turnOpts.tools ?? []).map(t => ({
++        name: t.name,
++        description: t.description,
++        inputSchema: t.inputSchema,
++      })),
++      ...(turnOpts.responseFormat == null
++        ? {}
++        : { responseFormat: turnOpts.responseFormat }),
++      ...(turnOpts.instructions
++        ? { instructions: turnOpts.instructions }
++        : {}),
++      model: turnOpts.model,
++      maxTurns,
++      ...(env !== undefined ? { env } : {}),
++      thinking,
++      ...(effort !== undefined ? { effort } : {}),
++      ...(turnOpts.skills.length > 0
++        ? { skills: turnOpts.skills.map(skill => skill.name) }
++        : {}),
++      ...(mcpServers == null ? {} : { mcpServers }),
++      ...(permissionMode ? { permissionMode } : {}),
++      ...(builtinToolFiltering ? { builtinToolFiltering } : {}),
++      ...(debug ? { debug } : {}),
++      ...(lastClaudeSessionId
++        ? { resumeSessionId: lastClaudeSessionId }
++        : continueConversation
++          ? { continue: true }
++          : {}),
++    };
++    pendingResumeFlag = false;
++    channel.send(startMessage);
++    bridgeTurnOpen = true;
++  };
++
+   /*
+    * Wire the channel into one turn's worth of events and return the control
+    * surface. Shared by `doPromptTurn` (which sends a `start` afterwards) and
+@@ -1569,6 +1684,12 @@ function createSession({
+   const wireTurn = (turnOpts: {
+     emit: (event: HarnessV1StreamPart) => void;
+     abortSignal?: AbortSignal;
++    /** What a late `start` for this turn is built from. */
++    startOpts: HarnessV1TurnSettings & {
++      responseFormat?: HarnessV1ResponseFormat;
++    };
++    /** The bridge turn this continues has already ended. */
++    late?: boolean;
+   }): HarnessV1PromptControl => {
+     let pendingResolve: (() => void) | undefined;
+     let pendingReject: ((err: unknown) => void) | undefined;
+@@ -1606,6 +1727,54 @@ function createSession({
+       pendingReject!(err);
+     };
+ 
++    /*
++     * Answers the bridge's current turn can no longer take: a continuation of
++     * a turn that already ended (`late`), or a result the bridge reported as
++     * expired. They go out as the prompt of a new `start` in the same
++     * conversation, and until that turn begins, a `finish` belongs to the turn
++     * that gave up on them (or to its replay after an attach) and must not end
++     * this one. The host submits right after this control is returned, so one
++     * macrotask batches every answer of the continuation.
++     */
++    const lateSubmissions: LateSubmission[] = [];
++    const sentToolResults = new Map<string, LateSubmission>();
++    const answeredToolCallIds = new Set<string>();
++    let holdFinish = turnOpts.late === true;
++    let lateStartSent = false;
++    let lateTurnStarted = false;
++    let lateFlushScheduled = false;
++    const sendLateStart = () => {
++      if (isSettled || lateStartSent || turnOpts.abortSignal?.aborted) return;
++      lateStartSent = true;
++      try {
++        sendStart({
++          prompt: renderLateSubmissions({
++            submissions: lateSubmissions.splice(0),
++            context: lateSubmissionContext,
++          }),
++          turnOpts: turnOpts.startOpts,
++          continueConversation: true,
++        });
++      } catch (err) {
++        // A timer callback: a throw here would escape as uncaught.
++        settleError(err);
++      }
++    };
++    const collectLate = (submission: LateSubmission) => {
++      lateSubmissions.push(submission);
++      if (lateFlushScheduled) return;
++      lateFlushScheduled = true;
++      setTimeout(sendLateStart, 0);
++    };
++    const onExpiredToolResult = (toolCallId: string) => {
++      const submission = sentToolResults.get(toolCallId);
++      if (submission == null || lateStartSent) return;
++      sentToolResults.delete(toolCallId);
++      lateSubmissions.push(submission);
++      holdFinish = true;
++      if (!bridgeTurnOpen) sendLateStart();
++    };
++
+     const eventTypes = [
+       'stream-start',
+       'text-start',
+@@ -1626,12 +1795,41 @@ function createSession({
+     for (const type of eventTypes) {
+       unsubs.push(
+         channel.on(type, msg => {
++          const rawValue =
++            msg.type === 'raw'
++              ? (msg.rawValue as { type?: unknown; toolCallId?: unknown })
++              : undefined;
++          if (
++            rawValue?.type === 'vgent-tool-result-expired' &&
++            typeof rawValue.toolCallId === 'string'
++          ) {
++            onExpiredToolResult(rawValue.toolCallId);
++            return;
++          }
++          if (msg.type === 'stream-start' && lateStartSent) {
++            lateTurnStarted = true;
++          }
++          // The ended turn's own error result for a question the host has
++          // since answered would overwrite that answer. After an attach the
++          // replay can arrive before the answer is submitted, so any question
++          // result of the ended turn counts: none of them carries the answer.
++          if (
++            msg.type === 'tool-result' &&
++            holdFinish &&
++            !lateTurnStarted &&
++            (answeredToolCallIds.has(msg.toolCallId) ||
++              msg.toolName === 'askUserQuestions')
++          ) {
++            return;
++          }
++          recordToolRequest(msg);
+           forward(msg);
+         }),
+       );
+     }
+     unsubs.push(
+       channel.on('finish', msg => {
++        bridgeTurnOpen = false;
+         const metadata = (
+           msg as {
+             harnessMetadata?: { 'claude-code'?: { sessionId?: unknown } };
+@@ -1640,12 +1838,17 @@ function createSession({
+         if (typeof metadata === 'string' && metadata.length > 0) {
+           lastClaudeSessionId = metadata;
+         }
++        if (holdFinish && !lateTurnStarted) {
++          if (lateSubmissions.length > 0) sendLateStart();
++          return;
++        }
+         forward(msg);
+         settleSuccess();
+       }),
+     );
+     unsubs.push(
+       channel.on('error', msg => {
++        bridgeTurnOpen = false;
+         forward(msg);
+         settleError(msg.error);
+       }),
+@@ -1668,12 +1871,15 @@ function createSession({
+       );
+     };
+     channel.onClose(onClose);
++    // A channel that closed before this turn was wired never calls back.
++    if (channel.isClosed()) onClose();
+ 
+     const onAbort = () => {
+       if (isSettled) return;
+       try {
+         channel.send({ type: 'abort' });
+       } catch {}
++      bridgeTurnOpen = false;
+       settleError(
+         turnOpts.abortSignal?.reason ??
+           new DOMException('Aborted', 'AbortError'),
+@@ -1691,6 +1897,11 @@ function createSession({
+ 
+     return {
+       submitToolResult: async input => {
++        answeredToolCallIds.add(input.toolCallId);
++        if (turnOpts.late === true && !lateStartSent) {
++          collectLate({ type: 'tool-result', ...input });
++          return;
++        }
+         channel.send({
+           type: 'tool-result',
+           toolCallId: input.toolCallId,
+@@ -1700,8 +1911,13 @@ function createSession({
+             ? { toolResult: input.toolResult }
+             : {}),
+         });
++        sentToolResults.set(input.toolCallId, { type: 'tool-result', ...input });
+       },
+       submitToolApproval: async input => {
++        if (turnOpts.late === true && !lateStartSent) {
++          collectLate({ type: 'tool-approval', ...input });
++          return;
++        }
+         channel.send({
+           type: 'tool-approval-response',
+           approvalId: input.approvalId,
+@@ -1712,20 +1928,22 @@ function createSession({
        ...(userMessageSubmitter == null
          ? {}
          : {
@@ -52,3 +1189,403 @@ index 263dc1de4d39d7eded6bcc79e1d51c16ee98438a..83cb4ecfcd71735d5c3b3f5f87a3b80f
              },
            }),
        done,
+     };
+   };
+ 
+-  const prepareTurn = async (turnOpts: {
+-    responseFormat?: HarnessV1ResponseFormat;
+-    skills: ReadonlyArray<HarnessV1Skill>;
+-    emit: (event: HarnessV1StreamPart) => void;
+-    abortSignal?: AbortSignal;
+-  }): Promise<HarnessV1PromptControl> => {
++  const prepareTurn = async (
++    turnOpts: HarnessV1TurnSettings & {
++      responseFormat?: HarnessV1ResponseFormat;
++      emit: (event: HarnessV1StreamPart) => void;
++      abortSignal?: AbortSignal;
++    },
++    { late = false }: { late?: boolean } = {},
++  ): Promise<HarnessV1PromptControl> => {
+     if (
+       turnOpts.responseFormat?.type === 'json' &&
+       turnOpts.responseFormat.schema == null
+@@ -1751,6 +1969,8 @@ function createSession({
+     return wireTurn({
+       emit: turnOpts.emit,
+       abortSignal: turnOpts.abortSignal,
++      startOpts: turnOpts,
++      late,
+     });
+   };
+ 
+@@ -1770,45 +1990,20 @@ function createSession({
+         return control;
+       }
+ 
+-      const startMessage = {
+-        type: 'start' as const,
++      sendStart({
+         prompt: extractUserText(promptOpts.prompt),
+-        tools: (promptOpts.tools ?? []).map(t => ({
+-          name: t.name,
+-          description: t.description,
+-          inputSchema: t.inputSchema,
+-        })),
+-        ...(promptOpts.responseFormat == null
+-          ? {}
+-          : { responseFormat: promptOpts.responseFormat }),
+-        ...(promptOpts.instructions
+-          ? { instructions: promptOpts.instructions }
+-          : {}),
+-        model: promptOpts.model,
+-        maxTurns,
+-        ...(env !== undefined ? { env } : {}),
+-        thinking,
+-        ...(effort !== undefined ? { effort } : {}),
+-        ...(promptOpts.skills.length > 0
+-          ? { skills: promptOpts.skills.map(skill => skill.name) }
+-          : {}),
+-        ...(mcpServers == null ? {} : { mcpServers }),
+-        ...(permissionMode ? { permissionMode } : {}),
+-        ...(builtinToolFiltering ? { builtinToolFiltering } : {}),
+-        ...(debug ? { debug } : {}),
+-        ...(lastClaudeSessionId
+-          ? { resumeSessionId: lastClaudeSessionId }
+-          : pendingResumeFlag
+-            ? { continue: true }
+-            : {}),
+-      };
+-      pendingResumeFlag = false;
+-      channel.send(startMessage);
++        turnOpts: promptOpts,
++        continueConversation: pendingResumeFlag,
++      });
+ 
+       return control;
+     },
+     doContinueTurn: async continueOpts => {
+-      const control = await prepareTurn(continueOpts);
++      // Decided before wiring: an attach may replay the ended turn's `finish`
++      // to the listeners as soon as they subscribe. A closed channel takes no
++      // `start` either, so its submissions fail as frames, as before.
++      const late = !rerunContinue && !bridgeTurnOpen && !channel.isClosed();
++      const control = await prepareTurn(continueOpts, { late });
+ 
+       /*
+        * attach / replay: the still-running (or disk-replayed) turn streams into
+@@ -1822,13 +2017,16 @@ function createSession({
+        * `continue: true`. Lossy — work in flight at the suspension is
+        * recomputed. This is the rare bridge-died fallback; the common slice path
+        * is `attach`.
++       *
++       * ended: the bridge turn this continuation answers is already over (see
++       * `bridgeTurnOpen`), so its answers cannot go in as frames. `wireTurn`
++       * collects them and puts them to Claude in a new turn of the same
++       * conversation.
+        */
+       // Same as `doPromptTurn`: an already-aborted signal settled the turn in
+       // `wireTurn`, so don't re-drive the thread nobody is waiting on.
+       if (rerunContinue && !continueOpts.abortSignal?.aborted) {
+-        pendingResumeFlag = false;
+-        channel.send({
+-          type: 'start' as const,
++        sendStart({
+           /*
+            * A continuation nudge rather than an empty prompt: `continue: true`
+            * rehydrates the prior thread, and this is the new user turn that
+@@ -1837,32 +2035,8 @@ function createSession({
+            * `cache_control`.
+            */
+           prompt: 'Continue.',
+-          tools: (continueOpts.tools ?? []).map(t => ({
+-            name: t.name,
+-            description: t.description,
+-            inputSchema: t.inputSchema,
+-          })),
+-          ...(continueOpts.responseFormat == null
+-            ? {}
+-            : { responseFormat: continueOpts.responseFormat }),
+-          ...(continueOpts.instructions
+-            ? { instructions: continueOpts.instructions }
+-            : {}),
+-          model: continueOpts.model,
+-          maxTurns,
+-          ...(env !== undefined ? { env } : {}),
+-          thinking,
+-          ...(effort !== undefined ? { effort } : {}),
+-          ...(continueOpts.skills.length > 0
+-            ? { skills: continueOpts.skills.map(skill => skill.name) }
+-            : {}),
+-          ...(mcpServers == null ? {} : { mcpServers }),
+-          ...(permissionMode ? { permissionMode } : {}),
+-          ...(builtinToolFiltering ? { builtinToolFiltering } : {}),
+-          ...(debug ? { debug } : {}),
+-          ...(lastClaudeSessionId
+-            ? { resumeSessionId: lastClaudeSessionId }
+-            : { continue: true }),
++          turnOpts: continueOpts,
++          continueConversation: true,
+         });
+       }
+ 
+@@ -2096,3 +2270,244 @@ function extractUserText(prompt: HarnessV1Prompt): string {
+   }
+   return parts.join('\n\n');
+ }
++
++/** An answer the host submitted for a bridge turn that had already ended. */
++type LateSubmission =
++  | {
++      type: 'tool-result';
++      toolCallId: string;
++      output: unknown;
++      isError?: boolean;
++      toolResult?: ToolResultPart;
++    }
++  | {
++      type: 'tool-approval';
++      approvalId: string;
++      approved: boolean;
++      reason?: string;
++    };
++
++type LateSubmissionContext = {
++  /**
++   * Tool calls by id: the runtime's name for the tool, its input, and the
++   * native AskUserQuestion request when it was one.
++   */
++  toolCalls: Map<
++    string,
++    { toolName: string; input: string; nativeRequest?: unknown }
++  >;
++  /** The tool call each approval request was about. */
++  approvalToolCallIds: Map<string, string>;
++};
++
++/*
++ * The user message that hands Claude the answers its ended turn never
++ * received. It is read by the model, so the framing is English; what the user
++ * wrote goes in verbatim.
++ */
++function renderLateSubmissions({
++  submissions,
++  context,
++}: {
++  submissions: readonly LateSubmission[];
++  context: LateSubmissionContext;
++}): string {
++  return submissions
++    .map(submission =>
++      submission.type === 'tool-approval'
++        ? renderLateApproval({ submission, context })
++        : renderLateToolResult({ submission, context }),
++    )
++    .join('\n\n');
++}
++
++function renderLateApproval({
++  submission,
++  context,
++}: {
++  submission: Extract<LateSubmission, { type: 'tool-approval' }>;
++  context: LateSubmissionContext;
++}): string {
++  const toolCallId = context.approvalToolCallIds.get(submission.approvalId);
++  const toolName =
++    toolCallId == null ? undefined : context.toolCalls.get(toolCallId)?.toolName;
++  const request =
++    toolName == null
++      ? 'your earlier tool request'
++      : `your earlier ${toolName} request`;
++  const reason = submission.reason?.trim()
++    ? ` (${submission.reason.trim()})`
++    : '';
++  return submission.approved
++    ? `The user approved ${request}${reason} after that turn had ended. Run it again if it is still needed.`
++    : `The user denied ${request}${reason} after that turn had ended.`;
++}
++
++function renderLateToolResult({
++  submission,
++  context,
++}: {
++  submission: Extract<LateSubmission, { type: 'tool-result' }>;
++  context: LateSubmissionContext;
++}): string {
++  const recorded = context.toolCalls.get(submission.toolCallId);
++  const toolName = recorded?.toolName ?? submission.toolResult?.toolName;
++  const nativeRequest =
++    submission.toolResult?.providerOptions?.['claude-code']?.nativeRequest ??
++    recorded?.nativeRequest;
++  const isQuestion =
++    nativeRequest != null ||
++    toolName === 'AskUserQuestion' ||
++    toolName === 'askUserQuestions';
++  if (isQuestion && !submission.isError) {
++    const questions = toLateQuestions(
++      nativeRequest ?? parseLateJson(recorded?.input),
++    );
++    const answers =
++      questions == null
++        ? undefined
++        : renderLateAnswers({ questions, output: submission.output });
++    if (answers != null) return answers;
++  }
++
++  const call =
++    toolName == null ? 'your earlier tool call' : `your earlier ${toolName} call`;
++  const output = submission.output as
++    | { type?: unknown; reason?: unknown }
++    | null
++    | undefined;
++  if (output?.type === 'execution-denied') {
++    const reason =
++      typeof output.reason === 'string' && output.reason.trim()
++        ? ` (${output.reason.trim()})`
++        : '';
++    return `The user denied ${call}${reason} after that turn had ended.`;
++  }
++  return `The result of ${call} arrived after that turn had ended${
++    submission.isError ? ' (the call failed)' : ''
++  }:\n${stringifyLateOutput(submission.output)}`;
++}
++
++type LateQuestion = {
++  question: string;
++  labels: string[];
++  multiSelect: boolean;
++};
++
++/*
++ * Questions from either the native AskUserQuestion request or the canonical
++ * `askUserQuestions` input. Answer and option ids are positional in both
++ * (`question-N`, `option-M`), as `toHarnessQuestionsInput` assigns them.
++ */
++function toLateQuestions(source: unknown): LateQuestion[] | undefined {
++  const questions = (source as { questions?: unknown } | null | undefined)
++    ?.questions;
++  if (!Array.isArray(questions) || questions.length === 0) return undefined;
++  return questions.map(entry => {
++    const question = (entry ?? {}) as {
++      question?: unknown;
++      options?: unknown;
++      multiSelect?: unknown;
++      allowMultiple?: unknown;
++    };
++    return {
++      question: typeof question.question === 'string' ? question.question : '',
++      labels: Array.isArray(question.options)
++        ? question.options.map(option => {
++            const label = (option as { label?: unknown } | null)?.label;
++            return typeof label === 'string' ? label : '';
++          })
++        : [],
++      multiSelect:
++        question.multiSelect === true || question.allowMultiple === true,
++    };
++  });
++}
++
++function renderLateAnswers({
++  questions,
++  output,
++}: {
++  questions: readonly LateQuestion[];
++  output: unknown;
++}): string | undefined {
++  const { action, answers } = (output ?? {}) as {
++    action?: unknown;
++    answers?: unknown;
++  };
++  if (action === 'declined' || action === 'cancelled') {
++    return 'The user declined to answer your earlier questions.';
++  }
++  if (action !== 'answered' && action !== 'partially-answered') {
++    return undefined;
++  }
++  const answerMap =
++    answers != null && typeof answers === 'object'
++      ? (answers as Record<string, unknown>)
++      : {};
++  const answered: string[] = [];
++  const unanswered: string[] = [];
++  questions.forEach((question, index) => {
++    const answer = toLateAnswerText({
++      question,
++      answer: answerMap[`question-${index + 1}`],
++    });
++    if (answer == null) {
++      unanswered.push(question.question);
++    } else {
++      answered.push(`- ${question.question}: ${answer}`);
++    }
++  });
++  if (answered.length === 0) {
++    return 'The user did not answer any of the questions from your earlier AskUserQuestion call.';
++  }
++  return [
++    'The user answered the questions from your earlier AskUserQuestion call after that call had timed out:',
++    ...answered,
++    ...(unanswered.length > 0
++      ? [`The user left these questions unanswered: ${unanswered.join('; ')}`]
++      : []),
++  ].join('\n');
++}
++
++/** Mirrors `toClaudeCodeAnswer` in the bridge: free-form text wins over options. */
++function toLateAnswerText({
++  question,
++  answer,
++}: {
++  question: LateQuestion;
++  answer: unknown;
++}): string | undefined {
++  if (answer == null || typeof answer !== 'object') return undefined;
++  const { optionIds, freeform } = answer as {
++    optionIds?: unknown;
++    freeform?: unknown;
++  };
++  if (typeof freeform === 'string' && freeform.trim() !== '') return freeform;
++  const labels = (Array.isArray(optionIds) ? optionIds : []).flatMap(id => {
++    if (typeof id !== 'string' || !id.startsWith('option-')) return [];
++    const index = Number(id.slice('option-'.length)) - 1;
++    const label = Number.isInteger(index) ? question.labels[index] : undefined;
++    return label ? [label] : [];
++  });
++  const text = question.multiSelect ? labels.join(', ') : labels[0];
++  return text ? text : undefined;
++}
++
++function parseLateJson(text: string | undefined): unknown {
++  if (text == null) return undefined;
++  try {
++    return JSON.parse(text);
++  } catch {
++    return undefined;
++  }
++}
++
++function stringifyLateOutput(output: unknown): string {
++  if (typeof output === 'string') return output;
++  try {
++    return JSON.stringify(output ?? null);
++  } catch {
++    return String(output);
++  }
++}
+diff --git a/src/index.ts b/src/index.ts
+index 88f00c9872f752286b85df3689f4d5cc48604df6..dd5240dad800ba738698fd0d9dfbdd20d535d9bd 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -7,7 +7,10 @@ import { createClaudeCode } from './claude-code-harness';
+  */
+ export const claudeCode = createClaudeCode();
+ 
+-export { createClaudeCode } from './claude-code-harness';
++export {
++  createClaudeCode,
++  createSession as __createClaudeCodeSessionForTesting,
++} from './claude-code-harness';
+ export { VERSION } from './version';
+ export type { ClaudeCodeHarnessSettings } from './claude-code-harness';
+ export type { ClaudeCodeAuthenticationMode } from './claude-code-auth';

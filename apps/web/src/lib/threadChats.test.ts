@@ -70,6 +70,7 @@ describe("ThreadChats hydration and resume", () => {
     });
 
     chats.observeThreads([summary("running", "2026-01-01T00:00:01.000Z", 1)]);
+    chats.focus(THREAD_ID);
     const chat = chats.get(THREAD_ID);
     const ready = chats.whenReady(THREAD_ID);
 
@@ -100,6 +101,7 @@ describe("ThreadChats hydration and resume", () => {
 
     const live = summary("running", "2026-01-01T00:00:01.000Z", 1);
     chats.observeThreads([live]);
+    chats.focus(THREAD_ID);
     chats.get(THREAD_ID);
     // Snapshots keep arriving while the history is in flight.
     chats.observeThreads([live]);
@@ -134,6 +136,96 @@ describe("ThreadChats hydration and resume", () => {
     await vi.waitFor(() => expect(chat.messages.map((entry) => entry.id)).toEqual(["m1-fixed"]));
     expect(historyCalls(calls)).toHaveLength(2);
     expect(streamCalls(calls)).toHaveLength(0);
+  });
+});
+
+describe("ThreadChats streams only the task on screen", () => {
+  /**
+   * The server with a turn in flight: `/stream` answers an open SSE body that
+   * stays open until the test ends, and reports when the client lets go of it.
+   */
+  function liveServer(options: { history: () => ThreadRecord; chat?: () => Response }) {
+    const calls: string[] = [];
+    const released: string[] = [];
+    const openStream = (url: string, signal: AbortSignal | null | undefined) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: "start", messageId: "a1" })}\n\n`));
+        },
+        cancel() {
+          released.push(url);
+        },
+      });
+      signal?.addEventListener("abort", () => released.push(url));
+      return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        calls.push(`${(init?.method ?? "GET").toUpperCase()} ${url}`);
+        if (url.endsWith("/stream")) return openStream(url, init?.signal);
+        if (url.includes("/api/chat/")) return options.chat?.() ?? openStream(url, init?.signal);
+        return new Response(JSON.stringify(options.history()), { status: 200, headers: { "content-type": "application/json" } });
+      }),
+    );
+    return { calls, released };
+  }
+
+  it("never opens a stream for a running task that is not on screen", async () => {
+    const { calls } = liveServer({ history: () => record("2026-01-01T00:00:01.000Z", [message("m1")]) });
+
+    chats.observeThreads([summary("running", "2026-01-01T00:00:01.000Z", 1)]);
+    chats.get(THREAD_ID);
+    await chats.whenReady(THREAD_ID);
+    chats.observeThreads([summary("running", "2026-01-01T00:00:02.000Z", 1)]);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(streamCalls(calls)).toHaveLength(0);
+    expect(chats.peek(THREAD_ID)).toBeUndefined();
+  });
+
+  it("lets go of the stream when the task is left, and joins again with a fresh history on return", async () => {
+    let current = record("2026-01-01T00:00:01.000Z", [message("m1")]);
+    const { calls, released } = liveServer({ history: () => current });
+
+    chats.observeThreads([summary("running", "2026-01-01T00:00:01.000Z", 1)]);
+    chats.focus(THREAD_ID);
+    const chat = chats.get(THREAD_ID);
+    await chats.whenReady(THREAD_ID);
+    await vi.waitFor(() => expect(streamCalls(calls)).toHaveLength(1));
+
+    chats.focus(null);
+    await vi.waitFor(() => expect(released).toHaveLength(1));
+    await vi.waitFor(() => expect(chat.status).toBe("ready"));
+
+    // The turn went on without us: the record has moved on by the time we return.
+    current = record("2026-01-01T00:00:05.000Z", [message("m1"), message("m2")]);
+    chats.observeThreads([summary("running", "2026-01-01T00:00:05.000Z", 2)]);
+    expect(streamCalls(calls)).toHaveLength(1);
+
+    chats.focus(THREAD_ID);
+    await chats.whenReady(THREAD_ID);
+    expect(chat.messages.map((entry) => entry.id)).toEqual(["m1", "m2"]);
+    await vi.waitFor(() => expect(streamCalls(calls)).toHaveLength(2));
+    expect(errors).toHaveLength(0);
+  });
+
+  it("lets go of a send once the server took it, when its task is no longer on screen", async () => {
+    const { calls, released } = liveServer({ history: () => record("2026-01-01T00:00:01.000Z", [message("m1")]) });
+
+    chats.focus(THREAD_ID);
+    chats.get(THREAD_ID);
+    await chats.whenReady(THREAD_ID);
+    // Left before the server answered — a new task whose worktree took a while.
+    const sent = chats.send(THREAD_ID, "发出去了");
+    chats.focus("elsewhere");
+    await expect(sent).resolves.toBeUndefined();
+
+    await vi.waitFor(() => expect(released.filter((url) => url.endsWith(`/api/chat/${THREAD_ID}`))).toHaveLength(1));
+    // Cut off mid-turn, the chat must not post its partial state again.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(calls.filter((url) => url.startsWith("POST "))).toHaveLength(1);
   });
 });
 

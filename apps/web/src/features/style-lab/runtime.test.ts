@@ -73,6 +73,34 @@ describe("chat style fixtures", () => {
     expect(value.snapshot().status).toBe("idle");
     expect(value.chat.messages).toHaveLength(2);
   });
+  it("sends fixture attachment queues with full files but exposes only summaries", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected network"));
+    const original = JSON.stringify(SCENARIOS);
+    const value = session("queue-attachments");
+    const queued = value.snapshot().queue![0]!;
+    expect(queued.text).toBe("");
+    expect(queued.files?.[0]).not.toHaveProperty("url");
+    const record = await value.client.integrate(value.chat.id, "commit");
+    expect(record.queue?.[0]?.files).toEqual(SCENARIOS.find((scene) => scene.id === "queue-attachments")!.thread!.queue![0]!.files);
+    await value.sendQueued(queued.id);
+    const sent = value.chat.messages.find((message) => message.id === queued.id)!;
+    expect(sent.parts.filter((part) => part.type === "file")).toEqual(SCENARIOS.find((scene) => scene.id === "queue-attachments")!.thread!.queue![0]!.files);
+    expect(value.snapshot().queue?.some((item) => item.id === queued.id)).toBe(false);
+    expect(JSON.stringify(SCENARIOS)).toBe(original);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("retains full files when a newly queued message is edited to an empty body", async () => {
+    const value = session("empty");
+    const files = [{ type: "file" as const, filename: "note.txt", mediaType: "text/plain", url: "data:text/plain,hello" }];
+    await value.queue("caption", "steer", files);
+    const queued = value.snapshot().queue![0]!;
+    expect(queued.mode).toBe("queue");
+    expect(queued.files?.[0]).not.toHaveProperty("url");
+    value.patch({ queue: [{ ...queued, text: "" }] });
+    await value.sendQueued(queued.id);
+    expect(value.chat.messages[0]?.parts).toEqual([{ type: "text", text: "" }, ...files]);
+    expect(value.snapshot().queue).toEqual([]);
+  });
   it("reset restores the original fixture after local mutations", async () => {
     const original = JSON.stringify(SCENARIOS);
     const value = session("queue");

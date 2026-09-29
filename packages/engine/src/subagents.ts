@@ -38,6 +38,16 @@ const EXPLORE_MAX_STEPS = 30;
 const CODER_MAX_STEPS = 60;
 /** How much of the child's closing text the parent model gets to see. */
 const SUMMARY_MAX_CHARS = 4000;
+/**
+ * How often a child's streaming text refreshes the live transcript. Every
+ * snapshot is a full copy of the child's transcript that the server relays to
+ * each open page, so one per token adds up to gigabytes over a long child.
+ */
+const LIVE_SNAPSHOT_INTERVAL_MS = 100;
+
+/** Which parts the transcript has and what state each is in — everything but streamed text. */
+const transcriptShape = (message: UIMessage): string =>
+  message.parts.map((part) => `${part.type}:${"state" in part ? part.state : ""}`).join("|");
 
 const EXPLORE_INSTRUCTIONS = `You are Vgent's exploration subagent. You research a repository and report back; you never change it.
 
@@ -214,11 +224,20 @@ async function* streamChild(
         },
       }),
     );
+    // A new part or a part changing state goes out at once; streamed text waits
+    // for the interval. The final transcript is always yielded below.
+    let sentShape = transcriptShape(message);
+    let sentAt = Date.now();
     for await (const next of readUIMessageStream({
       message,
       stream: toUIMessageStream({ stream, onError: (error) => (error instanceof Error ? error.message : String(error)) }),
     })) {
       message = next;
+      const shape = transcriptShape(message);
+      const now = Date.now();
+      if (shape === sentShape && now - sentAt < LIVE_SNAPSHOT_INTERVAL_MS) continue;
+      sentShape = shape;
+      sentAt = now;
       yield message;
     }
   } catch (error) {

@@ -1,4 +1,4 @@
-import type { UIMessageChunk } from "ai";
+import { readUIMessageStream, type UIMessage, type UIMessageChunk } from "ai";
 import { describe, expect, it } from "vitest";
 import { createChunkHub } from "./chunk-hub.js";
 
@@ -60,6 +60,44 @@ describe("createChunkHub", () => {
 
     expect(await drain(aborted)).toHaveLength(1);
     expect(await drain(survivor)).toHaveLength(2);
+  });
+
+  it("keeps only a call's latest preliminary output, and replays the same message", async () => {
+    const hub = createChunkHub();
+    hub.publish({ type: "start", messageId: "m1" });
+    hub.publish({ type: "tool-input-available", toolCallId: "c1", toolName: "explore", input: { prompt: "look" } });
+    for (let step = 1; step <= 50; step++) {
+      hub.publish({ type: "tool-output-available", toolCallId: "c1", output: { step }, preliminary: true });
+    }
+    hub.publish({ type: "text-start", id: "t1" });
+    hub.publish({ type: "text-delta", id: "t1", delta: "done" });
+    hub.publish({ type: "text-end", id: "t1" });
+    hub.publish({ type: "tool-output-available", toolCallId: "c1", output: { step: "final" } });
+    hub.close();
+
+    const outputs = hub.chunks.filter((chunk) => chunk.type === "tool-output-available");
+    expect(outputs).toEqual([{ type: "tool-output-available", toolCallId: "c1", output: { step: "final" } }]);
+
+    let replayed: UIMessage | undefined;
+    for await (const message of readUIMessageStream({ stream: hub.subscribe() })) replayed = message;
+    expect(replayed?.parts).toEqual([
+      expect.objectContaining({ type: "tool-explore", state: "output-available", output: { step: "final" } }),
+      expect.objectContaining({ type: "text", text: "done" }),
+    ]);
+  });
+
+  it("lets a subscriber that has not read yet skip outputs superseded meanwhile", async () => {
+    const hub = createChunkHub();
+    const slow = hub.subscribe();
+    hub.publish({ type: "tool-input-available", toolCallId: "c1", toolName: "explore", input: {} });
+    for (let step = 1; step <= 50; step++) {
+      hub.publish({ type: "tool-output-available", toolCallId: "c1", output: { step }, preliminary: true });
+    }
+    hub.close();
+
+    const outputs = (await drain(slow)).filter((chunk) => chunk.type === "tool-output-available");
+    expect(outputs.length).toBeLessThanOrEqual(2);
+    expect(outputs.at(-1)).toMatchObject({ output: { step: 50 }, preliminary: true });
   });
 
   it("interrupt closes open text, reasoning and non-terminal tool calls", async () => {

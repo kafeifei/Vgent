@@ -3,18 +3,20 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { ModelMessage, TextStreamPart, ToolSet, UIMessage } from "ai";
+import type { FileUIPart, ModelMessage, TextStreamPart, ToolSet, UIMessage } from "ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp, type VgentApp } from "./app.js";
 import { createEngineRegistry, type EngineFactoryOverride, type EngineRunner } from "./engines/registry.js";
 import { QUEUE_ITEM_MAX_BYTES, QUEUE_MAX_ITEMS } from "./queue.js";
-import type { Project, ThreadMessageMetadata, ThreadRecord } from "./types.js";
+import type { Project, ThreadMessageMetadata, ThreadRecord, ThreadSummary } from "./types.js";
 
 const exec = promisify(execFile);
 const hasGit = spawnSync("git", ["--version"]).status === 0;
 
 const TOKEN = "test-token-0123456789";
 const ORIGIN = "http://127.0.0.1:7414";
+const image: FileUIPart = { type: "file", mediaType: "image/png", filename: "截图.png", url: "data:image/png;base64,aGVsbG8=" };
+const document: FileUIPart = { type: "file", mediaType: "text/plain", filename: "说明.txt", url: "data:text/plain,%E8%AF%B4%E6%98%8E" };
 
 const dirs: string[] = [];
 const apps: VgentApp[] = [];
@@ -140,6 +142,7 @@ function createGatedEngine(
   const prompts: string[] = [];
   /** Every turn's whole history as the engine was handed it: `role:text`. */
   const histories: string[][] = [];
+  const modelHistories: ModelMessage[][] = [];
   /** What reached the running turn, by either road. */
   const steered: string[] = [];
   const releases: Array<() => void> = [];
@@ -201,6 +204,7 @@ function createGatedEngine(
         async stream({ messages, abortSignal }) {
           const text = textOf(messages.at(-1));
           prompts.push(text);
+          modelHistories.push(structuredClone(messages));
           histories.push(messages.map((message) => `${message.role}:${textOf(message)}`));
           let release!: () => void;
           const gate = new Promise<void>((resolve) => {
@@ -221,6 +225,7 @@ function createGatedEngine(
     factory,
     prompts,
     histories,
+    modelHistories,
     steered,
     /** Waits until `count` turns have started, then lets the oldest unreleased one finish. */
     async releaseTurn(count: number): Promise<void> {
@@ -538,7 +543,7 @@ describe.skipIf(!hasGit)("排队", () => {
 
     const first = postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "慢活")] });
     await waitFor("第一轮开始", () => engine.prompts.length === 1);
-    await postJson(app, `/api/threads/${thread.id}/queue`, { text: "排队一" });
+    await postJson(app, `/api/threads/${thread.id}/queue`, { text: "排队一", files: [image] });
 
     expect((await postJson(app, `/api/chat/${thread.id}/stop`, {})).status).toBe(204);
     await (await first).text();
@@ -552,8 +557,10 @@ describe.skipIf(!hasGit)("排队", () => {
     const item = paused.queue![0]!;
     expect((await postJson(app, `/api/threads/${thread.id}/queue/${item.id}/send`, {})).status).toBe(200);
     await engine.releaseTurn(2);
-    await waitFor("排队消息发出", () => engine.prompts.some((text) => text.endsWith("排队一")));
+    await waitFor("排队消息发出", () => engine.prompts.some((text) => text.includes("排队一")));
     expect((await getThread(app, thread.id)).queue ?? []).toHaveLength(0);
+    expect((await getThread(app, thread.id)).messages.find((message) => message.id === item.id)?.parts).toContainEqual(image);
+    expect(engine.prompts[1]).toContain("截图.png");
   });
 
   it("「打断并发送」：运行中不带 interrupt 是 409，带上就先停这一轮再发这条", async () => {
@@ -565,7 +572,7 @@ describe.skipIf(!hasGit)("排队", () => {
 
     const first = postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "慢活")] });
     await waitFor("第一轮开始", () => engine.prompts.length === 1);
-    await postJson(app, `/api/threads/${thread.id}/queue`, { text: "改方向" });
+    await postJson(app, `/api/threads/${thread.id}/queue`, { text: "改方向", files: [image] });
     const item = (await getThread(app, thread.id)).queue![0]!;
 
     // Nothing jumps a running turn by accident.
@@ -576,9 +583,11 @@ describe.skipIf(!hasGit)("排队", () => {
 
     expect((await postJson(app, `/api/threads/${thread.id}/queue/${item.id}/send`, { interrupt: true })).status).toBe(200);
     await (await first).text();
-    await waitFor("排队的那条发出", () => engine.prompts.some((text) => text.endsWith("改方向")));
+    await waitFor("排队的那条发出", () => engine.prompts.some((text) => text.includes("改方向")));
     expect(engine.prompts).toHaveLength(2);
     expect((await getThread(app, thread.id)).queue ?? []).toHaveLength(0);
+    expect((await getThread(app, thread.id)).messages.find((message) => message.id === item.id)?.parts).toContainEqual(image);
+    expect(engine.prompts[1]).toContain("截图.png");
     await engine.releaseTurn(2);
     await waitForStatus(app, thread.id, "idle");
   });
@@ -658,19 +667,21 @@ describe.skipIf(!hasGit)("排队", () => {
 
     // What a process that died with work waiting leaves behind: one task idle
     // with a queue, one recovered as `interrupted` with the same.
-    const item = (text: string) => [{ id: `q-${text}`, text, createdAt: new Date().toISOString() }];
+    const item = (text: string) => [{ id: `q-${text}`, text, files: [image], createdAt: new Date().toISOString() }];
     await seedRecord(dir, idle.id, { status: "idle", queue: item("重启后要发") });
     await seedRecord(dir, stopped.id, { status: "interrupted", queue: item("中断的不该发") });
 
     const second = createGatedEngine({ instant: true });
     const rebooted = makeApp(dir, second.factory);
     await request(rebooted, "/api/threads");
-    await waitFor("重启后发出", () => second.prompts.some((text) => text.endsWith("重启后要发")));
+    await waitFor("重启后发出", () => second.prompts.some((text) => text.includes("重启后要发")));
     await waitFor("队列跑空", async () => ((await getThread(rebooted, idle.id)).queue ?? []).length === 0);
 
     await sleep(120);
     expect(second.prompts.some((text) => text.includes("中断的不该发"))).toBe(false);
-    expect((await getThread(rebooted, stopped.id)).queue).toHaveLength(1);
+    expect((await getThread(rebooted, stopped.id)).queue?.[0]?.files).toEqual([image]);
+    expect((await getThread(rebooted, idle.id)).messages.find((message) => message.id === "q-重启后要发")?.parts).toContainEqual(image);
+    expect(second.prompts[0]).toContain("截图.png");
   });
 
   it("server 自己发起的回合能从 /api/chat/:id/stream 观察到", async () => {
@@ -731,12 +742,14 @@ describe.skipIf(!hasGit)("排队", () => {
     const app = makeApp(dir, createGatedEngine({ instant: true, failOn: "会炸", unavailable: () => broken }).factory);
     const thread = await failedThread(app, repo);
 
-    const requeued = (await (await postJson(app, `/api/threads/${thread.id}/queue`, { text: "发不出去" })).json()) as ThreadRecord;
+    const requeued = (await (await postJson(app, `/api/threads/${thread.id}/queue`, { text: "发不出去", files: [image] })).json()) as ThreadRecord;
     expect(requeued.queue).toHaveLength(1);
     const item = requeued.queue![0]!;
 
+    expect(item.files).toEqual([image]);
     broken = true;
     expect((await postJson(app, `/api/threads/${thread.id}/queue/${item.id}/send`, {})).status).toBe(500);
+    expect((await getThread(app, thread.id)).queue?.[0]?.files).toEqual([image]);
     // Taken out to be started, and put straight back when the start failed.
     expect((await getThread(app, thread.id)).queue?.map((entry) => entry.text)).toEqual(["发不出去"]);
     expect((await getThread(app, thread.id)).queue?.[0]?.id).toBe(item.id);
@@ -772,5 +785,85 @@ describe.skipIf(!hasGit)("排队", () => {
 
     expect((await request(app, `/api/threads/${thread.id}`, { method: "DELETE" })).status).toBe(204);
     expect((await request(app, `/api/threads/${thread.id}`)).status).toBe(404);
+  });
+});
+
+describe.skipIf(!hasGit)("附件排队", () => {
+  it.each(["push", "pull"] as const)("%s 引擎把图文和纯附件按 FIFO 留到下一回合，不作引导", async (steer) => {
+    const dir = await tempDir();
+    const engine = createGatedEngine({ steer });
+    const app = makeApp(dir, engine.factory);
+    const thread = await setupThread(app, await repoWithHistory());
+    const first = postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "慢活")] });
+    await waitFor("第一轮开始", () => engine.prompts.length === 1);
+    const path = `/api/threads/${thread.id}/queue`;
+    expect((await postJson(app, path, { text: "看截图", files: [image] })).status).toBe(200);
+    const response = await postJson(app, path, { text: "", files: [document] });
+    expect(response.status).toBe(200);
+    const queued = (await response.json()) as ThreadRecord;
+    expect(queued.queue).toMatchObject([
+      { text: "看截图", mode: "queue", files: [image] },
+      { text: "", mode: "queue", files: [document] },
+    ]);
+    expect(engine.steered).toEqual([]);
+    expect(engine.prompts).toHaveLength(1);
+    await engine.releaseTurn(1);
+    await (await first).text();
+    await engine.releaseTurn(2);
+    await engine.releaseTurn(3);
+    await waitForStatus(app, thread.id, "idle");
+    expect(engine.steered).toEqual([]);
+    expect(engine.prompts).toHaveLength(3);
+    const record = await getThread(app, thread.id);
+    expect(record.queue ?? []).toHaveLength(0);
+    const users = record.messages.filter((message) => message.role === "user");
+    expect(users.slice(1).map((message) => message.id)).toEqual(queued.queue!.map((item) => item.id));
+    for (const [index, file] of [image, document].entries()) {
+      const message = users[index + 1]!;
+      expect(message.parts).toContainEqual(file);
+      const partIndex = message.parts.findIndex((part) => part.type === "file");
+      const savedPath = join(dir, "attachments", thread.id, `${message.id}-${partIndex}-${file.filename}`);
+      expect(await readFile(savedPath, "utf8")).toBe(index === 0 ? "hello" : "说明");
+      const modelMessage = engine.modelHistories[index + 1]!.at(-1)!;
+      expect(modelMessage.role).toBe("user");
+      expect(textOf(modelMessage)).toContain(savedPath);
+      expect(JSON.stringify(modelMessage)).not.toContain(file.url);
+    }
+    expect(engine.prompts[1]).toContain("看截图");
+    expect(engine.prompts[2]).not.toContain("看截图");
+  });
+
+  it("附件可清空文字、重排和删除；完整记录保留 data URL，列表和索引只存附件摘要", async () => {
+    const dir = await tempDir();
+    const app = makeApp(dir, createGatedEngine({ instant: true, failOn: "会炸" }).factory);
+    const thread = await failedThread(app, await repoWithHistory());
+    const path = `/api/threads/${thread.id}/queue`;
+    const rejected = await postJson(app, path, { text: "引导", mode: "steer", files: [image] });
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toMatchObject({ error: { code: "queue_files_cannot_steer" } });
+    expect((await getThread(app, thread.id)).queue ?? []).toHaveLength(0);
+    await postJson(app, path, { text: "图文", files: [image] });
+    const added = (await (await postJson(app, path, { text: "文字", mode: "queue" })).json()) as ThreadRecord;
+    const [a, b] = added.queue!;
+    expect((await patchJson(app, `${path}/${b!.id}`, { text: "" })).status).toBe(400);
+    const edited = await patchJson(app, `${path}/${a!.id}`, { text: "" });
+    expect(edited.status).toBe(200);
+    expect(((await edited.json()) as ThreadRecord).queue?.[0]).toMatchObject({ text: "", files: [image], mode: "queue" });
+    const reordered = await request(app, `${path}/order`, { method: "PUT", body: JSON.stringify({ ids: [b!.id, a!.id] }) });
+    expect(reordered.status).toBe(200);
+    expect(((await reordered.json()) as ThreadRecord).queue?.map((item) => item.id)).toEqual([b!.id, a!.id]);
+    expect((await getThread(app, thread.id)).queue?.[1]?.files).toEqual([image]);
+    const stored = JSON.parse(await readFile(join(dir, "threads", `${thread.id}.json`), "utf8")) as ThreadRecord;
+    expect(stored.queue?.[1]?.files).toEqual([image]);
+    const { threads: summaries } = (await (await request(app, "/api/threads")).json()) as { threads: ThreadSummary[] };
+    const index = JSON.parse(await readFile(join(dir, "threads", "index.json"), "utf8")) as { threads: ThreadSummary[] };
+    for (const list of [summaries, index.threads]) {
+      expect(list.find((entry) => entry.id === thread.id)?.queue?.[1]?.files).toEqual([
+        { type: "file", mediaType: image.mediaType, filename: image.filename },
+      ]);
+      expect(JSON.stringify(list)).not.toContain(image.url);
+    }
+    expect((await request(app, `${path}/${a!.id}`, { method: "DELETE" })).status).toBe(200);
+    expect((await getThread(app, thread.id)).queue?.map((item) => item.id)).toEqual([b!.id]);
   });
 });

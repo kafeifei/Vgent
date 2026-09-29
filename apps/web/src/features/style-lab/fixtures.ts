@@ -1,7 +1,7 @@
 import SVG from "./sample.svg?raw";
 export { SVG };
 import type { UIMessage } from "ai";
-import type { EngineDescriptor, ThreadSummary } from "@/lib/types";
+import type { EngineDescriptor, QueuedMessage, ThreadSummary } from "@/lib/types";
 import type { RightTab } from "@/features/rightpane/RightPane";
 import type { DraftValue } from "@/lib/drafts";
 
@@ -11,7 +11,7 @@ export interface ChatScenario {
   label: string;
   hint: string;
   messages: UIMessage[];
-  thread?: Partial<ThreadSummary>;
+  thread?: Partial<Omit<ThreadSummary, "queue">> & { queue?: QueuedMessage[] };
   tab?: RightTab;
   file?: string;
   inspect?: string;
@@ -65,6 +65,10 @@ export const SCENARIOS: ChatScenario[] = [
   { id: "thinking", group: "运行", label: "等待首字", hint: "请求已开始、尚未返回内容。点击演示回复或停止。", messages: [user("分析现有聊天布局。")], thread: { status: "running" } },
   { id: "reasoning", group: "运行", label: "思考中", hint: "实时思考与展开、收起。点击演示回复可查看完整流式过程。", messages: pair("分析现有聊天布局。", { ...thought, state: "streaming" }), thread: { status: "running" } },
   { id: "streaming", group: "运行", label: "回复生成中", hint: "停留在流式文本中间，便于调样式；点击演示回复继续观察动画。", messages: pair("给出修改建议。", { type: "text", text: "先调整消息间距，再检查 **工具执行** 和最终回复之间的层次。\n\n```ts\nconst layout =", state: "streaming" }), thread: { status: "running" } },
+  { id: "queue-attachments", group: "运行", label: "附件排队", hint: "纯附件与图文队列：可以清空正文，不提供引导；打断发送或停止后发送会保留完整附件。", messages: pair("检查聊天布局。", read), thread: { status: "running", queue: [
+    { id: "queued-file", text: "", mode: "queue", createdAt: AT, files: [{ type: "file", filename: "preview.svg", mediaType: "image/svg+xml", url: IMAGE }] },
+    { id: "queued-files", text: "对照需求检查", mode: "queue", createdAt: AT, files: [{ type: "file", filename: "requirements.txt", mediaType: "text/plain", url: "data:text/plain,Check%20chat%20layout" }, { type: "file", filename: "preview.svg", mediaType: "image/svg+xml", url: IMAGE }] },
+  ] }, draft: { text: "", attachments: [{ id: "queued-draft", name: "preview.svg", mediaType: "image/svg+xml", url: IMAGE, size: SVG.length }] } },
   { id: "queue", group: "运行", label: "排队与插话", hint: "可编辑、重排、删除、插话；停止后观察暂停队列。", messages: pair("检查全部聊天组件。", { ...thought, state: "streaming" }), thread: { status: "running", queue: queued } },
   { id: "steer-pending", group: "运行", label: "引导等待处理", hint: "消息只有正文；悬停显示立即打断并发送，下一轮排队仍在输入框。", messages: pair("检查所有布局。", read, { type: "data-steer", id: "steer-pending-1", data: { messageId: "steer-pending-1", text: "先检查输入框，不改配色。", receipt: true } }), thread: { status: "running", queue: [{ id: "steer-pending-1", text: "先检查输入框，不改配色。", mode: "steer", accepted: true, createdAt: AT }, queued[0]!] } },
   { id: "steer-stopped", group: "运行", label: "停止后的引导", hint: "悬停显示立即发送。保留消息正文与输入框上方的下一轮队列。", messages: pair("检查所有布局。", read), thread: { status: "interrupted", queue: [{ id: "steer-stopped-1", text: "先检查输入框，不改配色。", mode: "steer", createdAt: AT }, queued[0]!] } },

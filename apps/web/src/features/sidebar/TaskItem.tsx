@@ -1,17 +1,12 @@
 import { useRef, useState, type RefObject } from "react";
-import { useChat } from "@ai-sdk/react";
-import type { Chat } from "@ai-sdk/react";
-import { isToolUIPart, type UIMessage } from "ai";
 import { GitFork, MoreHorizontal } from "lucide-react";
 import { OutcomeBadge } from "@/components/OutcomeBadge";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { shortTime } from "@/lib/format";
 import { isImeKeyEvent } from "@/lib/ime";
-import { CHAT_THROTTLE_MS } from "@/lib/threadChats";
 import { LIVE_REASON, LIVE_STATUSES, TRANSITION_LABELS, type ThreadStatus, type ThreadSummary, type ThreadTransition } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { describeTool } from "@/features/worklog/toolMeta";
 import { UncommittedConfirm, useUncommittedGate } from "@/features/workspace/UncommittedConfirm";
 
 /** Shape, not just colour: 「等人」 is a hollow ring, 「在跑 / 结束」 is a solid dot. */
@@ -22,27 +17,6 @@ export function StatusDot({ status }: { status: ThreadStatus }) {
   if (status === "awaiting-input") return <span className={cn(base, "shadow-[inset_0_0_0_2px_var(--color-info)]")} />;
   if (status === "error" || status === "interrupted") return <span className={cn(base, "bg-danger")} />;
   return <span className={cn(base, "bg-fg-faint")} />;
-}
-
-/** The last tool call the live chat produced, e.g. `读取 src/x.ts` / `$ pnpm test`. */
-function currentAction(messages: readonly UIMessage[]): string | undefined {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message == null || message.role !== "assistant") continue;
-    for (let part = message.parts.length - 1; part >= 0; part -= 1) {
-      const candidate = message.parts[part];
-      if (candidate == null || !isToolUIPart(candidate)) continue;
-      const display = describeTool(candidate);
-      return `${display.verb} ${display.target}`.trim();
-    }
-  }
-  return undefined;
-}
-
-/** A running task's row: its title, with the current action as the hover text. */
-function LiveTitle({ chat, title }: { chat: Chat<UIMessage>; title: string }) {
-  const { messages } = useChat({ chat, throttle: CHAT_THROTTLE_MS });
-  return <span title={currentAction(messages) ?? "运行中"}>{title}</span>;
 }
 
 type RowMenuActions = {
@@ -192,7 +166,6 @@ function RowMenu({ openRef, ...actions }: RowMenuActions & { openRef: RefObject<
 export function TaskItem({
   thread,
   selected,
-  chat,
   onSelect,
   onArchive,
   onCheckUncommitted,
@@ -202,8 +175,6 @@ export function TaskItem({
 }: {
   thread: ThreadSummary;
   selected: boolean;
-  /** Only supplied for running threads, so idle ones cost nothing. */
-  chat: Chat<UIMessage> | undefined;
   onSelect: () => void;
   onArchive: (archived: boolean, preserveChanges?: boolean) => void;
   onCheckUncommitted: () => Promise<number>;
@@ -289,7 +260,7 @@ export function TaskItem({
           </span>
         )}
         <span className={cn("min-w-0 flex-1 truncate", unread && "font-medium", archived && "text-fg-faint")}>
-          {thread.workspaceState != null ? `${thread.title} · ${state}` : thread.status === "running" && chat != null ? <LiveTitle chat={chat} title={thread.title} /> : thread.title}
+          {thread.workspaceState != null ? `${thread.title} · ${state}` : thread.title}
         </span>
         <OutcomeBadge outcome={thread.outcome} pr={thread.pr} />
         {/* The stamp gives way to the row's menu on hover, so the two never fight for the corner. */}

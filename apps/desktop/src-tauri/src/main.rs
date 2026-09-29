@@ -2,6 +2,7 @@
 
 mod backend;
 mod notify;
+mod server_log;
 mod unfinished;
 
 use backend::{Backend, BackendReady, SpawnError};
@@ -271,10 +272,20 @@ fn main() {
                         if lifecycle.closing.load(Ordering::SeqCst) {
                             return;
                         }
+                        // A quit takes the backend out of the slot before stopping
+                        // it, so an exit seen here was not asked for.
                         let exited = lifecycle
                             .backend
                             .lock()
-                            .map(|mut slot| slot.as_mut().is_some_and(Backend::has_exited))
+                            .map(|mut slot| {
+                                slot.as_mut().is_some_and(|backend| {
+                                    let Some(status) = backend.exit_status() else {
+                                        return false;
+                                    };
+                                    backend.record_exit("内置服务意外退出", status);
+                                    true
+                                })
+                            })
                             .unwrap_or(false);
                         if exited {
                             let handle = app_handle.clone();

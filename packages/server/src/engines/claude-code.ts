@@ -18,7 +18,8 @@ const DESCRIPTOR: EngineDescriptor = {
   label: "Claude Code",
   capabilities: {
     approvals: true,
-    askUser: false,
+    // Its native AskUserQuestion reaches the host as `askUserQuestions`.
+    askUser: true,
     planMode: true,
     compact: true,
     knownDefaultModel: false,
@@ -38,7 +39,7 @@ const DESCRIPTOR: EngineDescriptor = {
  */
 const PLAN_ACTIVE_TOOLS = ["read", "grep", "glob", "TodoWrite"] as const;
 
-/** Claude Code has no `askUserQuestions`, so the addendum tells it to ask in prose. */
+/** A 计划 turn leaves AskUserQuestion inactive, so the addendum tells it to ask in prose. */
 const PLAN_INSTRUCTIONS = planModeInstructions({ askTool: false });
 
 /** From here up, a window is Claude Code's long one. */

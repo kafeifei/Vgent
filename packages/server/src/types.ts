@@ -1,7 +1,7 @@
 import type { TaskState } from "@vgent/engine";
 import type { McpServerConfig } from "@vgent/engine";
 import type { HarnessAgentContinueTurnState, HarnessAgentResumeSessionState } from "@vgent/engines";
-import type { UIMessage } from "ai";
+import type { FileUIPart, UIMessage } from "ai";
 
 export type EngineId = "claude-code" | "codex" | "vgent";
 export type PermissionMode = "allow-reads" | "allow-edits" | "allow-all";
@@ -263,6 +263,8 @@ export interface ApplyUndoRecord {
 export interface QueuedMessage {
   id: string;
   text: string;
+  /** Original attachments, consumed atomically with the queued user message. */
+  files?: FileUIPart[];
   createdAt: string;
   /** Missing on older records: a normal next-turn queue item. */
   mode?: "queue" | "steer";
@@ -277,6 +279,11 @@ export interface QueuedMessage {
   /** The runtime reported this message entered the active turn. */
   applied?: boolean;
 }
+
+/** State/index payloads describe attachments without broadcasting their bytes. */
+export type QueuedMessageSummary = Omit<QueuedMessage, "files"> & {
+  files?: Pick<FileUIPart, "type" | "filename" | "mediaType">[];
+};
 
 /** The task's diff against its baseline, in three numbers, for the sidebar. */
 export interface ChangeStats {
@@ -389,7 +396,8 @@ export interface ThreadRecord {
  * outside the task's own 收口 has any use for, and one that would ride along in
  * every state push.
  */
-export interface ThreadSummary extends Omit<ThreadRecord, "messages" | "applyUndo"> {
+export interface ThreadSummary extends Omit<ThreadRecord, "messages" | "applyUndo" | "queue"> {
+  queue?: QueuedMessageSummary[];
   messageCount: number;
   pendingApprovals: number;
 }

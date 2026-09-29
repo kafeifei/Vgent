@@ -48,7 +48,17 @@ export function safeFileName(name: string | undefined, fallback: string): string
     .replace(/[\x00-\x1f]/g, "")
     .replace(/^\.+/, "")
     .trim();
-  return cleaned === "" ? fallback : cleaned.slice(-120);
+  if (cleaned === "") return fallback;
+  const points = Array.from(cleaned);
+  let bytes = 0;
+  let start = points.length;
+  while (start > 0) {
+    const size = Buffer.byteLength(points[start - 1]!, "utf8");
+    if (bytes + size > 120) break;
+    bytes += size;
+    start--;
+  }
+  return points.slice(start).join("");
 }
 
 export interface AttachmentOptions {

@@ -3,7 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tool, type ToolSet } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createMCPClient } from "@ai-sdk/mcp";
+
+vi.mock("@ai-sdk/mcp", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@ai-sdk/mcp")>();
+  return { ...actual, createMCPClient: vi.fn(actual.createMCPClient) };
+});
 import { z } from "zod";
 import { createVgentEngine } from "./engine.js";
 import { connectMcpServers, hasDeferredTools, parseMcpServers, prepareMcpTools } from "./mcp.js";
@@ -98,4 +104,31 @@ describe("createVgentEngine with extra tools", () => {
     expect(Object.keys(bare.tools)).not.toContain("explore");
     expect(Object.keys(bare.tools)).not.toContain("coder");
   });
+});
+
+
+it("returns stable tool-name order across connection delays and enumeration order", async () => {
+  const mock = vi.mocked(createMCPClient);
+  try {
+    for (const reverse of [false, true]) {
+      const closes = [vi.fn(async () => {}), vi.fn(async () => {})];
+      for (const index of [0, 1]) {
+        mock.mockImplementationOnce(async () => {
+          await new Promise((resolve) => setTimeout(resolve, (reverse ? index === 0 : index === 1) ? 15 : 0));
+          return {
+            tools: async () => Object.fromEntries((reverse ? ["a", "z"] : ["z", "a"]).map((name) => [name, fakeServerTools().listIssues!])),
+            close: closes[index],
+          } as unknown as Awaited<ReturnType<typeof createMCPClient>>;
+        });
+      }
+      const connection = await connectMcpServers([{ name: "z", url: "https://z.test" }, { name: "a", url: "https://a.test" }]);
+      expect(Object.keys(connection.tools)).toEqual(["a__a", "a__z", "z__a", "z__z"]);
+      expect(Object.values(connection.tools).every((tool) => tool.deferLoading === true)).toBe(true);
+      await connection.close();
+      for (const close of closes) expect(close).toHaveBeenCalledTimes(1);
+    }
+  } finally {
+    mock.mockReset();
+    mock.mockImplementation((await vi.importActual<typeof import("@ai-sdk/mcp")>("@ai-sdk/mcp")).createMCPClient);
+  }
 });

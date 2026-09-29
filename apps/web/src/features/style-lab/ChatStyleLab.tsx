@@ -110,7 +110,7 @@ function Scene({ session, right, setRight, left, toggleLeft, onReset, onEmpty }:
   const [allowlist, setAllowlist] = useState<readonly string[]>([]);
   const changes = useChanges({ client, threadId: thread.id, refreshKey: thread.updatedAt, selected: file, onSelect: setFile, toast });
   const actions = useMemo<ThreadViewActions>(() => ({
-    whenReady: async () => {}, getChat: () => session.chat, toast,
+    whenReady: async () => {}, getChat: () => session.chat, focusChat: () => {}, toast,
     allowTools: (entries) => setAllowlist((list) => [...list, ...entries]),
     openPreview: (path) => { setPreview({ path, nonce: Date.now() }); setTab("files"); setRight(true); },
     openChanges: (path) => { setFile(path ?? null); setTab("changes"); setRight(true); },
@@ -124,7 +124,7 @@ function Scene({ session, right, setRight, left, toggleLeft, onReset, onEmpty }:
     },
     setRightTab: setTab, openRight: () => setRight(true), toggleLeft,
     compactThread: session.compact, newTask: onEmpty,
-    queueMessage: (_id, text, mode) => session.queue(text, mode),
+    queueMessage: (_id, text, mode, files) => session.queue(text, mode, files),
     send: (_id, text, files) => session.send(text, files), stop: () => { void session.stop(); },
     rememberModelPick: () => {},
     setModel: (_id, engine, model) => session.patch({ engine, model }),
@@ -132,17 +132,13 @@ function Scene({ session, right, setRight, left, toggleLeft, onReset, onEmpty }:
     setContextWindow: (_id, value) => session.patch({ contextWindow: value ?? undefined }),
     setServiceTier: (_id, value) => session.patch({ serviceTier: value ?? undefined }),
     setMode: (_id, mode) => session.patch({ mode }),
-    sendQueued: async (_id, itemId) => {
-      const item = session.snapshot().queue?.find((entry) => entry.id === itemId);
-      if (!item) return;
-      await session.stop().then(() => { session.patch({ queue: session.snapshot().queue?.filter((entry) => entry.id !== itemId) }); return session.send(item.text, [], item.id); });
-    },
+    sendQueued: (_id, itemId) => session.sendQueued(itemId),
     editQueued: (_id, itemId, text) => session.patch({ queue: session.snapshot().queue?.map((item) => item.id === itemId ? { ...item, text } : item) }),
-    deleteQueued: (_id, itemId) => session.patch({ queue: session.snapshot().queue?.filter((item) => item.id !== itemId) }),
+    deleteQueued: (_id, itemId) => session.deleteQueued(itemId),
     reorderQueue: (_id, ids) => session.patch({ queue: ids.flatMap((id) => session.snapshot().queue?.filter((item) => item.id === id) ?? []) }),
     steerQueued: (_id, itemId) => {
       const item = session.snapshot().queue?.find((entry) => entry.id === itemId);
-      if (!item) return;
+      if (!item || item.files?.length) return;
       session.chat.messages = [...session.chat.messages, { id: crypto.randomUUID(), role: "assistant", parts: [{ type: "data-steer", data: { text: item.text } }] }];
       session.patch({ queue: session.snapshot().queue?.filter((entry) => entry.id !== itemId) });
     },

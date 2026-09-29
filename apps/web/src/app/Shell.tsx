@@ -179,7 +179,6 @@ export function Shell({ token }: { token: string }) {
           onOpenFolder={actions.openFolder}
           onPickFolder={actions.pickFolder}
           settingsOpen={settingsOpen}
-          getChat={actions.getChat}
           onArchive={actions.archiveThread}
           onCheckUncommitted={actions.countUncommitted}
           onUnread={actions.markUnread}

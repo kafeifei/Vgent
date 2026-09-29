@@ -6,10 +6,17 @@ import type { UIMessageChunk } from "ai";
  * Replay and live tail are the same code path: a subscriber pumps from index 0
  * and keeps pumping as new chunks arrive, so a page refreshed mid-turn
  * reconstructs exactly the message the server persists from the same chunks.
+ *
+ * One exception keeps a long turn's memory bounded: a preliminary tool output
+ * is the tool's whole result so far (a subagent's transcript), and the next
+ * output for the same call replaces it outright. Only the latest one stays in
+ * the buffer; the earlier ones become holes the pump steps over. Subscribers
+ * pump only as fast as they read, so a slow page skips those too instead of
+ * queueing every copy.
  */
 export interface ChunkHub {
   readonly closed: boolean;
-  /** The buffer so far. Readonly; tests and persistence read it, nothing mutates it. */
+  /** The buffer so far, without superseded preliminary outputs. Tests read it. */
   readonly chunks: readonly UIMessageChunk[];
   publish(chunk: UIMessageChunk): void;
   /** Close every part left open by a stopped or failed turn, as chunks. */
@@ -21,7 +28,9 @@ export interface ChunkHub {
 const TERMINAL_TOOL_STATES = new Set(["output-available", "output-error", "output-denied"]);
 
 export function createChunkHub(): ChunkHub {
-  const buffer: UIMessageChunk[] = [];
+  const buffer: (UIMessageChunk | undefined)[] = [];
+  /** Where each tool call's latest preliminary output sits in `buffer`. */
+  const preliminaryAt = new Map<string, number>();
   const subscribers = new Set<() => void>();
   const toolStates = new Map<string, string>();
   const openText = new Set<string>();
@@ -70,12 +79,18 @@ export function createChunkHub(): ChunkHub {
       return closed;
     },
     get chunks() {
-      return buffer;
+      return buffer.filter((chunk) => chunk !== undefined);
     },
 
     publish(chunk) {
       if (closed) return;
       track(chunk);
+      if (chunk.type === "tool-output-available") {
+        const earlier = preliminaryAt.get(chunk.toolCallId);
+        if (earlier !== undefined) buffer[earlier] = undefined;
+        if (chunk.preliminary === true) preliminaryAt.set(chunk.toolCallId, buffer.length);
+        else preliminaryAt.delete(chunk.toolCallId);
+      }
       buffer.push(chunk);
       wake();
     },
@@ -116,7 +131,8 @@ export function createChunkHub(): ChunkHub {
       };
       const pump = () => {
         if (done || controller == null) return;
-        while (index < buffer.length) {
+        // `pull` resumes a subscriber that stopped here for want of room.
+        while (index < buffer.length && (controller.desiredSize ?? 1) > 0) {
           const chunk = buffer[index++];
           if (chunk === undefined) continue;
           try {
@@ -126,7 +142,7 @@ export function createChunkHub(): ChunkHub {
             return;
           }
         }
-        if (closed) {
+        if (closed && index >= buffer.length) {
           stop();
           try {
             controller.close();

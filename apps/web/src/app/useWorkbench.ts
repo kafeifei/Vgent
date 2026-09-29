@@ -378,8 +378,12 @@ export function useWorkbench(token: string) {
           () => false,
         );
         // A rejected send still belongs to this task, even if the user has
-        // switched away while its worktree was being created.
+        // switched away while its worktree was being created. A worktree that
+        // could not be made keeps the message in the log itself (as Cursor
+        // does), so then it is not put back into the composer as well.
         if (!accepted) {
+          const kept = await client.getThread(record.id).then((thread) => thread.messages.length > 0, () => false);
+          if (kept) return true;
           return client.putDraft(record.id, { text, attachments: [...attachments] }).then(
             () => { setFailedFirstSend(record.id); return true; },
             (error: Error) => { toast(error.message); return false; },
@@ -408,8 +412,8 @@ export function useWorkbench(token: string) {
         ),
 
       /** Persist a steer or a next-turn item before clearing the composer. */
-      queueMessage: (threadId: string, text: string, mode: "steer" | "queue" = "steer"): Promise<boolean> =>
-        client.queueMessage(threadId, text, mode).then(
+      queueMessage: (threadId: string, text: string, mode: "steer" | "queue" = "steer", files: FileUIPart[] = []): Promise<boolean> =>
+        client.queueMessage(threadId, text, mode, files).then(
           () => true,
           (error: Error) => {
             toast(error.message);
@@ -578,6 +582,8 @@ export function useWorkbench(token: string) {
 
       getChat: (threadId: string) => chats.get(threadId),
       whenReady: (threadId: string) => chats.whenReady(threadId),
+      /** The task on screen, the only one whose chat follows its turn live. */
+      focusChat: (threadId: string | null) => chats.focus(threadId),
       toast,
     }),
     [activeProjectId, addProject, openProject, chats, client, selectChange, selectThread, selectedThreadId, state.projects, state.threads, thread, toast],

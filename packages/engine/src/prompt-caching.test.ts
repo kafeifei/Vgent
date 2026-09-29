@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import type { ModelMessage } from "ai";
+import { jsonSchema, type ModelMessage } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { createVgentEngine } from "./engine.js";
 import { promptCaching } from "./prompt-caching.js";
@@ -17,6 +17,29 @@ const answer = { content: [{ type: "text" as const, text: "done" }], finishReaso
 const call = (toolName: string, input: object) => ({ content: [{ type: "tool-call" as const, toolCallId: "t1", toolName, input: JSON.stringify(input) }], finishReason: { unified: "tool-calls" as const }, usage, warnings: [] });
 const initial: ModelMessage[] = [{ role: "user", content: "Work carefully" }];
 const plan: TaskState = { goal: "Deliver", items: [{ text: "verify", status: "pending" }] };
+
+it("budgets hosted search schemas only after they enter history, not the entire deferred catalog", async () => {
+  const model = new MockLanguageModelV3({ provider: "codex-subscription.responses", modelId: "gpt-6-astra", doGenerate: answer });
+  const description = "Synthetic deferred schema ".repeat(4000);
+  const parameters = { type: "object" as const, properties: {}, additionalProperties: false };
+  const engine = createVgentEngine({
+    model, repoPath: await temp(), subagents: false, contextTokenBudget: 10000,
+    extraTools: { srv__large: { description, inputSchema: jsonSchema(parameters), deferLoading: true, execute: async () => "done" } },
+  });
+  try {
+    expect((await engine.agent.generate({ messages: initial })).text).toBe("done");
+    expect(model.doGenerateCalls).toHaveLength(1);
+    const discovered: ModelMessage[] = [
+      ...initial,
+      { role: "assistant", content: [
+        { type: "tool-call", toolCallId: "search", toolName: "tool_search", input: { arguments: { query: "large" } }, providerExecuted: true },
+        { type: "tool-result", toolCallId: "search", toolName: "tool_search", output: { type: "json", value: { tools: [{ type: "function", name: "srv__large", description, parameters }] } } },
+      ] },
+    ];
+    await expect(engine.agent.generate({ messages: discovered })).rejects.toThrow(/容量/);
+    expect(model.doGenerateCalls).toHaveLength(1);
+  } finally { await engine.dispose(); }
+});
 
 it("uses SDK options only on supported models and reserves the session header for Codex", () => {
   for (const provider of ["google.generative-ai", "anthropic.messages", "amazon-bedrock", "custom.chat"]) {

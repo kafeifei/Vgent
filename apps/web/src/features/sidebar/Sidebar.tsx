@@ -1,6 +1,4 @@
 import { useState, type ComponentType } from "react";
-import type { Chat } from "@ai-sdk/react";
-import type { UIMessage } from "ai";
 import { ChevronRight, FolderOpen, FolderPlus, ListFilter, PanelLeft, Plus, Search, Settings, SquarePen } from "lucide-react";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ProjectPicker } from "@/components/ProjectPicker";
@@ -69,7 +67,6 @@ export function Sidebar({
   onOpenFolder,
   onPickFolder,
   settingsOpen,
-  getChat,
   onArchive,
   onCheckUncommitted,
   onUnread,
@@ -97,8 +94,6 @@ export function Sidebar({
   onOpenFolder: (repoPath: string) => Promise<void>;
   onPickFolder: () => Promise<string | null>;
   settingsOpen: boolean;
-  /** Live chats only: the sidebar reads the current action off them. */
-  getChat: (threadId: string) => Chat<UIMessage>;
   /** `preserveChanges`: the row's menu confirmed the worktree's uncommitted changes go along. */
   onArchive: (threadId: string, archived: boolean, preserveChanges?: boolean) => void;
   /** How many files a task's worktree has not committed, asked before archiving it. */
@@ -231,7 +226,6 @@ export function Sidebar({
                     key={thread.id}
                     thread={thread}
                     selected={thread.id === selectedThreadId}
-                    chat={thread.status === "running" ? getChat(thread.id) : undefined}
                     onSelect={() => onSelect(thread.id)}
                     onArchive={(archived, preserveChanges) => onArchive(thread.id, archived, preserveChanges)}
                     onCheckUncommitted={() => onCheckUncommitted(thread.id)}

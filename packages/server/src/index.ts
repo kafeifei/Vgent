@@ -180,6 +180,7 @@ export type {
   PermissionMode,
   Project,
   QueuedMessage,
+  QueuedMessageSummary,
   Settings,
   ThreadMessageMetadata,
   ThreadMode,

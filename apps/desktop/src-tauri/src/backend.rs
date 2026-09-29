@@ -1,9 +1,10 @@
+use crate::server_log::ServerLog;
 use serde::Deserialize;
 use std::{
     collections::VecDeque,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
     sync::{mpsc, Arc, Mutex},
     thread,
     time::{Duration, Instant},
@@ -75,6 +76,12 @@ impl From<&str> for SpawnError {
 
 pub struct Backend {
     child: Child,
+    log: ServerLog,
+    /// One message per pipe reader when its pipe closes, so the exit line can
+    /// wait for the server's last words to land first.
+    pipes_closed: mpsc::Receiver<()>,
+    pipes_open: usize,
+    exit_recorded: bool,
 }
 
 /// The server is only ours if the handshake file names the process we spawned;
@@ -193,12 +200,17 @@ impl Backend {
         let child_pid = child.id();
         let stdout = child.stdout.take().ok_or("无法建立内置服务的日志管道。")?;
         let stderr = child.stderr.take().ok_or("无法建立内置服务的日志管道。")?;
+        let log = ServerLog::open(data_dir);
+        log.line("desktop", &format!("启动内置服务，进程 {child_pid}"));
         let errors = Arc::new(Mutex::new(VecDeque::<String>::new()));
         let error_tail = errors.clone();
-        let (stderr_done, stderr_closed) = mpsc::channel();
+        let (pipe_done, pipes_closed) = mpsc::channel();
+        let stderr_log = log.clone();
+        let stderr_done = pipe_done.clone();
         thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                 eprintln!("[backend] {line}");
+                stderr_log.line("stderr", &line);
                 if let Ok(mut tail) = error_tail.lock() {
                     tail.push_back(line.chars().take(1000).collect());
                     while tail.len() > 8 {
@@ -208,6 +220,7 @@ impl Backend {
             }
             let _ = stderr_done.send(());
         });
+        let stdout_log = log.clone();
         thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 // `VGENT_DESKTOP=1` keeps the token off stdout; belt and braces.
@@ -215,10 +228,18 @@ impl Backend {
                     continue;
                 }
                 eprintln!("[backend] {line}");
+                stdout_log.line("stdout", &line);
             }
+            let _ = pipe_done.send(());
         });
 
-        let mut backend = Self { child };
+        let mut backend = Self {
+            child,
+            log,
+            pipes_closed,
+            pipes_open: 2,
+            exit_recorded: false,
+        };
         let connection_path = data_dir.join("connection.json");
         let deadline = Instant::now() + Duration::from_secs(30);
         let result = loop {
@@ -253,10 +274,13 @@ impl Backend {
         match result {
             Ok(ready) => Ok((backend, ready)),
             Err(error) => {
-                backend.shutdown();
                 // A fast startup failure can reach us before the stderr thread
-                // has drained; give the closed pipe a bounded moment.
-                let _ = stderr_closed.recv_timeout(Duration::from_millis(250));
+                // has drained; recording the exit waits a bounded moment for the
+                // closed pipes, which fills the tail below too.
+                backend.shutdown();
+                backend
+                    .log
+                    .line("desktop", &format!("启动失败：{}", error.message()));
                 let detail = errors
                     .lock()
                     .map(|tail| tail.iter().cloned().collect::<Vec<_>>().join("\n"))
@@ -266,8 +290,35 @@ impl Backend {
         }
     }
 
+    pub fn exit_status(&mut self) -> Option<ExitStatus> {
+        self.child.try_wait().ok().flatten()
+    }
+
     pub fn has_exited(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(Some(_)))
+        self.exit_status().is_some()
+    }
+
+    /// Writes how the server ended as the log's last line: a crash (V8 out of
+    /// memory, a native abort) shows up here as a signal. Waits a bounded moment
+    /// for both pipes to close first, so nothing the server said lands after it.
+    /// A bridge process still holding a pipe only costs that moment.
+    ///
+    /// Only the first call writes: the watcher's 意外退出 is not repeated by the
+    /// `shutdown` that follows it.
+    pub fn record_exit(&mut self, how: &str, status: ExitStatus) {
+        if self.exit_recorded {
+            return;
+        }
+        self.exit_recorded = true;
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while self.pipes_open > 0 {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if self.pipes_closed.recv_timeout(left).is_err() {
+                break;
+            }
+            self.pipes_open -= 1;
+        }
+        self.log.line("desktop", &format!("{how}（{status}）"));
     }
 
     fn wait_for_exit(&mut self, duration: Duration) -> bool {
@@ -287,9 +338,11 @@ impl Backend {
     /// to 10s each so engines persist their resume state), closes the listener
     /// and removes `connection.json`. Only a server that ignores that gets killed.
     pub fn shutdown(&mut self) {
-        if self.has_exited() {
+        if let Some(status) = self.exit_status() {
+            self.record_exit("内置服务已退出", status);
             return;
         }
+        self.log.line("desktop", "正在停止内置服务");
         #[cfg(unix)]
         unsafe {
             libc::kill(-(self.child.id() as i32), libc::SIGTERM);
@@ -299,9 +352,12 @@ impl Backend {
             let _ = self.child.kill();
         }
         if self.wait_for_exit(Duration::from_secs(20)) {
+            self.record_stopped();
             return;
         }
         eprintln!("[desktop] 内置服务未及时退出，正在强制终止本应用拥有的进程组。");
+        self.log
+            .line("desktop", "内置服务未及时退出，强制终止进程组");
         #[cfg(unix)]
         unsafe {
             libc::kill(-(self.child.id() as i32), libc::SIGKILL);
@@ -312,6 +368,16 @@ impl Backend {
         }
         if !self.wait_for_exit(Duration::from_secs(2)) {
             eprintln!("[desktop] 内置服务未确认退出；已发送强制终止信号。");
+            self.log
+                .line("desktop", "内置服务未确认退出；已发送强制终止信号");
+            return;
+        }
+        self.record_stopped();
+    }
+
+    fn record_stopped(&mut self) {
+        if let Some(status) = self.exit_status() {
+            self.record_exit("内置服务已停止", status);
         }
     }
 }
@@ -438,6 +504,66 @@ setInterval(() => {{}}, 1000);
         let error = result.err().unwrap();
         assert!(matches!(error, SpawnError::Failed(_)));
         assert!(error.message().contains("数据目录已被另一个实例使用"));
+        // The same words reach the log, followed by how the process ended.
+        let log = std::fs::read_to_string(directory.join("logs/server.log")).unwrap();
+        let said = log
+            .find("[stderr] 测试：数据目录已被另一个实例使用。")
+            .unwrap();
+        let ended = log
+            .find("[desktop] 内置服务已退出（exit status: 2）")
+            .unwrap();
+        assert!(said < ended, "{log}");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// A server that dies under the app (V8 out of memory, a native abort) has no
+    /// terminal to tell; its last words and the signal must be in the log.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn an_unexpected_death_ends_the_log_with_its_signal() {
+        let node = bundled_node();
+        if !node.is_file() {
+            eprintln!("跳过：未准备内置 Node（先跑 scripts/prepare-desktop.mjs）");
+            return;
+        }
+        let directory = scratch("killed");
+        let script = directory.join("main.js");
+        std::fs::write(
+            &script,
+            format!(
+                r#"const fs = require('node:fs');
+fs.writeFileSync({directory:?} + '/connection.json', JSON.stringify({{version:1,url:'http://127.0.0.1:42001',token:'a'.repeat(64),pid:process.pid}}));
+console.log('ready #token=secret');
+setTimeout(() => {{ process.stderr.write('FATAL ERROR: 测试遗言\n', () => process.kill(process.pid, 'SIGKILL')); }}, 100);
+setInterval(() => {{}}, 1000);
+"#
+            ),
+        )
+        .unwrap();
+        let (mut backend, _) = Backend::spawn(&node, &script, &directory, &directory)
+            .unwrap_or_else(|error| panic!("{}", error.message()));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = backend.exit_status() {
+                break status;
+            }
+            assert!(Instant::now() < deadline, "stand-in never died");
+            thread::sleep(Duration::from_millis(20));
+        };
+        backend.record_exit("内置服务意外退出", status);
+        backend.shutdown();
+        let log = std::fs::read_to_string(directory.join("logs/server.log")).unwrap();
+        let lines: Vec<_> = log.lines().collect();
+        assert!(!log.contains("secret"), "{log}");
+        assert!(
+            lines[lines.len() - 2].ends_with("[stderr] FATAL ERROR: 测试遗言"),
+            "{log}"
+        );
+        // Recorded once, by the watcher; the later `shutdown` adds nothing.
+        assert!(
+            lines[lines.len() - 1].ends_with("[desktop] 内置服务意外退出（signal: 9 (SIGKILL)）"),
+            "{log}"
+        );
         std::fs::remove_dir_all(directory).unwrap();
     }
 

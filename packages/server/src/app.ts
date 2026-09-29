@@ -44,7 +44,7 @@ import { contextOptionsFor, createModelCatalog, orderBySource, type ModelCatalog
 import { reasoningFor } from "./reasoning.js";
 import { SUBSCRIPTION_IDS, createSubscriptionService, markHidden, withHiddenModels, type ClaudeLoginStatus, type NativeSubscriptionId, type SubscriptionId } from "./subscriptions.js";
 import { logoutSubscription } from "./subscription-logout.js";
-import { createQueueStore, readQueueText } from "./queue.js";
+import { createQueueStore } from "./queue.js";
 import { asRestoreTarget, lastTurnPair, planRestore, type RestoreTarget } from "./restore.js";
 import { createRunManager, recoverInterruptedThreads } from "./runs.js";
 import { registerStatic } from "./static.js";
@@ -1279,13 +1279,12 @@ export function createApp(options: CreateAppOptions): VgentApp {
   app.post("/api/threads/:id/queue", async (c) => {
     const id = c.req.param("id");
     assertNotArchived(await threadOf(id));
-    const body = (await c.req.json().catch(() => undefined)) as { text?: unknown; mode?: unknown } | undefined;
-    const text = readQueueText(body?.text);
-    const mode = body?.mode ?? "steer";
+    const body = (await c.req.json().catch(() => undefined)) as { text?: unknown; mode?: unknown; files?: unknown } | undefined;
+    const mode = body?.mode ?? (Array.isArray(body?.files) && body.files.length > 0 ? "queue" : "steer");
     if (mode !== "queue" && mode !== "steer") throw new BadRequestError("mode 必须是 queue 或 steer", "invalid_queue_mode");
-    const record = await queue.append(id, text, mode);
+    const record = await queue.append(id, body?.text, mode, body?.files);
     const item = record.queue?.at(-1);
-    if (mode === "steer" && item != null) await runs.steer(id, text, item.id);
+    if (mode === "steer" && item != null) await runs.steer(id, item.text, item.id);
     // A turn can settle between the client seeing 「运行中」 and this write
     // landing. The dispatcher already ran on an empty queue by then, so it is
     // nudged again — it re-checks the status and does nothing unless the
@@ -1318,7 +1317,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const id = c.req.param("id");
     await threadOf(id);
     const body = (await c.req.json().catch(() => undefined)) as { text?: unknown } | undefined;
-    return c.json(await queue.edit(id, c.req.param("itemId"), readQueueText(body?.text)));
+    return c.json(await queue.edit(id, c.req.param("itemId"), body?.text));
   });
 
   app.delete("/api/threads/:id/queue/:itemId", async (c) => {

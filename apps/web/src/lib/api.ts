@@ -1,3 +1,4 @@
+import type { FileUIPart } from "ai";
 import { modelsChanged } from "./modelEvents";
 import { accountsChanged } from "./accountEvents";
 import type { AccountSnapshot } from "./types";
@@ -389,8 +390,8 @@ export function createClient(token: string) {
       api<ThreadRecord>(`/threads/${threadId}/fork`, token, { method: "POST", json: { messageId } }),
 
     /** Durable follow-up; mode chooses current-turn steer or next-turn queue. */
-    queueMessage: (threadId: string, text: string, mode: "steer" | "queue" = "steer") =>
-      api<ThreadRecord>(`/threads/${threadId}/queue`, token, { method: "POST", json: { text, mode } }),
+    queueMessage: (threadId: string, text: string, mode: "steer" | "queue" = "steer", files: FileUIPart[] = []) =>
+      api<ThreadRecord>(`/threads/${threadId}/queue`, token, { method: "POST", json: { text, mode, files } }),
     reorderQueue: (threadId: string, ids: readonly string[]) =>
       api<ThreadRecord>(`/threads/${threadId}/queue/order`, token, { method: "PUT", json: { ids } }),
     steerQueued: (threadId: string, itemId: string) =>

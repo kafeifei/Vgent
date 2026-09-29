@@ -1,8 +1,12 @@
 import { useState } from "react";
 import { ArrowDown, ArrowUp, CornerUpRight, Pencil, Send, X } from "lucide-react";
-import type { QueuedMessage } from "@/lib/types";
+import type { QueuedMessageSummary } from "@/lib/types";
 import { isImeKeyEvent } from "@/lib/ime";
 import { cn } from "@/lib/utils";
+
+export function canSaveQueuedText(item: QueuedMessageSummary, text: string): boolean {
+  return text.trim() !== "" || (item.files?.length ?? 0) > 0;
+}
 
 /**
  * Pending steer and next-turn queue items stay visible above the composer.
@@ -18,7 +22,7 @@ export function QueueStrip({
   onReorder,
   onSteer,
 }: {
-  items: readonly QueuedMessage[];
+  items: readonly QueuedMessageSummary[];
   note?: string | undefined;
   /** Absent while the task is live: nothing may jump the running turn. */
   onSend?: ((itemId: string) => void) | undefined;
@@ -37,8 +41,9 @@ export function QueueStrip({
   const save = (): void => {
     if (editing == null) return;
     const text = editing.text.trim();
-    // An emptied item is a mistake, not a delete — 删除 is right there.
-    if (text !== "") onEdit(editing.id, text);
+    // Attachments survive text-only edits, including an empty body.
+    const item = items.find((entry) => entry.id === editing.id);
+    if (item && canSaveQueuedText(item, text)) onEdit(editing.id, text);
     setEditing(null);
   };
 
@@ -76,9 +81,14 @@ export function QueueStrip({
               }}
               className="min-w-0 flex-1 rounded-sm border border-border-strong bg-bg-inset px-2xs py-3xs text-fg text-xs outline-none"
             />
-          ) : (
+          ) : item.text ? (
             <span title={item.text} className="min-w-0 flex-1 truncate text-fg text-xs">
               {item.text}
+            </span>
+          ) : null}
+          {!!item.files?.length && (
+            <span title={item.files.map((file) => file.filename || "未命名附件").join("、")} className="min-w-0 max-w-[50%] flex-1 truncate text-fg-muted text-xs">
+              {item.files.length} 个附件 · {item.files.map((file) => file.filename || "未命名附件").join("、")}
             </span>
           )}
           {/* 发送 only on the head item, and only when nothing is running. */}
@@ -104,7 +114,7 @@ export function QueueStrip({
               <span>打断并发送</span>
             </button>
           )}
-          {item.mode !== "steer" && onSteer != null && onInterrupt != null && (
+          {!item.files?.length && item.mode !== "steer" && onSteer != null && onInterrupt != null && (
             <button type="button" title="把这条消息引导进当前回合" onClick={() => onSteer(item.id)} className="inline-flex h-lg flex-none items-center gap-3xs rounded-sm px-2xs text-fg-muted text-xs hover:bg-bg-active hover:text-fg">
               <CornerUpRight className="size-sm" />引导
             </button>

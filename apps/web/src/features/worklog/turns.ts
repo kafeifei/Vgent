@@ -1,5 +1,5 @@
 import { getToolName, isToolUIPart, type UIMessage } from "ai";
-import type { QueuedMessage, ThreadMessageMetadata } from "@/lib/types";
+import type { QueuedMessageSummary, ThreadMessageMetadata } from "@/lib/types";
 import { isToolStreaming, type ToolPart } from "./toolMeta";
 
 export type TextPart = Extract<UIMessage["parts"][number], { type: "text" }>;
@@ -111,7 +111,7 @@ function blocksOf(message: UIMessage): Block[] {
  * with an assistant message (a resumed thread) gets a leading turn with no user
  * box.
  */
-export function buildTurns(messages: readonly UIMessage[], queue: readonly QueuedMessage[] = [], live = false): Turn[] {
+export function buildTurns(messages: readonly UIMessage[], queue: readonly QueuedMessageSummary[] = [], live = false): Turn[] {
   const turns: Turn[] = [];
   for (const message of messages) {
     if (message.role === "user") {

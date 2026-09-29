@@ -23,7 +23,7 @@ export type ApprovalDecision = "not-applicable" | "user-approval";
  * `memory` does write, but only inside its own directory outside the repository
  * — never the user's code — so asking for each note would be pure friction.
  */
-const READ_ONLY_TOOLS = new Set(["read", "grep", "glob", "explore", "toolSearch", "updatePlan", "memory"]);
+const READ_ONLY_TOOLS = new Set(["read", "grep", "glob", "explore", "toolSearch", "tool_search", "updatePlan", "memory"]);
 const CUA_READ_ONLY_TOOLS = new Set([
   "cua__list_apps", "cua__list_windows", "cua__get_window_state", "cua__get_accessibility_tree",
   "cua__get_desktop_state", "cua__get_screen_size", "cua__get_cursor_position",
@@ -106,7 +106,7 @@ export function createApprovalPolicy(mode: PermissionMode, alwaysAllow: readonly
         groups.command.length ? `Command-dependent approval: ${groups.command.join(", ")}. The engine checks the full input against its built-in command rules and standing approvals; unmatched calls ${pending}. These checks do not provide OS isolation.` : "",
         groups.approval.length ? `Calls to ${groups.approval.join(", ")} ${pending}.` : "",
         standing.length ? `Applicable standing approvals: ${JSON.stringify(standing)}. Shell entries are command-scoped and every segment must pass the engine's checks.` : "",
-        toolNames.includes("toolSearch") ? `Tools discovered later use the same policy; unrecognized tools ${mode === "allow-all" ? "run without tool approval" : pending}.` : "",
+        toolNames.some((name) => name === "toolSearch" || name === "tool_search") ? `Tools discovered later use the same policy; unrecognized tools ${mode === "allow-all" ? "run without tool approval" : pending}.` : "",
         interactive
           ? "Submit an authorized tool call to let the approval system handle it. Do not ask a separate conversational permission question. Respect a denial; do not route the same operation through another tool to bypass it."
           : "This subagent cannot ask the user for approval. A denied call is a limitation to report, not permission to bypass the policy.",

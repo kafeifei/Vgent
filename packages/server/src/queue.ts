@@ -1,21 +1,63 @@
-import type { UIMessage } from "ai";
+import type { FileUIPart, UIMessage } from "ai";
 import { randomUUID } from "node:crypto";
-import { BadRequestError, ConflictError, NotFoundError } from "./errors.js";
+import { decodeDataUrl } from "./attachments.js";
+import { BadRequestError, ConflictError, NotFoundError, VgentServerError } from "./errors.js";
+import { isDraftMediaType, MAX_DRAFT_ATTACHMENT_BYTES, MAX_DRAFT_ATTACHMENTS } from "./store/drafts.js";
 import type { ThreadStore } from "./store/threads.js";
 import type { QueuedMessage, ThreadRecord } from "./types.js";
 
 /** How many messages one task may keep waiting. */
 export const QUEUE_MAX_ITEMS = 20;
 
-/** Cap on one queued message, so a runaway paste cannot bloat the thread file. */
+/** Cap on one queued message's text, independent of its files. */
 export const QUEUE_ITEM_MAX_BYTES = 32 * 1024;
+/** Decoded bytes per message; encoded URLs across the whole queue are also capped. */
+export const QUEUE_FILES_MAX_BYTES = 20 * 1024 * 1024;
+export const QUEUE_FILE_URLS_MAX_BYTES = 64 * 1024 * 1024;
 
-/**
- * One queued message's text from a request body. Blank is a 400 rather than a
- * silently dropped item: the composer only ever posts what the user typed.
- */
-export function readQueueText(value: unknown): string {
-  if (typeof value !== "string" || value.trim() === "") throw new BadRequestError("text 必须是非空字符串", "invalid_queue_text");
+const filesTooLarge = (message: string): never => {
+  throw new VgentServerError({ message, status: 413, code: "queue_files_too_large" });
+};
+
+/** Persist self-contained data URLs, never ephemeral blob URLs or remote references. */
+export function readQueueFiles(value: unknown): FileUIPart[] {
+  if (value === undefined) return [];
+  const invalid = (): never => { throw new BadRequestError("附件必须包含有效的文件名、类型和 data URL", "invalid_queue_files"); };
+  if (!Array.isArray(value)) return invalid();
+  if (value.length > MAX_DRAFT_ATTACHMENTS) filesTooLarge(`每条消息最多 ${MAX_DRAFT_ATTACHMENTS} 个附件`);
+  let total = 0;
+  return value.map((entry: unknown) => {
+    if (entry == null || typeof entry !== "object") return invalid();
+    const { type, mediaType, filename, url } = entry as Record<string, unknown>;
+    if (type !== "file" || !isDraftMediaType(mediaType) || typeof mediaType !== "string" || typeof url !== "string") return invalid();
+    if (filename !== undefined && (typeof filename !== "string" || filename.length > 255)) return invalid();
+    // Reject oversized encodings before allocating a decoded buffer (percent encoding is at most 3x).
+    if (url.length > MAX_DRAFT_ATTACHMENT_BYTES * 3 + 512) filesTooLarge("单个附件不能超过 10 MB");
+    const prefix = `data:${mediaType}`;
+    if (!url.startsWith(`${prefix},`) && !url.startsWith(`${prefix};base64,`)) return invalid();
+    if (url.startsWith(`${prefix};base64,`)) {
+      const payload = url.slice(prefix.length + 8);
+      if (payload.length > Math.ceil(MAX_DRAFT_ATTACHMENT_BYTES / 3) * 4) filesTooLarge("单个附件不能超过 10 MB");
+      if (payload.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(payload)) return invalid();
+    }
+    let bytes: Uint8Array | undefined;
+    try { bytes = decodeDataUrl(url); } catch { return invalid(); }
+    if (bytes == null) return invalid();
+    if (bytes.byteLength > MAX_DRAFT_ATTACHMENT_BYTES) filesTooLarge("单个附件不能超过 10 MB");
+    total += bytes.byteLength;
+    if (total > QUEUE_FILES_MAX_BYTES) filesTooLarge("每条排队消息的附件合计不能超过 20 MB");
+    return { type: "file" as const, mediaType, url, ...(typeof filename === "string" ? { filename } : {}) };
+  });
+}
+
+const fileUrlBytes = (files: readonly FileUIPart[]): number => files.reduce((sum, file) => sum + Buffer.byteLength(file.url, "utf8"), 0);
+const assertQueueMode = (mode: "queue" | "steer", files: readonly FileUIPart[]): void => {
+  if (mode === "steer" && files.length > 0) throw new BadRequestError("带附件的消息请排队到下一回合，不能转为引导", "queue_files_cannot_steer");
+};
+
+/** Blank text is valid only when the message still carries files. */
+export function readQueueText(value: unknown, hasFiles = false): string {
+  if (typeof value !== "string" || (!hasFiles && value.trim() === "")) throw new BadRequestError("text 必须是字符串；没有附件时不能为空", "invalid_queue_text");
   if (Buffer.byteLength(value, "utf8") > QUEUE_ITEM_MAX_BYTES) {
     throw new BadRequestError(`排队消息超过 ${QUEUE_ITEM_MAX_BYTES / 1024} KB`, "queue_item_too_large");
   }
@@ -34,8 +76,8 @@ export function readQueueText(value: unknown): string {
 export interface QueueStore {
   /** Runs `work` with exclusive access to this thread's queue. */
   locked<T>(threadId: string, work: () => Promise<T>): Promise<T>;
-  append(threadId: string, text: string, mode?: "queue" | "steer"): Promise<ThreadRecord>;
-  edit(threadId: string, itemId: string, text: string): Promise<ThreadRecord>;
+  append(threadId: string, text: unknown, mode?: "queue" | "steer", files?: unknown): Promise<ThreadRecord>;
+  edit(threadId: string, itemId: string, text: unknown): Promise<ThreadRecord>;
   remove(threadId: string, itemId: string): Promise<ThreadRecord>;
   reorder(threadId: string, ids: readonly string[]): Promise<ThreadRecord>;
   setMode(threadId: string, itemId: string, mode: "queue" | "steer"): Promise<ThreadRecord>;
@@ -84,23 +126,31 @@ export function createQueueStore(threads: ThreadStore): QueueStore {
   return {
     locked,
 
-    append: (threadId, text, mode = "queue") =>
+    append: (threadId, value, mode = "queue", fileValue) =>
       locked(threadId, async () => {
         const thread = await load(threadId);
+        const files = readQueueFiles(fileValue);
+        const text = readQueueText(value, files.length > 0);
+        assertQueueMode(mode, files);
         const queue = thread.queue ?? [];
         if (queue.length >= QUEUE_MAX_ITEMS) {
           throw new BadRequestError(`排队最多 ${QUEUE_MAX_ITEMS} 条，先发出或删掉一些`, "queue_full");
         }
-        return write(threadId, [...queue, { id: randomUUID(), text, createdAt: new Date().toISOString(), mode }]);
+        if (queue.reduce((sum, item) => sum + fileUrlBytes(item.files ?? []), fileUrlBytes(files)) > QUEUE_FILE_URLS_MAX_BYTES) {
+          filesTooLarge("排队附件总量已满，请先发出或删掉一些");
+        }
+        return write(threadId, [...queue, { id: randomUUID(), text, createdAt: new Date().toISOString(), mode, ...(files.length ? { files } : {}) }]);
       }),
 
-    edit: (threadId, itemId, text) =>
+    edit: (threadId, itemId, value) =>
       locked(threadId, async () => {
         const thread = await load(threadId);
         const queue = thread.queue ?? [];
-        if (!queue.some((item) => item.id === itemId)) throw new NotFoundError("这条排队消息不存在", "queue_item_not_found");
-        if (queue.some((item) => item.id === itemId && (item.accepted === true || item.delivering === true || item.promoting === true)))
+        const target = queue.find((item) => item.id === itemId);
+        if (!target) throw new NotFoundError("这条排队消息不存在", "queue_item_not_found");
+        if (target.accepted || target.delivering || target.promoting)
           throw new ConflictError("引导已送达，不能再编辑", "steer_already_accepted");
+        const text = readQueueText(value, (target.files?.length ?? 0) > 0);
         return write(
           threadId,
           queue.map((item) => (item.id === itemId ? { ...item, text } : item)),
@@ -141,8 +191,10 @@ export function createQueueStore(threads: ThreadStore): QueueStore {
     setMode: (threadId, itemId, mode) =>
       locked(threadId, async () => {
         const queue = (await load(threadId)).queue ?? [];
-        if (!queue.some((item) => item.id === itemId)) throw new NotFoundError("这条排队消息不存在", "queue_item_not_found");
-        if (queue.some((item) => item.id === itemId && (item.accepted === true || item.delivering === true || item.promoting === true)))
+        const item = queue.find((entry) => entry.id === itemId);
+        if (!item) throw new NotFoundError("这条排队消息不存在", "queue_item_not_found");
+        assertQueueMode(mode, item.files ?? []);
+        if (item.accepted || item.delivering || item.promoting)
           throw new ConflictError("引导已送达", "steer_already_accepted");
         return write(
           threadId,

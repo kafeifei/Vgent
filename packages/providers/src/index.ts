@@ -1,3 +1,4 @@
+export { createOpenAIToolSearch } from "./tool-search.js";
 export { createApiKeyModel } from "./api-key-model.js";
 export { createCodexSubscriptionModel } from "./codex-model.js";
 export type { CodexSubscriptionModelOptions } from "./codex-model.js";

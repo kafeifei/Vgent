@@ -67,6 +67,13 @@ class ResumableTransport extends DefaultChatTransport<UIMessage> {
  * `useChat`, which takes the very `Chat` instance held here.
  *
  * There is no rollback: the server has no route for it.
+ *
+ * Only the task on screen keeps its stream open. The page reaches the server
+ * over HTTP/1.1, which allows six connections per host — `/api/state` takes
+ * one, and a stream per running task took the rest: with five tasks running,
+ * every other request queued behind them and the next task opened stayed on
+ * 「加载中…」 forever. A task left while its turn runs lets go of its stream;
+ * the run itself lives on the server and is joined again on return.
  */
 export class ThreadChats {
   private readonly chats = new Map<string, Chat<UIMessage>>();
@@ -82,6 +89,13 @@ export class ThreadChats {
    * did leave the composer.
    */
   private readonly accepting = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
+  /** The task on screen: the one chat allowed to hold a stream open. */
+  private focused: string | null = null;
+  /**
+   * Chats let go of mid-turn. Their messages stop wherever the stream was cut,
+   * so they must not auto-send off that partial state, nor be read as current.
+   */
+  private readonly detached = new Set<string>();
   /** Bumped by `dispose()`; every in-flight promise checks it before writing. */
   private generation = 0;
 
@@ -108,9 +122,27 @@ export class ThreadChats {
     return chat;
   }
 
-  /** The chat a thread already has, or nothing — unlike `get`, this never creates one. */
+  /**
+   * The chat of the task on screen, or nothing — unlike `get`, this never
+   * creates one. A chat off screen is not following its turn, so what it holds
+   * is not what the task is doing now.
+   */
   peek(threadId: string): Chat<UIMessage> | undefined {
-    return this.chats.get(threadId);
+    return threadId === this.focused ? this.chats.get(threadId) : undefined;
+  }
+
+  /**
+   * The task now on screen, or none. The one before lets go of its stream; this
+   * one joins its turn if it is live, with a fresh history first when it was let
+   * go of mid-turn — `whenReady` waits for that, so call this before it.
+   */
+  focus(threadId: string | null): void {
+    if (this.focused === threadId) return;
+    const previous = this.focused;
+    this.focused = threadId;
+    if (previous != null) this.detach(previous);
+    const summary = threadId == null ? undefined : this.latest.get(threadId);
+    if (summary != null) this.reconcile(summary);
   }
 
   /** Awaits the initial history load, so a view never renders a half-filled chat. */
@@ -156,8 +188,9 @@ export class ThreadChats {
       transport,
       // This belongs on the `Chat`, not on `useChat`: when `useChat` is handed
       // an existing instance it ignores every other `ChatInit` field, so an
-      // approval answered in the UI would never be posted back.
-      sendAutomaticallyWhen: shouldSendAutomatically,
+      // approval answered in the UI would never be posted back. A chat cut off
+      // mid-turn still ends its request, and must not post its partial state.
+      sendAutomaticallyWhen: (options) => !this.detached.has(threadId) && shouldSendAutomatically(options),
       onError: (error) => {
         if (generation !== this.generation) return;
         this.onError(describeTransportError(error));
@@ -181,42 +214,75 @@ export class ThreadChats {
     const generation = this.generation;
     const record = await this.history(threadId);
     if (generation !== this.generation || this.chats.get(threadId) !== chat) return;
-    chat.messages = record.messages;
-    this.hydratedAt.set(threadId, record.updatedAt);
+    this.hydrate(threadId, chat, record);
     // Kicked off, not awaited: `whenReady` must resolve with the history, or
     // the view sits on its spinner for as long as the resumed turn runs.
     // `resume` marks `resuming` synchronously, so the guards still hold.
     if (isLive(this.latest.get(threadId)?.status ?? "idle")) void this.resume(threadId);
   }
 
+  private hydrate(threadId: string, chat: Chat<UIMessage>, record: ThreadRecord): void {
+    chat.messages = record.messages;
+    this.hydratedAt.set(threadId, record.updatedAt);
+    this.detached.delete(threadId);
+  }
+
   /**
-   * Called with every `/api/state` snapshot. A live thread gets re-attached to
-   * its stream; a finished one gets its snapshot refreshed whenever the server
-   * has touched the record since we last read it (a turn that ended in an error
-   * leaves the counts equal and the content different).
+   * Called with every `/api/state` snapshot. The live thread on screen gets
+   * re-attached to its stream; a finished one gets its snapshot refreshed
+   * whenever the server has touched the record since we last read it (a turn
+   * that ended in an error leaves the counts equal and the content different).
    */
   observeThreads(summaries: readonly ThreadSummary[]): void {
     for (const summary of summaries) {
       this.latest.set(summary.id, summary);
-      const chat = this.chats.get(summary.id);
-      if (chat == null) continue;
-
-      if (isLive(summary.status)) {
-        // `ready` still held means the history is in flight; that load starts
-        // the resume itself once the messages are in.
-        if (this.resuming.has(summary.id) || this.ready.has(summary.id)) continue;
-        if (chat.status === "error") chat.clearError();
-        // A settled chat on a live thread means this client did not start the
-        // turn: another window did, or the server's own 排队 dispatcher did. Its
-        // user message is in the record and not in this chat, so the history
-        // has to come first — see `attach`.
-        if (chat.status === "ready") void this.attach(summary, chat);
-        continue;
-      }
-
-      if (chat.status === "error") chat.clearError();
-      this.refreshIfStale(summary, chat);
+      this.reconcile(summary);
     }
+  }
+
+  private reconcile(summary: ThreadSummary): void {
+    const chat = this.chats.get(summary.id);
+    if (chat == null) return;
+
+    if (isLive(summary.status)) {
+      // Off screen, a live chat holds no stream: the run goes on without it.
+      if (summary.id !== this.focused) {
+        this.detach(summary.id);
+        return;
+      }
+      // `ready` still held means the history is in flight; that load starts
+      // the resume itself once the messages are in.
+      if (this.resuming.has(summary.id) || this.ready.has(summary.id)) return;
+      if (chat.status === "error") chat.clearError();
+      // A settled chat on a live thread means this client is not following the
+      // turn: another window or the server's own 排队 dispatcher started it, or
+      // this chat let go of it off screen. The record holds what this chat does
+      // not, so the history has to come first — see `attach`.
+      if (chat.status === "ready") void this.attach(summary, chat);
+      return;
+    }
+
+    if (chat.status === "error") chat.clearError();
+    this.refreshIfStale(summary, chat);
+  }
+
+  /**
+   * Lets go of a chat's stream without stopping its run, which the server owns;
+   * `attach` picks the turn up again.
+   *
+   * A request not yet answered is left alone unless `accepted` says the server
+   * has it: cut too early, an approval answer would never arrive. `send` lets
+   * go once it knows; an automatic send is let go of by the next snapshot.
+   */
+  private detach(threadId: string, accepted = false): void {
+    const chat = this.chats.get(threadId);
+    if (chat == null || this.accepting.has(threadId)) return;
+    const holding = this.resuming.has(threadId) || chat.status === "streaming" || (accepted && chat.status === "submitted");
+    if (!holding) return;
+    this.detached.add(threadId);
+    // What it holds stops mid-turn, so the next attach must read the record.
+    this.hydratedAt.delete(threadId);
+    void chat.stop().catch(() => undefined);
   }
 
   /** Snapshot refresh for a thread that is no longer streaming. */
@@ -231,8 +297,7 @@ export class ThreadChats {
       .then((record) => {
         if (generation !== this.generation || this.chats.get(summary.id) !== chat) return;
         if (chat.status !== "ready" || this.resuming.has(summary.id)) return;
-        chat.messages = record.messages;
-        this.hydratedAt.set(summary.id, record.updatedAt);
+        this.hydrate(summary.id, chat, record);
       })
       .catch((error: unknown) => {
         if (error instanceof Error) this.onError(error);
@@ -263,8 +328,7 @@ export class ThreadChats {
         // Only a settled chat may be replaced wholesale; a resume that slipped
         // in first already owns the message list.
         if (chat.status !== "ready" || this.resuming.has(summary.id)) return;
-        chat.messages = record.messages;
-        this.hydratedAt.set(summary.id, record.updatedAt);
+        this.hydrate(summary.id, chat, record);
       })
       .catch((error: unknown) => {
         if (error instanceof Error) this.onError(error);
@@ -279,7 +343,7 @@ export class ThreadChats {
   /** Attach to the thread's active run. An idle thread answers 204 and resolves. */
   private async resume(threadId: string): Promise<void> {
     const chat = this.chats.get(threadId);
-    if (chat == null || this.resuming.has(threadId)) return;
+    if (chat == null || this.resuming.has(threadId) || threadId !== this.focused) return;
     const generation = this.generation;
     this.resuming.add(threadId);
     try {
@@ -331,6 +395,9 @@ export class ThreadChats {
       if (this.chats.get(threadId) === chat) chat.messages = before;
       throw error;
     }
+    // Sent from a task already left — say a new one whose worktree took a
+    // while: the server has the turn now, and this stream has no one to show it to.
+    if (threadId !== this.focused) this.detach(threadId, true);
   }
 
   /** Client-side abort plus the server-side stop the abort alone cannot do. */
@@ -348,6 +415,7 @@ export class ThreadChats {
     this.resuming.delete(threadId);
     this.latest.delete(threadId);
     this.hydratedAt.delete(threadId);
+    this.detached.delete(threadId);
   }
 
   dispose(): void {
@@ -359,5 +427,7 @@ export class ThreadChats {
     this.resuming.clear();
     this.latest.clear();
     this.hydratedAt.clear();
+    this.detached.clear();
+    this.focused = null;
   }
 }

@@ -1,10 +1,48 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import type { AskUserQuestionsInput, AskUserQuestionsOutput, QuestionAnswer } from "@/lib/types";
 
+type Answers = Record<string, QuestionAnswer>;
+
+/** The foot's primary button: 下一题 turns the page, 继续 submits the card. */
+export type PrimaryAction = { kind: "next"; disabled: boolean } | { kind: "submit"; disabled: boolean; output: AskUserQuestionsOutput };
+
+const isAnswered = (answer: QuestionAnswer | undefined) =>
+  answer != null && (answer.optionIds.length > 0 || (answer.freeform ?? "") !== "");
+
+/**
+ * 下一题 on every page but the last, so answering one question never sends the rest
+ * unanswered; 继续 on the last page, or on any page once every question has an answer.
+ */
+export function primaryAction(input: AskUserQuestionsInput, answers: Answers, page: number): PrimaryAction {
+  const { questions, allowPartialAnswers } = input;
+  const allAnswered = questions.every((q) => isAnswered(answers[q.id]));
+  if (page < questions.length - 1 && !allAnswered) {
+    const current = questions[page];
+    return { kind: "next", disabled: !allowPartialAnswers && !isAnswered(current == null ? undefined : answers[current.id]) };
+  }
+  return {
+    kind: "submit",
+    disabled: allowPartialAnswers ? !questions.some((q) => isAnswered(answers[q.id])) : !allAnswered,
+    output: { action: allowPartialAnswers && !allAnswered ? "partially-answered" : "answered", answers },
+  };
+}
+
+/**
+ * How long after a page turn 继续 ignores clicks: the page turn puts 继续 under
+ * the pointer (and the focus) that just pressed 下一题, so the second click of a
+ * double-click or a repeated Enter would otherwise send the card unfinished.
+ */
+const SUBMIT_GUARD_MS = 600;
+
+/** Whether a click on 继续 is a fresh decision rather than the tail of the page turn. */
+export function submitArmed(turnedAt: number | undefined, now: number, clickCount: number): boolean {
+  return clickCount <= 1 && (turnedAt == null || now - turnedAt >= SUBMIT_GUARD_MS);
+}
+
 /**
  * `askUserQuestions`, Cursor-style: one question per page, numbered options,
- * `‹ ›` paging, 跳过 / 继续 at the foot.
+ * `‹ ›` paging, 跳过 / 下一题 / 继续 at the foot.
  */
 export function QuestionCard({
   id,
@@ -16,7 +54,8 @@ export function QuestionCard({
   onSubmit: (output: AskUserQuestionsOutput) => void;
 }) {
   const [page, setPage] = useState(0);
-  const [answers, setAnswers] = useState<Record<string, QuestionAnswer>>({});
+  const [answers, setAnswers] = useState<Answers>({});
+  const turnedAt = useRef<number | undefined>(undefined);
 
   const questions = input.questions;
   const question = questions[page];
@@ -25,17 +64,19 @@ export function QuestionCard({
   const selected = answers[question.id]?.optionIds ?? [];
   const freeform = answers[question.id]?.freeform ?? "";
 
+  // A cleared text box is no answer: an empty `freeform` would otherwise stand
+  // in for the option picked after it (Claude Code prefers the text).
   const update = (patch: Partial<QuestionAnswer>) =>
     setAnswers((previous) => {
-      const current = previous[question.id] ?? { optionIds: [] };
-      return { ...previous, [question.id]: { ...current, ...patch } };
+      const { freeform: text, ...rest } = { ...(previous[question.id] ?? { optionIds: [] }), ...patch };
+      return { ...previous, [question.id]: text ? { ...rest, freeform: text } : rest };
     });
-
-  const answered = (id: string) => {
-    const answer = answers[id];
-    return answer != null && (answer.optionIds.length > 0 || (answer.freeform ?? "") !== "");
+  const turnPage = (next: number) => {
+    turnedAt.current = performance.now();
+    setPage(next);
   };
-  const canSubmit = input.allowPartialAnswers ? questions.some((q) => answered(q.id)) : questions.every((q) => answered(q.id));
+
+  const primary = primaryAction(input, answers, page);
 
   return (
     <article id={id} className="rounded-lg border border-border bg-bg-elevated px-md py-sm">
@@ -48,7 +89,7 @@ export function QuestionCard({
             type="button"
             aria-label="上一个"
             disabled={page === 0}
-            onClick={() => setPage((value) => Math.max(0, value - 1))}
+            onClick={() => turnPage(Math.max(0, page - 1))}
             className="grid size-lg place-items-center rounded-sm text-fg-faint hover:bg-bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent"
           >
             ‹
@@ -57,7 +98,7 @@ export function QuestionCard({
             type="button"
             aria-label="下一个"
             disabled={page >= questions.length - 1}
-            onClick={() => setPage((value) => Math.min(questions.length - 1, value + 1))}
+            onClick={() => turnPage(Math.min(questions.length - 1, page + 1))}
             className="grid size-lg place-items-center rounded-sm text-fg-faint hover:bg-bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent"
           >
             ›
@@ -129,16 +170,14 @@ export function QuestionCard({
         </button>
         <button
           type="button"
-          disabled={!canSubmit}
-          onClick={() =>
-            onSubmit({
-              action: input.allowPartialAnswers && !questions.every((q) => answered(q.id)) ? "partially-answered" : "answered",
-              answers,
-            })
-          }
+          disabled={primary.disabled}
+          onClick={(event) => {
+            if (primary.kind === "next") turnPage(page + 1);
+            else if (submitArmed(turnedAt.current, performance.now(), event.detail)) onSubmit(primary.output);
+          }}
           className="inline-flex h-xl items-center rounded-md border border-brand bg-brand px-sm font-semibold text-brand-fg text-xs hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
         >
-          继续
+          {primary.kind === "next" ? "下一题" : "继续"}
         </button>
       </div>
     </article>

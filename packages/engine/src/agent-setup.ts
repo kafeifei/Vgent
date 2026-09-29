@@ -1,6 +1,7 @@
 import { dirname, resolve } from "node:path";
 import { createCodingTools } from "@vgent/tools";
-import { toolSearch, type ToolSet } from "ai";
+import { createOpenAIToolSearch, type ProviderConfig } from "@vgent/providers";
+import { toolSearch, type LanguageModel, type ToolSet } from "ai";
 import { buildInstructions, type VgentContext } from "./instructions.js";
 import { hasDeferredTools } from "./mcp.js";
 import { createApprovalPolicy, type PermissionMode } from "./permissions.js";
@@ -21,6 +22,8 @@ export interface AgentSetupOptions {
 
 /** The same assembly path for the top-level agent and its children. */
 export function createAgentSetup(options: AgentSetupOptions & {
+  model?: LanguageModel;
+  providers?: readonly ProviderConfig[] | undefined;
   extraTools?: ToolSet;
   allowedTools?: readonly string[];
   role?: string;
@@ -47,7 +50,12 @@ export function createAgentSetup(options: AgentSetupOptions & {
   const tools: ToolSet = options.allowedTools
     ? Object.fromEntries(options.allowedTools.filter((name) => all[name] != null).map((name) => [name, all[name]!]))
     : all;
-  if (hasDeferredTools(tools)) {
+  const nativeSearch = hasDeferredTools(tools) ? createOpenAIToolSearch(options.model, options.providers) : undefined;
+  if (nativeSearch) {
+    // Keep the generic toolSearch name for old history. Reusing it would make
+    // the provider reinterpret saved function calls as native search items.
+    tools.tool_search = nativeSearch;
+  } else if (hasDeferredTools(tools)) {
     const search = toolSearch();
     tools.toolSearch = {
       ...search,
@@ -69,19 +77,30 @@ export function createAgentSetup(options: AgentSetupOptions & {
       },
     };
   }
-  return {
+  const instructions = buildInstructions({
+    repoPath,
+    ...(projectPath ? { projectPath } : {}),
     tools,
-    toolApproval: policy.toolApproval,
-    instructions: buildInstructions({
-      repoPath,
-      ...(projectPath ? { projectPath } : {}),
-      tools,
-      approvalInstructions: policy.describe(Object.keys(tools).filter((name) => !tools[name]!.deferLoading), interactive),
-      ...(options.context ? { context: options.context } : {}),
-      ...(options.skills ? { skills: options.skills } : {}),
-      ...(options.instructions ? { extra: options.instructions } : {}),
-      ...(options.role ? { role: options.role } : {}),
-      ...(options.plan ? { plan: true } : {}),
-    }),
-  };
+    approvalInstructions: policy.describe(Object.keys(tools).filter((name) => !tools[name]!.deferLoading), interactive),
+    ...(options.context ? { context: options.context } : {}),
+    ...(options.skills ? { skills: options.skills } : {}),
+    ...(options.instructions ? { extra: options.instructions } : {}),
+    ...(options.role ? { role: options.role } : {}),
+    ...(options.plan ? { plan: true } : {}),
+  });
+  // Build instructions while deferred candidates are still hidden by the SDK flag.
+  if (nativeSearch) {
+    for (const [name, definition] of Object.entries(tools)) {
+      if (!definition.deferLoading) continue;
+      const { deferLoading: _, ...candidate } = definition;
+      tools[name] = {
+        ...candidate,
+        providerOptions: {
+          ...candidate.providerOptions,
+          openai: { ...candidate.providerOptions?.openai, deferLoading: true },
+        },
+      };
+    }
+  }
+  return { tools, toolApproval: policy.toolApproval, instructions };
 }

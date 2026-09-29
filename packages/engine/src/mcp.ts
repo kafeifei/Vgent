@@ -142,7 +142,7 @@ export async function connectMcpServers(
   );
 
   return {
-    tools,
+    tools: Object.fromEntries(Object.keys(tools).sort().map((name) => [name, tools[name]!])),
     close: async () => {
       await Promise.all(clients.map((client) => client.close().catch(() => {})));
     },

@@ -7,6 +7,7 @@ import { toFileParts } from "@/features/composer/attachments";
 import type { SlashCommand } from "@/features/composer/slash";
 import type { ChangesView } from "@/features/changes/useChanges";
 import { ArchivedBar } from "@/features/composer/ArchivedBar";
+import { LockedBar } from "@/features/composer/LockedBar";
 import { Composer } from "@/features/composer/Composer";
 import { taskBranch, taskLocation } from "@/features/composer/location";
 import { TaskHeader } from "@/features/taskheader/TaskHeader";
@@ -24,7 +25,7 @@ import type { EngineDescriptor, ModelPick, PermissionMode, ThreadSummary } from 
 import { isLiveThread, type WorkbenchActions } from "./useWorkbench";
 
 export type ThreadViewActions = Pick<WorkbenchActions,
-  "whenReady" | "getChat" | "toast" | "allowTools" | "openPreview" | "openChanges" | "focusTerminal" | "inspectTool" | "forkThread" | "setRightTab" | "openRight" | "toggleLeft" | "compactThread" | "newTask" | "queueMessage" | "send" | "stop" | "rememberModelPick" | "setModel" | "setReasoningEffort" | "setContextWindow" | "setServiceTier" | "setMode" | "sendQueued" | "editQueued" | "deleteQueued" | "reorderQueue" | "steerQueued" | "reclaimWorkspace" | "restoreWorkspace" | "archiveThread" | "countUncommitted"
+  "whenReady" | "getChat" | "focusChat" | "toast" | "allowTools" | "openPreview" | "openChanges" | "focusTerminal" | "inspectTool" | "forkThread" | "setRightTab" | "openRight" | "toggleLeft" | "compactThread" | "newTask" | "queueMessage" | "send" | "stop" | "rememberModelPick" | "setModel" | "setReasoningEffort" | "setContextWindow" | "setServiceTier" | "setMode" | "sendQueued" | "editQueued" | "deleteQueued" | "reorderQueue" | "steerQueued" | "reclaimWorkspace" | "restoreWorkspace" | "archiveThread" | "countUncommitted"
 >;
 
 /** Waits for the thread's history to land before mounting the chat view. */
@@ -59,12 +60,16 @@ export function ThreadView(props: {
 
   useEffect(() => {
     let cancelled = false;
+    const view = latest.current;
     setChat(null);
-    void latest.current.whenReady(thread.id).then(() => {
-      if (!cancelled) setChat(latest.current.getChat(thread.id));
+    // Before `whenReady`: a task left mid-turn reads its history again first.
+    view.focusChat(thread.id);
+    void view.whenReady(thread.id).then(() => {
+      if (!cancelled) setChat(view.getChat(thread.id));
     });
     return () => {
       cancelled = true;
+      view.focusChat(null);
     };
   }, [thread.id]);
 
@@ -242,18 +247,13 @@ function ThreadChatView({
     const text = draft.value.trim();
     if ((text === "" && attachments.length === 0) || sending.current) return;
     if (thread.workspaceState != null || (thread.workspace?.setup?.status === "running" && thread.messageCount === 0)) {
-      actions.toast(thread.workspaceState === "failed" ? "worktree 创建失败，请新建任务" : "正在准备 worktree，请稍候");
+      actions.toast("正在准备 worktree，请稍候");
       return;
     }
-    // Enter steers the active turn; Command+Enter explicitly waits for the next turn.
+    // Enter steers text; files and Command+Enter wait for the next turn.
     if (live) {
-      // The queue holds text only; a message with files waits for the turn to end.
-      if (attachments.length > 0) {
-        actions.toast("带附件的消息不能排队，等这一轮结束再发");
-        return;
-      }
       sending.current = true;
-      void draft.submit(() => actions.queueMessage(thread.id, text, delivery)).finally(() => {
+      void draft.submit(() => actions.queueMessage(thread.id, text, attachments.length ? "queue" : delivery, toFileParts(attachments))).finally(() => {
         sending.current = false;
       });
       return;
@@ -324,6 +324,9 @@ function ThreadChatView({
         {thread.archivedAt != null ? (
           // The draft stays on the server meanwhile, so 取消归档 brings the composer back as it was.
           <ArchivedBar onUnarchive={() => actions.archiveThread(thread.id, false)} />
+        ) : thread.workspaceState === "failed" ? (
+          // Cursor locks the input of an agent whose worktree could not be made; the reason is in the log above.
+          <LockedBar label="worktree 创建失败" />
         ) : (
           <Composer
             value={draft.value}

@@ -32,6 +32,26 @@ describe("helpers", () => {
     expect(safeFileName("截图 1.png", "x")).toBe("截图 1.png");
   });
 
+  it.each([
+    ["a".repeat(200) + ".txt", "a".repeat(116) + ".txt"],
+    ["中".repeat(80) + ".txt", "中".repeat(38) + ".txt"],
+    ["😀".repeat(80) + "a.txt", "😀".repeat(28) + "a.txt"],
+    ["中a😀".repeat(80) + ".txt", "😀" + "中a😀".repeat(14) + ".txt"],
+  ])("keeps a UTF-8 suffix without splitting code points: %s", (name, expected) => {
+    const result = safeFileName(name, "fallback");
+    expect(result).toBe(expected);
+    expect(Buffer.byteLength(result, "utf8")).toBeLessThanOrEqual(120);
+    expect(result.endsWith(".txt")).toBe(true);
+    expect(Buffer.from(result, "utf8").toString("utf8")).toBe(result);
+    expect(result).not.toContain("\uFFFD");
+  });
+
+  it("preserves the fallback when cleaning leaves an empty name", () => {
+    const fallback = "中".repeat(80);
+    expect(safeFileName(undefined, fallback)).toBe(fallback);
+    expect(safeFileName("...\u0000 ", fallback)).toBe(fallback);
+  });
+
   it("tells text from binary by media type or extension", () => {
     expect(isTextAttachment({ mediaType: "text/markdown", filename: "a.md" })).toBe(true);
     expect(isTextAttachment({ mediaType: "application/octet-stream", filename: "main.rs" })).toBe(true);
@@ -62,6 +82,39 @@ describe("prepareAttachments", () => {
     // The stored message is untouched: the log still draws the image.
     expect(messages[0]?.parts[1]?.type).toBe("file");
   });
+
+  it.each(["550e8400-e29b-41d4-a716-446655440000", "消息😀".repeat(80)])(
+    "writes and reuses long Chinese filenames for message %s",
+    async (id) => {
+      const dir = await scratch();
+      const content = "附件原始内容 😀\n第二行";
+      const messages = [
+        {
+          ...userMessage([
+            { type: "text", text: "请看附件" },
+            { type: "file", mediaType: "text/plain", filename: "中".repeat(80) + ".txt", url: dataUrl("text/plain", content) },
+          ]),
+          id,
+        },
+      ];
+      const original = structuredClone(messages);
+      const options = { engine: "codex" as const, dir };
+      const prepared = await prepareAttachments(messages, options);
+      const files = await readdir(dir);
+      expect(files).toEqual([`${safeFileName(id, "message")}-1-${"中".repeat(38)}.txt`]);
+      const filename = files[0]!;
+      expect(Buffer.byteLength(filename, "utf8")).toBeLessThanOrEqual(255);
+      expect(await readFile(join(dir, filename))).toEqual(Buffer.from(content, "utf8"));
+      const note = prepared[0]?.parts[1];
+      expect(note?.type === "text" && note.text).toContain(join(dir, filename));
+      expect(messages).toEqual(original);
+
+      expect(await prepareAttachments(messages, options)).toEqual(prepared);
+      expect(await readdir(dir)).toEqual(files);
+      expect(await readFile(join(dir, filename))).toEqual(Buffer.from(content, "utf8"));
+      expect(messages).toEqual(original);
+    },
+  );
 
   it("keeps images as file parts and inlines text for the in-house engine", async () => {
     const dir = await scratch();

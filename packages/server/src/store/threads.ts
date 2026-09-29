@@ -159,8 +159,16 @@ export function countPendingApprovals(messages: readonly UIMessage[]): number {
 
 export function summarize(record: ThreadRecord): ThreadSummary {
   // `applyUndo` is destructured only to keep it out of `rest`.
-  const { messages, applyUndo: _applyUndo, taskState: _taskState, ...rest } = record;
-  return { ...rest, messageCount: messages.length, pendingApprovals: countPendingApprovals(messages) };
+  const { messages, queue, applyUndo: _applyUndo, taskState: _taskState, ...rest } = record;
+  return {
+    ...rest,
+    ...(queue ? { queue: queue.map(({ files, ...item }) => ({
+      ...item,
+      ...(files?.length ? { files: files.map(({ type, mediaType, filename }) => ({ type, mediaType, ...(filename === undefined ? {} : { filename }) })) } : {}),
+    })) } : {}),
+    messageCount: messages.length,
+    pendingApprovals: countPendingApprovals(messages),
+  };
 }
 
 /**

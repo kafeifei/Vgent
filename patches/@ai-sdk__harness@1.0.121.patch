@@ -59,6 +59,99 @@ index d5f4b9814b52202c343eed96d3bec24269dd1406..e5f5bf27a7d13452782e3adbfc213e23
    }
    // ─── Internals ──────────────────────────────────────────────────────
    async _startPromptTurn(input) {
+diff --git a/dist/bridge/index.d.ts b/dist/bridge/index.d.ts
+index 59db3ed2fba44111e8760e34ce51c86e006d8c3d..2a08c92f46b4f0b726a155eb56782c84d78887d0 100644
+--- a/dist/bridge/index.d.ts
++++ b/dist/bridge/index.d.ts
+@@ -59,6 +59,11 @@ interface BridgeTurn {
+      * Register interest in a host-executed tool result and resolve when the
+      * matching `tool-result` arrives. The adapter emits the `tool-call` event
+      * itself (via {@link emit}) using the same `toolCallId`.
++     *
++     * When `abortSignal` aborts before the result arrives, the request is
++     * withdrawn: the promise rejects with the signal's reason, and a result that
++     * arrives for this `toolCallId` later is dropped rather than buffered or
++     * handed to another request's `matches`.
+      */
+     requestToolResult(input: string | {
+         toolCallId: string;
+@@ -67,6 +72,7 @@ interface BridgeTurn {
+             isError?: boolean;
+             toolResult?: ToolResultPart;
+         }) => boolean;
++        abortSignal?: AbortSignal;
+     }): Promise<{
+         output: unknown;
+         isError?: boolean;
+diff --git a/dist/bridge/index.js b/dist/bridge/index.js
+index 1af4d2859eb41a2c3e891041a55fadeb64e71fc7..eeb473c41e6b86d59cfd191b4ed45ddf0d2b74d8 100644
+--- a/dist/bridge/index.js
++++ b/dist/bridge/index.js
+@@ -235,6 +235,7 @@ async function runBridge(options) {
+   }
+   const pendingToolResults = /* @__PURE__ */ new Map();
+   const bufferedToolResults = [];
++  const expiredToolCallIds = /* @__PURE__ */ new Set();
+   const pendingToolApprovals = /* @__PURE__ */ new Map();
+   const writeBridgeMeta = async (state) => {
+     try {
+@@ -424,11 +425,29 @@ async function runBridge(options) {
+                 bufferedToolResults.splice(bufferedIndex, 1)[0].result
+               );
+             }
+-            return new Promise((resolve) => {
+-              pendingToolResults.set(request.toolCallId, {
+-                resolve,
++            const { abortSignal } = request;
++            if (abortSignal?.aborted) {
++              expiredToolCallIds.add(request.toolCallId);
++              return Promise.reject(abortSignal.reason);
++            }
++            return new Promise((resolve, reject) => {
++              const onAbort = () => {
++                if (pendingToolResults.get(request.toolCallId) !== pending) {
++                  return;
++                }
++                pendingToolResults.delete(request.toolCallId);
++                expiredToolCallIds.add(request.toolCallId);
++                reject(abortSignal.reason);
++              };
++              const pending = {
++                resolve: (result) => {
++                  abortSignal?.removeEventListener("abort", onAbort);
++                  resolve(result);
++                },
+                 matches: request.matches
+-              });
++              };
++              pendingToolResults.set(request.toolCallId, pending);
++              abortSignal?.addEventListener("abort", onAbort, { once: true });
+             });
+           },
+           requestToolApproval: (approvalId) => new Promise((resolve) => {
+@@ -472,6 +491,16 @@ async function runBridge(options) {
+         return;
+       }
+       case "tool-result": {
++        if (expiredToolCallIds.has(msg.toolCallId)) {
++          emitWarning({
++            message: `Dropped a tool result for ${msg.toolCallId}: its request was withdrawn before the result arrived.`
++          });
++          emit({
++            type: "raw",
++            rawValue: { type: "vgent-tool-result-expired", toolCallId: msg.toolCallId }
++          });
++          return;
++        }
+         const result = {
+           output: msg.output,
+           isError: msg.isError,
+@@ -667,4 +696,3 @@ export {
+   HarnessBridgeCapabilityUnsupportedError,
+   runBridge
+ };
+-//# sourceMappingURL=index.js.map
+\ No newline at end of file
 diff --git a/dist/index.d.ts b/dist/index.d.ts
 index 6cd159158c59d2fac375e8038a3631694b745c86..388fc227f412fc19dbd54eebc610065baf0810ac 100644
 --- a/dist/index.d.ts
@@ -142,6 +235,101 @@ index 8cb11d646d2b9388764b84db462c3dd9c9983219..5439a7a1acebec9c9f1877027e07fc8b
    }
  
    // ─── Internals ──────────────────────────────────────────────────────
+diff --git a/src/bridge/index.ts b/src/bridge/index.ts
+index 6f6d2aaa7bfb15c8d3ef73f792362f4bb82af70c..6c4083ba96233e7a848ce1ffae32a4fa6ef7510e 100644
+--- a/src/bridge/index.ts
++++ b/src/bridge/index.ts
+@@ -243,6 +243,11 @@ export interface BridgeTurn {
+    * Register interest in a host-executed tool result and resolve when the
+    * matching `tool-result` arrives. The adapter emits the `tool-call` event
+    * itself (via {@link emit}) using the same `toolCallId`.
++   *
++   * When `abortSignal` aborts before the result arrives, the request is
++   * withdrawn: the promise rejects with the signal's reason, and a result that
++   * arrives for this `toolCallId` later is dropped rather than buffered or
++   * handed to another request's `matches`.
+    */
+   requestToolResult(
+     input:
+@@ -254,6 +259,7 @@ export interface BridgeTurn {
+             isError?: boolean;
+             toolResult?: ToolResultPart;
+           }) => boolean;
++          abortSignal?: AbortSignal;
+         },
+   ): Promise<{
+     output: unknown;
+@@ -542,6 +548,13 @@ export async function runBridge<TStart extends { type: 'start' }>(
+       toolResult?: ToolResultPart;
+     };
+   }> = [];
++  /*
++   * Tool calls whose request was withdrawn before a result arrived (the
++   * runtime stopped waiting for it). A result the host sends for one of them
++   * later has no reader: buffering it would leave it to answer some future
++   * request whose `matches` accepts it.
++   */
++  const expiredToolCallIds = new Set<string>();
+   const pendingToolApprovals = new Map<
+     string,
+     (response: { approved: boolean; reason?: string }) => void
+@@ -798,11 +811,33 @@ export async function runBridge<TStart extends { type: 'start' }>(
+                 bufferedToolResults.splice(bufferedIndex, 1)[0].result,
+               );
+             }
+-            return new Promise(resolve => {
+-              pendingToolResults.set(request.toolCallId, {
+-                resolve,
++            const { abortSignal } = request;
++            if (abortSignal?.aborted) {
++              expiredToolCallIds.add(request.toolCallId);
++              return Promise.reject(abortSignal.reason);
++            }
++            return new Promise((resolve, reject) => {
++              const onAbort = (): void => {
++                if (pendingToolResults.get(request.toolCallId) !== pending) {
++                  return;
++                }
++                pendingToolResults.delete(request.toolCallId);
++                expiredToolCallIds.add(request.toolCallId);
++                reject(abortSignal!.reason);
++              };
++              const pending = {
++                resolve: (result: {
++                  output: unknown;
++                  isError?: boolean;
++                  toolResult?: ToolResultPart;
++                }) => {
++                  abortSignal?.removeEventListener('abort', onAbort);
++                  resolve(result);
++                },
+                 matches: request.matches,
+-              });
++              };
++              pendingToolResults.set(request.toolCallId, pending);
++              abortSignal?.addEventListener('abort', onAbort, { once: true });
+             });
+           },
+           requestToolApproval: approvalId =>
+@@ -852,6 +887,18 @@ export async function runBridge<TStart extends { type: 'start' }>(
+         return;
+       }
+       case 'tool-result': {
++        if (expiredToolCallIds.has(msg.toolCallId)) {
++          emitWarning({
++            message: `Dropped a tool result for ${msg.toolCallId}: its request was withdrawn before the result arrived.`,
++          });
++          // The host still holds the answer; this tells it to send it as the
++          // next turn instead of waiting on a request that no longer exists.
++          emit({
++            type: 'raw',
++            rawValue: { type: 'vgent-tool-result-expired', toolCallId: msg.toolCallId },
++          });
++          return;
++        }
+         const result = {
+           output: msg.output,
+           isError: msg.isError,
 diff --git a/src/utils/bridge-user-message-submitter.ts b/src/utils/bridge-user-message-submitter.ts
 index 96737b2cab0d88f800e01d7b532b31d2d0a4621d..181c7f94dce799a9150a92c88221d1c4faea0669 100644
 --- a/src/utils/bridge-user-message-submitter.ts

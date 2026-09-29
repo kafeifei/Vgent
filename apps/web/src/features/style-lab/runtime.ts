@@ -1,5 +1,5 @@
 import { Chat } from "@ai-sdk/react";
-import { getToolName, isToolUIPart, type ChatTransport, type UIMessage, type UIMessageChunk } from "ai";
+import { getToolName, isToolUIPart, type ChatTransport, type FileUIPart, type UIMessage, type UIMessageChunk } from "ai";
 import type { ApiClient } from "@/lib/api";
 import type { DraftValue } from "@/lib/drafts";
 import type { ChangesResponse, ThreadRecord, ThreadSummary } from "@/lib/types";
@@ -21,6 +21,7 @@ export class StyleSession {
   private listeners = new Set<() => void>();
   private thread: ThreadSummary;
   private draft: DraftValue;
+  private queuedFiles = new Map<string, FileUIPart[]>();
   private plan = PLAN;
   private disposed = false;
   private stopStream: (() => void) | undefined;
@@ -33,6 +34,11 @@ export class StyleSession {
   constructor(readonly scenario: ChatScenario, private notify: (text: string) => void = () => {}, delay = 65) {
     const id = `style-lab-${scenario.id}-${crypto.randomUUID()}`;
     this.thread = { version: 1, id, projectId: "style-lab", title: scenario.label, engine: "vgent", model: "sample-model", status: "idle", createdAt: AT, updatedAt: AT, messageCount: scenario.messages.length, pendingApprovals: 0, ...structuredClone(scenario.thread) };
+    if (scenario.thread?.queue) this.thread.queue = scenario.thread.queue.map((item) => {
+      const files = structuredClone(item.files ?? []);
+      this.queuedFiles.set(item.id, files);
+      return { ...item, files: files.map(({ type, filename, mediaType }) => ({ type, ...(filename != null ? { filename } : {}), mediaType })) };
+    });
     this.draft = structuredClone(scenario.draft ?? { text: "", attachments: [] });
     const transport: ChatTransport<UIMessage> = {
       reconnectToStream: async () => null,
@@ -139,7 +145,8 @@ export class StyleSession {
         if (action === "discard" || action === "commit") this.files = [];
         this.notify(`样例已执行：${action}`);
         this.patch({});
-        return { ...this.thread, messages: this.chat.messages } as ThreadRecord;
+        const { queue, messageCount: _count, pendingApprovals: _pending, ...record } = this.thread;
+        return { ...record, messages: this.chat.messages, ...(queue ? { queue: queue.map((item) => ({ ...item, files: this.queuedFiles.get(item.id) ?? [] })) } : {}) } satisfies ThreadRecord;
       },
       restoreCheckpoint: async () => { this.patch({ restoredTo: undefined }); return { restored: "sample-latest", undo: "sample-undo", files: 2, whole: false }; },
     });
@@ -176,6 +183,23 @@ export class StyleSession {
     this.chat.messages = [{ ...assistant([textPart("已检查聊天组件，接下来继续调整样式。")], crypto.randomUUID()), metadata: { compacted: { before, at: new Date().toISOString() } } }];
     this.patch({ status: "idle" });
   };
-  queue = (text: string, mode: "steer" | "queue" = "queue") => { this.patch({ queue: [...(this.thread.queue ?? []), { id: crypto.randomUUID(), text, mode, createdAt: new Date().toISOString() }] }); return Promise.resolve(true); };
+  queue = (text: string, mode: "steer" | "queue" = "queue", files: FileUIPart[] = []) => {
+    const id = crypto.randomUUID();
+    this.queuedFiles.set(id, structuredClone(files));
+    this.patch({ queue: [...(this.thread.queue ?? []), { id, text, mode: files.length ? "queue" : mode, createdAt: new Date().toISOString(), files: files.map(({ type, filename, mediaType }) => ({ type, ...(filename != null ? { filename } : {}), mediaType })) }] });
+    return Promise.resolve(true);
+  };
+  deleteQueued = (itemId: string) => {
+    this.queuedFiles.delete(itemId);
+    this.patch({ queue: this.thread.queue?.filter((item) => item.id !== itemId) });
+  };
+  sendQueued = async (itemId: string) => {
+    const item = this.thread.queue?.find((entry) => entry.id === itemId);
+    if (!item) return;
+    const files = this.queuedFiles.get(itemId) ?? [];
+    await this.stop();
+    this.deleteQueued(itemId);
+    await this.send(item.text, files, item.id);
+  };
   dispose = () => { this.disposed = true; void this.chat.stop(); this.stopStream?.(); this.listeners.clear(); };
 }

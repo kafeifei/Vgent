@@ -18,7 +18,7 @@ import type {
   ModelCatalog,
   ModelPick,
   PermissionMode,
-  QueuedMessage,
+  QueuedMessageSummary,
   ThreadMode,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -137,7 +137,7 @@ export function Composer({
   mode: ThreadMode;
   onPickMode: (mode: ThreadMode) => void;
   /** Pending steer and queue items, in their current order. */
-  queue?: readonly QueuedMessage[];
+  queue?: readonly QueuedMessageSummary[];
   /** Why the queue is not moving — 已停止 / 出错 / 等审批. Absent while a turn runs. */
   queueNote?: string | undefined;
   /** 「发送」 on the head item. Absent while the task is live. */
@@ -219,7 +219,7 @@ export function Composer({
   const canLeaveMode = !live;
   // A typed follow-up uses the same button as an idle send. Once the caller
   // clears the accepted draft, a running task shows Stop again.
-  const showSend = !live || value.trim().length > 0;
+  const showSend = !live || value.trim().length > 0 || attachments.length > 0;
 
   /**
    * Picking another engine's model can take Plan away. Falling back silently
@@ -595,7 +595,7 @@ export function Composer({
                 }
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
-                  onSubmit(event.metaKey ? "queue" : "steer");
+                  onSubmit(event.metaKey || (live && attachments.length > 0) ? "queue" : "steer");
                 }
               }}
               className={cn(
@@ -663,10 +663,10 @@ export function Composer({
           )}
           <button
             type="button"
-            aria-label={showSend ? (live ? "发送引导" : "发送") : "停止"}
-            title={showSend && live ? "发送引导（⌘↵ 排队）" : undefined}
+            aria-label={showSend ? (live ? (attachments.length > 0 ? "排队" : "发送引导") : "发送") : "停止"}
+            title={showSend && live ? (attachments.length > 0 ? "带附件的消息将在下一回合发送" : "发送引导（⌘↵ 排队）") : undefined}
             onClick={() => {
-              if (showSend) onSubmit("steer");
+              if (showSend) onSubmit(live && attachments.length > 0 ? "queue" : "steer");
               else onStop?.();
               // The click took the focus; the next message is typed without reaching for the mouse.
               textarea.current?.focus();

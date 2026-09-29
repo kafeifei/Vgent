@@ -97,6 +97,24 @@ describe("explore subagent", () => {
     expect(result.summary).toBe("Found the relevant files.");
   });
 
+  it("sends streamed text as a few live snapshots, not one full transcript per token", async () => {
+    const deltas = Array.from({ length: 500 }, (_, index) => `词${index} `);
+    const child = new MockLanguageModelV3({ doStream: {
+      stream: simulateReadableStream({ chunks: [
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "t" },
+        ...deltas.map((delta) => ({ type: "text-delta" as const, id: "t", delta })),
+        { type: "text-end", id: "t" },
+        FINISH_STOP,
+      ], chunkDelayInMs: null, initialDelayInMs: null }),
+    } });
+    const tools = createSubagentTools({ model: child, repoPath, permissionMode: "allow-reads" });
+    const snapshots: UIMessage[] = [];
+    for await (const value of tools.explore!.execute!({ prompt: "Inspect" }, { toolCallId: "child", messages: [] }) as AsyncIterable<UIMessage>) snapshots.push(value);
+    expect(snapshots.length).toBeLessThan(20);
+    expect(snapshots.at(-1)!.parts).toContainEqual(expect.objectContaining({ type: "text", text: deltas.join(""), state: "done" }));
+  });
+
   it.each([undefined, false])("requests supported child summaries without changing effort and respects summary=%s", async (summary) => {
     const child = new MockLanguageModelV3({ provider: "codex-subscription.responses", modelId: "child-model", doStream: {
       stream: simulateReadableStream({ chunks: textStep("Done."), chunkDelayInMs: null, initialDelayInMs: null }),

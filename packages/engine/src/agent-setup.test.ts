@@ -2,6 +2,9 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tool } from "ai";
+import { createModelRegistry, type ProviderConfig } from "@vgent/providers";
+import { createVgentEngine } from "./engine.js";
+import { MockLanguageModelV3 } from "ai/test";
 import { z } from "zod";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createAgentSetup } from "./agent-setup.js";
@@ -71,5 +74,80 @@ describe("shared agent setup", () => {
     expect(plan.instructions).not.toContain("memory");
     expect(plan.instructions).not.toContain("toolSearch");
     expect(plan.instructions).not.toContain("EXTERNAL_SENTINEL");
+  });
+});
+
+
+describe("hosted tool search setup", () => {
+  const model = new MockLanguageModelV3({ provider: "codex-subscription.responses", modelId: "gpt-6-astra" });
+  const candidate = () => tool({
+    description: "PRIVATE_CANDIDATE_DESCRIPTION",
+    inputSchema: z.object({}),
+    deferLoading: true,
+    providerOptions: { openai: { strict: true }, other: { retained: true } },
+    execute: async () => "executed",
+  });
+
+  it("keeps candidates hidden, clones options, and preserves approval and execution guards", async () => {
+    const original = candidate();
+    const extraTools = { srv__private_candidate: original };
+    const setup = createAgentSetup({ repoPath, permissionMode: "allow-reads", model, extraTools });
+    expect(setup.tools.tool_search).toMatchObject({ type: "provider", id: "openai.tool_search", args: {} });
+    expect(setup.tools.toolSearch).toBeUndefined();
+    expect(setup.instructions).toContain("Tools discovered later use the same policy");
+    const converted = setup.tools.srv__private_candidate!;
+    expect(converted).not.toHaveProperty("deferLoading");
+    expect(converted.providerOptions).toEqual({ openai: { strict: true, deferLoading: true }, other: { retained: true } });
+    expect(converted.inputSchema).toBe(original.inputSchema);
+    expect(setup.instructions).not.toContain("srv__private_candidate");
+    expect(setup.instructions).not.toContain("PRIVATE_CANDIDATE_DESCRIPTION");
+    expect(setup.toolApproval({ toolCall: { toolName: "srv__private_candidate", input: {} } })).toBe("user-approval");
+    expect(extraTools.srv__private_candidate).toBe(original);
+    expect(original.deferLoading).toBe(true);
+    expect(original.providerOptions).toEqual({ openai: { strict: true }, other: { retained: true } });
+    await expect(converted.execute!({}, execution)).resolves.toBe("executed");
+    const child = createAgentSetup({ repoPath, permissionMode: "allow-reads", model, extraTools, interactive: false });
+    expect(() => child.tools.srv__private_candidate!.execute!({}, execution)).toThrow(/需要审批/);
+    const closing = createAgentSetup({ repoPath, permissionMode: "allow-all", model, extraTools, canExecute: () => false });
+    expect(() => closing.tools.srv__private_candidate!.execute!({}, execution)).toThrow(/budget exhausted/);
+  });
+
+  it("filters plan tools before search creation and adds no search without deferred candidates", () => {
+    const setup = createAgentSetup({ repoPath, permissionMode: "allow-reads", model, extraTools: { srv__private_candidate: candidate() }, allowedTools: ["read", "grep", "glob"], plan: true });
+    expect(Object.keys(setup.tools)).toEqual(["read", "grep", "glob"]);
+    expect(setup.instructions).not.toContain("toolSearch");
+    expect(setup.instructions).not.toContain("srv__private_candidate");
+    expect(setup.instructions).not.toContain("PRIVATE_CANDIDATE_DESCRIPTION");
+    expect(createAgentSetup({ repoPath, permissionMode: "allow-reads", model }).tools.toolSearch).toBeUndefined();
+  });
+
+  it.each([
+    ["custom-official", "https://api.openai.com/v1", true],
+    ["openai", "https://third-party.example/v1", false],
+  ] as const)("uses configured endpoint rather than %s name in setup and engine", async (id, baseURL, hosted) => {
+    const providers: ProviderConfig[] = [{ id, name: id, apiKey: "fake-key", agents: {
+      vgent: { protocol: "openai", baseURL, models: [{ id: "gpt-6-astra" }] },
+    } }];
+    const spec = `${id}:gpt-6-astra`;
+    const options = { repoPath, permissionMode: "allow-all" as const, providers, extraTools: { external: candidate() } };
+    const setup = createAgentSetup({ ...options, model: createModelRegistry({ providers }).languageModel(spec) });
+    const engine = createVgentEngine({ ...options, model: spec, subagents: false });
+    try {
+      for (const tools of [setup.tools, engine.agent.tools]) {
+        expect(tools.tool_search?.id === "openai.tool_search").toBe(hosted);
+        expect(tools.toolSearch != null).toBe(!hosted);
+        expect(tools.external?.deferLoading).toBe(hosted ? undefined : true);
+        expect(tools.external?.providerOptions?.openai?.deferLoading).toBe(hosted ? true : undefined);
+      }
+    } finally {
+      await engine.dispose();
+    }
+  });
+
+  it("retains generic search and top-level deferral for older models", () => {
+    const setup = createAgentSetup({ repoPath, permissionMode: "allow-reads", model: new MockLanguageModelV3({ provider: "openai.responses", modelId: "gpt-5.3" }), extraTools: { external: candidate() } });
+    expect(setup.tools.toolSearch?.id).not.toBe("openai.tool_search");
+    expect(setup.tools.toolSearch?.description).toContain("matching tools become callable on the next step");
+    expect(setup.tools.external?.deferLoading).toBe(true);
   });
 });

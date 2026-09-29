@@ -369,6 +369,11 @@ describe.skipIf(!hasGit)("deferred worktree creation", () => {
     const failed = await getThread(app, created.id);
     expect(failed.workspaceState).toBe("failed");
     expect(failed.error).toContain("提交");
+    // The message the worktree held back stays on the task and names it, as Cursor keeps it above the failure.
+    expect(failed.messages.map((message) => message.id)).toEqual(["m1"]);
+    expect(failed.title).toBe("开工");
+    expect((await send()).status).toBe(409);
+    expect((await getThread(app, created.id)).messages).toHaveLength(1);
     await app.shutdown();
     const restarted = makeApp(dir);
     expect((await postJson(restarted, `/api/chat/${created.id}`, {

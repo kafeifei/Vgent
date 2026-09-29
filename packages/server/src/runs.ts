@@ -657,6 +657,13 @@ export function createRunManager(options: {
 
     // Subscribe before the engine starts: the hub replays from chunk 0 anyway,
     // but this way the reader is already draining while the turn runs.
+    //
+    // The reader never waits on the disk. `readUIMessageStream` copies the
+    // whole message for every chunk whether or not anyone is reading, so a
+    // reader stuck behind a large thread's save queues one full copy per chunk.
+    // A save still in flight just means a later chunk starts the next one; the
+    // final save after the stream always lands last.
+    let saving: Promise<void> | undefined;
     const reader = (async () => {
       for await (const message of readUIMessageStream({
         stream: run.hub.subscribe(),
@@ -665,11 +672,14 @@ export function createRunManager(options: {
       })) {
         assistant = message;
         const now = Date.now();
-        if (now - lastPersistedAt >= PERSIST_INTERVAL_MS) {
+        if (saving == null && now - lastPersistedAt >= PERSIST_INTERVAL_MS) {
           lastPersistedAt = now;
-          await persist(message).catch((error) => log.warn(`中途保存线程 ${thread.id} 失败`, error));
+          saving = persist(message)
+            .catch((error) => log.warn(`中途保存线程 ${thread.id} 失败`, error))
+            .finally(() => { saving = undefined; });
         }
       }
+      await saving;
     })();
 
     const runHooks: RunHooks = {
@@ -1031,6 +1041,22 @@ export function createRunManager(options: {
   };
 
   /**
+   * 创建 worktree 失败: the first message the worktree held back stays on the
+   * task, the way Cursor keeps it above 「Worktree creation failed」, instead of
+   * vanishing with the refused turn. It names the task, as it would have.
+   */
+  const keepHeldBackMessage = async (threadId: string, uiMessages: unknown): Promise<void> => {
+    const thread = await threads.get(threadId);
+    if (thread == null || thread.workspaceState !== "failed" || thread.messages.length > 0) return;
+    const result = await safeValidateUIMessages({ messages: uiMessages });
+    if (!result.success) return;
+    const kept = result.data.filter((message) => message.role === "user");
+    if (kept.length === 0) return;
+    const title = thread.title === DEFAULT_THREAD_TITLE ? deriveThreadTitle(kept) : undefined;
+    await threads.update(threadId, { messages: kept, ...(title != null ? { title } : {}) });
+  };
+
+  /**
    * Start a turn on a thread. The one path into the engine, whichever side
    * asked: an HTTP `POST /api/chat/:id`, the 排队 dispatcher below, or the
    * 「发送」 route. Everything a turn needs to be a real turn — the setup wait,
@@ -1050,7 +1076,14 @@ export function createRunManager(options: {
     // A fresh worktree may still be installing dependencies: the user could
     // submit their first message the moment the task appeared. A *failed*
     // setup does not hold the turn back — the task simply runs without it.
-    await options.whenWorkspaceReady?.(threadId);
+    try {
+      await options.whenWorkspaceReady?.(threadId);
+    } catch (error) {
+      await keepHeldBackMessage(threadId, uiMessages).catch((failure: unknown) =>
+        log.warn(`保留线程 ${threadId} 的首条消息失败`, failure),
+      );
+      throw error;
+    }
     await whenSetupSettled(threadId);
     // The previous turn's engine may still be persisting its resume state.
     await finishing.get(threadId);
@@ -1170,7 +1203,10 @@ export function createRunManager(options: {
     try {
       // Built the way the web builds it, because from here on it is the same
       // message: `start` stamps its checkpoint and folds it into the history.
-      await startTurn(threadId, [{ id: item.id, role: "user", parts: [{ type: "text", text: item.text }] }]);
+      await startTurn(threadId, [{ id: item.id, role: "user", parts: [
+        ...(item.text.trim() ? [{ type: "text" as const, text: item.text }] : []),
+        ...(item.files ?? []),
+      ] }]);
       return item;
     } catch (error) {
       await queue.putBack(threadId, item).catch((failure: unknown) => log.error(`排队消息放回线程 ${threadId} 失败`, failure));

@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -155,6 +155,8 @@ describe.skipIf(!hasGit)("worktree setup", () => {
 
     const thread = await settledThread(app, created.id);
     expect(thread.workspace?.setup).toMatchObject({ status: "ok", exitCode: 0 });
+    // 「已创建 worktree」 has its span to show.
+    expect(Date.parse(thread.workspace!.created!.finishedAt)).toBeGreaterThanOrEqual(Date.parse(thread.workspace!.created!.startedAt));
     expect(existsSync(join(thread.workspace!.path, "marker"))).toBe(true);
     // The project's own checkout is untouched: `ROOT_WORKTREE_PATH` points at it.
     expect(existsSync(join(repo, "marker"))).toBe(false);
@@ -162,11 +164,12 @@ describe.skipIf(!hasGit)("worktree setup", () => {
     const body = (await request(app, `/api/threads/${created.id}/workspace/setup-log`).then((r) => r.json())) as {
       status: string;
       exitCode?: number;
+      command?: string;
       log: string;
     };
-    expect(body).toMatchObject({ status: "ok", exitCode: 0 });
-    expect(body.log).toContain("$ echo 装好了 > marker");
-    expect(body.log).toContain("第二步");
+    expect(body).toMatchObject({ status: "ok", exitCode: 0, command: "echo 装好了 > marker && echo 第二步" });
+    // Only what the commands printed: it is shown to the user as the script's output.
+    expect(body.log).toBe("第二步\n");
   });
 
   it("hands ROOT_WORKTREE_PATH to the setup commands", async () => {
@@ -175,8 +178,8 @@ describe.skipIf(!hasGit)("worktree setup", () => {
     const created = await worktreeThread(app, repo);
     const thread = await settledThread(app, created.id);
     expect(thread.workspace?.setup?.status).toBe("ok");
-    const body = (await request(app, `/api/threads/${created.id}/workspace/setup-log`).then((r) => r.json())) as { log: string };
-    expect(body.log).toContain(".cursor/worktrees.json");
+    const root = (await readFile(join(thread.workspace!.path, "root.txt"), "utf8")).trim();
+    expect(await realpath(root)).toBe(await realpath(repo));
   });
 
   it("stops at the first failing command, keeps its exit code, and still lets the turn run", async () => {
@@ -186,7 +189,7 @@ describe.skipIf(!hasGit)("worktree setup", () => {
     const created = await worktreeThread(app, repo);
 
     const thread = await settledThread(app, created.id);
-    expect(thread.workspace?.setup).toMatchObject({ status: "failed", exitCode: 3 });
+    expect(thread.workspace?.setup).toMatchObject({ status: "failed", exitCode: 3, error: "setup 脚本失败，退出码 3" });
     expect(existsSync(join(thread.workspace!.path, "marker"))).toBe(false);
 
     const response = await postJson(app, `/api/chat/${created.id}`, {

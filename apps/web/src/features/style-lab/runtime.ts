@@ -116,7 +116,7 @@ export class StyleSession {
       },
       getPlan: async () => ({ content: this.plan, updatedAt: AT }),
       putPlan: async (_id, value) => { this.plan = value; return { content: this.plan, updatedAt: new Date().toISOString() }; },
-      getSetupLog: async () => ({ status: this.thread.workspace?.setup?.status ?? "none", ...(this.thread.workspace?.setup?.exitCode != null ? { exitCode: this.thread.workspace.setup.exitCode } : {}), log: this.scenario.id === "setup-error" ? "$ pnpm install\nERR_PNPM_FETCH_503 registry unavailable\nexit 1" : "$ pnpm install\nResolving packages…" }),
+      getSetupLog: async () => ({ status: this.thread.workspace?.setup?.status ?? "none", ...(this.thread.workspace?.setup?.exitCode != null ? { exitCode: this.thread.workspace.setup.exitCode } : {}), ...(this.thread.workspace?.setup?.command != null ? { command: this.thread.workspace.setup.command } : {}), log: this.scenario.id === "setup-error" ? "Progress: resolved 412, reused 398, downloaded 0, added 0\n ERR_PNPM_FETCH_503  GET https://registry.npmjs.org/ai: Service Unavailable - 503\n" : "Progress: resolved 412, reused 398, downloaded 0, added 0\n" }),
       listChanges: async () => ({ repoPath: ROOT, branch: "style/chat-layout", files: [...this.files], lastTurn: true }),
       getFileDiff: async (_id, path) => ({ path, status: "modified", binary: false, diff: path === "src/chat.ts" ? DIFF : `--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,${PLAN.split("\n").length} @@\n${PLAN.split("\n").map((line) => `+${line}`).join("\n")}\n`, truncated: false }),
       revertFile: async (_id, path) => { this.files = this.files.filter((file) => file.path !== path); return { path }; },

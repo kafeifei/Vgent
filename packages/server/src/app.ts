@@ -198,6 +198,11 @@ function readPreserveChanges(value: unknown): boolean {
 }
 
 /** 模式 from a request body. Absent means「不改」; anything but the two words is a 400. */
+/** 「创建 worktree」's span, ending now. */
+function createdSince(startedAt: string): NonNullable<ThreadWorkspace["created"]> {
+  return { startedAt, finishedAt: new Date().toISOString() };
+}
+
 function readThreadMode(value: unknown): ThreadMode {
   if (value === "plan" || value === "agent") return value;
   throw new BadRequestError('mode 只能是 "plan" 或 "agent"', "invalid_mode");
@@ -927,10 +932,11 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const workspace = thread.workspace;
     if (workspace?.reclaimed !== true || workspace.snapshotPath == null) return undefined;
     const project = await projectOf(thread);
+    const startedAt = new Date().toISOString();
     const { branch } = await restoreWorktree({ dataDir, project, thread, snapshotPath: workspace.snapshotPath });
     const record = await threads.update(thread.id, {
       ...patch,
-      workspace: { mode: "worktree", path: workspace.path, branch, baseCommit: workspace.baseCommit },
+      workspace: { mode: "worktree", path: workspace.path, branch, baseCommit: workspace.baseCommit, created: createdSince(startedAt) },
     });
     if (record.workspace != null) setupWorkspace(thread.id, record.workspace, project);
     void discardSnapshot(dataDir, thread.id, workspace.snapshotPath).catch((error: unknown) => log.warn(`线程 ${thread.id} 用过的归档快照没删掉`, error));
@@ -1014,6 +1020,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     return c.json({
       status: setup?.status ?? "none",
       ...(setup?.exitCode != null ? { exitCode: setup.exitCode } : {}),
+      ...(setup?.command != null ? { command: setup.command } : {}),
       log: await readSetupLog(dataDir, thread.id),
     });
   });
@@ -1112,7 +1119,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     if (body?.deferWorkspace === true) {
       const pending = (async () => {
         try {
-          const workspace = await createWorktree({ dataDir, project, threadId: record.id });
+          const workspace = { ...(await createWorktree({ dataDir, project, threadId: record.id })), created: createdSince(record.createdAt) };
           await threads.update(record.id, { workspace, workspaceState: undefined });
           setupWorkspace(record.id, workspace, project);
         } catch (error) {
@@ -1129,7 +1136,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     }
     // Legacy callers still wait for creation and lose the thread if it fails.
     try {
-      const workspace = await createWorktree({ dataDir, project, threadId: record.id });
+      const workspace = { ...(await createWorktree({ dataDir, project, threadId: record.id })), created: createdSince(record.createdAt) };
       const withWorkspace = await threads.update(record.id, { workspace });
       setupWorkspace(record.id, workspace, project);
       return c.json(withWorkspace);

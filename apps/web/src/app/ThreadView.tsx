@@ -9,7 +9,6 @@ import { ArchivedBar } from "@/features/composer/ArchivedBar";
 import { Composer } from "@/features/composer/Composer";
 import { taskBranch, taskLocation } from "@/features/composer/location";
 import { TaskHeader } from "@/features/taskheader/TaskHeader";
-import { SetupNotice } from "@/features/workspace/SetupNotice";
 import { FileAccessProvider } from "@/features/files/fileAccess";
 import { WorkLog } from "@/features/worklog/WorkLog";
 import { pendingQueue, type QueueItem } from "@/features/worklog/queue";
@@ -293,7 +292,6 @@ function ThreadChatView({
 
   return (
     <>
-      {/* One grid row: the header, plus the setup line when there is one. */}
       <div className="min-w-0">
         <TaskHeader
           thread={thread}
@@ -303,13 +301,6 @@ function ThreadChatView({
           onCheckUncommitted={() => actions.countUncommitted(thread.id)}
           onRestoreWorkspace={() => actions.restoreWorkspace(thread.id)}
           onToggleLeft={actions.toggleLeft}
-        />
-        <SetupNotice
-          setup={thread.workspace?.setup}
-          onOpenLog={() => {
-            actions.setRightTab("term");
-            actions.openRight();
-          }}
         />
       </div>
 

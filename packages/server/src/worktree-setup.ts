@@ -19,7 +19,7 @@
  */
 import { execFile, spawn } from "node:child_process";
 import { appendFile, cp, lstat, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { ThreadStore } from "./store/threads.js";
 import type { Logger, WorkspaceSetup } from "./types.js";
@@ -213,8 +213,24 @@ export interface RunSetupOptions {
   signal?: AbortSignal;
 }
 
-/** Runs the spec's steps in order, stopping at the first failure. Returns the exit code. */
-export async function runSetup(options: RunSetupOptions): Promise<number> {
+/** How a setup ended: its exit code, and on failure the sentence the user reads. */
+export interface SetupResult {
+  exitCode: number;
+  error?: string;
+}
+
+/** The setup as one shell line — what the 终端 tab titles it with. */
+export function setupCommandOf(spec: SetupSpec, projectPath: string): string {
+  return spec.kind === "script" ? `sh ${relative(projectPath, spec.scriptPath)}` : spec.commands.join(" && ");
+}
+
+/**
+ * Runs the spec's steps in order, stopping at the first failure. The log holds
+ * only what the steps printed — it is shown to the user as the script's
+ * output, the way Cursor shows it — so the exit code and the reason are
+ * returned, not written into it.
+ */
+export async function runSetup(options: RunSetupOptions): Promise<SetupResult> {
   const path = setupLogPath(options.dataDir, options.threadId);
   await writeFile(path, "", { mode: 0o600 });
   const append = createAppender(path);
@@ -225,37 +241,23 @@ export async function runSetup(options: RunSetupOptions): Promise<number> {
 
   const includeFiles = options.includeFiles ?? [];
   if (includeFiles.length > 0) {
-    await append(`# ${INCLUDE_KEY}: ${includeFiles.join(", ")}\n`);
     try {
-      const copied = await copyIncludeFiles(options.projectPath, options.workspacePath, includeFiles);
-      await append(`从项目目录复制了 ${copied} 个被忽略的文件\n`);
+      await copyIncludeFiles(options.projectPath, options.workspacePath, includeFiles);
     } catch (error) {
-      await append(`复制失败：${error instanceof Error ? error.message : String(error)}\n\n退出码 1\n`);
-      return 1;
+      return { exitCode: 1, error: `复制 ${INCLUDE_KEY} 失败：${error instanceof Error ? error.message : String(error)}` };
     }
   }
   const spec = options.spec;
-  if (spec == null) {
-    await append("\n退出码 0\n");
-    return 0;
-  }
+  if (spec == null) return { exitCode: 0 };
 
-  const steps: Array<{ label: string; argv: string[] }> =
-    spec.kind === "script"
-      ? [{ label: `sh ${spec.scriptPath}`, argv: [spec.scriptPath] }]
-      : spec.commands.map((command) => ({ label: command, argv: ["-c", command] }));
-
-  await append(`# ${spec.configPath} · ${spec.key}\n`);
-  for (const step of steps) {
-    await append(`$ ${step.label}\n`);
-    const code = await runStep(step.argv, { cwd: options.workspacePath, env, signal, append });
+  const steps = spec.kind === "script" ? [[spec.scriptPath]] : spec.commands.map((command) => ["-c", command]);
+  for (const argv of steps) {
+    const code = await runStep(argv, { cwd: options.workspacePath, env, signal, append });
     if (code !== 0) {
-      await append(signal.aborted ? `\n超时或已取消，退出码 ${code}\n` : `\n退出码 ${code}\n`);
-      return code;
+      return { exitCode: code, error: signal.aborted ? "setup 脚本超时，已终止" : `setup 脚本失败，退出码 ${code}` };
     }
   }
-  await append("\n退出码 0\n");
-  return 0;
+  return { exitCode: 0 };
 }
 
 // --- tracking -----------------------------------------------------------
@@ -292,20 +294,24 @@ export function startSetup(options: StartSetupOptions): void {
     ]);
     if (spec == null && includeFiles.length === 0) return;
     const startedAt = new Date().toISOString();
-    await options.onStatus({ status: "running", startedAt });
-    let exitCode = 1;
+    const command = spec == null ? undefined : setupCommandOf(spec, options.projectPath);
+    await options.onStatus({ status: "running", startedAt, ...(command != null ? { command } : {}) });
+    let result: SetupResult;
     try {
-      exitCode = await runSetup({ ...options, ...(spec != null ? { spec } : {}), includeFiles });
+      result = await runSetup({ ...options, ...(spec != null ? { spec } : {}), includeFiles });
     } catch (error) {
       log.warn(`工作目录准备失败 (thread ${options.threadId})`, error);
+      result = { exitCode: 1, error: `setup 脚本没能运行：${error instanceof Error ? error.message : String(error)}` };
     }
     await options.onStatus({
-      status: exitCode === 0 ? "ok" : "failed",
+      status: result.exitCode === 0 ? "ok" : "failed",
       startedAt,
       finishedAt: new Date().toISOString(),
-      exitCode,
+      exitCode: result.exitCode,
+      ...(command != null ? { command } : {}),
+      ...(result.error != null ? { error: result.error } : {}),
     });
-    if (exitCode !== 0) log.warn(`工作目录准备失败 (thread ${options.threadId})，退出码 ${exitCode}`);
+    if (result.exitCode !== 0) log.warn(`工作目录准备失败 (thread ${options.threadId})，退出码 ${result.exitCode}`);
   })().catch((error: unknown) => log.warn(`工作目录准备出错 (thread ${options.threadId})`, error));
 
   inflight.set(options.threadId, task);
@@ -337,7 +343,10 @@ export async function failInterruptedSetups(threads: ThreadStore, log: Logger = 
     if (workspace?.setup?.status !== "running") continue;
     await threads
       .update(summary.id, {
-        workspace: { ...workspace, setup: { ...workspace.setup, status: "failed", finishedAt: new Date().toISOString() } },
+        workspace: {
+          ...workspace,
+          setup: { ...workspace.setup, status: "failed", finishedAt: new Date().toISOString(), error: "setup 脚本因 Vgent 重启中断" },
+        },
       })
       .catch((error) => log.warn(`标记线程 ${summary.id} 的工作目录准备失败`, error));
   }

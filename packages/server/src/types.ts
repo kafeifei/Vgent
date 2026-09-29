@@ -30,6 +30,10 @@ export interface WorkspaceSetup {
   startedAt: string;
   finishedAt?: string;
   exitCode?: number;
+  /** What ran, as one shell line — the commands joined by `&&`, or the script. The 终端 tab's title for it. */
+  command?: string;
+  /** Why it failed, as the one sentence shown under 「运行 setup 脚本失败」. */
+  error?: string;
 }
 
 /**
@@ -47,6 +51,11 @@ export interface ThreadWorkspace {
   reclaimed?: boolean;
   /** The snapshot a reclaimed worktree can be restored from. */
   snapshotPath?: string;
+  /**
+   * When 「创建 worktree」 started and finished — made new, or put back by
+   * 取消归档. Absent on a task from before it was kept.
+   */
+  created?: { startedAt: string; finishedAt: string };
   /** Progress of the project's setup script; absent means there was none to run. */
   setup?: WorkspaceSetup;
 }

@@ -64,7 +64,7 @@ export function TerminalPanel({
     let cancelled = false;
     void client.getSetupLog(threadId).then(
       (body) => {
-        if (!cancelled) setSetup(body.log === "" ? null : body);
+        if (!cancelled) setSetup(body.status === "none" ? null : body);
       },
       () => {
         if (!cancelled) setSetup(null);
@@ -80,7 +80,7 @@ export function TerminalPanel({
     if (setup == null) return collected;
     const head: TerminalEntry = {
       id: "worktree-setup",
-      command: "worktree setup",
+      command: setup.command ?? "setup-worktree",
       output: setup.log,
       state: setup.status === "running" ? "running" : setup.status === "failed" ? "error" : "done",
       ...(setup.exitCode != null ? { exitCode: setup.exitCode } : {}),

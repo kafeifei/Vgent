@@ -18,6 +18,8 @@ export interface ChatScenario {
   draft?: DraftValue;
 }
 export const AT = "2026-09-26T08:30:00.000Z";
+/** `AT` plus some seconds, for spans that need a duration to show. */
+const AT_PLUS = (seconds: number): string => new Date(Date.parse(AT) + seconds * 1000).toISOString();
 export const ROOT = "/style-lab/sample-project";
 
 export const IMAGE = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(SVG)}`;
@@ -89,8 +91,8 @@ export const SCENARIOS: ChatScenario[] = [
   { id: "no-output", group: "异常与恢复", label: "空回复", hint: "模型结束但没有内容的兜底状态。", messages: [user("检查代码。"), assistant([])] },
   { id: "compacted", group: "异常与恢复", label: "上下文已压缩", hint: "压缩标记、摘要与上下文占用。", messages: [{ ...assistant([textPart("之前已检查 24 个组件，剩余输入框和文件预览待验收。")]), metadata: { compacted: { before: 48, at: AT }, usage: { inputTokens: 365000, outputTokens: 350, totalTokens: 365350 } } }, user("继续检查。", "user-2"), assistant([textPart("从输入框继续。")], "assistant-2")] },
   { id: "restored", group: "异常与恢复", label: "回到检查点", hint: "被撤销的回合与回到最新按钮。", messages: settled, thread: { restoredTo: { messageId: "user-1", undoCommit: "sample-undo", at: AT } } },
-  { id: "setup", group: "任务与工作区", label: "环境准备中", hint: "任务标题下的准备状态和日志。", messages: [user("开始检查。")], thread: { workspace: { ...workspace, setup: { status: "running", startedAt: AT } } }, tab: "term" },
-  { id: "setup-error", group: "任务与工作区", label: "环境准备失败", hint: "失败通知与安装日志。", messages: settled, thread: { workspace: { ...workspace, setup: { status: "failed", startedAt: AT, finishedAt: AT, exitCode: 1 } } }, tab: "term" },
+  { id: "setup", group: "任务与工作区", label: "环境准备中", hint: "第一条消息下的创建 worktree 与 setup 脚本两行。", messages: [user("开始检查。")], thread: { workspace: { ...workspace, created: { startedAt: AT, finishedAt: AT_PLUS(2) }, setup: { status: "running", startedAt: new Date().toISOString(), command: "pnpm install" } } }, tab: "term" },
+  { id: "setup-error", group: "任务与工作区", label: "环境准备失败", hint: "失败原因与输出末尾。", messages: settled, thread: { workspace: { ...workspace, created: { startedAt: AT, finishedAt: AT_PLUS(2) }, setup: { status: "failed", startedAt: AT_PLUS(2), finishedAt: AT_PLUS(16), exitCode: 1, command: "pnpm install", error: "setup 脚本失败，退出码 1" } } }, tab: "term" },
   { id: "reclaimed", group: "任务与工作区", label: "工作区已回收", hint: "目录回收提示和恢复操作。", messages: settled, thread: { workspace: { ...workspace, reclaimed: true, snapshotPath: "/style-lab/snapshot" } } },
   { id: "archived", group: "任务与工作区", label: "任务已归档", hint: "归档后的输入区与恢复任务。", messages: settled, thread: { archivedAt: AT } },
   { id: "files", group: "详情面板", label: "文件树与预览", hint: "浏览样例目录，预览 Markdown、代码和图片。", messages: settled, tab: "files" },

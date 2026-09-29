@@ -56,6 +56,7 @@ export function Turn({
   actions,
   allowlist,
   drawings,
+  afterUser,
 }: {
   turn: TurnModel;
   isLast: boolean;
@@ -66,6 +67,8 @@ export function Turn({
   allowlist: readonly string[];
   /** Every SVG the task has written, as it stood when this turn ended. */
   drawings: ReadonlyMap<string, string>;
+  /** Rows that belong between the message and the work — the worktree setup under the first one. */
+  afterUser?: ReactNode;
 }) {
   const { ref, pinned } = usePinned(isLast);
   // The reply, its actions and the output cards wait until the turn has settled.
@@ -128,6 +131,7 @@ export function Turn({
           )}
         </div>
       )}
+      {afterUser}
 
       {sections.map((section) => {
         if (section.kind === "steer") return (

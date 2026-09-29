@@ -1,7 +1,5 @@
-import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
 import { CHATGPT_CODEX_BASE_URL, getCodexTokenProvider } from "@vgent/providers";
-import { DEFAULT_CODEX_DATA_DIR, type CodexAuthEnvironment } from "@vgent/engines";
+import { DEFAULT_CODEX_DATA_DIR, prepareCodexHome, type CodexAuthEnvironment } from "@vgent/engines";
 import type { LanguageModelUsage, ModelMessage, TextStreamPart, ToolSet } from "ai";
 import { CodexAppServer, type CodexNotification } from "./codex-app-server.js";
 import type { EngineContext, EngineRunner } from "./registry.js";
@@ -104,7 +102,7 @@ export async function createNativeCodexRunner(
   ctx: EngineContext,
   options: { model?: string; effort?: string; serviceTier?: string; codexConfig?: Obj; auth?: CodexAuthEnvironment },
 ): Promise<EngineRunner> {
-  const home = await mkdir(join(DEFAULT_CODEX_DATA_DIR, "codex-home"), { recursive: true }).then(() => join(DEFAULT_CODEX_DATA_DIR, "codex-home"));
+  const home = await prepareCodexHome(DEFAULT_CODEX_DATA_DIR);
   const credential = options.auth == null ? await getCodexTokenProvider().getAccessToken() : undefined;
   const baseUrl = options.auth?.OPENAI_BASE_URL ?? CHATGPT_CODEX_BASE_URL;
   const key = options.auth?.OPENAI_API_KEY ?? credential?.accessToken;

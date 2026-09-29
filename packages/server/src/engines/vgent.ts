@@ -130,11 +130,8 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
         join(homedir(), ".agents", "skills"),
         join(homedir(), ".claude", "skills"),
       ]);
-      // ~/.agents/AGENTS.md plus the project's AGENTS.md / CLAUDE.md — the
-      // rules the user already wrote down for this repo hold here too.
-      const standing = agentInstructionsSection(
-        await loadAgentInstructions({ repoPath: ctx.project.repoPath, projectPath: ctx.projectPath }),
-      );
+      // ~/.agents/AGENTS.md plus the repository's AGENTS.md.
+      const standing = agentInstructionsSection(await loadAgentInstructions({ repoPath: ctx.project.repoPath }));
       const cua = cuaBinary == null ? undefined : await connectMcpServers([cuaMcpConfig(cuaBinary)], { log: ctx.log });
       const cuaTools = cua == null ? {} : onlyCuaTools(cua.tools);
       if (cua != null && Object.keys(cuaTools).length === 0) {

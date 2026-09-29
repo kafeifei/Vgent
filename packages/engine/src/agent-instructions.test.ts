@@ -6,48 +6,37 @@ import { agentInstructionsSection, loadAgentInstructions } from "./agent-instruc
 
 let root: string;
 let home: string;
-let project: string;
-let worktree: string;
+let repo: string;
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "vgent-agent-instructions-"));
   home = join(root, "home");
-  project = join(root, "project");
-  worktree = join(root, "worktree");
-  await Promise.all([join(home, ".agents"), join(home, ".claude"), join(home, ".codex"), project, worktree].map((dir) => mkdir(dir, { recursive: true })));
+  repo = join(root, "repo");
+  await Promise.all([join(home, ".agents"), join(home, ".claude"), join(home, ".codex"), repo].map((dir) => mkdir(dir, { recursive: true })));
 });
 
 describe("loadAgentInstructions", () => {
-  it("reads the global file first, then the project's, and takes a git-ignored file from the project checkout", async () => {
+  it("reads the global AGENTS.md first, then the repository's", async () => {
     await writeFile(join(home, ".agents", "AGENTS.md"), "始终用中文回复。\n");
-    await writeFile(join(project, "AGENTS.md"), "改完合到 main 再发 debug。");
-    await writeFile(join(project, "CLAUDE.md"), "旧的项目说明");
-    await writeFile(join(worktree, "CLAUDE.md"), "worktree 自己的项目说明");
+    await writeFile(join(repo, "AGENTS.md"), "改完合到 main 再发 debug。");
 
-    const files = await loadAgentInstructions({ repoPath: worktree, projectPath: project, home });
-
-    expect(files).toEqual([
+    expect(await loadAgentInstructions({ repoPath: repo, home })).toEqual([
       { path: join(home, ".agents", "AGENTS.md"), content: "始终用中文回复。" },
-      { path: join(project, "AGENTS.md"), content: "改完合到 main 再发 debug。" },
-      { path: join(worktree, "CLAUDE.md"), content: "worktree 自己的项目说明" },
+      { path: join(repo, "AGENTS.md"), content: "改完合到 main 再发 debug。" },
     ]);
   });
 
-  it("leaves Claude Code's and Codex's own global files to them", async () => {
+  it("leaves each harness's own files to it", async () => {
     await writeFile(join(home, ".claude", "CLAUDE.md"), "Claude Code 的规矩");
     await writeFile(join(home, ".codex", "AGENTS.md"), "Codex 的规矩");
+    await writeFile(join(repo, "CLAUDE.md"), "@AGENTS.md");
 
-    expect(await loadAgentInstructions({ repoPath: worktree, home })).toEqual([]);
+    expect(await loadAgentInstructions({ repoPath: repo, home })).toEqual([]);
   });
 
-  it("keeps identical text once and skips empty files", async () => {
-    await writeFile(join(worktree, "AGENTS.md"), "same");
-    await writeFile(join(worktree, "CLAUDE.md"), "same\n");
+  it("skips empty files", async () => {
     await writeFile(join(home, ".agents", "AGENTS.md"), "  \n");
-
-    const files = await loadAgentInstructions({ repoPath: worktree, home });
-
-    expect(files).toEqual([{ path: join(worktree, "AGENTS.md"), content: "same" }]);
+    expect(await loadAgentInstructions({ repoPath: repo, home })).toEqual([]);
   });
 
   it("renders nothing when there are no files", () => {

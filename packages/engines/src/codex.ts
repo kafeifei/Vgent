@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { rename, rm, stat, symlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -85,6 +87,28 @@ export interface CodexEngine {
 
 export const DEFAULT_CODEX_DATA_DIR = join(homedir(), ".vgent", "harness", "codex");
 
+/**
+ * The private `CODEX_HOME` under `dataDir` (see {@link createCodexEngine}),
+ * with the user's own global `AGENTS.md` linked in: isolating the config must
+ * not also drop the rules Codex follows everywhere else. A symlink, so edits
+ * apply on the next turn; replaced by rename, so concurrent engines never see
+ * it missing.
+ */
+export async function prepareCodexHome(dataDir: string, env: NodeJS.ProcessEnv = process.env): Promise<string> {
+  const home = await ensureDirectory(join(dataDir, "codex-home"), 0o700);
+  const own = join(resolve(env.CODEX_HOME ?? join(homedir(), ".codex")), "AGENTS.md");
+  const link = join(home, "AGENTS.md");
+  if (own === link) return home;
+  if (await stat(own).then(() => false, () => true)) {
+    await rm(link, { force: true });
+    return home;
+  }
+  const staged = `${link}.${randomUUID()}`;
+  await symlink(own, staged);
+  await rename(staged, link);
+  return home;
+}
+
 /** The authentication environment the Codex adapter reads (`pickOpenAI`): a key and the endpoint it is for. */
 export type CodexAuthEnvironment = Readonly<Record<string, string>> & {
   readonly OPENAI_BASE_URL: string;
@@ -129,7 +153,8 @@ export function codexProviderEnv(input: { baseURL: string; apiKey?: string }): C
  *   app install, whose `features` table this adapter's pinned
  *   `@openai/codex-sdk` version cannot parse (`invalid type: map, expected a
  *   boolean`), crashing every turn. An isolated `CODEX_HOME` sidesteps that
- *   entirely; the credential is still supplied via env, so auth is unaffected.
+ *   entirely; the credential is still supplied via env, so auth is unaffected,
+ *   and the user's global `AGENTS.md` is linked in ({@link prepareCodexHome}).
  * - The Codex harness has no built-in tool approval (`supportsBuiltinToolApprovals:
  *   false`) and no built-in tool filtering. `HarnessAgent`'s constructor already
  *   rejects any `permissionMode` other than `'allow-all'` for such a harness
@@ -147,7 +172,7 @@ export async function createCodexEngine(options: CodexEngineOptions): Promise<Co
   const repoPath = await resolveRepoPath(options.repoPath, "Codex");
   const dataDir = await ensureDirectory(resolve(options.dataDir ?? DEFAULT_CODEX_DATA_DIR), 0o700);
   // Isolated from the real `~/.codex`; see the module doc comment above.
-  const codexHomeDir = await ensureDirectory(join(dataDir, "codex-home"), 0o700);
+  const codexHomeDir = await prepareCodexHome(dataDir);
 
   const provider = createLocalSandboxProvider({
     cwd: dataDir,

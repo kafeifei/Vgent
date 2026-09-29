@@ -1,9 +1,8 @@
 /**
- * The user's and the project's standing instructions. Globally only the
- * cross-agent `~/.agents/AGENTS.md`: `~/.codex/AGENTS.md` and
- * `~/.claude/CLAUDE.md` belong to Codex and Claude Code, which read them on
- * their own. In the project both `AGENTS.md` and `CLAUDE.md` count — that is
- * where rules like how this repo ships are written down.
+ * The user's and the project's standing instructions, from `AGENTS.md` only:
+ * the cross-agent `~/.agents/AGENTS.md` globally, and the repository's own. A
+ * harness's files — `~/.codex/AGENTS.md`, `CLAUDE.md` — are its own to read.
+ * Project rules are tracked in git, so a worktree carries them itself.
  *
  * Unlike skills these are inlined: they are short, and they apply to every turn.
  */
@@ -14,17 +13,11 @@ import { dirname, isAbsolute, relative, resolve, join, sep } from "node:path";
 /** Per file. An instructions file far past this is not something to paste into every prompt. */
 const FILE_MAX_CHARS = 32_000;
 
-const FILE_NAMES = ["AGENTS.md", "CLAUDE.md"] as const;
+const FILE_NAME = "AGENTS.md";
 
 export interface AgentInstructionsOptions {
   /** The directory the agent works in — a worktree, or the project itself. */
   repoPath: string;
-  /**
-   * The project's own checkout when `repoPath` is a worktree cut from it. A
-   * file kept out of git on purpose (a local-only `AGENTS.md`) exists only
-   * there, so it is read from here when the worktree has none of that name.
-   */
-  projectPath?: string;
   /** Where the global file lives. Defaults to the user's home directory. */
   home?: string;
 }
@@ -42,27 +35,10 @@ const readIfAny = async (path: string): Promise<AgentInstructionsFile | undefine
   return { path, content: content.length > FILE_MAX_CHARS ? `${content.slice(0, FILE_MAX_CHARS)}\n…（截断）` : content };
 };
 
-/**
- * The global file first, then the project's, so the project's come later in
- * the prompt and read as the more specific rule. The same text reached twice (a
- * worktree and its project both tracking `CLAUDE.md`) is kept once.
- */
-export async function loadAgentInstructions({
-  repoPath,
-  projectPath,
-  home = homedir(),
-}: AgentInstructionsOptions): Promise<AgentInstructionsFile[]> {
-  const candidates = [await readIfAny(join(home, ".agents", "AGENTS.md"))];
-  for (const name of FILE_NAMES) {
-    const own = await readIfAny(join(repoPath, name));
-    candidates.push(own ?? (projectPath != null && projectPath !== repoPath ? await readIfAny(join(projectPath, name)) : undefined));
-  }
-  const seen = new Set<string>();
-  return candidates.filter((file): file is AgentInstructionsFile => {
-    if (file == null || seen.has(file.content)) return false;
-    seen.add(file.content);
-    return true;
-  });
+/** The global file first, then the project's, so the project's reads as the more specific rule. */
+export async function loadAgentInstructions({ repoPath, home = homedir() }: AgentInstructionsOptions): Promise<AgentInstructionsFile[]> {
+  const files = [await readIfAny(join(home, ".agents", FILE_NAME)), await readIfAny(join(repoPath, FILE_NAME))];
+  return files.filter((file): file is AgentInstructionsFile => file != null);
 }
 
 /** The system-prompt section for {@link loadAgentInstructions}' files; empty when there are none. */
@@ -94,10 +70,8 @@ export async function loadScopedInstructions(repoPath: string, files: readonly s
   }
   const result: AgentInstructionsFile[] = [];
   for (const dir of [...directories].sort((a, b) => a.split(sep).length - b.split(sep).length || a.localeCompare(b))) {
-    for (const name of FILE_NAMES) {
-      const rule = await readIfAny(join(dir, name));
-      if (rule) result.push({ ...rule, scope: dir });
-    }
+    const rule = await readIfAny(join(dir, FILE_NAME));
+    if (rule) result.push({ ...rule, scope: dir });
   }
   return result;
 }

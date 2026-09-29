@@ -17,6 +17,7 @@ export {
   codexProviderEnv,
   createCodexEngine,
   DEFAULT_CODEX_DATA_DIR,
+  prepareCodexHome,
   type CodexAuthEnvironment,
   type CodexEngine,
   type CodexEngineOptions,

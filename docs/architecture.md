@@ -92,6 +92,7 @@ Vgent 是一个 **Web 优先**的本地 coding agent 工作台，底下可换引
 - **状态**：所有 provider / 认证 / 目录配置通过 `createXxx(dataDir)` 注入，无模块级可变状态。
 - **认证**：始终 mint token 写入 `connection.json`，不区分桌面与否。
 - **任务运行**：run 的 finally 里先释放槽位再做可能抛错的清理，`run.done` 创建时就挂 catch。
+- **异常恢复**：启动以任务文件而非索引中的状态为准，关闭意外退出残留的运行轮次并持久化 `restartRecovery`；在 worktree 回收前，经每任务启动锁和 store 的原子 token 认领派发新提示轮次。手动停止及生命周期变化取消恢复；等待审批/回答不自动派发。原生引擎收到有上限的原目标和最近历史快照，自研引擎沿用完整历史；未确认的工具结果不当成成功，要求先核实副作用。恢复准备失败保留 token 并显示错误，不在后台循环重试。桌面父进程消失触发 `shutdown({ recoverRunning: true })`，在 abort 前落盘恢复意图；普通 SIGINT/SIGTERM 仍按主动退出处理。
 - **worktree**：`packages/server/src/workspace.ts`，搬 freecode 的 snapshot / restore（销毁前复验所有权、前后 hash 清点、保护 index blob），阶段四已落地，见「阶段四进度」。
 - **静态**：`packages/server/src/static.ts` 的 `registerStatic` 在 `/api` 之外兜底吐 `apps/web/dist`（SPA fallback），`--web-dist` / `VGENT_WEB_DIST` 指定目录，桌面壳和浏览器共用同一个 `#token=` 入口，不需要第二个前端服务。启动时把整个目录读进内存（约 26 MB），之后只从内存吐：装新 Vgent.app 会把 bundle 换到正在跑的实例底下，已打开的页面还按旧哈希要按需加载的 chunk（Shiki 语法、Streamdown 的高亮），以前每次请求读磁盘，拿到的是新包的 `index.html`，`import()` 失败、整窗空白（2026-09-23 build 125 装上后实际发生）。`/assets/` 下找不到的文件回 404，不再回 `index.html`。改了 `apps/web/dist` 要重启 server 才生效。web 根上有 `CrashScreen`（`apps/web/src/app/CrashScreen.tsx`），任何渲染错误显示错误信息和「重新加载」，不再卸掉整棵树。
 - **模型目录**：`packages/server/src/models.ts` 的 `createModelCatalog`，`GET /api/engines/:engine/models` 按 engine 现查（Codex 在线接口 → 本地缓存 → 内置兜底，10 分钟缓存 `?refresh=1` 强刷），不写死清单。

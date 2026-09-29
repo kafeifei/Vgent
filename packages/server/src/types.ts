@@ -287,6 +287,8 @@ export interface ChangeStats {
 
 /** One task. Persisted whole in `threads/<id>.json`. */
 export interface ThreadRecord {
+  /** Durable auto-continuation intent after a crash; value is the recovery message id. */
+  restartRecovery?: string;
   taskState?: TaskState;
   version: 1;
   id: string;

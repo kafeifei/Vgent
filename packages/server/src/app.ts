@@ -140,7 +140,7 @@ export interface VgentApp {
   app: Hono;
   /** Exposed so `main.ts` can auto-register the caller's repo at startup without a second store. */
   projects: ProjectStore;
-  shutdown(): Promise<void>;
+  shutdown(options?: { recoverRunning?: boolean }): Promise<void>;
 }
 
 function tokensMatch(provided: string, expected: string): boolean {
@@ -463,9 +463,9 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   /**
    * 排队 survives a restart: a task that was idle with messages waiting when
-   * the process died picks them up now. A task recovered as `interrupted` does
-   * not — its queue stays paused until the user says otherwise, which is
-   * exactly what `dispatchQueue` decides for itself from the status.
+   * the process died picks them up now. Crash recovery continues the interrupted
+   * goal first; only its successful completion releases queued turns. Manually
+   * stopped or failed tasks keep their queues paused.
    */
   const dispatchQueuesAtBoot = async (): Promise<void> => {
     for (const summary of await threads.list()) {
@@ -478,6 +478,12 @@ export function createApp(options: CreateAppOptions): VgentApp {
   // git once per task, and the first `/api/state` waits on `recovered` — it
   // must not also wait on housekeeping.
   void recovered
+    // Recover execution before worktree reclamation: these tasks still own work.
+    .then(async () => {
+      for (const summary of await threads.list()) {
+        if (summary.restartRecovery != null) await runs.resumeInterrupted(summary.id);
+      }
+    })
     .then(() => resumeTransitions())
     .then(() => trimWorktrees())
     .then(backfillChangeStats)
@@ -1904,13 +1910,13 @@ export function createApp(options: CreateAppOptions): VgentApp {
   return {
     app,
     projects,
-    async shutdown() {
+    async shutdown(shutdownOptions) {
       claudeLogin.cancel();
       if (debounce != null) clearTimeout(debounce);
       for (const timer of runtimeTimers) clearTimeout(timer);
       for (const unsubscribe of unsubscribes) unsubscribe();
       clients.clear();
-      await Promise.all([runs.stopAll(), options.remote?.stop()]);
+      await Promise.all([runs.stopAll(shutdownOptions), options.remote?.stop()]);
     },
   };
 }

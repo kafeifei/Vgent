@@ -211,12 +211,12 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     }
 
     let shuttingDown = false;
-    const stop = () => {
+    const stop = (recoverRunning = false) => {
       if (shuttingDown) return;
       shuttingDown = true;
       void (async () => {
         // Stopping the runs first lets each engine persist its resume state.
-        await shutdown().catch((error) => console.error("停止运行中的任务失败", error));
+        await shutdown({ recoverRunning }).catch((error) => console.error("停止运行中的任务失败", error));
         await new Promise<void>((resolve) => {
           server.close(() => resolve());
           // `close` only stops accepting; it then waits for every open socket. The
@@ -231,11 +231,11 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
         process.exit(0);
       })();
     };
-    process.on("SIGINT", stop);
-    process.on("SIGTERM", stop);
+    process.on("SIGINT", () => stop());
+    process.on("SIGTERM", () => stop());
     // The shell never SIGTERMs us when it is killed outright, so in desktop mode
     // losing the parent is a shutdown signal of its own.
-    if (desktop) watchParentExit({ getPpid: () => process.ppid, onOrphaned: stop });
+    if (desktop) watchParentExit({ getPpid: () => process.ppid, onOrphaned: () => stop(true) });
   } catch (error) {
     // Anything between taking the lock and handing the process over to `stop` —
     // a port already in use, an unreadable data directory — must not leave the

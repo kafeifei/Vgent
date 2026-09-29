@@ -29,6 +29,7 @@ import type { QueueStore } from "./queue.js";
 import { forkNote } from "./fork.js";
 import { projectOfThread } from "./no-project.js";
 import { restoreNote } from "./restore.js";
+import { pendingHumanStatus, restartNote, RESTART_RESUME_TEXT } from "./restart.js";
 import { compactionChunk, isCompactionPart } from "./compaction.js";
 import { expandSteers, steerChunk, withoutPromotedSteers } from "./steer.js";
 import type { ProjectStore } from "./store/projects.js";
@@ -148,7 +149,7 @@ export function deriveThreadTitle(messages: readonly UIMessage[]): string | unde
 }
 
 export const RESTART_INTERRUPT_TEXT = "服务已重启";
-export const RESTART_PENDING_TOOL_TEXT = "服务已重启，请重新发送";
+export const RESTART_PENDING_TOOL_TEXT = "服务意外退出，工具结果未确认；继续前请先核实实际执行状态，不要直接重放";
 /** A turn that was frozen for the restart but could not be picked up again. */
 export const RESUME_FAILED_TEXT = "服务重启后未能恢复这一轮，请重新发送";
 export const STOP_INTERRUPT_TEXT = "已停止";
@@ -191,6 +192,7 @@ interface LiveRun {
   abort: AbortController;
   done: Promise<void>;
   stopped: boolean;
+  interruptReason?: string;
   /** Set while the engine is streaming, so a 插话 has someone to go to. */
   runner?: EngineRunner;
   acceptedSteers: Set<string>;
@@ -214,6 +216,8 @@ interface ParkedEngine {
 
 export interface RunManager {
   start(threadId: string, uiMessages: unknown): Promise<ChunkHub>;
+  /** Claim a persisted crash recovery once, serialized with manual starts and stops. */
+  resumeInterrupted(threadId: string): Promise<void>;
   /**
    * 排队「发送」: take one queued message out and run it as a turn, right now.
    * The item goes back to the head of the queue if the turn could not start.
@@ -234,7 +238,7 @@ export interface RunManager {
   subscribe(threadId: string, signal?: AbortSignal): ReadableStream<UIMessageChunk> | undefined;
   isRunning(threadId: string): boolean;
   /** Stop every live run and destroy every parked engine. For shutdown. */
-  stopAll(): Promise<void>;
+  stopAll(options?: { recoverRunning?: boolean }): Promise<void>;
 }
 
 export function createRunManager(options: {
@@ -283,6 +287,7 @@ export function createRunManager(options: {
   };
   const log = options.log ?? silentLogger;
   const stopTimeoutMs = options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS;
+  let shuttingDown = false;
   const runs = new Map<string, LiveRun>();
   const owners = new Map<string, LiveRun>();
   const writing = new Map<string, Promise<void>>();
@@ -628,7 +633,8 @@ export function createRunManager(options: {
       await writeRun(() => threads.saveMessages(thread.id, withAssistant(assistant)));
     };
     run.flush = async () => {
-      await updateRun({ messages: withTurnEnd(withAssistant(assistant), { status: "interrupted", reason: STOP_INTERRUPT_TEXT }) });
+      Object.assign(runRecord, { endedAt: new Date().toISOString(), stopReason: run.interruptReason === RESTART_INTERRUPT_TEXT ? "unknown" : "cancelled" });
+      await updateRun({ messages: withTurnEnd(withAssistant(assistant), { status: "interrupted", reason: run.interruptReason ?? STOP_INTERRUPT_TEXT }) });
     };
 
     // A turn that continues the last assistant message (an approval answer, a
@@ -706,7 +712,17 @@ export function createRunManager(options: {
       // the stored message, so the log still shows what the user typed.
       // 附件: the stored messages keep their `file` parts for the log; the
       // engine gets them as paths, or as parts it can really read.
-      const readable = await prepareAttachments(messages, {
+      // Keep partial outputs in the UI log, but never pass them to the model as
+      // final tool success after an interrupted turn.
+      let interrupted = false;
+      const modelHistory = messages.map(message => {
+        if (message.role === "user") interrupted = (message.metadata as ThreadMessageMetadata | undefined)?.turnEnd?.status === "interrupted";
+        if (!interrupted || message.role !== "assistant") return message;
+        return { ...message, parts: message.parts.map(part =>
+          isToolUIPart(part) && part.state === "output-available" && part.preliminary === true
+            ? toClosedToolPart(part, RESTART_PENDING_TOOL_TEXT) : part) };
+      });
+      const readable = await prepareAttachments(modelHistory, {
         engine: thread.engine,
         dir: join(dataDir, "attachments", thread.id),
       });
@@ -929,9 +945,9 @@ export function createRunManager(options: {
       } else {
         // 停止: recorded even when the turn had produced nothing yet, or the
         // question would sit in the log as if it had never been answered.
-        Object.assign(runRecord, { endedAt: new Date().toISOString(), stopReason: "cancelled" });
+        Object.assign(runRecord, { endedAt: new Date().toISOString(), stopReason: run.interruptReason === RESTART_INTERRUPT_TEXT ? "unknown" : "cancelled" });
         await updateRun({
-          messages: withTurnEnd(withAssistant(settled), { status: "interrupted", reason: STOP_INTERRUPT_TEXT }),
+          messages: withTurnEnd(withAssistant(settled), { status: "interrupted", reason: run.interruptReason ?? STOP_INTERRUPT_TEXT }),
         });
       }
     } catch (error) {
@@ -943,7 +959,7 @@ export function createRunManager(options: {
       const resumeFailed = error instanceof TurnResumeFailedError;
       Object.assign(runRecord, runner?.outcome?.() ?? {}, {
         endedAt: new Date().toISOString(),
-        stopReason: run.stopped ? "cancelled" : resumeFailed ? "unknown" : "error",
+        stopReason: run.stopped ? (run.interruptReason === RESTART_INTERRUPT_TEXT ? "unknown" : "cancelled") : resumeFailed ? "unknown" : "error",
         errorClass: classifyFailure(error),
       });
       if (resumeFailed) await writeRun(() => clearContinueFrom(thread.id));
@@ -956,7 +972,7 @@ export function createRunManager(options: {
       // A failure before or during the turn reaches the client as an `error`
       // chunk; `useChat` surfaces it instead of ending on a silent close.
       run.hub.publish({ type: "error", errorText: message });
-      run.hub.interrupt(message);
+      run.hub.interrupt(run.stopped ? (run.interruptReason ?? STOP_INTERRUPT_TEXT) : message);
       run.hub.close();
       await reader.catch(() => {});
       await updateRun({
@@ -965,7 +981,7 @@ export function createRunManager(options: {
               ? closePendingToolParts(withAssistant(assistant), RESUME_FAILED_TEXT)
               : withAssistant(run.stopped ? assistant : settleStreamingToolParts(assistant, seed?.dropped)),
             run.stopped
-              ? { status: "interrupted", reason: STOP_INTERRUPT_TEXT }
+              ? { status: "interrupted", reason: run.interruptReason ?? STOP_INTERRUPT_TEXT }
               : resumeFailed
                 ? { status: "interrupted", reason: RESUME_FAILED_TEXT }
                 : { status: "error", reason: rawMessage },
@@ -1020,7 +1036,8 @@ export function createRunManager(options: {
    * 「发送」 route. Everything a turn needs to be a real turn — the setup wait,
    * 每回合快照, Plan mode, the title, the cleared 收口 — lives here.
    */
-  const startTurnUnlocked = async (threadId: string, uiMessages: unknown): Promise<ChunkHub> => {
+  const startTurnUnlocked = async (threadId: string, uiMessages: unknown, recovery?: { id: string; note: string }): Promise<ChunkHub> => {
+    if (shuttingDown) throw new ConflictError("服务正在退出", "server_stopping");
     const active = runs.get(threadId);
     if (active != null) {
       if (active.stopped) throw new ConflictError("引擎仍在停止，请稍后重试", "thread_stopping");
@@ -1041,6 +1058,7 @@ export function createRunManager(options: {
     // assistant message while this follow-up was waiting for its slot.
     const thread = await threads.get(threadId);
     if (thread == null) throw new NotFoundError(`线程不存在: ${threadId}`, "thread_not_found");
+    if (thread.archivedAt != null) throw new ConflictError("任务已归档，请先取消归档", "thread_archived");
     // 归档中 / 恢复中: the worktree is being taken apart or put back.
     if (thread.transition != null) {
       throw new ConflictError(`任务正在${thread.transition === "archiving" ? "归档" : "恢复"}，稍等`, "thread_transitioning");
@@ -1093,11 +1111,13 @@ export function createRunManager(options: {
     // 分叉后的第一轮: an engine whose session keeps its own history has none of
     // what the fork copied, so that turn carries it as text. Said once.
     const forked = thread.forkedFrom?.pending === true && factory.statelessTurns !== true ? forkNote(thread.messages) : undefined;
-    const note = [forked, restored].filter((part) => part != null).join("\n\n") || undefined;
+    const note = [forked, restored, recovery?.note].filter((part) => part != null).join("\n\n") || undefined;
     // A thread is named by its first user message; an explicit title is kept.
     const title = thread.title === DEFAULT_THREAD_TITLE ? deriveThreadTitle(messages) : undefined;
+    if (shuttingDown) throw new ConflictError("服务正在退出", "server_stopping");
     const updated = await threads.update(threadId, {
       messages,
+      ...(recovery != null ? { consumeRestartRecovery: recovery.id } : { restartRecovery: undefined }),
       consumeQueueIds: messages.filter((message) => message.role === "user").map((message) => message.id),
       status: "running",
       error: undefined,
@@ -1189,8 +1209,95 @@ export function createRunManager(options: {
     timer.unref?.();
   };
 
+  const stopTurnUnlocked = async (threadId: string, recoverRunning = false): Promise<void> => {
+    const fresh = await threads.get(threadId);
+    if (!recoverRunning && fresh?.restartRecovery != null) await threads.update(threadId, { restartRecovery: undefined });
+    const hadParked = parked.has(threadId);
+    await releaseParked(threadId, STOP_INTERRUPT_TEXT);
+    if (hadParked) {
+      const items = (await threads.get(threadId))?.queue?.filter(item => item.mode === "steer") ?? [];
+      await options.queue?.settleSteers(threadId, items.map(item => item.id), true);
+    }
+    const run = runs.get(threadId);
+    if (run == null) return;
+    if (recoverRunning) {
+      await locked(writing, threadId, async () => {
+        // Recheck after queued writes: a closed hub may only be finalizing.
+        const persisted = await threads.get(threadId);
+        if (runs.get(threadId) !== run || run.stopped || run.hub.closed || persisted?.status !== "running" ||
+          pendingHumanStatus(persisted.messages) != null || persisted.archivedAt != null || persisted.transition != null ||
+          persisted.outcome != null || persisted.workspace?.reclaimed === true || persisted.workspaceState != null ||
+          !persisted.messages.some(message => message.role === "user")) return;
+        // Fence the turn's finalizer before yielding to persistence. Failure is
+        // propagated, never disguised as a successful recoverable shutdown.
+        run.stopped = true;
+        run.interruptReason = RESTART_INTERRUPT_TEXT;
+        await threads.update(threadId, { status: "interrupted", restartRecovery: randomUUID() });
+      });
+    }
+    run.stopped = true;
+    run.abort.abort();
+    run.hub.interrupt(run.interruptReason ?? STOP_INTERRUPT_TEXT);
+    run.hub.close();
+    await threads.update(threadId, { status: "interrupted" }).catch((error) => log.warn(`标记线程 ${threadId} 中断失败`, error));
+    // An engine that ignores its abort signal must not hold the slot — and
+    // with it SIGTERM — forever. After the deadline the run keeps draining in
+    // the background, but the thread is startable again.
+    const timedOut = await Promise.race([
+      run.done.then(
+        () => false,
+        () => false,
+      ),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(true), stopTimeoutMs).unref?.()),
+    ]);
+    if (timedOut) {
+      log.warn(`线程 ${threadId} 在 ${stopTimeoutMs}ms 内没有停下，关闭引擎并隔离旧回合`);
+      await run.runner?.destroy();
+      await run.flush?.();
+      await locked(writing, threadId, async () => { run.retired = true; });
+      await options.queue?.settleSteers(threadId, [...new Set([...run.acceptedSteers, ...run.deliveringSteers])], true);
+      if (runs.get(threadId) === run) runs.delete(threadId);
+    }
+  };
+
   return {
     start: startTurn,
+
+    resumeInterrupted(threadId) {
+      return locked(starting, threadId, async () => {
+        if (shuttingDown || runs.has(threadId)) return;
+        const thread = await threads.get(threadId);
+        if (thread?.restartRecovery == null || thread.status !== "interrupted" ||
+          thread.archivedAt != null || thread.transition != null || thread.workspace?.reclaimed === true ||
+          thread.outcome != null || pendingHumanStatus(thread.messages) != null) return;
+        try {
+          // A crashed runtime cannot be continued by replaying its tool results.
+          // Keep the last completed native session but start a fresh prompt turn.
+          await clearContinueFrom(threadId);
+          await startTurnUnlocked(threadId, [{
+            id: thread.restartRecovery,
+            role: "user",
+            parts: [{ type: "text", text: RESTART_RESUME_TEXT }],
+          }], { id: thread.restartRecovery, note: restartNote(thread, registry[thread.engine]?.statelessTurns !== true) });
+          log.info(`线程 ${threadId} 已自动继续意外退出前的任务`);
+        } catch (error) {
+          if (shuttingDown || (error instanceof ConflictError && error.code === "recovery_superseded")) return;
+          let fresh = await threads.get(threadId);
+          if (fresh == null || runs.has(threadId) || fresh.archivedAt != null || fresh.transition != null ||
+            fresh.outcome != null || fresh.workspace?.reclaimed === true || fresh.workspaceState != null) return;
+          // The record may have landed before its index write failed. No engine
+          // owns this turn: restore the same claim, keeping its message for retry.
+          if (fresh.status === "running" && fresh.messages.findLast(message => message.role === "user")?.id === thread.restartRecovery) {
+            fresh = await threads.update(threadId, { status: "interrupted", restartRecovery: thread.restartRecovery });
+          }
+          if (fresh.restartRecovery !== thread.restartRecovery) return;
+          log.warn(`线程 ${threadId} 自动继续失败`, error);
+          // No timer retries. Keep the durable intent if startup failed, so a
+          // second crash or restart cannot silently lose the interrupted task.
+          await threads.update(threadId, { error: `自动继续失败：${rawErrorText(error)}`, unread: true });
+        }
+      });
+    },
 
     async sendQueued(threadId, itemId) {
       const item = await runQueued(threadId, itemId);
@@ -1202,37 +1309,15 @@ export function createRunManager(options: {
     steer: deliverSteer,
 
     async stop(threadId) {
-      const hadParked = parked.has(threadId);
-      await releaseParked(threadId, STOP_INTERRUPT_TEXT);
-      if (hadParked) {
-        const items = (await threads.get(threadId))?.queue?.filter(item => item.mode === "steer") ?? [];
-        await options.queue?.settleSteers(threadId, items.map(item => item.id), true);
+      // Cancel before waiting for a startup probe, which may never settle.
+      const pending = await threads.get(threadId);
+      if (pending?.restartRecovery != null) {
+        const fresh = await threads.update(threadId, { restartRecovery: undefined });
+        // If startup claimed first, its run may not be registered yet. Wait for
+        // the starting lock in that case and stop it through the ordinary path.
+        if (fresh.status !== "running" && !runs.has(threadId) && !parked.has(threadId)) return;
       }
-      const run = runs.get(threadId);
-      if (run == null) return;
-      run.stopped = true;
-      run.abort.abort();
-      run.hub.interrupt(STOP_INTERRUPT_TEXT);
-      run.hub.close();
-      await threads.update(threadId, { status: "interrupted" }).catch((error) => log.warn(`标记线程 ${threadId} 中断失败`, error));
-      // An engine that ignores its abort signal must not hold the slot — and
-      // with it SIGTERM — forever. After the deadline the run keeps draining in
-      // the background, but the thread is startable again.
-      const timedOut = await Promise.race([
-        run.done.then(
-          () => false,
-          () => false,
-        ),
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(true), stopTimeoutMs).unref?.()),
-      ]);
-      if (timedOut) {
-        log.warn(`线程 ${threadId} 在 ${stopTimeoutMs}ms 内没有停下，关闭引擎并隔离旧回合`);
-        await run.runner?.destroy();
-        await run.flush?.();
-        await locked(writing, threadId, async () => { run.retired = true; });
-        await options.queue?.settleSteers(threadId, [...new Set([...run.acceptedSteers, ...run.deliveringSteers])], true);
-        if (runs.get(threadId) === run) runs.delete(threadId);
-      }
+      return locked(starting, threadId, () => stopTurnUnlocked(threadId));
     },
 
     subscribe(threadId, signal) {
@@ -1249,8 +1334,12 @@ export function createRunManager(options: {
       return run != null && !run.hub.closed;
     },
 
-    async stopAll() {
-      await Promise.all([...runs.keys()].map((threadId) => this.stop(threadId)));
+    async stopAll(options) {
+      shuttingDown = true;
+      // Startups already awaiting credentials/checkpoints must settle before stopping.
+      await Promise.all([...starting.values()]);
+      await Promise.all([...runs.keys()].map((threadId) =>
+        locked(starting, threadId, () => stopTurnUnlocked(threadId, options?.recoverRunning === true))));
       // A stateless engine holds nothing — the pending approval is just an open
       // tool part in the stored messages, and the next `start` builds a fresh
       // runner from them — so its runner is dropped and the thread is left
@@ -1327,12 +1416,25 @@ const UNFINISHED_STATUSES: readonly ThreadStatus[] = ["running", "awaiting-appro
  * naming a runtime that is still up, and the next turn attaches to it. Without
  * that the turn died with its process, and leaving the approval open would only
  * let the client answer something that is gone — it is closed like the rest.
- * A `running` thread is interrupted either way: its turn was mid-flight.
+ * A `running` thread is closed first and given a durable recovery intent, unless
+ * its saved parts show it was already waiting for a human. Boot dispatch starts
+ * a fresh prompt from that intent; it never executes the old tool calls.
  */
 export async function recoverInterruptedThreads(threads: ThreadStore, registry: EngineRegistry, log: Logger = silentLogger): Promise<void> {
   const stateless = statelessEngines(registry);
   const summaries = await threads.list();
-  for (const summary of summaries) {
+  for (const entry of summaries) {
+    // The thread file is authoritative: a crash can precede the index write.
+    const summary = await threads.get(entry.id);
+    if (summary == null) continue;
+    if (entry.status !== summary.status) await threads.update(summary.id, { status: summary.status });
+    if (summary.status === "running") {
+      const waiting = pendingHumanStatus(summary.messages);
+      if (waiting != null) {
+        await threads.update(summary.id, { status: waiting, restartRecovery: undefined });
+        summary.status = waiting;
+      }
+    }
     const accepted = summary.queue?.filter((item) => item.accepted || item.delivering || item.promoting) ?? [];
     if (accepted.length > 0 && !UNFINISHED_STATUSES.includes(summary.status)) {
       const record = await threads.get(summary.id);
@@ -1385,6 +1487,10 @@ export async function recoverInterruptedThreads(threads: ThreadStore, registry: 
           )
           .map((item) => ({ ...item, accepted: false, delivering: false, promoting: false, claimed: false })),
         status: "interrupted",
+        restartRecovery: summary.status === "running" && summary.archivedAt == null &&
+          summary.transition == null && summary.workspace?.reclaimed !== true && summary.outcome == null &&
+          record.messages.some(message => message.role === "user")
+          ? (record.restartRecovery ?? randomUUID()) : undefined,
         error: RESTART_INTERRUPT_TEXT,
       })
       .catch((error) => log.warn(`恢复线程 ${summary.id} 失败`, error));

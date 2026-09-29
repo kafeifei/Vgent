@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { access, mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { isToolUIPart, type UIMessage } from "ai";
-import { NotFoundError } from "../errors.js";
+import { ConflictError, NotFoundError } from "../errors.js";
 import type {
   ApplyUndoRecord,
   ChangeStats,
@@ -61,6 +61,9 @@ export interface CreateThreadInput {
 
 export type ThreadPatch = Partial<{
   consumeQueueIds: string[];
+  /** Atomic recovery claim; rejects if the task was changed while startup awaited I/O. */
+  consumeRestartRecovery: string;
+  restartRecovery: string | undefined;
   taskState: ThreadRecord["taskState"];
   title: string;
   /** Only ever changed on a thread with no messages; the route enforces that. */
@@ -302,6 +305,11 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
       const updated = await serialize(id, async () => {
         const current = await readRecord(id);
         if (current == null) throw new NotFoundError(`线程不存在: ${id}`, "thread_not_found");
+        if (patch.consumeRestartRecovery != null && (current.restartRecovery !== patch.consumeRestartRecovery ||
+          current.status !== "interrupted" || current.archivedAt != null || current.transition != null ||
+          current.workspace?.reclaimed === true || current.workspaceState != null || current.outcome != null)) {
+          throw new ConflictError("任务状态已改变，取消自动继续", "recovery_superseded");
+        }
         const next: ThreadRecord = {
           ...current,
           ...("title" in patch && patch.title != null ? { title: patch.title } : {}),
@@ -319,6 +327,13 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
           next.queue = (current.queue ?? []).filter((item) => !consumed.has(item.id));
           if (!next.queue.length) delete next.queue;
         }
+        if ("restartRecovery" in patch) {
+          if (patch.restartRecovery == null) delete next.restartRecovery;
+          else next.restartRecovery = patch.restartRecovery;
+        }
+        // Explicit lifecycle changes cancel boot intent, even if later undone.
+        if (patch.consumeRestartRecovery != null || patch.archivedAt != null || patch.transition != null ||
+          patch.workspace?.reclaimed === true || patch.outcome != null) delete next.restartRecovery;
         if ("taskState" in patch) {
           if (patch.taskState == null) delete next.taskState;
           else next.taskState = patch.taskState;

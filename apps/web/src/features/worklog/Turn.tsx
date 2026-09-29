@@ -58,6 +58,7 @@ export function Turn({
   allowlist,
   drawings,
   afterUser,
+  preparing = false,
 }: {
   turn: TurnModel;
   isLast: boolean;
@@ -70,6 +71,8 @@ export function Turn({
   drawings: ReadonlyMap<string, string>;
   /** Rows that belong between the message and the work — the worktree setup under the first one. */
   afterUser?: ReactNode;
+  /** The worktree is still being made ready: its rows are what is live, so there is no 「思考中…」 yet. */
+  preparing?: boolean;
 }) {
   const { ref, pinned } = usePinned(isLast);
   // The reply, its actions and the output cards wait until the turn has settled.
@@ -169,7 +172,7 @@ export function Turn({
         </div>
       ))}
       {/* Until the first block lands there is nothing else on screen to say the turn is alive. */}
-      {!compactRequest && !settled && turn.blocks.length === 0 && (
+      {!compactRequest && !settled && !preparing && turn.blocks.length === 0 && (
         <div className="px-chat-inset text-fg-muted">
           <Shimmer>思考中…</Shimmer>
         </div>

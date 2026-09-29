@@ -130,6 +130,7 @@ export function WorkLog({
               <Turn
                 turn={turn}
                 {...(index === 0 && setupAfterFirst && setup != null ? { afterUser: setup } : {})}
+                preparing={preparing}
                 isLast={index === turns.length - 1}
                 live={live}
                 dimmed={restoredIndex >= 0 && index >= restoredIndex}

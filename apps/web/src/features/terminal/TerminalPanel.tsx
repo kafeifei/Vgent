@@ -1,9 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { UIMessage } from "ai";
 import type { InspectRequest } from "@/app/useWorkbench";
 import { Spinner } from "@/features/worklog/ToolRow";
-import type { ApiClient } from "@/lib/api";
-import type { SetupLog } from "@/lib/types";
 import { collectTerminalEntries, type TerminalEntry } from "./terminal";
 
 /** Within this many pixels of the bottom counts as "at the bottom". */
@@ -40,53 +38,15 @@ function TerminalRow({ entry }: { entry: TerminalEntry }) {
  */
 export function TerminalPanel({
   messages,
-  client,
-  threadId,
-  refreshKey,
   focus,
 }: {
   messages: UIMessage[];
-  client: ApiClient;
-  threadId: string | null;
-  /** The thread's `updatedAt`: setup finishing moves it, which re-fetches the log. */
-  refreshKey: string;
   /** A command row in the log was clicked: scroll to that command and flash it. */
   focus?: InspectRequest | null;
 }) {
-  // The worktree setup ran before the engine did, so it is the first entry —
-  // and it never went through the messages, so it is fetched on its own.
-  const [setup, setSetup] = useState<SetupLog | null>(null);
-  useEffect(() => {
-    if (threadId == null) {
-      setSetup(null);
-      return;
-    }
-    let cancelled = false;
-    void client.getSetupLog(threadId).then(
-      (body) => {
-        if (!cancelled) setSetup(body.status === "none" ? null : body);
-      },
-      () => {
-        if (!cancelled) setSetup(null);
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [client, threadId, refreshKey]);
-
-  const entries = useMemo(() => {
-    const collected = collectTerminalEntries(messages);
-    if (setup == null) return collected;
-    const head: TerminalEntry = {
-      id: "worktree-setup",
-      command: setup.command ?? "setup-worktree",
-      output: setup.log,
-      state: setup.status === "running" ? "running" : setup.status === "failed" ? "error" : "done",
-      ...(setup.exitCode != null ? { exitCode: setup.exitCode } : {}),
-    };
-    return [head, ...collected];
-  }, [messages, setup]);
+  // Only the agent's own commands: the worktree's setup script is not one of
+  // them, and — as in Cursor — its output shows nowhere but under a failed setup.
+  const entries = useMemo(() => collectTerminalEntries(messages), [messages]);
   const containerRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
 

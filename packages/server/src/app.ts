@@ -1012,15 +1012,13 @@ export function createApp(options: CreateAppOptions): VgentApp {
     return c.json({ files: await countUncommitted(workspace.path) });
   });
 
-  // What the project's setup script printed. The 终端 tab shows it as the
-  // task's first entry, so it is fetched rather than pushed through messages.
+  // What the project's setup script printed, shown under a failed setup.
   app.get("/api/threads/:id/workspace/setup-log", async (c) => {
     const thread = await threadOf(c.req.param("id"));
     const setup = thread.workspace?.setup;
     return c.json({
       status: setup?.status ?? "none",
       ...(setup?.exitCode != null ? { exitCode: setup.exitCode } : {}),
-      ...(setup?.command != null ? { command: setup.command } : {}),
       log: await readSetupLog(dataDir, thread.id),
     });
   });

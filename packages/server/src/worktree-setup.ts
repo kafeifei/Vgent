@@ -19,7 +19,7 @@
  */
 import { execFile, spawn } from "node:child_process";
 import { appendFile, cp, lstat, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { ThreadStore } from "./store/threads.js";
 import type { Logger, WorkspaceSetup } from "./types.js";
@@ -219,16 +219,11 @@ export interface SetupResult {
   error?: string;
 }
 
-/** The setup as one shell line — what the 终端 tab titles it with. */
-export function setupCommandOf(spec: SetupSpec, projectPath: string): string {
-  return spec.kind === "script" ? `sh ${relative(projectPath, spec.scriptPath)}` : spec.commands.join(" && ");
-}
-
 /**
- * Runs the spec's steps in order, stopping at the first failure. The log holds
- * only what the steps printed — it is shown to the user as the script's
- * output, the way Cursor shows it — so the exit code and the reason are
- * returned, not written into it.
+ * Runs the spec's steps in order, stopping at the first failure. The log is
+ * the script's output as Cursor keeps it: what the steps printed, each
+ * command echoed before it runs so a failed tail says which one it was. The
+ * exit code and the reason are returned, not written into it.
  */
 export async function runSetup(options: RunSetupOptions): Promise<SetupResult> {
   const path = setupLogPath(options.dataDir, options.threadId);
@@ -250,8 +245,10 @@ export async function runSetup(options: RunSetupOptions): Promise<SetupResult> {
   const spec = options.spec;
   if (spec == null) return { exitCode: 0 };
 
-  const steps = spec.kind === "script" ? [[spec.scriptPath]] : spec.commands.map((command) => ["-c", command]);
-  for (const argv of steps) {
+  const steps: Array<{ echo?: string; argv: string[] }> =
+    spec.kind === "script" ? [{ argv: [spec.scriptPath] }] : spec.commands.map((command) => ({ echo: command, argv: ["-c", command] }));
+  for (const { echo, argv } of steps) {
+    if (echo != null) await append(`$ ${echo}\n`);
     const code = await runStep(argv, { cwd: options.workspacePath, env, signal, append });
     if (code !== 0) {
       return { exitCode: code, error: signal.aborted ? "setup 脚本超时，已终止" : `setup 脚本失败，退出码 ${code}` };
@@ -294,8 +291,7 @@ export function startSetup(options: StartSetupOptions): void {
     ]);
     if (spec == null && includeFiles.length === 0) return;
     const startedAt = new Date().toISOString();
-    const command = spec == null ? undefined : setupCommandOf(spec, options.projectPath);
-    await options.onStatus({ status: "running", startedAt, ...(command != null ? { command } : {}) });
+    await options.onStatus({ status: "running", startedAt });
     let result: SetupResult;
     try {
       result = await runSetup({ ...options, ...(spec != null ? { spec } : {}), includeFiles });
@@ -308,7 +304,6 @@ export function startSetup(options: StartSetupOptions): void {
       startedAt,
       finishedAt: new Date().toISOString(),
       exitCode: result.exitCode,
-      ...(command != null ? { command } : {}),
       ...(result.error != null ? { error: result.error } : {}),
     });
     if (result.exitCode !== 0) log.warn(`工作目录准备失败 (thread ${options.threadId})，退出码 ${result.exitCode}`);

@@ -1,6 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import type { UIMessage } from "ai";
 import type { ThreadSummary } from "@/lib/types";
 import { WorkLog } from "./WorkLog";
 
@@ -16,10 +17,10 @@ const base: ThreadSummary = {
   pendingApprovals: 0,
 };
 
-const htmlOf = (thread: ThreadSummary) => renderToStaticMarkup(createElement(WorkLog, {
+const htmlOf = (thread: ThreadSummary, messages: UIMessage[] = [], live = false) => renderToStaticMarkup(createElement(WorkLog, {
   thread,
-  messages: [],
-  live: false,
+  messages,
+  live,
   error: undefined,
   actions: {
     respondToApproval: () => {}, alwaysAllow: () => {}, answerQuestions: () => {},
@@ -48,6 +49,16 @@ describe("worktree preparation in the chat log", () => {
     // Cursor's rows: what is happening, not the commands themselves.
     expect(html).not.toContain("pnpm install");
     expect(html).not.toContain("还没有内容");
+  });
+
+  it("puts the rows under the first message and holds 「思考中…」 back until setup is done", () => {
+    const first: UIMessage[] = [{ id: "u1", role: "user", parts: [{ type: "text", text: "开工" }] }];
+    const worktree = { mode: "worktree" as const, path: "/tmp/worktree", branch: "vgent/thread-1", baseCommit: "abc" };
+    const running = htmlOf({ ...base, workspace: { ...worktree, setup: { status: "running", startedAt: base.createdAt } } }, first, true);
+    expect(running.indexOf("开工")).toBeLessThan(running.indexOf("正在运行 setup 脚本"));
+    expect(running).not.toContain("思考中");
+    const done = htmlOf({ ...base, workspace: { ...worktree, setup: { status: "ok", startedAt: base.createdAt, finishedAt: base.createdAt } } }, first, true);
+    expect(done).toContain("思考中");
   });
 
   it("says why setup failed, and nothing about a setup that went fine", () => {

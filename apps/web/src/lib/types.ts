@@ -88,8 +88,6 @@ export type IntegrateResponse = import("@vgent/server").ThreadRecord & {
 export type SetupLog = {
   status: "none" | "running" | "ok" | "failed";
   exitCode?: number;
-  /** What ran, as one shell line; absent when the setup only copied `include-files`. */
-  command?: string;
   log: string;
 };
 

@@ -164,12 +164,11 @@ describe.skipIf(!hasGit)("worktree setup", () => {
     const body = (await request(app, `/api/threads/${created.id}/workspace/setup-log`).then((r) => r.json())) as {
       status: string;
       exitCode?: number;
-      command?: string;
       log: string;
     };
-    expect(body).toMatchObject({ status: "ok", exitCode: 0, command: "echo 装好了 > marker && echo 第二步" });
-    // Only what the commands printed: it is shown to the user as the script's output.
-    expect(body.log).toBe("第二步\n");
+    expect(body).toMatchObject({ status: "ok", exitCode: 0 });
+    // What the commands printed, each echoed first, as Cursor's script output reads.
+    expect(body.log).toBe("$ echo 装好了 > marker\n$ echo 第二步\n第二步\n");
   });
 
   it("hands ROOT_WORKTREE_PATH to the setup commands", async () => {

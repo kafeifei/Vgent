@@ -30,8 +30,6 @@ export interface WorkspaceSetup {
   startedAt: string;
   finishedAt?: string;
   exitCode?: number;
-  /** What ran, as one shell line — the commands joined by `&&`, or the script. The 终端 tab's title for it. */
-  command?: string;
   /** Why it failed, as the one sentence shown under 「运行 setup 脚本失败」. */
   error?: string;
 }

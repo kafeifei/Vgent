@@ -202,7 +202,7 @@ export function RightPane({
             <ToolDetail part={findToolPart(messages, inspect?.toolCallId)} onOpenFile={onOpenFile} />
           </FileAccessProvider>
         ) : tab === "term" ? (
-          <TerminalPanel messages={messages} client={client} threadId={threadId} refreshKey={refreshKey} focus={inspect} />
+          <TerminalPanel messages={messages} focus={inspect} />
         ) : (
           <>
             {/* The document first — it is what Plan mode produces; the todo

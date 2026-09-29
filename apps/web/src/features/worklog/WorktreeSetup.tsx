@@ -119,7 +119,7 @@ export function WorktreeSetup({ thread, client }: { thread: ThreadSummary; clien
         ? (setup.error ?? (setup.exitCode != null ? `setup 脚本失败，退出码 ${setup.exitCode}` : "setup 脚本失败"))
         : undefined;
   return (
-    <div className="flex flex-col px-chat-inset">
+    <div className="flex flex-col gap-xs px-chat-inset">
       {phases.map((phase) => (
         <PhaseRow key={phase.key} label={LABELS[phase.key][phase.status]} status={phase.status} duration={durationOf(phase, now)} />
       ))}
@@ -135,7 +135,7 @@ export function WorktreeSetup({ thread, client }: { thread: ThreadSummary; clien
 
 function PhaseRow({ label, status, duration }: { label: string; status: PhaseStatus; duration: string | undefined }) {
   return (
-    <div className={cn("flex min-h-row-tool items-center gap-xs", status === "failed" ? "text-danger" : "text-fg-muted")}>
+    <div className={cn("flex items-center gap-2xs", status === "failed" ? "text-danger" : "text-fg-muted")}>
       {status === "running" ? <Shimmer as="span">{label}</Shimmer> : <span className="min-w-0 break-words">{label}</span>}
       {duration != null && <span className={status === "failed" ? "opacity-70" : "text-fg-faint"}>用时 {duration}</span>}
     </div>
@@ -151,7 +151,7 @@ function Output({ text }: { text: string }) {
   return (
     <pre
       ref={ref}
-      className="mt-2xs max-h-[calc(var(--spacing-3xl)*4)] overflow-y-auto whitespace-pre-wrap break-all rounded-sm bg-bg-inset p-xs font-mono text-fg-muted text-xs"
+      className="max-h-[calc(var(--spacing-3xl)*4)] overflow-y-auto whitespace-pre-wrap break-all rounded-sm bg-bg-inset p-xs font-mono text-fg-muted text-xs"
     >
       {text}
     </pre>

@@ -7,7 +7,8 @@ import { createSettingsStore } from "../store/settings.js";
 import type { EngineDescriptor } from "./capabilities.js";
 import { createNativeCodexRunner } from "./codex-native.js";
 import { effectiveReasoningLevel } from "../reasoning.js";
-import type { EngineContext, EngineFactory, EngineRunner } from "./registry.js";
+import type { EngineAccounts, EngineContext, EngineFactory, EngineRunner } from "./registry.js";
+import { DEFAULT_ACCOUNT, splitAccountSpec } from "../accounts/spec.js";
 
 /**
  * 引擎能力表, the Codex row. `update_plan` exists but produces no UI part, and
@@ -78,26 +79,30 @@ function asCodexEffort(level: string | undefined): CodexEngineOptions["reasoning
  * across processes; an older harness resume payload also contains that id.
  * This path supports turn/steer and reports actual insertion via userMessage.
  */
-export function createCodexEngineFactory(): EngineFactory {
+export function createCodexEngineFactory(accounts?: EngineAccounts): EngineFactory {
   return {
     descriptor: DESCRIPTOR,
 
     async ensureAvailable({ thread }) {
+      const { accountId, spec } = thread.model == null ? { spec: undefined } : splitAccountSpec(thread.model);
       // A provider's model runs on the provider's key; the login is not needed, so its absence is no obstacle.
-      if (thread.model != null && splitProviderModelSpec(thread.model) != null) return;
+      if (spec != null && splitProviderModelSpec(spec) != null) return;
+      if (accountId != null) { await accounts?.ensure(accountId); return; }
       // The native runner's token provider reads the same login store.
-      const report = await describeSubscriptionAuth();
-      if (!report.codex.available) {
-        throw new EngineUnavailableError("Codex 未登录：找不到可用的 ChatGPT / Codex 登录态（~/.codex/auth.json，或 CODEX_HOME）");
-      }
+      const home = accounts?.codexHome(DEFAULT_ACCOUNT.codex);
+      const report = await describeSubscriptionAuth(home != null ? { env: { ...process.env, CODEX_HOME: home } } : {});
+      if (!report.codex.available) throw new EngineUnavailableError("Codex 未登录：在「账号」里添加一个 Codex 账号");
     },
 
     async create(ctx: EngineContext): Promise<EngineRunner> {
       const settings = await createSettingsStore(ctx.dataDir, ctx.log).get();
       const cuaBinary = settings.computerUseProvider === "cua" ? await requireCuaDriver() : undefined;
       const reasoningEffort = asCodexEffort(effectiveReasoningLevel(ctx.thread.reasoningEffort));
-      const route = codexProviderRoute(ctx.thread.model, await createProviderStore(ctx.dataDir, ctx.log).list());
-      const model = route?.model ?? ctx.thread.model;
+      // `@<account>:<slug>`: the same model on another Codex account's login.
+      const { accountId, spec } = ctx.thread.model == null ? { spec: undefined } : splitAccountSpec(ctx.thread.model);
+      const route = codexProviderRoute(spec, await createProviderStore(ctx.dataDir, ctx.log).list());
+      const model = route?.model ?? spec;
+      const codexHome = route == null ? accounts?.codexHome(accountId ?? DEFAULT_ACCOUNT.codex) : undefined;
       // The native runner loads the full catalog before process startup, so
       // the selected speed is recognized by the runtime as well as the picker.
       const tier = ctx.thread.serviceTier;
@@ -116,6 +121,7 @@ export function createCodexEngineFactory(): EngineFactory {
       return createNativeCodexRunner(ctx, {
         ...(model != null ? { model } : {}),
         ...(route != null ? { auth: route.auth } : {}),
+        ...(codexHome != null ? { codexHome } : {}),
         ...(codexConfig != null ? { codexConfig } : {}),
         ...(reasoningEffort != null ? { effort: reasoningEffort } : {}),
         ...(tier != null ? { serviceTier: tier } : {}),

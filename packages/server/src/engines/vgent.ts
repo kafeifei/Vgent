@@ -9,7 +9,9 @@ import {
   loadSkillsIndex,
 } from "@vgent/engine";
 import { cuaMcpConfig, onlyCuaTools, requireCuaDriver } from "../computer-use/cua.js";
-import { describeModelSpec, describeSubscriptionAuth } from "@vgent/providers";
+import { createCodexSubscriptionModel, describeModelSpec, describeSubscriptionAuth } from "@vgent/providers";
+import { DEFAULT_ACCOUNT, splitAccountSpec } from "../accounts/spec.js";
+import type { AccountId } from "../accounts/types.js";
 import type { LanguageModel, TextStreamPart, ToolSet } from "ai";
 import { BadRequestError, EngineUnavailableError } from "../errors.js";
 import { createProviderStore } from "../store/providers.js";
@@ -61,7 +63,25 @@ export interface VgentEngineFactoryOptions {
    * probe, since an injected model needs no credential.
    */
   model?: LanguageModel;
-  copilot?: { available(): Promise<void>; model(id: string): Promise<LanguageModel> };
+  /** One GitHub account's Copilot. */
+  copilot?: (account: AccountId) => { available(): Promise<void>; model(id: string): Promise<LanguageModel> };
+  /** Where a Codex account keeps its login, and whether an account is still there. */
+  accounts?: { codexHome(id: AccountId): string; ensure(id: AccountId): Promise<void> };
+}
+
+/**
+ * The model a spec names for the in-house engine, when it is one only an
+ * account can run: a Copilot model, or a Codex model on another account than
+ * the machine's (the machine's own Codex login resolves by name, as before).
+ * Anything else is left to the engine's model registry.
+ */
+export async function accountModel(model: string, options: Pick<VgentEngineFactoryOptions, "copilot" | "accounts">): Promise<LanguageModel | undefined> {
+  const { accountId, spec } = splitAccountSpec(model);
+  if (spec.startsWith("github-copilot:") && options.copilot != null) return options.copilot(accountId ?? DEFAULT_ACCOUNT.github).model(spec.slice("github-copilot:".length));
+  if (accountId != null && spec.startsWith(CODEX_SUBSCRIPTION_PREFIX) && options.accounts != null) {
+    return createCodexSubscriptionModel(spec.slice(CODEX_SUBSCRIPTION_PREFIX.length), { env: { ...process.env, CODEX_HOME: options.accounts.codexHome(accountId) } });
+  }
+  return undefined;
 }
 
 /** How much of a chosen window the history may fill before pruning; the rest is the reply's and the tools'. */
@@ -91,8 +111,9 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
     // classifier the registry resolves with, so the two cannot disagree.
     async ensureAvailable({ thread, dataDir }) {
       if (override != null) return;
-      const spec = thread.model ?? DEFAULT_VGENT_MODEL;
-      if (spec.startsWith("github-copilot:") && options.copilot) { await options.copilot.available(); return; }
+      const { accountId, spec } = splitAccountSpec(thread.model ?? DEFAULT_VGENT_MODEL);
+      if (accountId != null) await options.accounts?.ensure(accountId);
+      if (spec.startsWith("github-copilot:") && options.copilot) { await options.copilot(accountId ?? DEFAULT_ACCOUNT.github).available(); return; }
       const described = describeModelSpec(spec, await createProviderStore(dataDir).list());
       if (described.kind === "invalid") {
         throw new BadRequestError(`模型标识不合法: ${JSON.stringify(spec)}，${described.reason}`, "invalid_model");
@@ -104,9 +125,10 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
         return;
       }
       if (described.kind === "codex-subscription") {
-        const report = await describeSubscriptionAuth();
+        const home = options.accounts?.codexHome(accountId ?? DEFAULT_ACCOUNT.codex);
+        const report = await describeSubscriptionAuth(home != null ? { env: { ...process.env, CODEX_HOME: home } } : {});
         if (!report.codex.available) {
-          throw new EngineUnavailableError("Codex 未登录：找不到可用的 ChatGPT / Codex 登录态（~/.codex/auth.json，或 CODEX_HOME）");
+          throw new EngineUnavailableError("Codex 未登录：在「账号」里添加一个 Codex 账号");
         }
         return;
       }
@@ -143,7 +165,7 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
       try {
         mcp = await connectMcpServers(settings.mcpServers ?? [], { log: ctx.log });
         const spec = ctx.thread.model ?? DEFAULT_VGENT_MODEL;
-        const model = override ?? (spec.startsWith("github-copilot:") && options.copilot ? await options.copilot.model(spec.slice("github-copilot:".length)) : spec);
+        const model = override ?? (await accountModel(spec, options)) ?? spec;
         const { workspace } = ctx.thread;
         engine = createVgentEngine({
           model,

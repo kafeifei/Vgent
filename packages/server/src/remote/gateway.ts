@@ -72,6 +72,8 @@ export function createWebEntry(options: {
         return;
       }
       if (path === "/api/remote" || path.startsWith("/api/remote/")) return forbidden();
+      // The host's accounts can be read from afar, not signed in, out or switched.
+      if (path.startsWith("/api/accounts/")) return forbidden();
       if (path === "/api/projects/pick") {
         send(409, { error: { code: "picker_unavailable", message: "远程连接请填写主机上的路径" } });
         return;

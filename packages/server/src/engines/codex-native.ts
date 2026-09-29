@@ -101,10 +101,13 @@ function toolName(type: string): string {
 /** Native Codex app-server runner. Unlike `codex exec`, it owns `turn/steer`. */
 export async function createNativeCodexRunner(
   ctx: EngineContext,
-  options: { model?: string; effort?: string; serviceTier?: string; codexConfig?: Obj; auth?: CodexAuthEnvironment },
+  options: { model?: string; effort?: string; serviceTier?: string; codexConfig?: Obj; auth?: CodexAuthEnvironment; codexHome?: string },
 ): Promise<EngineRunner> {
   const home = await prepareCodexHome(DEFAULT_CODEX_DATA_DIR);
-  const credential = options.auth == null ? await getCodexTokenProvider().getAccessToken() : undefined;
+  // The login the turn runs on: the account's home when it names one, else the machine's.
+  const credential = options.auth == null
+    ? await getCodexTokenProvider(options.codexHome != null ? { env: { ...process.env, CODEX_HOME: options.codexHome } } : {}).getAccessToken()
+    : undefined;
   const baseUrl = options.auth?.OPENAI_BASE_URL ?? CHATGPT_CODEX_BASE_URL;
   const key = options.auth?.OPENAI_API_KEY ?? credential?.accessToken;
   if (key == null) throw new Error("Codex credential is unavailable");

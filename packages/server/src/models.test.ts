@@ -75,8 +75,8 @@ describe("createModelCatalog", () => {
 
     expect(result.source).toBe("codex-cache");
     expect(result.models).toEqual([
-      { id: "gpt-6-astra", label: "GPT-6-Astra", description: "最强", modelKey: "codex-subscription/gpt-6-astra", source: { kind: "codex-subscription", name: "Codex", logo: "openai" }, vendor: "openai" },
-      { id: "gpt-5.5", label: "GPT-5.5", modelKey: "codex-subscription/gpt-5.5", source: { kind: "codex-subscription", name: "Codex", logo: "openai" }, vendor: "openai" },
+      { id: "gpt-6-astra", label: "GPT-6-Astra", description: "最强", modelKey: "codex-subscription/gpt-6-astra", source: { kind: "codex-subscription", name: "Codex", logo: "openai", account: "codex" }, vendor: "openai" },
+      { id: "gpt-5.5", label: "GPT-5.5", modelKey: "codex-subscription/gpt-5.5", source: { kind: "codex-subscription", name: "Codex", logo: "openai", account: "codex" }, vendor: "openai" },
     ]);
     expect(result.warning).toContain("在线目录不可用");
   });
@@ -111,15 +111,15 @@ describe("createModelCatalog", () => {
     });
 
     expect((await catalog.list("codex")).models).toEqual([
-      { id: "gpt-6-astra", label: "GPT-6-Astra", contextWindow: 272_000, modelKey: "codex-subscription/gpt-6-astra", source: { kind: "codex-subscription", name: "Codex", logo: "openai" }, vendor: "openai" },
-      { id: "gpt-old", label: "GPT-Old", modelKey: "codex-subscription/gpt-old", source: { kind: "codex-subscription", name: "Codex", logo: "openai" }, vendor: "openai" },
+      { id: "gpt-6-astra", label: "GPT-6-Astra", contextWindow: 272_000, modelKey: "codex-subscription/gpt-6-astra", source: { kind: "codex-subscription", name: "Codex", logo: "openai", account: "codex" }, vendor: "openai" },
+      { id: "gpt-old", label: "GPT-Old", modelKey: "codex-subscription/gpt-old", source: { kind: "codex-subscription", name: "Codex", logo: "openai", account: "codex" }, vendor: "openai" },
     ]);
     // The `vgent` engine's prefixed mapping inherits the same window — and the
     // same name: it is the same model, and only the id carries the prefix.
     expect((await catalog.list("vgent")).models).toEqual([
       // The key is the Codex engine's own: one model, two engines.
-      { id: "codex-subscription:gpt-6-astra", label: "GPT-6-Astra", contextWindow: 272_000, modelKey: "codex-subscription/gpt-6-astra", source: { kind: "codex-subscription", name: "Codex", logo: "openai" }, vendor: "openai" },
-      { id: "codex-subscription:gpt-old", label: "GPT-Old", modelKey: "codex-subscription/gpt-old", source: { kind: "codex-subscription", name: "Codex", logo: "openai" }, vendor: "openai" },
+      { id: "codex-subscription:gpt-6-astra", label: "GPT-6-Astra", contextWindow: 272_000, modelKey: "codex-subscription/gpt-6-astra", source: { kind: "codex-subscription", name: "Codex", logo: "openai", account: "codex" }, vendor: "openai" },
+      { id: "codex-subscription:gpt-old", label: "GPT-Old", modelKey: "codex-subscription/gpt-old", source: { kind: "codex-subscription", name: "Codex", logo: "openai", account: "codex" }, vendor: "openai" },
     ]);
   });
 
@@ -304,6 +304,47 @@ describe("createModelCatalog", () => {
     clock += 10 * 60_000;
     expect((await catalog.list("codex")).models[0]?.id).toBe("gpt-3");
     expect(calls).toBe(3);
+  });
+});
+
+describe("models per account", () => {
+  it("lists each account's models under its own heading, the first account keeping the old ids", async () => {
+    const first = await loggedInCodexHome(CACHED_MODELS);
+    const second = await loggedInCodexHome([{ slug: "gpt-5.5", display_name: "GPT-5.5", visibility: "list", priority: 1 }]);
+    const homes: Record<string, string> = { codex: first, "codex-0a1b2c3d": second };
+    const catalog = createModelCatalog({
+      env: {},
+      fetchCodexRemote: rejectRemote,
+      accounts: {
+        usable: async (kind) => (kind === "codex" ? [{ id: "codex", email: "a@example.com" }, { id: "codex-0a1b2c3d", email: "b@example.com" }] : [{ id: "claude" }, { id: "claude-0a1b2c3d", email: "c@example.com" }]),
+        codexHome: (id) => homes[id]!,
+      },
+    });
+
+    const codex = (await catalog.list("codex")).models;
+    expect(codex.map((entry) => [entry.id, entry.modelKey, entry.source?.name])).toEqual([
+      ["gpt-6-astra", "codex-subscription/gpt-6-astra", "Codex · a@example.com"],
+      ["gpt-5.5", "codex-subscription/gpt-5.5", "Codex · a@example.com"],
+      ["@codex-0a1b2c3d:gpt-5.5", "codex-subscription@codex-0a1b2c3d/gpt-5.5", "Codex · b@example.com"],
+    ]);
+    const vgent = (await catalog.list("vgent")).models;
+    expect(vgent.map((entry) => entry.id)).toContain("@codex-0a1b2c3d:codex-subscription:gpt-5.5");
+    // One model per account across both engines: the in-house row shares the Codex row's key.
+    expect(vgent.find((entry) => entry.id === "@codex-0a1b2c3d:codex-subscription:gpt-5.5")?.modelKey).toBe("codex-subscription@codex-0a1b2c3d/gpt-5.5");
+
+    const claude = (await catalog.list("claude-code")).models;
+    expect(claude.filter((entry) => entry.label === "sonnet").map((entry) => [entry.id, entry.source?.account, entry.source?.name])).toEqual([
+      ["sonnet", "claude", "Claude"],
+      ["@claude-0a1b2c3d:sonnet", "claude-0a1b2c3d", "Claude · c@example.com"],
+    ]);
+  });
+
+  it("lists no Codex model at all when no account is signed in", async () => {
+    const catalog = createModelCatalog({ env: {}, fetchCodexRemote: rejectRemote, accounts: { usable: async () => [], codexHome: () => "/nowhere" } });
+    const codex = await catalog.list("codex");
+    expect(codex.models).toEqual([]);
+    expect(codex.warning).toContain("添加一个 Codex 账号");
+    expect((await catalog.list("claude-code")).models).toEqual([]);
   });
 });
 

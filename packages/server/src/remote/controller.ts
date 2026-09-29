@@ -1,49 +1,36 @@
 import type { RemoteAccessState } from "./types.js"
-import {
-  GitHubAuthError,
-  type GitHubCredential,
-  type getGitHubAccount,
-  type beginGitHubLogin,
-  type waitGitHubLogin,
-} from "./github.js"
+import { GitHubAuthError } from "./github.js"
 import type { RemoteTunnelDevice } from "./tunnels.js"
 import type { RemoteHostRecord } from "./host.js"
 
-type Account = Awaited<ReturnType<typeof getGitHubAccount>>
+type Identity = { id: number; name: string; username: string; avatarUrl?: string }
 type Connection = { stop(): Promise<void> }
 type FailureCategory = Exclude<RemoteAccessState["error"], null>
-type FailureOperation =
-  | "initialize"
-  | "poll"
-  | "signIn"
-  | "cancelSignIn"
-  | "signOut"
-  | "enable"
-  | "disable"
-  | "rename"
-  | "refresh"
+type FailureOperation = "initialize" | "poll" | "select" | "enable" | "disable" | "rename" | "refresh"
 export type RemoteControllerFailure = {
   operation: FailureOperation
   category: FailureCategory
   code?: string
   status?: number
 }
+/**
+ * The GitHub accounts remote access can run as. Signing in and out is theirs:
+ * remote access only picks one, by its account id, and borrows its token.
+ */
+export type RemoteGitHub = {
+  available(): boolean
+  identity(id: string): Promise<Identity>
+  token(id: string): Promise<string>
+  /** Changes when the account signs out, so work started before cannot finish after. */
+  revision(id: string): number
+}
 type Dependencies = {
-  credentials: {
-    available(): boolean
-    read(): GitHubCredential | undefined | Promise<GitHubCredential | undefined>
-    write(value: GitHubCredential): void | Promise<void>
-    clear(): void | Promise<void>
-  }
+  github: RemoteGitHub
   settings: { get(key: string): unknown; set(key: string, value: unknown): void }
   deviceID: string
   deviceName: string
   changed(state: RemoteAccessState): void
   failed?(failure: RemoteControllerFailure): void
-  login: typeof beginGitHubLogin
-  waitLogin: typeof waitGitHubLogin
-  account(token: string): Promise<Account>
-  refreshCredential(value: GitHubCredential): Promise<GitHubCredential>
   list(token: () => Promise<string>): Promise<RemoteTunnelDevice[]>
   host(options: {
     token(): Promise<string>
@@ -55,14 +42,14 @@ type Dependencies = {
     save(record: RemoteHostRecord): void
     changed(status: "connecting" | "online" | "offline"): void
   }): Promise<Connection & { device: RemoteTunnelDevice }>
-
 }
 
 export function createRemoteController(deps: Dependencies) {
+  const savedAccount = deps.settings.get("remoteAccountId")
   let state: RemoteAccessState = {
-    configured: deps.credentials.available(),
+    configured: deps.github.available(),
+    accountId: typeof savedAccount === "string" ? savedAccount : null,
     account: null,
-    authorization: null,
     enabled: deps.settings.get("remoteEnabled") === true,
     status: "disabled",
     deviceName:
@@ -73,18 +60,13 @@ export function createRemoteController(deps: Dependencies) {
     devices: [],
     error: null,
   }
-  let credential: GitHubCredential | undefined
-  let credentialReadAttempted = false
-  let credentialWrites = Promise.resolve()
-  let account: Account | undefined
+  let account: Identity | undefined
+  /** The account's revision when `account` was read; a sign-out moves it. */
+  let accountRevision = 0
   let host: Connection | undefined
-  let login: AbortController | undefined
   let hosting: AbortController | undefined
   let revision = 0
-  let authentication = 0
-  let signingOut = false
   let disposed = false
-  let refresh: { generation: number; promise: Promise<GitHubCredential> } | undefined
   let hostStopping = Promise.resolve()
   let pending = Promise.resolve()
   let timer: ReturnType<typeof setInterval> | undefined
@@ -97,26 +79,10 @@ export function createRemoteController(deps: Dependencies) {
     if (disposed || generation !== revision) throw new Error("Remote operation cancelled")
   }
   const token = async () => {
-    if (!credential || disposed || signingOut) throw new Error("Authentication required")
-    if (!credential.expiresAt || credential.expiresAt > Date.now() + 60_000) return credential.accessToken
-    const generation = authentication
-    if (!refresh || refresh.generation !== generation) {
-      const promise = deps.refreshCredential(credential).finally(() => {
-        if (refresh?.promise === promise) refresh = undefined
-      })
-      refresh = { generation, promise }
-    }
-    const next = await refresh.promise
-    if (disposed || generation !== authentication) throw new Error("Authentication cancelled")
-    credentialWrites = credentialWrites.catch(() => {}).then(async () => {
-      if (disposed || generation !== authentication || signingOut) throw new Error("Authentication cancelled")
-      if (credential !== next) await deps.credentials.write(next)
-      if (disposed || generation !== authentication || signingOut) throw new Error("Authentication cancelled")
-      credential = next
-    })
-    await credentialWrites
-    if (disposed || generation !== authentication) throw new Error("Authentication cancelled")
-    return next.accessToken
+    const id = state.accountId
+    if (id == null || disposed) throw new Error("Authentication required")
+    if (deps.github.revision(id) !== accountRevision) throw new Error("Authentication cancelled")
+    return deps.github.token(id)
   }
   const records = () => {
     const value = deps.settings.get("remoteTunnels")
@@ -137,26 +103,18 @@ export function createRemoteController(deps: Dependencies) {
     hostStopping = Promise.allSettled([hostStopping, previous?.stop()]).then(() => undefined)
     await hostStopping
   }
-  const halt = async () => {
-    await haltHost()
-  }
   const restoreAccount = async (generation: number) => {
     check(generation)
     if (account) return
-    if (!credential) {
-      // A denied or locked credential store may show a native authorization dialog.
-      // Polling must not repeatedly ask; only an explicit refresh retries the read.
-      if (credentialReadAttempted) return
-      credentialReadAttempted = true
-      const saved = await deps.credentials.read()
-      check(generation)
-      credential = saved
-    }
-    if (!credential) return
-    const identity = await deps.account(await token())
+    const id = state.accountId
+    if (id == null) return
+    const before = deps.github.revision(id)
+    const identity = await deps.github.identity(id)
     check(generation)
+    if (deps.github.revision(id) !== before) throw new Error("Authentication cancelled")
     account = identity
-    publish({ account: { name: identity.name, username: identity.username, avatarUrl: `https://avatars.githubusercontent.com/u/${identity.id}?s=80` }, error: null })
+    accountRevision = before
+    publish({ account: { name: identity.name, username: identity.username, avatarUrl: identity.avatarUrl ?? `https://avatars.githubusercontent.com/u/${identity.id}?s=80` }, error: null })
   }
   const list = async (generation: number) => {
     check(generation)
@@ -212,38 +170,6 @@ export function createRemoteController(deps: Dependencies) {
     host = result
     publish({ status: "online", url: result.device.url, error: null })
   }
-  const authenticate = async (generation: number) => {
-    check(generation)
-    if (account) return
-    if (!deps.credentials.available()) throw new RemoteConfigurationError()
-    const controller = new AbortController()
-    login = controller
-    try {
-      const authorization = await deps.login({ signal: controller.signal })
-      controller.signal.throwIfAborted()
-      publish({
-        authorization: {
-          userCode: authorization.userCode,
-          verificationUri: authorization.verificationUri,
-          expiresAt: authorization.expiresAt,
-        },
-        error: null,
-      })
-      const next = await deps.waitLogin(authorization, { signal: controller.signal })
-      const identity = await deps.account(next.accessToken)
-      controller.signal.throwIfAborted()
-      check(generation)
-      await deps.credentials.write(next)
-      controller.signal.throwIfAborted()
-      check(generation)
-      credential = next
-      account = identity
-      publish({ account: { name: identity.name, username: identity.username, avatarUrl: `https://avatars.githubusercontent.com/u/${identity.id}?s=80` }, authorization: null })
-    } finally {
-      if (login === controller) login = undefined
-      if (generation === revision) publish({ authorization: null })
-    }
-  }
   const run = (operation: FailureOperation, action: (generation: number) => Promise<unknown>) => {
     const generation = revision
     const result = pending.then(async () => {
@@ -263,15 +189,22 @@ export function createRemoteController(deps: Dependencies) {
     pending = result.then(() => undefined)
     return result
   }
+  /** Stops using the current account: whatever runs as it goes down with it. */
+  const forget = async (next: string | null) => {
+    await haltHost()
+    account = undefined
+    deps.settings.set("remoteAccountId", next)
+    publish({ accountId: next, account: null, url: null, devices: [], status: state.enabled ? "offline" : "disabled", error: null })
+  }
+  const startUp = async (generation: number) => {
+    await restoreAccount(generation)
+    if (account) {
+      await ensureHost(generation)
+      await list(generation)
+    } else if (state.enabled) publish({ status: "offline", error: "authentication" })
+  }
   return {
     getState: async () => state,
-    /** Internal account adapter. Never serialize credentials into an API response. */
-    githubAccess: async () => {
-      const generation = authentication;
-      const accessToken = await token();
-      if (!account || generation !== authentication) throw new Error("GitHub account changed");
-      return { accessToken, accountId: String(account.id), revision: generation };
-    },
     initialize: () => {
       if (disposed) return Promise.resolve(state)
       timer ??= setInterval(() => {
@@ -282,48 +215,32 @@ export function createRemoteController(deps: Dependencies) {
         })
       }, 30_000)
       timer.unref?.()
-      return run("initialize", async (generation) => {
-        await restoreAccount(generation)
-        if (account) {
-          await ensureHost(generation)
-          await list(generation)
-        } else if (state.enabled) publish({ status: "offline", error: "authentication" })
-      })
+      return run("initialize", startUp)
     },
-    signIn: () =>
-      run("signIn", async (generation) => {
-        await authenticate(generation)
-        check(generation)
-        await ensureHost(generation)
-        await list(generation)
-      }),
-    cancelSignIn: () => {
+    /** Run as another GitHub account, or as none. Hosting follows if it is on. */
+    selectAccount: (id: string | null) => {
       revision++
-      login?.abort()
-      return run("cancelSignIn", async () => {
-        publish({ authorization: null, error: null })
-      })
-    },
-    signOut: () => {
-      signingOut = true
-      revision++
-      authentication++
-      login?.abort()
       hosting?.abort()
-      return run("signOut", async () => {
-        await halt()
-        await credentialWrites.catch(() => undefined)
-        try { await deps.credentials.clear() } finally { signingOut = false }
+      return run("select", async (generation) => {
+        await forget(id)
+        check(generation)
+        await startUp(generation)
+      })
+    },
+    /** An account signed out: if it is the one in use, remote access stops and forgets it. */
+    accountRemoved: (id: string) => {
+      if (state.accountId !== id) return Promise.resolve(state)
+      revision++
+      hosting?.abort()
+      return run("disable", async () => {
         deps.settings.set("remoteEnabled", false)
-        credential = undefined
-        account = undefined
-        publish({ account: null, authorization: null, url: null, enabled: false, status: "disabled", devices: [], error: null })
+        publish({ enabled: false })
+        await forget(null)
       })
     },
     setEnabled: (enabled: boolean) => {
       if (!enabled) {
         revision++
-        login?.abort()
         hosting?.abort()
       }
       return run(enabled ? "enable" : "disable", async (generation) => {
@@ -339,7 +256,8 @@ export function createRemoteController(deps: Dependencies) {
           })
           return
         }
-        await authenticate(generation)
+        await restoreAccount(generation)
+        if (!account) throw new RemoteAuthenticationError()
         check(generation)
         deps.settings.set("remoteEnabled", true)
         publish({ enabled: true })
@@ -358,7 +276,11 @@ export function createRemoteController(deps: Dependencies) {
       }),
     refresh: () =>
       run("refresh", async (generation) => {
-        if (!credential) credentialReadAttempted = false
+        // A login renewed elsewhere is read again rather than trusted from before.
+        if (account && state.accountId != null && deps.github.revision(state.accountId) !== accountRevision) {
+          await haltHost()
+          account = undefined
+        }
         await restoreAccount(generation)
         if (!account) {
           if (state.enabled) publish({ status: "offline", error: "authentication" })
@@ -371,20 +293,19 @@ export function createRemoteController(deps: Dependencies) {
     stop: async () => {
       disposed = true
       revision++
-      authentication++
       if (timer) clearInterval(timer)
-      login?.abort()
       hosting?.abort()
-      await halt()
+      await haltHost()
       await pending
     },
   }
 }
 
-class RemoteConfigurationError extends Error {}
+class RemoteAuthenticationError extends Error {}
 
 function failureCategory(error: unknown): FailureCategory {
-  if (error instanceof RemoteConfigurationError) return "configuration"
+  if (error instanceof RemoteAuthenticationError) return "authentication"
+  if (error instanceof Error && ["Authentication required", "Authentication cancelled", "GitHub account is not signed in", "GitHub account changed"].includes(error.message)) return "authentication"
   if (error && typeof error === "object") {
     const response = property(error, "response")
     if (response && typeof response === "object" && property(response, "status") === 403) {

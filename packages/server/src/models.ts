@@ -8,6 +8,8 @@ import type { EngineId, Logger } from "./types.js";
 import { silentLogger } from "./types.js";
 import { CLAUDE_CODE_LONG_CONTEXT, CLAUDE_CODE_STANDARD_CONTEXT } from "./engines/claude-code.js";
 import { DEFAULT_REASONING_LEVEL, defaultLevelFor, reasoningFor } from "./reasoning.js";
+import { DEFAULT_ACCOUNT, accountModelKey, accountSpec, subscriptionKey } from "./accounts/spec.js";
+import type { AccountId, AccountSummary, AccountUse } from "./accounts/types.js";
 
 /** One selectable model. `id` is what a thread's `model` field is set to. */
 export interface ModelEntry {
@@ -97,10 +99,13 @@ export interface ModelSource {
    * Absent for one they never placed; the picker lists those after the rest.
    */
   rank?: number;
+  /** The account the models come with — a Claude, Codex or GitHub login. Absent for a provider's key or the gateway. */
+  account?: AccountId;
 }
 
-/** How `Settings.providerOrder` names a source: a provider by its id, a login by its kind. */
-export const sourceOrderKey = (source: ModelSource): string => (source.kind === "provider" ? (source.id ?? source.name) : source.kind);
+/** How `Settings.providerOrder` names a source: an account by its subscription key, a provider by its id, the gateway by its kind. */
+export const sourceOrderKey = (source: ModelSource): string =>
+  source.account != null ? subscriptionKey(source.account) : source.kind === "provider" ? (source.id ?? source.name) : source.kind;
 
 /**
  * The list regrouped in 提供商排序: each ranked source's models, in the user's
@@ -119,8 +124,17 @@ export function orderBySource(models: readonly ModelEntry[], order: readonly str
     .map(({ entry }) => entry);
 }
 
-const CODEX_SOURCE: ModelSource = { kind: "codex-subscription", name: "Codex", logo: "openai" };
-const CLAUDE_SOURCE: ModelSource = { kind: "claude-subscription", name: "Claude", logo: "anthropic" };
+/** Who an account is, as far as a model list cares: what its heading in the picker says. */
+type CatalogAccount = Pick<AccountSummary, "id" | "email" | "username">;
+
+/** The picker's heading for an account's models: the platform, then who is signed in. */
+export const accountSourceName = (platform: string, account: Pick<AccountSummary, "email" | "username">): string => {
+  const who = account.email ?? (account.username != null ? `@${account.username}` : undefined);
+  return who != null ? `${platform} · ${who}` : platform;
+};
+
+const codexSource = (account: CatalogAccount): ModelSource => ({ kind: "codex-subscription", name: accountSourceName("Codex", account), logo: "openai", account: account.id });
+const claudeSource = (account: CatalogAccount): ModelSource => ({ kind: "claude-subscription", name: accountSourceName("Claude", account), logo: "anthropic", account: account.id });
 const GATEWAY_SOURCE: ModelSource = { kind: "gateway", name: "AI Gateway", logo: "vercel" };
 
 /** From here up a window counts as long, and a model that has nothing shorter is offered {@link SHORT_CONTEXT_OPTION} beside it. */
@@ -235,6 +249,16 @@ export interface ModelCatalogOptions {
    * of window.
    */
   catalogModelOf?: () => Promise<(modelId: string) => { reasoningLevels?: string[]; contextWindow?: number; vendor?: string; cost?: ModelCost } | undefined>;
+  /**
+   * The accounts behind the lists: the signed-in ones switched on for an
+   * engine, first account first, and where a Codex account keeps its login.
+   * Unset — a test, the CLI — it is the machine's own login, and a Codex that
+   * is not signed in still lists its built-in model.
+   */
+  accounts?: {
+    usable(kind: "claude" | "codex", use: AccountUse): Promise<CatalogAccount[]>;
+    codexHome(id: AccountId): string;
+  };
 }
 
 /** How long a fetched catalog is reused. A picker opening twice must not refetch. */
@@ -251,14 +275,8 @@ const FALLBACK_CODEX_CLIENT_VERSION = "0.155.0";
 /** Either of these lets the AI Gateway authenticate a `provider/model` spec. */
 const GATEWAY_ENV_VARS = ["AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"] as const;
 
-/** One key for the Codex login's model, whichever engine names it. */
-const codexModelKey = (slug: string): string => `codex-subscription/${slug}`;
-
-const CODEX_BUILTIN: ModelEntry[] = [{ id: "gpt-5.5", label: "gpt-5.5", modelKey: codexModelKey("gpt-5.5"), source: CODEX_SOURCE, vendor: "openai" }];
-
-const VGENT_BUILTIN: ModelEntry[] = [
-  { id: `${CODEX_SUBSCRIPTION_PREFIX}gpt-5.5`, label: "gpt-5.5", modelKey: codexModelKey("gpt-5.5"), source: CODEX_SOURCE, vendor: "openai" },
-];
+/** What Codex offers when nothing better is known: no account signed in, and no catalog to read. */
+const CODEX_BUILTIN: CodexCatalogModel[] = [{ slug: "gpt-5.5", display_name: "gpt-5.5" }];
 
 /**
  * The Claude Agent SDK has no list endpoint, and the harness passes `model`
@@ -272,7 +290,7 @@ const CLAUDE_CODE_BUILTIN: ModelEntry[] = [
   { id: "haiku", label: "haiku", description: "别名：当前默认的 Haiku 版本" },
 ];
 
-const CODEX_LOGGED_OUT = "Codex 未登录：找不到可用的 ChatGPT / Codex 登录态（~/.codex/auth.json，或 CODEX_HOME）";
+const CODEX_LOGGED_OUT = "Codex 未登录：在「账号」里添加一个 Codex 账号";
 
 /**
  * What `@ai-sdk/openai` documents for a gateway-routed OpenAI model. Only
@@ -308,8 +326,6 @@ function withClaudeCodeReasoning(
     const listed = known(entry);
     return {
       ...entry,
-      modelKey: `claude-subscription/${entry.id}`,
-      source: CLAUDE_SOURCE,
       vendor: "anthropic",
       ...reasoningFor("claude-code", listed?.reasoningLevels),
       ...contextOptionsFor("claude-code", undefined, listed?.contextWindow),
@@ -444,7 +460,6 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
   const now = options.now ?? (() => Date.now());
   const env = options.env ?? process.env;
   const gateway = options.gateway ?? defaultGateway;
-  const fetchCodexRemote = options.fetchCodexRemote ?? ((input) => fetchCodexRemoteCatalog(input, env));
 
   const cached = new Map<EngineId, { at: number; catalog: ModelCatalog }>();
   let revision = 0;
@@ -456,15 +471,26 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
       return undefined;
     });
 
-  /** Codex's own catalog, shared by the `codex` and `vgent` engines. */
-  const listCodexModels = async (): Promise<{ models: CodexCatalogModel[]; source: string; warning?: string }> => {
-    const report = await describeSubscriptionAuth({ env });
+  /** The accounts an engine lists models for; without an account service, the machine's own login. */
+  const accountsFor = async (kind: "claude" | "codex", use: AccountUse): Promise<CatalogAccount[]> => {
+    if (options.accounts == null) return [{ id: DEFAULT_ACCOUNT[kind] }];
+    return options.accounts.usable(kind, use).catch((error: unknown) => {
+      log.warn("读取账号失败", error);
+      return [];
+    });
+  };
+  const homeOf = (id: AccountId) => options.accounts?.codexHome(id) ?? codexHome(env);
+
+  /** One Codex account's catalog, shared by the `codex` and `vgent` engines. */
+  const listCodexModels = async (home: string): Promise<{ models: CodexCatalogModel[]; source: string; warning?: string }> => {
+    const homeEnv = { ...env, CODEX_HOME: home };
+    const report = await describeSubscriptionAuth({ env: homeEnv });
     if (!report.codex.available) return { models: [], source: "builtin", warning: CODEX_LOGGED_OUT };
 
-    const cache = await readCodexCache(codexHome(env));
+    const cache = await readCodexCache(home);
     let warning: string | undefined;
     try {
-      const remote = await fetchCodexRemote({
+      const remote = await (options.fetchCodexRemote ?? ((input) => fetchCodexRemoteCatalog(input, homeEnv)))({
         clientVersion: cache?.clientVersion ?? FALLBACK_CODEX_CLIENT_VERSION,
         signal: AbortSignal.timeout(REMOTE_TIMEOUT_MS),
       });
@@ -476,7 +502,26 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
     }
 
     if (cache != null && cache.models.length > 0) return { models: cache.models, source: "codex-cache", warning };
-    return { models: [], source: "builtin", warning: "找不到 Codex 模型目录，已改用内置清单" };
+    return { models: CODEX_BUILTIN, source: "builtin", warning: "找不到 Codex 模型目录，已改用内置清单" };
+  };
+
+  /**
+   * Every Codex account's models for one engine, each under its own heading.
+   * With no account service and nobody signed in, the built-in model still
+   * shows, as it always did; the app instead lists nothing and offers to sign in.
+   */
+  const codexRows = async (
+    use: "codex" | "vgent",
+    row: (entry: CodexCatalogModel, account: CatalogAccount) => ModelEntry,
+  ): Promise<{ models: ModelEntry[]; source: string; warning?: string }> => {
+    const accounts = await accountsFor("codex", use);
+    const listings = await Promise.all(accounts.map(async (account) => ({ account, ...(await listCodexModels(homeOf(account.id))) })));
+    const signedIn = listings.filter((listing) => listing.models.length > 0);
+    const warnings = [...new Set([...(accounts.length === 0 ? [CODEX_LOGGED_OUT] : []), ...listings.flatMap((listing) => (listing.warning != null ? [listing.warning] : []))])];
+    const models = signedIn.flatMap(({ account, models: entries }) => entries.map((entry) => row(entry, account)));
+    if (models.length === 0 && options.accounts == null) models.push(...CODEX_BUILTIN.map((entry) => row(entry, { id: DEFAULT_ACCOUNT.codex })));
+    const sources = [...new Set(signedIn.map((listing) => listing.source))];
+    return { models, source: sources.length > 0 ? sources.join("+") : "builtin", ...(warnings.length > 0 ? { warning: warnings.join("；") } : {}) };
   };
 
   const listGatewayModels = async (): Promise<{ models: ModelEntry[]; warning?: string }> => {
@@ -506,65 +551,31 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
     }
   };
 
-  const buildCodex = async (): Promise<Omit<ModelCatalog, "engine" | "fetchedAt">> => {
-    const [codex, modelOf] = await Promise.all([listCodexModels(), catalogModelOf()]);
-    if (codex.models.length === 0) {
-      return { models: CODEX_BUILTIN, source: "builtin", ...(codex.warning != null ? { warning: codex.warning } : {}) };
-    }
-    return {
-      models: codex.models.map((entry) => ({
-        id: entry.slug,
-        label: entry.display_name ?? entry.slug,
-        ...(entry.description != null ? { description: entry.description } : {}),
-        ...codexReasoning(entry),
-        ...codexTiers(entry),
-        ...(entry.context_window != null ? { contextWindow: entry.context_window } : {}),
-        ...contextOptionsFor("codex", entry.context_window, modelOf?.(entry.slug)?.contextWindow),
-        modelKey: codexModelKey(entry.slug),
-        source: CODEX_SOURCE,
-        vendor: "openai",
-      })),
-      source: codex.source,
-      ...(codex.warning != null ? { warning: codex.warning } : {}),
-    };
-  };
+  /** A Codex model as one engine lists it; the Codex engine names it by slug, the in-house one behind the subscription prefix. */
+  const codexEntry = (engine: "codex" | "vgent", modelOf: Awaited<ReturnType<typeof catalogModelOf>>) => (entry: CodexCatalogModel, account: CatalogAccount): ModelEntry => ({
+    id: accountSpec(account.id, engine === "codex" ? entry.slug : `${CODEX_SUBSCRIPTION_PREFIX}${entry.slug}`),
+    // The same model under both engines, so it is called the same thing.
+    label: entry.display_name ?? entry.slug,
+    ...(entry.description != null ? { description: entry.description } : {}),
+    ...codexReasoning(entry),
+    ...codexTiers(entry),
+    ...(entry.context_window != null ? { contextWindow: entry.context_window } : {}),
+    ...contextOptionsFor(engine, entry.context_window, modelOf?.(entry.slug)?.contextWindow),
+    modelKey: accountModelKey(account.id, entry.slug),
+    source: codexSource(account),
+    vendor: "openai",
+  });
+
+  const buildCodex = async (): Promise<Omit<ModelCatalog, "engine" | "fetchedAt">> =>
+    codexRows("codex", codexEntry("codex", await catalogModelOf()));
 
   const buildVgent = async (): Promise<Omit<ModelCatalog, "engine" | "fetchedAt">> => {
-    const [codex, gatewayModels, modelOf] = await Promise.all([listCodexModels(), listGatewayModels(), catalogModelOf()]);
-    const models: ModelEntry[] = [];
-    const sources: string[] = [];
+    const modelOf = await catalogModelOf();
+    const [codex, gatewayModels] = await Promise.all([codexRows("vgent", codexEntry("vgent", modelOf)), listGatewayModels()]);
+    const models = [...codex.models, ...gatewayModels.models];
+    const sources = [...(codex.models.length > 0 ? [codex.source] : []), ...(gatewayModels.models.length > 0 ? ["gateway"] : [])];
     const warnings = [codex.warning, gatewayModels.warning].filter((value): value is string => value != null);
-
-    if (codex.models.length > 0) {
-      sources.push(codex.source);
-      models.push(
-        ...codex.models.map((entry) => ({
-          id: `${CODEX_SUBSCRIPTION_PREFIX}${entry.slug}`,
-          // The same model as the Codex engine's row, so it is called the same
-          // thing; the prefixed id is an implementation detail of the route, and
-          // the group heading already says which engine this is.
-          label: entry.display_name ?? entry.slug,
-          ...(entry.description != null ? { description: entry.description } : {}),
-          // Same model behind the subscription prefix, so the same levels and
-          // the same window apply.
-          ...codexReasoning(entry),
-          ...codexTiers(entry),
-          ...(entry.context_window != null ? { contextWindow: entry.context_window } : {}),
-          ...contextOptionsFor("vgent", entry.context_window, modelOf?.(entry.slug)?.contextWindow),
-          modelKey: codexModelKey(entry.slug),
-          source: CODEX_SOURCE,
-          vendor: "openai",
-        })),
-      );
-    }
-    if (gatewayModels.models.length > 0) {
-      sources.push("gateway");
-      models.push(...gatewayModels.models);
-    }
-    if (models.length === 0) {
-      return { models: VGENT_BUILTIN, source: "builtin", ...(warnings.length > 0 ? { warning: warnings.join("；") } : {}) };
-    }
-    return { models, source: sources.join("+"), ...(warnings.length > 0 ? { warning: warnings.join("；") } : {}) };
+    return { models, source: sources.length > 0 ? sources.join("+") : "builtin", ...(warnings.length > 0 ? { warning: warnings.join("；") } : {}) };
   };
 
   /**
@@ -603,8 +614,12 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
     const seen = new Set(CLAUDE_CODE_BUILTIN.map((entry) => entry.id));
     const full = [...fromApi, ...fromCatalog].filter((entry) => !seen.has(entry.id) && seen.add(entry.id) != null);
     const sources = ["builtin", ...(fromApi.length > 0 ? ["anthropic-api"] : []), ...(fromCatalog.length > 0 ? ["models.dev"] : [])];
+    const listed = withClaudeCodeReasoning([...CLAUDE_CODE_BUILTIN, ...full], modelOf, fromCatalog);
     return {
-      models: withClaudeCodeReasoning([...CLAUDE_CODE_BUILTIN, ...full], modelOf, fromCatalog),
+      // Each Claude account offers the same models, under its own heading.
+      models: (await accountsFor("claude", "claude-code")).flatMap((account) =>
+        listed.map((entry) => ({ ...entry, id: accountSpec(account.id, entry.id), modelKey: accountModelKey(account.id, entry.id), source: claudeSource(account) })),
+      ),
       source: sources.join("+"),
       ...(warning != null ? { warning } : {}),
     };

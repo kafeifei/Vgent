@@ -118,11 +118,9 @@ export {
   createSubscriptionService,
   parseClaudeLoginStatus,
   probeClaudeLogin,
-  SUBSCRIPTION_IDS,
   type ClaudeLoginStatus,
   type SubscriptionAccount,
   type SubscriptionId,
-  type NativeSubscriptionId,
   type SubscriptionModel,
   type SubscriptionService,
 } from "./subscriptions.js";
@@ -215,8 +213,6 @@ export type {
 export { createCatalogStore, type CatalogSnapshot, type CatalogSource, type CatalogStore } from "./store/catalog.js";
 export type { HarnessEngineId, HarnessRuntimeStatus } from "./harness-runtime.js";
 
-export type { ClaudeLoginAttempt } from "./claude-login.js";
-
 export type { RemoteAccessState, RemoteDevice } from "./remote/types.js";
 
-export type { AccountId, AccountSummary, AccountSnapshot, AccountUsage, UsageWindow } from "./accounts/types.js";
+export type { AccountId, AccountKind, AccountLoginAttempt, AccountSummary, AccountSnapshot, AccountUsage, AccountUse, UsageWindow } from "./accounts/types.js";

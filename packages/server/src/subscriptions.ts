@@ -1,20 +1,22 @@
 import { execFile } from "node:child_process";
 import { claudeCommand, claudeLoginEnv } from "./claude-login.js";
 import { CODEX_SUBSCRIPTION_PREFIX } from "@vgent/engine";
-import type { ModelCatalogService, ModelEntry } from "./models.js";
+import { accountSourceName, type ModelCatalogService, type ModelEntry } from "./models.js";
 import type { EngineId, Settings } from "./types.js";
-import type { createAccountService } from "./accounts/service.js";
+import type { AccountService } from "./accounts/service.js";
+import { accountOfSubscriptionKey, splitAccountSpec, subscriptionKey } from "./accounts/spec.js";
+import type { AccountId, AccountKind, AccountSummary, AccountUse } from "./accounts/types.js";
 
 /**
- * 订阅: the shared platform logins an Engine can run on without a key. They sit on the
- * settings page next to the connected providers, because to the user they are
- * the same thing — an account that brings models. Identity always comes from
- * the shared account service; this layer only projects model visibility.
+ * 订阅: the accounts an Engine can run on without a key. Each one that brings
+ * models — a Claude or Codex login, a GitHub account's Copilot — is a row of
+ * the provider page of its own, next to the connected providers, because to
+ * the user it is the same thing: an account that brings models. Who is signed
+ * in comes from the account service; this layer only projects model switches.
  */
-export type NativeSubscriptionId = "claude-subscription" | "codex-subscription";
-export type SubscriptionId = NativeSubscriptionId | "github-copilot";
 
-export const SUBSCRIPTION_IDS: readonly SubscriptionId[] = ["claude-subscription", "codex-subscription", "github-copilot"];
+/** What a subscription is called in 提供商排序 and on the provider page: see `subscriptionKey`. */
+export type SubscriptionId = string;
 
 /** One model of a subscription: a row of the 模型 table. */
 export interface SubscriptionModel {
@@ -28,20 +30,18 @@ export interface SubscriptionModel {
 
 export interface SubscriptionAccount {
   id: SubscriptionId;
+  /** The account behind it, for 管理账号. */
+  accountId: AccountId;
+  kind: AccountKind;
+  /** The platform, then who is signed in: the model picker's heading for these models. */
   name: string;
-  /** Absent when nobody can say: the CLI that knows is not installed. */
-  loggedIn?: boolean;
   email?: string;
   username?: string;
   plan?: string;
   /** How it is signed in when that is not the subscription itself (an API key, a cloud account). */
   method?: string;
-  /** What to run in a terminal to sign in. There is no key to paste. */
-  loginCommand: string;
-  /** The agents that run on this login, in the order the table shows them. */
+  /** The agents this account is switched on for, in the order the table shows them. */
   agents: EngineId[];
-  /** Why an agent one would expect is missing from `agents`. */
-  note?: string;
   /** Why the model list is not the live one. */
   warning?: string;
   models: SubscriptionModel[];
@@ -53,6 +53,8 @@ export interface ClaudeLoginStatus {
   email?: string;
   plan?: string;
   method?: string;
+  /** Which organization the login is in: with the email, what tells two logins apart. */
+  orgId?: string;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -72,6 +74,7 @@ export function parseClaudeLoginStatus(stdout: string): ClaudeLoginStatus {
     loggedIn: parsed.loggedIn,
     ...(text(parsed.email) != null ? { email: text(parsed.email)! } : {}),
     ...(text(parsed.subscriptionType) != null ? { plan: text(parsed.subscriptionType)! } : {}),
+    ...(text(parsed.orgId) != null ? { orgId: text(parsed.orgId)! } : {}),
     // `claude.ai` is the subscription; anything else is worth a word, because the models and the bill differ.
     ...(parsed.loggedIn && method != null && method !== "claude.ai" ? { method } : {}),
   };
@@ -110,110 +113,93 @@ export function markHidden(models: readonly ModelEntry[], hidden: readonly strin
 }
 
 export interface SubscriptionService {
-  /** All accounts, with their login state. `refresh` asks the vendors for their model lists again. */
+  /** Every signed-in account with a model use on. `refresh` asks the vendors for their model lists again. */
   list(settings: Settings, options?: { refresh?: boolean }): Promise<SubscriptionAccount[]>;
-  /** One account's model rows only — what a switch needs back, without asking any CLI again. */
-  models(id: SubscriptionId, settings: Settings): Promise<SubscriptionModel[]>;
+  /** One account's model rows only — what a switch needs back, without asking any CLI again. Undefined for no such subscription. */
+  models(id: SubscriptionId, settings: Settings): Promise<SubscriptionModel[] | undefined>;
+}
+
+/** The engines each platform's models run on, in the table's column order. */
+const ENGINES: Record<AccountKind, Array<{ engine: EngineId; use: AccountUse }>> = {
+  claude: [{ engine: "claude-code", use: "claude-code" }],
+  codex: [{ engine: "vgent", use: "vgent" }, { engine: "codex", use: "codex" }],
+  github: [{ engine: "vgent", use: "copilot" }],
+};
+
+/** The model a row stands for, whichever engine names it: its id without the account and the subscription prefix. */
+function rowId(spec: string): string {
+  const bare = splitAccountSpec(spec).spec;
+  if (bare.startsWith(CODEX_SUBSCRIPTION_PREFIX)) return bare.slice(CODEX_SUBSCRIPTION_PREFIX.length);
+  if (bare.startsWith("github-copilot:")) return bare.slice("github-copilot:".length);
+  return bare;
 }
 
 export function createSubscriptionService(options: {
   modelCatalog: ModelCatalogService;
-  /** Uses the same identities and Copilot catalog as quota, remote access and execution. */
-  accounts: Pick<ReturnType<typeof createAccountService>, "list" | "copilot">;
+  accounts: Pick<AccountService, "list" | "copilotModels">;
 }): SubscriptionService {
   const { modelCatalog } = options;
 
-  const row = (entry: ModelEntry, id: string): Omit<SubscriptionModel, "agents"> => ({
-    id,
-    label: entry.label,
-    ...(entry.description != null ? { description: entry.description } : {}),
-    ...(entry.contextWindow != null ? { contextWindow: entry.contextWindow } : {}),
+  /** Engines this account's models run on right now: switched on, and the engine lists them. */
+  const agentsOf = (account: AccountSummary): EngineId[] =>
+    ENGINES[account.kind].filter(({ use }) => account.uses.some((entry) => entry.id === use && entry.enabled)).map(({ engine }) => engine);
+
+  const rows = async (account: AccountSummary, settings: Settings, refresh: boolean): Promise<{ models: SubscriptionModel[]; warning?: string }> => {
+    const agents = agentsOf(account);
+    const byRow = new Map<string, SubscriptionModel>();
+    let warning: string | undefined;
+    for (const engine of agents) {
+      let entries: ModelEntry[];
+      if (account.kind === "github") {
+        entries = await options.accounts.copilotModels(refresh);
+        if (!entries.some((entry) => entry.source?.account === account.id)) warning = "暂时无法读取 Copilot 模型，请确认此 GitHub 账号具有 Copilot 权限后重试。";
+      } else {
+        const catalog = await modelCatalog.list(engine, { refresh });
+        entries = catalog.models;
+        warning ??= catalog.warning;
+      }
+      for (const entry of entries) {
+        if (entry.source?.account !== account.id) continue;
+        const id = rowId(entry.id);
+        const existing = byRow.get(id) ?? {
+          id,
+          label: entry.label,
+          ...(entry.description != null ? { description: entry.description } : {}),
+          ...(entry.contextWindow != null ? { contextWindow: entry.contextWindow } : {}),
+          agents: {},
+        };
+        existing.agents[engine] = { spec: entry.id, enabled: !(settings.hiddenModels?.[engine] ?? []).includes(entry.id) };
+        byRow.set(id, existing);
+      }
+    }
+    return { models: [...byRow.values()], ...(warning != null ? { warning } : {}) };
+  };
+
+  const subscriptionOf = async (account: AccountSummary, settings: Settings, refresh: boolean): Promise<SubscriptionAccount> => ({
+    id: subscriptionKey(account.id),
+    accountId: account.id,
+    kind: account.kind,
+    name: accountSourceName(account.kind === "github" ? "GitHub Copilot" : account.name, account),
+    ...(account.email != null ? { email: account.email } : {}),
+    ...(account.username != null ? { username: account.username } : {}),
+    ...(account.plan != null ? { plan: account.plan } : {}),
+    ...(account.method != null ? { method: account.method } : {}),
+    agents: agentsOf(account),
+    ...(await rows(account, settings, refresh)),
   });
-  const cell = (settings: Settings, engine: EngineId, spec: string) => ({ spec, enabled: !(settings.hiddenModels?.[engine] ?? []).includes(spec) });
 
-  const claudeModels = async (settings: Settings, refresh: boolean): Promise<{ models: SubscriptionModel[]; warning?: string }> => {
-    const catalog = await modelCatalog.list("claude-code", { refresh });
-    return {
-      models: catalog.models.map((entry) => ({ ...row(entry, entry.id), agents: { "claude-code": cell(settings, "claude-code", entry.id) } })),
-      ...(catalog.warning != null ? { warning: catalog.warning } : {}),
-    };
-  };
-
-  // One row per Codex model, whichever agent lists it: the Codex agent calls it
-  // by its slug, the in-house one by the slug behind the subscription prefix.
-  const codexModels = async (settings: Settings, refresh: boolean): Promise<{ models: SubscriptionModel[]; warning?: string }> => {
-    const [codex, vgent] = await Promise.all([modelCatalog.list("codex", { refresh }), modelCatalog.list("vgent", { refresh })]);
-    const rows = new Map<string, SubscriptionModel>();
-    for (const entry of vgent.models) {
-      if (!entry.id.startsWith(CODEX_SUBSCRIPTION_PREFIX)) continue;
-      const slug = entry.id.slice(CODEX_SUBSCRIPTION_PREFIX.length);
-      rows.set(slug, { ...row(entry, slug), agents: { vgent: cell(settings, "vgent", entry.id) } });
-    }
-    for (const entry of codex.models) {
-      const existing = rows.get(entry.id) ?? { ...row(entry, entry.id), agents: {} };
-      rows.set(entry.id, { ...existing, agents: { ...existing.agents, codex: cell(settings, "codex", entry.id) } });
-    }
-    return { models: [...rows.values()], ...(codex.warning != null ? { warning: codex.warning } : {}) };
-  };
-
-  const copilotModels = async (settings: Settings, refresh: boolean): Promise<{ models: SubscriptionModel[]; warning?: string }> => {
-    try {
-      const entries = await options.accounts.copilot.models(refresh);
-      return { models: entries.map(entry => ({ ...row(entry, entry.id.slice("github-copilot:".length)), agents: { vgent: cell(settings, "vgent", entry.id) } })) };
-    } catch {
-      return { models: [], warning: "暂时无法读取 Copilot 模型，请确认此 GitHub 账号具有 Copilot 权限后重试。" };
-    }
-  };
+  const withModels = (account: AccountSummary) => account.loggedIn === true && agentsOf(account).length > 0;
 
   return {
     async list(settings, listOptions) {
       const refresh = listOptions?.refresh === true;
-      const [identity, claude, codex] = await Promise.all([
-        options.accounts.list({ refresh }),
-        claudeModels(settings, refresh),
-        codexModels(settings, refresh),
-      ]);
-      const claudeLogin = identity.accounts.find(a => a.id === "claude");
-      const codexLogin = identity.accounts.find(a => a.id === "codex");
-      const github = identity.accounts.find(a => a.id === "github");
-      const login = (account: typeof claudeLogin) => ({
-        ...(account?.loggedIn != null ? { loggedIn: account.loggedIn } : {}),
-        ...(account?.email ? { email: account.email } : {}),
-        ...(account?.plan ? { plan: account.plan } : {}),
-        ...(account?.method ? { method: account.method } : {}),
-      });
-      return [
-        {
-          id: "claude-subscription",
-          name: "Claude 订阅",
-          ...login(claudeLogin),
-          loginCommand: "claude auth login",
-          agents: ["claude-code"],
-          note: "当前登录由 Claude Code 引擎使用。",
-          ...claude,
-        },
-        {
-          id: "codex-subscription",
-          name: "ChatGPT · Codex 订阅",
-          ...login(codexLogin),
-          loginCommand: "codex login",
-          agents: ["vgent", "codex"],
-          ...codex,
-        },
-        ...(github ? [{
-          id: "github-copilot" as const,
-          name: "GitHub Copilot",
-          ...login(github),
-          ...(github.username ? { username: github.username } : {}),
-          loginCommand: "",
-          agents: ["vgent" as const],
-          note: "与远程访问共用 GitHub 登录；模型开关决定 Vgent 引擎选择器中显示哪些模型。",
-          ...(github.loggedIn ? await copilotModels(settings, refresh) : { models: [] }),
-        }] : []),
-      ];
+      const accounts = (await options.accounts.list({ refresh })).accounts.filter(withModels);
+      return Promise.all(accounts.map((account) => subscriptionOf(account, settings, refresh)));
     },
     async models(id, settings) {
-      return (id === "github-copilot" ? await copilotModels(settings, false) : id === "claude-subscription" ? await claudeModels(settings, false) : await codexModels(settings, false)).models;
+      const accountId = accountOfSubscriptionKey(id);
+      const account = (await options.accounts.list()).accounts.find((entry) => entry.id === accountId);
+      return account == null ? undefined : (await rows(account, settings, false)).models;
     },
   };
 }

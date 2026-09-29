@@ -1,6 +1,7 @@
 import type { Hono } from "hono";
 import { BadRequestError, VgentServerError } from "../errors.js";
 import type { RemoteService } from "./service.js";
+import { isAccountId } from "../accounts/spec.js";
 
 /** Mounted after the local API's token/Host checks. The relay blocks these routes. */
 export function registerRemoteRoutes(app: Hono, remote?: RemoteService, accountChanged?: () => void) {
@@ -13,15 +14,20 @@ export function registerRemoteRoutes(app: Hono, remote?: RemoteService, accountC
     const body: unknown = await c.req.json().catch(() => undefined);
     if (!body || typeof body !== "object" || !("action" in body)) throw new BadRequestError("缺少远程操作", "invalid_remote_action");
     const host = service();
-    if (["signIn", "signOut", "refresh"].includes(String(body.action))) { accountChanged?.(); }
     switch (body.action) {
-      case "signIn": { const state = await host.signIn(); accountChanged?.(); return c.json(state); }
-      case "cancelSignIn": return c.json(await host.cancelSignIn());
-      case "signOut": { const state = await host.signOut(); accountChanged?.(); return c.json(state); }
+      case "selectAccount": {
+        if (!("accountId" in body) || (body.accountId !== null && !isAccountId(body.accountId))) throw new BadRequestError("accountId 必须是账号 id 或 null", "invalid_remote_action");
+        const state = await host.selectAccount(body.accountId as string | null);
+        accountChanged?.();
+        return c.json(state);
+      }
       case "refresh": return c.json(await host.refresh());
-      case "setEnabled":
+      case "setEnabled": {
         if (!("enabled" in body) || typeof body.enabled !== "boolean") throw new BadRequestError("enabled 必须为布尔值", "invalid_remote_action");
-        return c.json(await host.setEnabled(body.enabled));
+        const state = await host.setEnabled(body.enabled);
+        accountChanged?.();
+        return c.json(state);
+      }
       case "rename":
         if (!("name" in body) || typeof body.name !== "string" || !body.name.trim() || body.name.trim().length > 40) throw new BadRequestError("设备名称需要 1–40 个字符", "invalid_remote_action");
         return c.json(await host.rename(body.name));

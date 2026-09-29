@@ -353,6 +353,8 @@ export type SubscriptionAuthStatus = {
   /** Whose login this is and on which plan, so the settings page can say so. Never a token. */
   readonly email?: string;
   readonly plan?: string;
+  /** The ChatGPT account (personal or a workspace) the login is in. Not a secret: it is sent as a header. */
+  readonly accountId?: string;
 };
 
 /**
@@ -398,7 +400,7 @@ async function describeCodexAuth(options: CodexCredentialOptions): Promise<Subsc
     if (stored == null) return { available: false, source: null };
     const credential = await toCodexCredential(stored.value);
     if (credential == null) return { available: false, source: null };
-    return { available: true, source: stored.source, expiresAt: credential.expiresAt, ...codexAccountOf(stored.value) };
+    return { available: true, source: stored.source, expiresAt: credential.expiresAt, ...codexAccountOf(stored.value), ...(credential.accountId != null ? { accountId: credential.accountId } : {}) };
   } catch {
     return { available: false, source: null };
   }

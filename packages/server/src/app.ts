@@ -1,7 +1,10 @@
-import { createAccountService } from "./accounts/service.js";
+import { AccountError, createAccountService } from "./accounts/service.js";
+import { createAccountRegistry, type AccountRegistry } from "./accounts/registry.js";
+import type { GitHubAccounts } from "./accounts/github.js";
+import { isAccountId, kindOfAccount } from "./accounts/spec.js";
+import type { AccountKind, AccountUse } from "./accounts/types.js";
 import { registerRemoteRoutes } from "./remote/routes.js";
 import type { RemoteService } from "./remote/service.js";
-import { createClaudeLogin } from "./claude-login.js";
 import { getCuaStatus, requestCuaPermissions, startCuaDriver, testCuaDriver } from "./computer-use/cua.js";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -25,10 +28,10 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { createCheckpoint, deleteCheckpoints, listCheckpointCommits, pinBaseline, restoreCheckpoint } from "./checkpoints.js";
 import { compactThread } from "./compact.js";
-import { BadRequestError, ConflictError, NotFoundError, UnauthorizedError, UpstreamModelError, VgentServerError } from "./errors.js";
+import { BadRequestError, ConflictError, EngineUnavailableError, NotFoundError, UnauthorizedError, UpstreamModelError, VgentServerError } from "./errors.js";
 import type { EngineRegistry } from "./engines/registry.js";
 import { createEngineRegistry, engineDescriptors, engineIds } from "./engines/registry.js";
-import { DEFAULT_VGENT_MODEL } from "./engines/vgent.js";
+import { DEFAULT_VGENT_MODEL, accountModel } from "./engines/vgent.js";
 import type { Files } from "./files.js";
 import { defaultDownloadsDir, saveDownload } from "./downloads.js";
 import { createFiles } from "./files.js";
@@ -43,8 +46,7 @@ import { planFork } from "./fork.js";
 import { asIntegrateAction, changeStatsOf, createIntegrator, taskTarget, type Integrator, type TaskTarget } from "./integrate.js";
 import { contextOptionsFor, createModelCatalog, orderBySource, type ModelCatalog, type ModelEntry } from "./models.js";
 import { reasoningFor } from "./reasoning.js";
-import { SUBSCRIPTION_IDS, createSubscriptionService, markHidden, withHiddenModels, type ClaudeLoginStatus, type NativeSubscriptionId, type SubscriptionId } from "./subscriptions.js";
-import { logoutSubscription } from "./subscription-logout.js";
+import { createSubscriptionService, markHidden, withHiddenModels, type ClaudeLoginStatus } from "./subscriptions.js";
 import { createQueueStore } from "./queue.js";
 import { asRestoreTarget, lastTurnPair, planRestore, type RestoreTarget } from "./restore.js";
 import { createRunManager, recoverInterruptedThreads } from "./runs.js";
@@ -121,10 +123,13 @@ export interface CreateAppOptions {
   providerFetch?: typeof globalThis.fetch;
   /** What the provider catalog (models.dev) is downloaded with. Tests answer for it, or refuse. */
   catalogFetch?: typeof globalThis.fetch;
-  /** Whether Claude is signed in on this machine. Tests answer; production asks the `claude` CLI. */
-  probeClaudeLogin?: () => Promise<ClaudeLoginStatus>;
-  /** Test seam; production asks the vendor CLI to sign out. */
-  logoutSubscription?: (id: NativeSubscriptionId) => Promise<void>;
+  /** Whether Claude is signed in. Tests answer; production asks the `claude` CLI, per account directory. */
+  probeClaudeLogin?: (env?: NodeJS.ProcessEnv) => Promise<ClaudeLoginStatus>;
+  /** The account records and the GitHub accounts, shared with remote access. `main.ts` builds them; tests get their own. */
+  accountRegistry?: AccountRegistry;
+  github?: GitHubAccounts;
+  /** Test seams of the account service: the vendor CLIs, the Codex probe, the network. */
+  accountOptions?: Pick<Parameters<typeof createAccountService>[0], "cli" | "probeCodex" | "fetch" | "claudeToken">;
   /**
    * The keeper of Claude Code's and Codex's CLI + SDK. Tests pass a fake; left
    * unset the real one is built, but it only checks and upgrades on its own
@@ -348,8 +353,27 @@ export function createApp(options: CreateAppOptions): VgentApp {
   const catalog = createCatalogStore(dataDir, { log, ...(options.catalogFetch != null ? { fetch: options.catalogFetch } : {}) });
   const queue = createQueueStore(threads);
   let invalidateModels = () => {};
-  const accounts = createAccountService({ ...(options.remote ? { remote: options.remote } : {}), ...(options.probeClaudeLogin ? { probeClaude: options.probeClaudeLogin } : {}), changed: () => invalidateModels() });
-  const registry = options.registry ?? createEngineRegistry(undefined, { copilot: accounts.copilot });
+  const accounts = createAccountService({
+    dataDir,
+    registry: options.accountRegistry ?? createAccountRegistry(dataDir, log),
+    ...(options.github ? { github: options.github } : {}),
+    ...(options.remote ? { remote: options.remote } : {}),
+    ...(options.probeClaudeLogin ? { probeClaude: options.probeClaudeLogin } : {}),
+    ...options.accountOptions,
+    changed: () => invalidateModels(),
+  });
+  /** What the engines take from the accounts; a task on an account that is gone stops before it starts. */
+  const engineAccounts = {
+    claudeEnv: accounts.claudeEnv,
+    codexHome: accounts.codexHome,
+    async ensure(id: string) {
+      const account = isAccountId(id) ? (await accounts.list()).accounts.find((entry) => entry.id === id) : undefined;
+      const name = isAccountId(id) ? { claude: "Claude", codex: "Codex", github: "GitHub" }[kindOfAccount(id)] : "这个";
+      if (account == null) throw new EngineUnavailableError(`这个任务用的 ${name} 账号已经移除了，请换一个模型`, "account_unavailable");
+      if (account.loggedIn === false) throw new EngineUnavailableError(`${name} 账号 ${account.email ?? account.username ?? ""} 需要重新登录`.replace("  ", " "), "account_unavailable");
+    },
+  };
+  const registry = options.registry ?? createEngineRegistry(undefined, { copilot: accounts.copilot, accounts: engineAccounts });
   const git = options.git ?? createGit();
   const files = options.files ?? createFiles();
   const integrator = options.integrator ?? createIntegrator({ log });
@@ -540,6 +564,42 @@ export function createApp(options: CreateAppOptions): VgentApp {
   app.get("/api/accounts", async (c) => {
     c.header("Cache-Control", "no-store");
     return c.json(await accounts.list({ usage: c.req.query("usage") === "1", refresh: c.req.query("refresh") === "1" }));
+  });
+  const accountKind = (value: unknown): AccountKind => {
+    if (value === "claude" || value === "codex" || value === "github") return value;
+    throw new BadRequestError("kind 只能是 claude、codex 或 github", "invalid_account_kind");
+  };
+  const accountFailure = (error: unknown): never => {
+    if (error instanceof AccountError) throw new BadRequestError(error.message, "invalid_account");
+    throw error;
+  };
+  // 登录: one at a time. A new account, or `accountId` to sign in to that one again.
+  app.post("/api/accounts/login", async (c) => {
+    const body = (await c.req.json().catch(() => undefined)) as { kind?: unknown; accountId?: unknown } | undefined;
+    const kind = accountKind(body?.kind);
+    if (body?.accountId != null && !isAccountId(body.accountId)) throw new BadRequestError("没有这个账号", "invalid_account");
+    return c.json(await accounts.startLogin(kind, body?.accountId as string | undefined).catch(accountFailure));
+  });
+  app.get("/api/accounts/login", (c) => c.json(accounts.loginStatus()));
+  app.delete("/api/accounts/login", (c) => c.json(accounts.cancelLogin()));
+  app.delete("/api/accounts/:id", async (c) => {
+    const id = c.req.param("id");
+    if (!isAccountId(id)) throw new NotFoundError(`没有账号 ${JSON.stringify(id)}`, "account_not_found");
+    try {
+      await accounts.logout(id);
+    } catch (error) {
+      if (error instanceof AccountError) throw new BadRequestError(error.message, "invalid_account");
+      throw new VgentServerError({ message: "退出失败，请检查命令行工具后重试", status: 502, code: "account_logout_failed" });
+    }
+    return c.json(await accounts.list());
+  });
+  app.put("/api/accounts/:id/uses", async (c) => {
+    const id = c.req.param("id");
+    if (!isAccountId(id)) throw new NotFoundError(`没有账号 ${JSON.stringify(id)}`, "account_not_found");
+    const body = (await c.req.json().catch(() => undefined)) as { use?: unknown; enabled?: unknown } | undefined;
+    if (typeof body?.use !== "string" || typeof body.enabled !== "boolean") throw new BadRequestError("需要 use 和 enabled", "invalid_account_use");
+    await accounts.setUse(id, body.use as AccountUse, body.enabled).catch(accountFailure);
+    return c.json(await accounts.list());
   });
 
   // --- projects ---------------------------------------------------------
@@ -1441,7 +1501,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     }
 
     const spec = thread.model ?? DEFAULT_VGENT_MODEL;
-    const model = options.compactModel ?? (spec.startsWith("github-copilot:") ? await accounts.copilot.model(spec.slice("github-copilot:".length)) : resolveModel(spec, await providers.list()));
+    const model = options.compactModel ?? (await accountModel(spec, { copilot: accounts.copilot, accounts: engineAccounts })) ?? resolveModel(spec, await providers.list());
     const { messages } = await compactThread({ thread, model }).catch((error: unknown) => {
       throw new UpstreamModelError(`压缩失败: ${error instanceof Error ? error.message : String(error)}`);
     });
@@ -1700,6 +1760,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   const modelCatalog = createModelCatalog({
     log,
+    accounts: { usable: (kind, use) => accounts.usable(kind, use), codexHome: accounts.codexHome },
     anthropicModels: async () => (await catalog.get()).providers.find((entry) => entry.id === "anthropic")?.models ?? [],
     catalogModelOf: async () => createModelIndex((await catalog.get()).providers),
   });
@@ -1760,7 +1821,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
         )
       : [];
     // What the 模型 table switched off stays in the list, marked: see `ModelEntry.hidden`.
-    const copilotModels = engine === "vgent" ? await accounts.copilot.models(refresh).catch(() => []) : [];
+    const copilotModels = engine === "vgent" ? await accounts.copilotModels(refresh) : [];
     const priceOf = modelOf ?? (await catalog.get().then((snapshot) => createModelIndex(snapshot.providers), () => undefined));
     const models = orderBySource([...markHidden([...listing.models, ...copilotModels], current.hiddenModels?.[engine]), ...fromProviders], current.providerOrder)
       .map((entry) => withCost(entry, priceOf));
@@ -1793,42 +1854,20 @@ export function createApp(options: CreateAppOptions): VgentApp {
     return c.json({ subscriptions: await subscriptions.list(await settings.get(), { refresh: c.req.query("refresh") === "1" }) });
   });
 
-  const claudeLogin = createClaudeLogin({ changed: accounts.invalidate });
-  app.post("/api/subscriptions/claude-subscription/login", async (c) => c.json(await claudeLogin.start()));
-  app.get("/api/subscriptions/claude-subscription/login", (c) => c.json(claudeLogin.status()));
-  app.delete("/api/subscriptions/claude-subscription/login", (c) => {
-    claudeLogin.cancel();
-    return c.json(claudeLogin.status());
-  });
-
-  app.post("/api/subscriptions/:id/logout", async (c) => {
-    const id = c.req.param("id") as SubscriptionId;
-    if (!SUBSCRIPTION_IDS.includes(id)) throw new NotFoundError(`没有订阅 ${JSON.stringify(id)}`, "subscription_not_found");
-    if (id === "github-copilot") throw new BadRequestError("GitHub 登录由远程访问统一管理", "shared_github_login");
-    if (id === "claude-subscription") claudeLogin.cancel();
-    try {
-      await accounts.change(id === "codex-subscription" ? "codex" : "claude", () => (options.logoutSubscription ?? logoutSubscription)(id));
-    } catch (cause) {
-      const name = id === "claude-subscription" ? "Claude" : "Codex";
-      throw new VgentServerError({ message: `${name} 退出失败，请检查命令行工具后重试`, status: 502, code: "subscription_logout_failed" });
-    }
-    return c.json({ ok: true });
-  });
-
   // One switch, or a whole column of them. Addressed by the table's row ids; the
   // per-agent model id behind each is ours to know, not the client's.
   app.put("/api/subscriptions/:id/models", async (c) => {
-    const id = c.req.param("id") as SubscriptionId;
-    if (!SUBSCRIPTION_IDS.includes(id)) throw new NotFoundError(`没有订阅 ${JSON.stringify(id)}`, "subscription_not_found");
+    const id = c.req.param("id");
     const body = (await c.req.json().catch(() => undefined)) as { agent?: unknown; models?: unknown; enabled?: unknown } | undefined;
     const agent = asEngine(body?.agent);
     const rowIds = Array.isArray(body?.models) ? body.models.filter((entry): entry is string => typeof entry === "string") : [];
     if (agent == null || typeof body?.enabled !== "boolean") throw new BadRequestError("需要 agent、models 和 enabled", "invalid_subscription_models");
     const rows = await subscriptions.models(id, await settings.get());
+    if (rows == null) throw new NotFoundError(`没有订阅 ${JSON.stringify(id)}`, "subscription_not_found");
     const specs = rows.flatMap((row) => (rowIds.includes(row.id) && row.agents[agent] != null ? [row.agents[agent].spec] : []));
     const enabled = body.enabled;
     const next = await settings.mutate((current) => ({ hiddenModels: withHiddenModels(current.hiddenModels, agent, specs, enabled) }));
-    return c.json({ models: await subscriptions.models(id, next) });
+    return c.json({ models: (await subscriptions.models(id, next)) ?? [] });
   });
 
   // --- chat -------------------------------------------------------------
@@ -1919,7 +1958,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     app,
     projects,
     async shutdown(shutdownOptions) {
-      claudeLogin.cancel();
+      accounts.cancelLogin();
       if (debounce != null) clearTimeout(debounce);
       for (const timer of runtimeTimers) clearTimeout(timer);
       for (const unsubscribe of unsubscribes) unsubscribe();

@@ -2,15 +2,15 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { createRemoteCredentials } from "./credentials.js";
-import { createRemoteController } from "./controller.js";
-import { createGitHubClient } from "./github.js";
+import { DEFAULT_ACCOUNT } from "../accounts/spec.js";
+import { createRemoteController, type RemoteGitHub } from "./controller.js";
 
 export type RemoteService = ReturnType<typeof createRemoteController>;
 
-/** Vgent owns its credential and device identity; no other application's state is read. */
+/** Vgent owns its device identity; the GitHub login it runs as is one of the accounts'. */
 export function createRemoteService(options: {
   dataDir: string;
+  github: RemoteGitHub;
   backend(): Promise<{ url: string; token: string }>;
 }) {
   const directory = join(options.dataDir, "remote");
@@ -33,18 +33,11 @@ export function createRemoteService(options: {
   const saved = settings.get("remoteDeviceID");
   const deviceID = typeof saved === "string" && /^[a-f0-9-]{36}$/.test(saved) ? saved : randomUUID();
   if (deviceID !== saved) settings.set("remoteDeviceID", deviceID);
-  const github = createGitHubClient();
-  const clientId = process.env.VGENT_GITHUB_CLIENT_ID;
+  // The single login remote access used to keep is now the first GitHub account.
+  if (settings.get("remoteAccountId") === undefined && settings.get("remoteCredentialSaved") === true) settings.set("remoteAccountId", DEFAULT_ACCOUNT.github);
   return createRemoteController({
+    github: options.github,
     settings, deviceID, deviceName: hostname().slice(0, 40), changed: () => {},
-    credentials: createRemoteCredentials(options.dataDir, {
-      get: () => settings.get("remoteCredentialSaved") === true,
-      set: (value) => settings.set("remoteCredentialSaved", value),
-    }),
-    login: (input) => github.beginGitHubLogin({ ...input, ...(clientId ? { clientId } : {}) }),
-    waitLogin: (auth, input) => github.waitGitHubLogin(auth, { ...input, ...(clientId ? { clientId } : {}) }),
-    account: github.getGitHubAccount,
-    refreshCredential: (value) => github.refreshGitHubCredential(value, clientId ? { clientId } : {}),
     list: async (token) => {
       const { createTunnelManagement, listRemoteDevices } = await import("./tunnels.js");
       return listRemoteDevices(createTunnelManagement(token));

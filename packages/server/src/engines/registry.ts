@@ -1,4 +1,5 @@
 import type { VgentEngineFactoryOptions } from "./vgent.js";
+import type { AccountId } from "../accounts/types.js";
 import type { EngineOutcome, TaskState } from "@vgent/engine";
 import type { ModelMessage, TextStreamPart, ToolSet } from "ai";
 import type { EngineId, HarnessState, Logger, PermissionMode, Project, ThreadRecord } from "../types.js";
@@ -131,6 +132,19 @@ export interface EngineFactory {
 
 export type EngineRegistry = Record<EngineId, EngineFactory>;
 
+/**
+ * What an engine needs from the accounts to run a model on one of them: the
+ * environment Claude Code runs under, the home a Codex login lives in. The
+ * account comes from the model spec (`@<account>:<model>`); none is the
+ * platform's first account, and a missing one is a message for the user.
+ */
+export interface EngineAccounts {
+  claudeEnv(id: AccountId): Promise<Record<string, string>>;
+  codexHome(id: AccountId): string;
+  /** Throws when the account is not there (signed out, removed). */
+  ensure(id: AccountId): Promise<void>;
+}
+
 /** Engine ids whose turns hold no live state; see `EngineFactory.statelessTurns`. */
 export function statelessEngines(registry: EngineRegistry): ReadonlySet<EngineId> {
   const ids = new Set<EngineId>();
@@ -158,12 +172,12 @@ export function engineDescriptors(registry: EngineRegistry): EngineDescriptor[] 
 export type EngineFactoryOverride = Omit<EngineFactory, "descriptor"> & { descriptor?: EngineDescriptor };
 
 /** All three engines, each backed by its real runtime. */
-export function createEngineRegistry(overrides?: Partial<Record<EngineId, EngineFactoryOverride>>, options: VgentEngineFactoryOptions = {}): EngineRegistry {
+export function createEngineRegistry(overrides?: Partial<Record<EngineId, EngineFactoryOverride>>, options: VgentEngineFactoryOptions & { accounts?: EngineAccounts } = {}): EngineRegistry {
   // Insertion order is the order every list shows the agents in — the model
   // picker's groups, the settings tables' columns: Codex, Claude Code, Vgent.
   const base: EngineRegistry = {
-    codex: createCodexEngineFactory(),
-    "claude-code": createClaudeCodeEngineFactory(),
+    codex: createCodexEngineFactory(options.accounts),
+    "claude-code": createClaudeCodeEngineFactory(options.accounts),
     vgent: createVgentEngineFactory(options),
   };
   if (overrides == null) return base;

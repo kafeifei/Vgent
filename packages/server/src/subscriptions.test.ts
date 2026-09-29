@@ -1,8 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { ModelCatalog, ModelCatalogService, ModelEntry } from "./models.js";
 import { DEFAULT_SETTINGS } from "./store/settings.js";
 import { createSubscriptionService, markHidden, parseClaudeLoginStatus, withHiddenModels } from "./subscriptions.js";
-import { createAccountService } from "./accounts/service.js";
+import type { AccountSummary, AccountUse } from "./accounts/types.js";
 import type { EngineId } from "./types.js";
 
 const catalogOf = (lists: Record<EngineId, ModelEntry[]>, warning?: string): ModelCatalogService => ({
@@ -15,27 +15,10 @@ const catalogOf = (lists: Record<EngineId, ModelEntry[]>, warning?: string): Mod
   }),
 });
 
-const LISTS: Record<EngineId, ModelEntry[]> = {
-  "claude-code": [
-    { id: "sonnet", label: "sonnet" },
-    { id: "opus", label: "opus" },
-  ],
-  codex: [
-    { id: "gpt-5.5", label: "GPT-5.5", contextWindow: 272_000 },
-    { id: "gpt-5.5-mini", label: "GPT-5.5 mini" },
-  ],
-  vgent: [
-    { id: "codex-subscription:gpt-5.5", label: "GPT-5.5", contextWindow: 272_000 },
-    { id: "codex-subscription:gpt-5.5-mini", label: "GPT-5.5 mini" },
-    // A gateway model: the in-house agent's own, but no subscription's.
-    { id: "openai/gpt-5", label: "GPT-5" },
-  ],
-};
-
 describe("parseClaudeLoginStatus", () => {
   it("reads who is signed in and on which plan", () => {
     const stdout = JSON.stringify({ loggedIn: true, authMethod: "claude.ai", email: "dev@example.com", orgId: "org-1", subscriptionType: "max" });
-    expect(parseClaudeLoginStatus(stdout)).toEqual({ loggedIn: true, email: "dev@example.com", plan: "max" });
+    expect(parseClaudeLoginStatus(stdout)).toEqual({ loggedIn: true, email: "dev@example.com", plan: "max", orgId: "org-1" });
   });
 
   it("says so when the login is not the subscription", () => {
@@ -65,44 +48,69 @@ describe("withHiddenModels / markHidden", () => {
 });
 
 describe("createSubscriptionService", () => {
-  const service = (probe: () => Promise<{ loggedIn?: boolean; email?: string; plan?: string }>, warning?: string) =>
-    createSubscriptionService({ modelCatalog: catalogOf(LISTS, warning), accounts: createAccountService({ probeClaude: probe, probeCodex: async () => ({ codex: { available: false, source: null } }) }) });
+  const claude = (account: string, name: string) => ({ kind: "claude-subscription" as const, name, account });
+  const codex = { kind: "codex-subscription" as const, name: "Codex · a@example.com", account: "codex" };
+  const LISTS: Record<EngineId, ModelEntry[]> = {
+    "claude-code": [
+      { id: "sonnet", label: "sonnet", source: claude("claude", "Claude · a@example.com") },
+      { id: "opus", label: "opus", source: claude("claude", "Claude · a@example.com") },
+      { id: "@claude-0a1b2c3d:sonnet", label: "sonnet", source: claude("claude-0a1b2c3d", "Claude · b@example.com") },
+    ],
+    codex: [
+      { id: "gpt-5.5", label: "GPT-5.5", contextWindow: 272_000, source: codex },
+      { id: "gpt-5.5-mini", label: "GPT-5.5 mini", source: codex },
+    ],
+    vgent: [
+      { id: "codex-subscription:gpt-5.5", label: "GPT-5.5", contextWindow: 272_000, source: codex },
+      { id: "codex-subscription:gpt-5.5-mini", label: "GPT-5.5 mini", source: codex },
+      // A gateway model: the in-house agent's own, but no account's.
+      { id: "openai/gpt-5", label: "GPT-5", source: { kind: "gateway", name: "AI Gateway" } },
+    ],
+  };
+  const uses = (...on: AccountUse[]) => (["claude-code", "codex", "vgent", "copilot", "remote"] as const).map((id) => ({ id, enabled: on.includes(id) }));
+  const ACCOUNTS: AccountSummary[] = [
+    { id: "codex", kind: "codex", name: "Codex", loggedIn: true, email: "a@example.com", machine: true, uses: uses("codex", "vgent") },
+    { id: "claude", kind: "claude", name: "Claude", loggedIn: true, email: "a@example.com", plan: "max", machine: true, uses: uses("claude-code") },
+    { id: "claude-0a1b2c3d", kind: "claude", name: "Claude", loggedIn: true, email: "b@example.com", uses: uses("claude-code") },
+    // Signed out, or on for nothing that brings models: not a subscription row.
+    { id: "claude-11111111", kind: "claude", name: "Claude", loggedIn: false, uses: uses("claude-code") },
+    { id: "github", kind: "github", name: "GitHub", loggedIn: true, username: "octo", uses: uses("remote") },
+  ];
+  const service = (accounts = ACCOUNTS) =>
+    createSubscriptionService({ modelCatalog: catalogOf(LISTS), accounts: { list: async () => ({ accounts, revision: 1 }), copilotModels: async () => [] } });
 
-  it("uses one identity read for both quota surfaces and model management", async () => {
-    const probe = vi.fn(async () => ({ loggedIn: true, email: "same@example.com" }));
-    const accounts = createAccountService({ probeClaude: probe, probeCodex: async () => ({ codex: { available: false, source: null } }) });
-    const models = createSubscriptionService({ modelCatalog: catalogOf(LISTS), accounts });
-    const [identity, listing] = await Promise.all([accounts.list(), models.list(DEFAULT_SETTINGS)]);
-    expect(probe).toHaveBeenCalledTimes(1);
-    expect(listing[0]?.email).toBe(identity.accounts.find(a => a.id === "claude")?.email);
-    expect(listing.map(a => a.id)).toEqual(["claude-subscription", "codex-subscription", "github-copilot"]);
-  });
-
-  it("lists the Claude login for Claude Code alone, and says why", async () => {
-    const [claude] = await service(async () => ({ loggedIn: true, email: "dev@example.com", plan: "max" })).list(DEFAULT_SETTINGS);
-    expect(claude).toMatchObject({ id: "claude-subscription", loggedIn: true, email: "dev@example.com", plan: "max", agents: ["claude-code"], loginCommand: "claude auth login" });
-    expect(claude?.note).toContain("Claude Code");
-    expect(claude?.models).toEqual([
-      { id: "sonnet", label: "sonnet", agents: { "claude-code": { spec: "sonnet", enabled: true } } },
-      { id: "opus", label: "opus", agents: { "claude-code": { spec: "opus", enabled: true } } },
+  it("gives every signed-in account that brings models a row of its own, named after who is signed in", async () => {
+    const rows = await service().list(DEFAULT_SETTINGS);
+    expect(rows.map((row) => [row.id, row.accountId, row.name, row.agents])).toEqual([
+      ["codex-subscription", "codex", "Codex · a@example.com", ["vgent", "codex"]],
+      ["claude-subscription", "claude", "Claude · a@example.com", ["claude-code"]],
+      ["claude-subscription@claude-0a1b2c3d", "claude-0a1b2c3d", "Claude · b@example.com", ["claude-code"]],
     ]);
   });
 
+  it("keeps each Claude account's models to itself", async () => {
+    const rows = await service().list(DEFAULT_SETTINGS);
+    expect(rows[1]?.models.map((model) => model.agents["claude-code"]?.spec)).toEqual(["sonnet", "opus"]);
+    expect(rows[2]?.models).toEqual([{ id: "sonnet", label: "sonnet", agents: { "claude-code": { spec: "@claude-0a1b2c3d:sonnet", enabled: true } } }]);
+  });
+
   it("gives one row per Codex model with both agents' ids for it, and leaves the gateway's models out", async () => {
-    const [, codex] = await service(async () => ({}), "Codex 未登录").list({ ...DEFAULT_SETTINGS, hiddenModels: { vgent: ["codex-subscription:gpt-5.5-mini"] } });
-    expect(codex).toMatchObject({ id: "codex-subscription", loggedIn: false, agents: ["vgent", "codex"], loginCommand: "codex login", warning: "Codex 未登录" });
-    expect(codex?.models).toEqual([
+    const [row] = await service().list({ ...DEFAULT_SETTINGS, hiddenModels: { vgent: ["codex-subscription:gpt-5.5-mini"] } });
+    expect(row?.models).toEqual([
       { id: "gpt-5.5", label: "GPT-5.5", contextWindow: 272_000, agents: { vgent: { spec: "codex-subscription:gpt-5.5", enabled: true }, codex: { spec: "gpt-5.5", enabled: true } } },
       { id: "gpt-5.5-mini", label: "GPT-5.5 mini", agents: { vgent: { spec: "codex-subscription:gpt-5.5-mini", enabled: false }, codex: { spec: "gpt-5.5-mini", enabled: true } } },
     ]);
   });
 
-  it("leaves the login state out when nobody can say, and survives a probe that throws", async () => {
-    const [unknown] = await service(async () => ({})).list(DEFAULT_SETTINGS);
-    expect(unknown && "loggedIn" in unknown).toBe(false);
-    const [failed] = await service(async () => {
-      throw new Error("spawn EACCES");
-    }).list(DEFAULT_SETTINGS);
-    expect(failed && "loggedIn" in failed).toBe(false);
+  it("drops the columns of an engine the account is switched off for", async () => {
+    const accounts = ACCOUNTS.map((account) => (account.id === "codex" ? { ...account, uses: uses("codex") } : account));
+    const [row] = await service(accounts).list(DEFAULT_SETTINGS);
+    expect(row?.agents).toEqual(["codex"]);
+    expect(row?.models[0]?.agents).toEqual({ codex: { spec: "gpt-5.5", enabled: true } });
+  });
+
+  it("answers one account's rows by its key, and nothing for one that is not there", async () => {
+    expect((await service().models("claude-subscription@claude-0a1b2c3d", DEFAULT_SETTINGS))?.length).toBe(1);
+    expect(await service().models("claude-subscription@claude-99999999", DEFAULT_SETTINGS)).toBeUndefined();
   });
 });

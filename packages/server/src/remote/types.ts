@@ -8,8 +8,9 @@ export type RemoteDevice = {
 
 export type RemoteAccessState = {
   configured: boolean
+  /** The GitHub account remote access runs as, by its account id. Signing in is the account page's. */
+  accountId: string | null
   account: { name: string; username: string; avatarUrl?: string } | null
-  authorization: { userCode: string; verificationUri: string; expiresAt: number } | null
   enabled: boolean
   status: "disabled" | "connecting" | "online" | "offline"
   deviceName: string

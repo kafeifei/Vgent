@@ -10,7 +10,8 @@ import { createSettingsStore } from "../store/settings.js";
 import type { EngineDescriptor } from "./capabilities.js";
 import { trackClaudeSteers } from "./claude-steer.js";
 import { stripDeniedApprovalResults } from "./harness-messages.js";
-import type { EngineContext, EngineFactory, EngineRunner } from "./registry.js";
+import type { EngineAccounts, EngineContext, EngineFactory, EngineRunner } from "./registry.js";
+import { splitAccountSpec } from "../accounts/spec.js";
 
 /** 引擎能力表, the Claude Code row: it can ask, and it can plan; the rest is not wired. */
 const DESCRIPTOR: EngineDescriptor = {
@@ -145,9 +146,15 @@ export async function claudeCodeInstructions(repoPath: string, planMode: boolean
  * probe for that which is both cheap and honest. A missing login surfaces as a
  * stream error part from the runtime instead.
  */
-export function createClaudeCodeEngineFactory(): EngineFactory {
+export function createClaudeCodeEngineFactory(accounts?: EngineAccounts): EngineFactory {
   return {
     descriptor: DESCRIPTOR,
+
+    // A model on an account that is gone is a 400 before the run, not a login prompt inside it.
+    async ensureAvailable({ thread }) {
+      const accountId = thread.model == null ? undefined : splitAccountSpec(thread.model).accountId;
+      if (accountId != null) await accounts?.ensure(accountId);
+    },
 
     async create(ctx: EngineContext): Promise<EngineRunner> {
       // Only a turn that is being continued may attach to a suspended one; a
@@ -155,7 +162,10 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
       const continueFrom = ctx.continuesTurn ? ctx.harnessState?.continueFrom : undefined;
       const resumeFrom = continueFrom == null ? ctx.harnessState?.resumeFrom : undefined;
       const settings = await createSettingsStore(ctx.dataDir, ctx.log).get();
-      const routed = providerRoute(ctx.thread.model, await createProviderStore(ctx.dataDir, ctx.log).list());
+      // `@<account>:<model>`: another Claude account's config directory, same model.
+      const { accountId, spec: model } = ctx.thread.model == null ? { spec: undefined } : splitAccountSpec(ctx.thread.model);
+      const accountEnv = accountId != null && accounts != null ? await accounts.claudeEnv(accountId) : {};
+      const routed = providerRoute(model, await createProviderStore(ctx.dataDir, ctx.log).list());
       const cua = settings.computerUseProvider === "cua" && !ctx.planMode
         ? await connectMcpServers([cuaMcpConfig(await requireCuaDriver())], { log: ctx.log })
         : undefined;
@@ -171,13 +181,13 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
       // The window is also where the runtime compacts, chosen or not: without
       // this the CLI compacts at its own idea of the model's limit, and a task
       // on 200K would run far past what its ring shows as full.
-      const env = { ...route?.env, CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(window) };
+      const env = { ...accountEnv, ...route?.env, CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(window) };
       const instructions = await claudeCodeInstructions(ctx.project.repoPath, ctx.planMode);
 
       const engine = await createClaudeCodeEngine({
         repoPath: ctx.project.repoPath,
         permissionMode: ctx.permissionMode,
-        ...(route != null ? { model: route.model, auth: route.auth } : ctx.thread.model != null ? { model: withLongContext(ctx.thread.model, window) } : {}),
+        ...(route != null ? { model: route.model, auth: route.auth } : model != null ? { model: withLongContext(model, window) } : {}),
         env,
         ...(cua != null ? { tools: asHostTools(cuaTools) } : {}),
         // 推理强度 is the harness's `effort`; thinking itself stays adaptive and

@@ -1,4 +1,6 @@
 import { createRemoteService, type RemoteService } from "./remote/service.js";
+import { createAccountRegistry } from "./accounts/registry.js";
+import { createGitHubAccounts } from "./accounts/github.js";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -145,10 +147,14 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     const token = randomBytes(32).toString("hex");
     let localUrl: string | undefined;
     let remote: RemoteService | undefined;
+    // One set of GitHub accounts, which remote access borrows from and the account page manages.
+    const accountRegistry = createAccountRegistry(dataDir, consoleLogger);
+    const github = createGitHubAccounts({ dataDir, registry: accountRegistry });
     if (webDist != null) {
       try {
         remote = createRemoteService({
           dataDir,
+          github,
           backend: async () => {
             if (!localUrl) throw new Error("Vgent server is not listening");
             return { url: localUrl, token };
@@ -160,6 +166,8 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       dataDir,
       token,
       ...(remote != null ? { remote } : {}),
+      accountRegistry,
+      github,
       log: consoleLogger,
       ...(webDist != null ? { webDist } : {}),
       // 「下载」 goes to the user's Downloads folder unless told otherwise — a scratch instance is told otherwise.

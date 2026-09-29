@@ -1,8 +1,3 @@
-import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { homedir, userInfo } from "node:os";
-import { join } from "node:path";
-import { promisify } from "node:util";
 import type { AccountUsage, UsageWindow } from "./types.js";
 
 export const object = (v: unknown): Record<string, unknown> => v != null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -76,20 +71,4 @@ export async function accountJson(url: string, headers: Record<string, string>, 
 export function unavailable(error: unknown): AccountUsage {
   const reauth = error instanceof UsageError && [401, 403].includes(error.status);
   return { status: reauth ? "reauth" : "unavailable", fetchedAt: new Date().toISOString(), windows: [], message: reauth ? "当前登录无法读取额度，请检查账号权限或重新登录" : error instanceof UsageError && error.status === 429 ? "平台暂时限制了额度查询，请稍后刷新" : "暂时无法读取额度，请稍后刷新" };
-}
-/** Read the same CLI store; never copy, persist, or refresh Claude credentials. */
-let keychainRetryAfter = 0;
-export async function readClaudeUsageToken(env: NodeJS.ProcessEnv = process.env): Promise<string | undefined> {
-  const custom = env.CLAUDE_CONFIG_DIR;
-  let text: string | undefined;
-  // macOS CLI owns the keychain. A custom profile must never fall back to the default account.
-  if (process.platform === "darwin" && !custom && Date.now() >= keychainRetryAfter) {
-    text = await promisify(execFile)("/usr/bin/security", ["find-generic-password", "-s", "Claude Code-credentials", "-a", userInfo().username, "-w"], { timeout: 8_000, maxBuffer: 512 * 1024 }).then(r => r.stdout).catch(() => { keychainRetryAfter = Date.now() + 5 * 60_000; return undefined; });
-  }
-  text ??= await readFile(join(custom ?? join(homedir(), ".claude"), ".credentials.json"), "utf8").catch(() => undefined);
-  if (!text) return undefined;
-  let raw: unknown; try { raw = JSON.parse(text); } catch { return undefined; }
-  const oauth = object(object(raw).claudeAiOauth);
-  if (number(oauth.expiresAt) != null && number(oauth.expiresAt)! <= Date.now()) throw new UsageError(401);
-  return typeof oauth.accessToken === "string" ? oauth.accessToken : undefined;
 }

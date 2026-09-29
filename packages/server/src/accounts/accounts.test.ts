@@ -1,8 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
+import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ClaudeLoginStatus } from "../subscriptions.js";
+import { createGitHubAccounts } from "./github.js";
+import { createAccountRegistry, type AccountRegistry } from "./registry.js";
 import { createAccountService } from "./service.js";
 import { createCopilotAccess } from "./copilot.js";
 import { parseClaudeUsage, parseCodexUsage, parseCopilotUsage } from "./usage.js";
-import type { RemoteService } from "../remote/service.js";
 
 const signedOutCodex = async () => ({ codex: { available: false, source: null } });
 function remoteFixture() {
@@ -31,39 +36,205 @@ describe("quota adapters", () => {
   });
 });
 
-describe("single account service", () => {
-  it("coalesces concurrent reads, shares the remote login and projects no secrets", async () => {
-    const remote = remoteFixture();
-    const probe = vi.fn(async () => ({ loggedIn: false }));
-    const fetcher = vi.fn(async (_url, init) => {
-      expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer one-github-login");
-      return Response.json({ quota_snapshots: { premium_interactions: { percent_remaining: 80 } } });
-    }) as unknown as typeof fetch;
-    const service = createAccountService({ remote: remote as unknown as RemoteService, probeClaude: probe, probeCodex: signedOutCodex, fetch: fetcher });
-    const [a, b] = await Promise.all([service.list({ usage: true }), service.list({ usage: true })]);
-    expect(a).toBe(b); expect(probe).toHaveBeenCalledTimes(1);
-    expect(a.accounts[0]?.usage?.windows[0]?.usedPercent).toBe(20);
-    expect(JSON.stringify(a)).not.toContain("one-github-login");
+/** A fake keychain and GitHub, behind the real GitHub account store. */
+function githubFixture(registry: AccountRegistry, users: Array<{ id: number; username: string }> = [{ id: 7, username: "octo" }]) {
+  const items = new Map<string, string>();
+  let next = 0;
+  const command = vi.fn(async (args: string[], input?: string) => {
+    if (input != null) {
+      const [, , , account, , , , value] = input.trim().split(" ");
+      items.set(account!, value!);
+      return "";
+    }
+    const account = args[args.indexOf("-a") + 1]!;
+    if (args[0] === "delete-generic-password") { items.delete(account); return ""; }
+    const value = items.get(account);
+    if (value == null) throw Object.assign(new Error("not found"), { code: 44 });
+    return value;
   });
-  it("discards an in-flight usage result after logout", async () => {
-    const remote = remoteFixture();
-    let finish!: () => void, started!: () => void;
-    const ready = new Promise<void>(resolve => { started = resolve; });
-    const service = createAccountService({ remote: remote as unknown as RemoteService, probeClaude: async () => ({ loggedIn: false }), probeCodex: signedOutCodex, fetch: async () => {
-      started(); await new Promise<void>(resolve => { finish = resolve; });
-      return Response.json({ quota_snapshots: { chat: { unlimited: true } } });
-    } });
-    const pending = service.list({ usage: true });
-    await ready; await service.change("github", remote.logout); finish();
-    const result = await pending;
-    expect(result.accounts[0]).toMatchObject({ loggedIn: false });
-    expect(result.accounts[0]?.usage).toBeUndefined();
+  const client = {
+    beginGitHubLogin: async () => ({ deviceCode: "device", userCode: "ABCD-EFGH", verificationUri: "https://github.com/login/device", expiresAt: Date.now() + 60_000, interval: 1 }),
+    waitGitHubLogin: async () => ({ accessToken: `token-${next++}` }),
+    getGitHubAccount: async (token: string) => {
+      const index = Number(token.slice("token-".length));
+      const user = users[Math.min(index, users.length - 1)]!;
+      return { ...user, name: user.username };
+    },
+    refreshGitHubCredential: async () => ({ accessToken: "refreshed" }),
+    exchangeGitHubCode: async () => ({ status: "pending" as const }),
+  };
+  const github = createGitHubAccounts({ dataDir: "/isolated/vgent", registry, command, client, platform: "darwin" });
+  return { github, items, command };
+}
+
+const probeByDir = (who: Record<string, ClaudeLoginStatus>) => async (env?: NodeJS.ProcessEnv): Promise<ClaudeLoginStatus> => who[env?.CLAUDE_CONFIG_DIR ?? "machine"] ?? { loggedIn: false };
+
+async function serviceFixture(options: { claude?: Record<string, ClaudeLoginStatus>; users?: Array<{ id: number; username: string }>; fetch?: typeof fetch } = {}) {
+  const dataDir = await mkdtemp(join(tmpdir(), "vgent-accounts-"));
+  cleanups.push(() => rm(dataDir, { recursive: true, force: true }));
+  const registry = createAccountRegistry(dataDir);
+  const { github, items } = githubFixture(registry, options.users);
+  const claude = { ...(options.claude ?? {}) };
+  const logouts: Array<string | undefined> = [];
+  const logins: Array<{ home: string | undefined; finish: () => void; fail: () => void }> = [];
+  const service = createAccountService({
+    dataDir, registry, github,
+    probeClaude: probeByDir(claude),
+    probeCodex: signedOutCodex,
+    ...(options.fetch ? { fetch: options.fetch } : {}),
+    cli: {
+      login: async (_kind, home) => {
+        let finish!: () => void, fail!: () => void;
+        const done = new Promise<void>((resolve, reject) => { finish = resolve; fail = () => reject(new Error("exit 1")); });
+        done.catch(() => {});
+        logins.push({ home, finish, fail });
+        return { url: () => "https://claude.ai/oauth/authorize?x=1", done, cancel: () => fail() };
+      },
+      logout: async (_kind, home) => { logouts.push(home); delete claude[home ?? "machine"]; },
+    },
   });
+  return { dataDir, registry, service, claude, logins, logouts, items };
+}
+
+const cleanups: Array<() => Promise<void>> = [];
+afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
+
+describe("account service", () => {
+  it("lists the machine's login and every added account, and projects no secrets", async () => {
+    const { registry, dataDir } = await serviceFixture();
+    const home = join(dataDir, "accounts", "claude-0a1b2c3d");
+    await registry.add({ id: "claude-0a1b2c3d", kind: "claude" });
+    const probe = probeByDir({ machine: { loggedIn: true, email: "a@example.com", orgId: "o1" }, [home]: { loggedIn: true, email: "b@example.com", orgId: "o2" } });
+    const listed = createAccountService({ dataDir, registry, probeClaude: probe, probeCodex: signedOutCodex });
+    const snapshot = await listed.list();
+    expect(snapshot.accounts.map((a) => [a.id, a.kind, a.email, a.machine ?? false])).toEqual([
+      ["claude", "claude", "a@example.com", true],
+      ["claude-0a1b2c3d", "claude", "b@example.com", false],
+    ]);
+    expect(snapshot.accounts[0]?.uses).toEqual([{ id: "claude-code", enabled: true }]);
+    expect(JSON.stringify(snapshot)).not.toContain("orgId");
+  });
+
+  it("signs a second Claude account in to a directory of its own, and keeps it", async () => {
+    const { service, claude, logins, registry, dataDir } = await serviceFixture({ claude: { machine: { loggedIn: true, email: "a@example.com", orgId: "o1" } } });
+    const started = await service.startLogin("claude");
+    expect(started).toMatchObject({ kind: "claude", state: "running", url: "https://claude.ai/oauth/authorize?x=1" });
+    const home = logins[0]!.home!;
+    expect(home.startsWith(join(dataDir, "accounts", "claude-"))).toBe(true);
+    claude[home] = { loggedIn: true, email: "b@example.com", orgId: "o2" };
+    logins[0]!.finish();
+    await vi.waitFor(() => expect(service.loginStatus().state).toBe("succeeded"));
+    const id = service.loginStatus().accountId!;
+    expect(id).toMatch(/^claude-[0-9a-f]{8}$/);
+    expect((await registry.list()).map((record) => record.id)).toEqual([id]);
+    expect((await service.list({ refresh: true })).accounts.map((a) => a.email)).toEqual(["a@example.com", "b@example.com"]);
+  });
+
+  it("undoes a second login as someone already here", async () => {
+    const { service, claude, logins, logouts, registry } = await serviceFixture({ claude: { machine: { loggedIn: true, email: "a@example.com", orgId: "o1" } } });
+    await service.startLogin("claude");
+    const home = logins[0]!.home!;
+    claude[home] = { loggedIn: true, email: "a@example.com", orgId: "o1" };
+    logins[0]!.finish();
+    await vi.waitFor(() => expect(service.loginStatus().state).toBe("failed"));
+    expect(service.loginStatus().error).toContain("已经添加过了");
+    expect(logouts).toEqual([home]);
+    expect(await registry.list()).toEqual([]);
+    await expect(access(home)).rejects.toThrow();
+  });
+
+  it("signs in to the machine's own login while it is free, and cancels cleanly", async () => {
+    const { service, logins } = await serviceFixture();
+    await service.startLogin("claude");
+    expect(logins[0]?.home).toBeUndefined();
+    expect(service.cancelLogin()).toEqual({ state: "idle" });
+  });
+
+  it("switches a use off for one account only, and signs an added account out with its directory", async () => {
+    const { service, registry, dataDir, logouts } = await serviceFixture();
+    const home = join(dataDir, "accounts", "claude-0a1b2c3d");
+    await mkdir(home, { recursive: true });
+    await registry.add({ id: "claude-0a1b2c3d", kind: "claude" });
+    await service.setUse("claude-0a1b2c3d", "claude-code", false);
+    expect((await registry.get("claude-0a1b2c3d"))?.uses).toEqual({ "claude-code": false });
+    await expect(service.setUse("claude", "copilot", true)).rejects.toThrow("没有这个用途");
+    await service.logout("claude-0a1b2c3d");
+    expect(logouts).toEqual([home]);
+    expect(await registry.list()).toEqual([]);
+    await expect(access(home)).rejects.toThrow();
+  });
+
+  it("keeps each GitHub account apart, renews a login for the same user, and forgets one on sign-out", async () => {
+    const { service, registry, items } = await serviceFixture({ users: [{ id: 7, username: "octo" }, { id: 8, username: "cat" }, { id: 7, username: "octo" }] });
+    const signIn = async () => {
+      const started = await service.startLogin("github");
+      expect(started).toMatchObject({ state: "running", userCode: "ABCD-EFGH" });
+      await vi.waitFor(() => expect(service.loginStatus().state).toBe("succeeded"));
+      return service.loginStatus().accountId!;
+    };
+    expect(await signIn()).toBe("github");
+    const second = await signIn();
+    expect(second).toMatch(/^github-[0-9a-f]{8}$/);
+    expect(await signIn()).toBe("github");
+    expect((await registry.list()).map((record) => record.id)).toEqual(["github", second]);
+    expect([...items.keys()].sort()).toEqual(["github", second].sort());
+    expect(JSON.stringify(await service.list({ refresh: true }))).not.toContain("token-");
+    await service.logout("github");
+    expect([...items.keys()]).toEqual([second]);
+    expect((await service.list({ refresh: true })).accounts.map((a) => a.username)).toEqual(["cat"]);
+  });
+
   it("does not read subscription credentials for a Claude API-key login", async () => {
     const token = vi.fn();
-    const service = createAccountService({ probeClaude: async () => ({ loggedIn: true, method: "api_key" }), probeCodex: signedOutCodex, claudeToken: token });
+    const dataDir = await mkdtemp(join(tmpdir(), "vgent-accounts-"));
+    cleanups.push(() => rm(dataDir, { recursive: true, force: true }));
+    const service = createAccountService({ dataDir, probeClaude: async () => ({ loggedIn: true, method: "api_key" }), probeCodex: signedOutCodex, claudeToken: token });
     const result = await service.list({ usage: true });
-    expect(result.accounts[2]?.method).toBe("api_key"); expect(token).not.toHaveBeenCalled();
+    expect(result.accounts[0]?.method).toBe("api_key"); expect(token).not.toHaveBeenCalled();
+  });
+
+  it("identity-only reads retain quotas without postponing their next refresh", async () => {
+    let now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const fetcher = vi.fn(async () => Response.json({ copilot_plan: "individual", quota_snapshots: { chat: { unlimited: true } } })) as unknown as typeof fetch;
+      const { service, registry, items } = await serviceFixture({ fetch: fetcher });
+      await registry.add({ id: "github", kind: "github" });
+      items.set("github", Buffer.from(JSON.stringify({ accessToken: "token-0" })).toString("base64"));
+      const full = await service.list({ usage: true });
+      now += 61_000;
+      const identity = await service.list();
+      expect(identity.accounts[0]?.usage).toBe(full.accounts[0]?.usage);
+      expect(identity.accounts[0]?.plan).toBe("individual");
+      await service.list({ usage: true });
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    } finally { clock.mockRestore(); }
+  });
+});
+
+describe("GitHub credentials", () => {
+  it("sends the credential over stdin, never argv, and reads back what was saved", async () => {
+    const registry = createAccountRegistry(await mkdtemp(join(tmpdir(), "vgent-accounts-")));
+    const { github, command } = githubFixture(registry);
+    const { done } = await github.beginLogin(new AbortController().signal);
+    await done;
+    const write = command.mock.calls.find(([args]) => args[0] === "-i");
+    expect(write?.[1]).toContain("add-generic-password -U -a github");
+    expect(JSON.stringify(command.mock.calls.map(([args]) => args))).not.toContain(Buffer.from(JSON.stringify({ accessToken: "token-0" })).toString("base64"));
+    expect(await github.token("github")).toBe("token-0");
+  });
+
+  it("each data directory uses its own keychain item", async () => {
+    const names: string[] = [];
+    for (const dataDir of ["/isolated/vgent-a", "/isolated/vgent-b"]) {
+      const github = createGitHubAccounts({ dataDir, registry: createAccountRegistry(await mkdtemp(join(tmpdir(), "vgent-accounts-"))), platform: "darwin", command: async (args) => {
+        names.push(args[args.indexOf("-s") + 1]!);
+        throw Object.assign(new Error("not found"), { code: 44 });
+      } });
+      await expect(github.token("github")).rejects.toThrow("not signed in");
+    }
+    expect(names.every((name) => name.startsWith("dev.vgent.remote."))).toBe(true);
+    expect(names[0]).not.toBe(names[1]);
   });
 });
 
@@ -91,22 +262,6 @@ describe("Copilot model access", () => {
     await remote.logout();
     await expect(access.available()).rejects.toThrow("signed out");
   });
-});
-
-it("identity-only reads retain quotas without postponing their next refresh", async () => {
-  let now = Date.now();
-  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
-  try {
-    const fetcher = vi.fn(async () => Response.json({ copilot_plan: "individual", quota_snapshots: { chat: { unlimited: true } } }));
-    const service = createAccountService({ remote: remoteFixture() as unknown as RemoteService, probeClaude: async () => ({ loggedIn: false }), probeCodex: signedOutCodex, fetch: fetcher });
-    const full = await service.list({ usage: true });
-    now += 61_000;
-    const identity = await service.list();
-    expect(identity.accounts[0]?.usage).toBe(full.accounts[0]?.usage);
-    expect(identity.accounts[0]?.plan).toBe("individual");
-    await service.list({ usage: true });
-    expect(fetcher).toHaveBeenCalledTimes(2);
-  } finally { clock.mockRestore(); }
 });
 
 it("executes Responses-only Copilot models, including a tool continuation, using the same login", async () => {

@@ -6,6 +6,8 @@ import { createApp, type VgentApp } from "./app.js";
 import { providerRoute } from "./engines/claude-code.js";
 import { codexProviderRoute } from "./engines/codex.js";
 import { createProviderStore } from "./store/providers.js";
+import { createAccountRegistry } from "./accounts/registry.js";
+import { createGitHubAccounts } from "./accounts/github.js";
 
 const TOKEN = "test-token-0123456789";
 const ORIGIN = "http://127.0.0.1:7412";
@@ -176,24 +178,23 @@ describe("provider routes", () => {
   it("lists the sources in 提供商排序, and forgets a provider's place when it is disconnected", async () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "");
     vi.stubEnv("CODEX_HOME", await tempDir());
-    vi.stubEnv("AI_GATEWAY_API_KEY", "");
-    vi.stubEnv("VERCEL_OIDC_TOKEN", "");
-    const app = makeApp(await tempDir());
+    const app = createApp({ dataDir: await tempDir(), token: TOKEN, catalogFetch: offlineCatalog, probeClaudeLogin: async () => ({ loggedIn: true, email: "dev@example.com" }) });
+    apps.push(app);
     await request(app, "/api/providers", { method: "POST", body: deepseekInput });
     type Listed = { models: { id: string; source?: { kind: string; id?: string; rank?: number } }[] };
     const sources = async () => {
-      const listed = (await (await request(app, "/api/engines/vgent/models")).json()) as Listed;
+      const listed = (await (await request(app, "/api/engines/claude-code/models")).json()) as Listed;
       return [...new Set(listed.models.map((model) => `${model.source?.id ?? model.source?.kind}@${model.source?.rank ?? "-"}`))];
     };
-    expect(await sources()).toEqual(["codex-subscription@-", "deepseek@-"]);
+    expect(await sources()).toEqual(["claude-subscription@-", "deepseek@-"]);
 
     expect((await request(app, "/api/settings/provider-order", { method: "PUT", body: { order: "deepseek" } })).status).toBe(400);
-    const saved = await request(app, "/api/settings/provider-order", { method: "PUT", body: { order: ["deepseek", "codex-subscription"] } });
-    expect(await saved.json()).toMatchObject({ providerOrder: ["deepseek", "codex-subscription"] });
-    expect(await sources()).toEqual(["deepseek@0", "codex-subscription@1"]);
+    const saved = await request(app, "/api/settings/provider-order", { method: "PUT", body: { order: ["deepseek", "claude-subscription"] } });
+    expect(await saved.json()).toMatchObject({ providerOrder: ["deepseek", "claude-subscription"] });
+    expect(await sources()).toEqual(["deepseek@0", "claude-subscription@1"]);
 
     await request(app, "/api/providers/deepseek", { method: "DELETE" });
-    expect(await (await request(app, "/api/settings")).json()).toMatchObject({ providerOrder: ["codex-subscription"] });
+    expect(await (await request(app, "/api/settings")).json()).toMatchObject({ providerOrder: ["claude-subscription"] });
   });
 
   it("offers Codex a provider's models once the provider has a Codex address, under the Responses protocol whatever was sent", async () => {
@@ -260,21 +261,25 @@ describe("provider routes", () => {
   });
 });
 
-describe("subscription logout route", () => {
-  it("calls only the selected vendor after an authenticated request", async () => {
-    const ids: string[] = [];
+describe("account routes", () => {
+  it("signs an account out through its vendor CLI after an authenticated request, and refuses what is not an account", async () => {
+    const homes: Array<string | undefined> = [];
+    let signedIn = true;
     const app = createApp({
       dataDir: await tempDir(), token: TOKEN, catalogFetch: offlineCatalog,
-      logoutSubscription: async (id) => { ids.push(id); },
+      probeClaudeLogin: async () => (signedIn ? { loggedIn: true, email: "dev@example.com" } : { loggedIn: false }),
+      accountOptions: { probeCodex: async () => ({ codex: { available: false, source: null } }), cli: { logout: async (_kind, home) => { homes.push(home); signedIn = false; } } },
     });
     apps.push(app);
-    expect((await request(app, "/api/subscriptions/claude-subscription/logout", { method: "POST" })).status).toBe(200);
-    expect((await request(app, "/api/subscriptions/codex-subscription/logout", { method: "POST" })).status).toBe(200);
-    expect((await request(app, "/api/subscriptions/github-copilot/logout", { method: "POST" })).status).toBe(400);
-    expect((await request(app, "/api/subscriptions/unknown/logout", { method: "POST" })).status).toBe(404);
-    expect(ids).toEqual(["claude-subscription", "codex-subscription"]);
-    expect((await app.app.request(`${ORIGIN}/api/subscriptions/claude-subscription/logout`, { method: "POST" })).status).toBe(401);
-    expect(ids).toHaveLength(2);
+    expect((await app.app.request(`${ORIGIN}/api/accounts/claude`, { method: "DELETE" })).status).toBe(401);
+    expect(homes).toEqual([]);
+    const after = await request(app, "/api/accounts/claude", { method: "DELETE" });
+    expect(after.status).toBe(200);
+    expect(((await after.json()) as { accounts: unknown[] }).accounts).toEqual([]);
+    expect(homes).toEqual([undefined]);
+    expect((await request(app, "/api/accounts/unknown", { method: "DELETE" })).status).toBe(404);
+    expect((await request(app, "/api/accounts/claude/uses", { method: "PUT", body: { use: "copilot", enabled: true } })).status).toBe(400);
+    expect((await request(app, "/api/accounts/login", { method: "POST", body: { kind: "gitlab" } })).status).toBe(400);
   });
 });
 
@@ -412,19 +417,13 @@ describe("subscription routes", () => {
   };
   type Listed = { subscriptions: { id: string; loggedIn?: boolean; email?: string; agents: string[]; models: { id: string; agents: Record<string, { spec: string; enabled: boolean }> }[] }[] };
 
-  it("lists all three logins with their state, every model on to begin with", async () => {
+  it("lists the signed-in accounts that bring models, every model on to begin with", async () => {
     await quietEnv();
     const app = makeSubscribedApp(await tempDir());
     const body = (await (await request(app, "/api/subscriptions")).json()) as Listed;
-    expect(body.subscriptions.map((entry) => [entry.id, entry.loggedIn, entry.agents])).toEqual([
-      ["claude-subscription", true, ["claude-code"]],
-      ["codex-subscription", false, ["vgent", "codex"]],
-      ["github-copilot", false, ["vgent"]],
-    ]);
-    expect(body.subscriptions[0]?.email).toBe("dev@example.com");
-    expect(body.subscriptions[1]?.models).toEqual([
-      { id: "gpt-5.5", label: "gpt-5.5", agents: { vgent: { spec: "codex-subscription:gpt-5.5", enabled: true }, codex: { spec: "gpt-5.5", enabled: true } } },
-    ]);
+    expect(body.subscriptions.map((entry) => [entry.id, entry.agents])).toEqual([["claude-subscription", ["claude-code"]]]);
+    expect(body.subscriptions[0]).toMatchObject({ email: "dev@example.com", name: "Claude · dev@example.com" });
+    expect(body.subscriptions[0]?.models[0]).toEqual({ id: "sonnet", label: "sonnet", description: "别名：当前默认的 Sonnet 版本", agents: { "claude-code": { spec: "sonnet", enabled: true } } });
   });
 
   it("shares Copilot model switches between settings and the Engine picker without another login", async () => {
@@ -435,15 +434,19 @@ describe("subscription routes", () => {
       if (url.endsWith("/models")) return Response.json({ data: [{ id: "copilot-model", name: "Copilot Model", capabilities: { type: "chat", supports: { tool_calls: true } }, supported_endpoints: ["/responses"] }] });
       throw Error("unexpected network call");
     });
-    const remote = {
-      getState: async () => ({ account: { username: "shared-user" } }),
-      githubAccess: async () => ({ accessToken: "same-github-login", accountId: "1", revision: 0 }),
-      stop: async () => {},
-    } as unknown as import("./remote/service.js").RemoteService;
-    const app = createApp({ dataDir: await tempDir(), token: TOKEN, remote, catalogFetch: offlineCatalog, probeClaudeLogin: async () => ({ loggedIn: false }) });
+    const dataDir = await tempDir();
+    const accountRegistry = createAccountRegistry(dataDir);
+    await accountRegistry.add({ id: "github", kind: "github" });
+    const stored = Buffer.from(JSON.stringify({ accessToken: "same-github-login" })).toString("base64");
+    const github = createGitHubAccounts({
+      dataDir, registry: accountRegistry, platform: "darwin",
+      command: async (args) => (args[0] === "find-generic-password" ? stored : ""),
+      client: { getGitHubAccount: async () => ({ id: 1, name: "Shared", username: "shared-user" }) } as unknown as Parameters<typeof createGitHubAccounts>[0]["client"],
+    });
+    const app = createApp({ dataDir, token: TOKEN, accountRegistry, github, catalogFetch: offlineCatalog, probeClaudeLogin: async () => ({ loggedIn: false }) });
     apps.push(app);
     const read = async () => ((await (await request(app, "/api/subscriptions")).json()) as Listed).subscriptions.find(a => a.id === "github-copilot");
-    expect(await read()).toMatchObject({ loggedIn: true, username: "shared-user", models: [{ id: "copilot-model", agents: { vgent: { enabled: true } } }] });
+    expect(await read()).toMatchObject({ username: "shared-user", name: "GitHub Copilot · @shared-user", models: [{ id: "copilot-model", agents: { vgent: { enabled: true } } }] });
     const toggle = (enabled: boolean) => request(app, "/api/subscriptions/github-copilot/models", { method: "PUT", body: { agent: "vgent", models: ["copilot-model"], enabled } });
     expect((await toggle(false)).status).toBe(200);
     expect(await read()).toMatchObject({ models: [{ agents: { vgent: { enabled: false } } }] });
@@ -466,29 +469,25 @@ describe("subscription routes", () => {
     expect([...ids.slice(3)].sort()).toEqual(["claude-haiku-4-5", "claude-opus-5"]);
   });
 
-  it("a switch hides the model from that agent's picker only, survives a restart, and comes back on", async () => {
+  it("a switch hides the model from the picker, survives a restart, and comes back on", async () => {
     await quietEnv();
     const dataDir = await tempDir();
     const app = makeSubscribedApp(dataDir);
 
-    const off = await request(app, "/api/subscriptions/codex-subscription/models", { method: "PUT", body: { agent: "vgent", models: ["gpt-5.5"], enabled: false } });
+    const off = await request(app, "/api/subscriptions/claude-subscription/models", { method: "PUT", body: { agent: "claude-code", models: ["opus"], enabled: false } });
     expect(off.status).toBe(200);
-    expect(((await off.json()) as { models: Listed["subscriptions"][number]["models"] }).models[0]?.agents).toEqual({
-      vgent: { spec: "codex-subscription:gpt-5.5", enabled: false },
-      codex: { spec: "gpt-5.5", enabled: true },
-    });
+    expect(((await off.json()) as { models: Listed["subscriptions"][number]["models"] }).models[1]?.agents).toEqual({ "claude-code": { spec: "opus", enabled: false } });
 
     // Still listed, so「默认」keeps its label and window — but marked, and the picker leaves it out.
-    const vgent = (await (await request(app, "/api/engines/vgent/models")).json()) as { models: { id: string; hidden?: boolean }[] };
-    expect(vgent.models).toContainEqual(expect.objectContaining({ id: "codex-subscription:gpt-5.5", hidden: true }));
-    const codex = (await (await request(app, "/api/engines/codex/models")).json()) as { models: { id: string; hidden?: boolean }[] };
-    expect(codex.models.some((model) => model.hidden === true)).toBe(false);
+    const claude = (await (await request(app, "/api/engines/claude-code/models")).json()) as { models: { id: string; hidden?: boolean }[] };
+    expect(claude.models).toContainEqual(expect.objectContaining({ id: "opus", hidden: true }));
+    expect(claude.models.filter((model) => model.hidden === true)).toHaveLength(1);
 
     const settingsFile = JSON.parse(await readFile(join(dataDir, "settings.json"), "utf8")) as { hiddenModels?: unknown };
-    expect(settingsFile.hiddenModels).toEqual({ vgent: ["codex-subscription:gpt-5.5"] });
+    expect(settingsFile.hiddenModels).toEqual({ "claude-code": ["opus"] });
 
-    const on = await request(app, "/api/subscriptions/codex-subscription/models", { method: "PUT", body: { agent: "vgent", models: ["gpt-5.5"], enabled: true } });
-    expect(((await on.json()) as { models: Listed["subscriptions"][number]["models"] }).models[0]?.agents.vgent?.enabled).toBe(true);
+    const on = await request(app, "/api/subscriptions/claude-subscription/models", { method: "PUT", body: { agent: "claude-code", models: ["opus"], enabled: true } });
+    expect(((await on.json()) as { models: Listed["subscriptions"][number]["models"] }).models[1]?.agents["claude-code"]?.enabled).toBe(true);
     expect("hiddenModels" in (JSON.parse(await readFile(join(dataDir, "settings.json"), "utf8")) as object)).toBe(false);
   });
 

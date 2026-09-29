@@ -1,6 +1,30 @@
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { dynamicTool, isToolUIPart, jsonSchema, readUIMessageStream, simulateReadableStream, type UIMessage, type UIMessageChunk } from "ai";
 import { describe, expect, it } from "vitest";
-import { asHostTools, withLongContext } from "./claude-code.js";
+import { asHostTools, claudeCodeInstructions, withLongContext } from "./claude-code.js";
+
+describe("claudeCodeInstructions", () => {
+  it("hands Claude Code the global and the repository's AGENTS.md, then plan mode's rules", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vgent-claude-instructions-"));
+    const home = join(root, "home");
+    const repo = join(root, "repo");
+    await mkdir(join(home, ".agents"), { recursive: true });
+    await mkdir(repo);
+    expect(await claudeCodeInstructions(repo, false, home)).toBeUndefined();
+
+    await writeFile(join(home, ".agents", "AGENTS.md"), "始终用中文回复。");
+    await writeFile(join(repo, "AGENTS.md"), "改完发 debug。");
+    const plain = await claudeCodeInstructions(repo, false, home);
+    expect(plain).toContain(`<instructions path="${join(home, ".agents", "AGENTS.md")}">\n始终用中文回复。`);
+    expect(plain).toContain(`<instructions path="${join(repo, "AGENTS.md")}">\n改完发 debug。`);
+
+    const planning = await claudeCodeInstructions(repo, true, home);
+    expect(planning?.startsWith(plain!)).toBe(true);
+    expect(planning!.length).toBeGreaterThan(plain!.length);
+  });
+});
 
 describe("withLongContext", () => {
   it("asks for the long window on the model name, the way /model spells it", () => {

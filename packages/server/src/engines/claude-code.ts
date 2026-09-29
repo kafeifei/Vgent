@@ -1,5 +1,5 @@
 import { collectHarnessAgentToolApprovalContinuations, collectHarnessAgentToolResultContinuations } from "@ai-sdk/harness/agent";
-import { connectMcpServers, planModeInstructions } from "@vgent/engine";
+import { agentInstructionsSection, connectMcpServers, loadAgentInstructions, planModeInstructions } from "@vgent/engine";
 import { cuaMcpConfig, onlyCuaTools, requireCuaDriver } from "../computer-use/cua.js";
 import { claudeCodeEffort, claudeCodeProviderEnv, claudeCodeThinking, createClaudeCodeEngine } from "@vgent/engines";
 import { splitProviderModelSpec, type ProviderConfig } from "@vgent/providers";
@@ -103,6 +103,17 @@ export function providerRoute(model: string | undefined, providers: readonly Pro
 }
 
 /**
+ * The harness's `instructions` for a turn. Claude Code reads CLAUDE.md, never
+ * AGENTS.md, so the rules every engine follows reach it here — re-read each
+ * turn like the in-house engine's — followed by plan mode's when it plans.
+ */
+export async function claudeCodeInstructions(repoPath: string, planMode: boolean, home?: string): Promise<string | undefined> {
+  const standing = agentInstructionsSection(await loadAgentInstructions({ repoPath, ...(home != null ? { home } : {}) }));
+  const parts = [standing, planMode ? PLAN_INSTRUCTIONS : ""].filter((part) => part !== "");
+  return parts.length > 0 ? parts.join("\n\n") : undefined;
+}
+
+/**
  * The real Claude Code engine, one harness session per thread.
  *
  * Resume strategy: the thread id *is* the harness `sessionId`, a turn that runs
@@ -151,6 +162,7 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
       // this the CLI compacts at the model's own limit, and a task that chose
       // 200K on a 1M model would run far past what its ring shows as full.
       const env = { ...route?.env, ...(ctx.thread.contextWindow != null ? { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(ctx.thread.contextWindow) } : {}) };
+      const instructions = await claudeCodeInstructions(ctx.project.repoPath, ctx.planMode);
 
       const engine = await createClaudeCodeEngine({
         repoPath: ctx.project.repoPath,
@@ -164,7 +176,8 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
         thinking: claudeCodeThinking(ctx.thread.reasoningEffort),
         effort: claudeCodeEffort(ctx.thread.reasoningEffort),
         // 计划回合只读：enforced at the SDK level, not asked for in prose.
-        ...(ctx.planMode ? { activeTools: PLAN_ACTIVE_TOOLS, instructions: PLAN_INSTRUCTIONS } : {}),
+        ...(ctx.planMode ? { activeTools: PLAN_ACTIVE_TOOLS } : {}),
+        ...(instructions != null ? { instructions } : {}),
         sessionId: ctx.thread.id,
         ...(continueFrom != null ? { continueFrom } : {}),
         ...(resumeFrom != null ? { resumeFrom } : {}),

@@ -1,8 +1,9 @@
 /**
  * The user's and the project's standing instructions, from `AGENTS.md` only:
- * the cross-agent `~/.agents/AGENTS.md` globally, and the repository's own. A
- * harness's files — `~/.codex/AGENTS.md`, `CLAUDE.md` — are its own to read.
- * Project rules are tracked in git, so a worktree carries them itself.
+ * the cross-agent `~/.agents/AGENTS.md` globally, and the repository's own.
+ * Project rules are tracked in git, so a worktree carries them itself. The
+ * in-house engine and Claude Code (which reads no `AGENTS.md` itself) get them
+ * from here; Codex reads the same two files on its own.
  *
  * Unlike skills these are inlined: they are short, and they apply to every turn.
  */

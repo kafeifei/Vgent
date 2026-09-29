@@ -25,7 +25,8 @@ export function resetText(at: string, now = Date.now()): string {
   const minutes = Math.ceil(delta / 60_000);
   return minutes >= 1440 ? `${Math.floor(minutes / 1440)} 天 ${Math.floor(minutes % 1440 / 60)} 小时后重置` : minutes >= 60 ? `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分钟后重置` : `${minutes} 分钟后重置`;
 }
-function Quota({ window: w }: { window: UsageWindow }) {
+/** One quota window: its fill, and when it resets. The account panel and the composer's quota card share it. */
+export function Quota({ window: w }: { window: UsageWindow }) {
   return <div className="space-y-2xs">
     <div className="flex items-center justify-between gap-sm text-xs"><span className="text-fg-secondary">{w.label}</span><span className="tabular-nums text-fg">{w.unlimited ? "不限量" : w.usedPercent != null ? `已用 ${Number(w.usedPercent.toFixed(1))}%` : w.used != null ? `${w.used.toLocaleString()}${w.limit != null ? ` / ${w.limit.toLocaleString()}` : ""} ${w.unit ?? ""}` : "暂无数据"}</span></div>
     {w.usedPercent != null && !w.unlimited && <div role="meter" aria-label={w.label} aria-valuenow={w.usedPercent} aria-valuemin={0} aria-valuemax={100} className="h-2xs overflow-hidden rounded-full bg-bg-strong"><div className={cn("h-full rounded-full", w.usedPercent >= 90 ? "bg-danger" : "bg-brand")} style={{ width: `${w.usedPercent}%` }} /></div>}

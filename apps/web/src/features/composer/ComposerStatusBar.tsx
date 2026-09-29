@@ -1,13 +1,15 @@
 import type { ReactNode } from "react";
 import type { UIMessage } from "ai";
 import { GitBranch } from "lucide-react";
-import type { ChangedFile, ModelCost } from "@/lib/types";
+import type { AccountSummary, ChangedFile, ModelCost } from "@/lib/types";
 import { ContextRing } from "./ContextRing";
+import { QuotaMeter } from "./QuotaMeter";
 import { sumChanges } from "./contextUsage";
 
 /**
  * The row **under** the composer in every task: which branch, where it runs,
- * what there is to review, how full the context is.
+ * what there is to review, how much of the account's quota is gone, how full
+ * the context is.
  *
  * It lives below the box rather than above it because it describes the task's
  * ground rather than the message being typed. The empty state has no such row:
@@ -23,6 +25,8 @@ export function ComposerStatusBar({
   contextWindow,
   contextOptions,
   cost,
+  onCompact,
+  account,
 }: {
   /** Absent (a detached HEAD, a project that is not a repo) hides the glyph too. */
   branch?: string | undefined;
@@ -38,6 +42,9 @@ export function ComposerStatusBar({
   contextOptions?: readonly number[] | undefined;
   /** The running model's list price, for the ring's card. */
   cost?: ModelCost | undefined;
+  onCompact?: (() => void) | undefined;
+  /** The subscription the task's tokens come from, for the quota card left of the ring. */
+  account?: AccountSummary | undefined;
 }) {
   const sums = changedFiles == null ? null : sumChanges(changedFiles);
 
@@ -66,7 +73,10 @@ export function ComposerStatusBar({
         </button>
       )}
       <span className="flex-1" />
-      {messages != null && <ContextRing messages={messages} contextWindow={contextWindow} contextOptions={contextOptions} cost={cost} />}
+      {account != null && <QuotaMeter account={account} />}
+      {messages != null && (
+        <ContextRing messages={messages} contextWindow={contextWindow} contextOptions={contextOptions} cost={cost} onCompact={onCompact} />
+      )}
     </div>
   );
 }

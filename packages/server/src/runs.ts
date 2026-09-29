@@ -112,6 +112,18 @@ function toUsageInfo(usage: LanguageModelUsage): UsageInfo {
   };
 }
 
+/** Two `UsageInfo`s added field by field; a field neither side has stays absent. */
+function addUsageInfo(a: UsageInfo, b: UsageInfo): UsageInfo {
+  const sum: UsageInfo = {};
+  for (const key of ["inputTokens", "outputTokens", "totalTokens", "cachedInputTokens", "cacheWriteTokens", "reasoningTokens"] as const) {
+    if (a[key] != null || b[key] != null) sum[key] = (a[key] ?? 0) + (b[key] ?? 0);
+  }
+  return sum;
+}
+
+/** Whether an engine counted anything at all — a Codex bridge's `finish` can carry all zeros. */
+const counted = (usage: UsageInfo): boolean => (usage.inputTokens ?? 0) > 0 || (usage.outputTokens ?? 0) > 0;
+
 /** Cap on an auto-derived thread title. */
 export const AUTO_TITLE_MAX_LEN = 60;
 
@@ -579,6 +591,8 @@ export function createRunManager(options: {
     let park = false;
     let finishReason: string | undefined;
     let steps = 0;
+    /** This turn's steps added up so far, so the context card's 累计 moves while the turn runs. */
+    let turnUsage: UsageInfo | undefined;
 
     /**
      * The history with this turn's assistant message folded in — or unchanged
@@ -827,9 +841,21 @@ export function createRunManager(options: {
         // context" means, while a sum over steps double-counts the history.
         // The reader merges each metadata object into the message, so a later
         // step simply overwrites the earlier one's numbers.
+        //
+        // `totalUsage` is the running sum of the steps until the turn's own
+        // `finish` replaces it with the engine's figure — unless that figure
+        // counts nothing, which would wipe out a sum that did.
         messageMetadata: ({ part }): ThreadMessageMetadata | undefined => {
-          if (part.type === "finish-step") return { usage: toUsageInfo(part.usage) };
-          if (part.type === "finish") return { totalUsage: toUsageInfo(part.totalUsage) };
+          if (part.type === "finish-step") {
+            const step = toUsageInfo(part.usage);
+            if (!counted(step)) return { usage: step };
+            turnUsage = turnUsage == null ? step : addUsageInfo(turnUsage, step);
+            return { usage: step, totalUsage: turnUsage };
+          }
+          if (part.type === "finish") {
+            const total = toUsageInfo(part.totalUsage);
+            return counted(total) || turnUsage == null ? { totalUsage: total } : { totalUsage: turnUsage };
+          }
           return undefined;
         },
       });

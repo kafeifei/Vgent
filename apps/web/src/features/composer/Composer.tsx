@@ -4,11 +4,13 @@ import { ArrowUp, Check, ChevronDown, File, FileText, Folder, Plus, Square, X } 
 import { UrlFigure } from "@/components/Figure";
 import { ModelPicker, effectiveModel } from "@/components/ModelPicker";
 import type { OptionsSet } from "@/components/modelChoices";
+import { accountOf } from "@/features/accounts/accountOf";
 import { dirName } from "@/features/changes/paths";
 import type { ModelPickPatch } from "@/lib/api";
 import { baseName } from "@/lib/format";
 import { useToast } from "@/lib/toast";
 import type {
+  AccountSummary,
   ChangedFile,
   EngineDescriptor,
   EngineId,
@@ -96,6 +98,8 @@ export function Composer({
   messages,
   changedFiles,
   onOpenChanges,
+  onCompact,
+  accounts,
   autoFocus = false,
   big = false,
 }: {
@@ -161,6 +165,10 @@ export function Composer({
   /** This task's working-tree changes, for the 审查 pill. Absent or empty = no pill. */
   changedFiles?: readonly ChangedFile[];
   onOpenChanges?: () => void;
+  /** 「压缩上下文」 in the ring's card. Absent where the engine cannot, or while a turn runs. */
+  onCompact?: (() => void) | undefined;
+  /** The signed-in platform accounts; the one the running model draws on gets the quota card. */
+  accounts?: readonly AccountSummary[] | undefined;
   autoFocus?: boolean;
   big?: boolean;
 }) {
@@ -681,6 +689,8 @@ export function Composer({
           {...(contextWindow != null ? { contextWindow } : {})}
           {...(runningEntry?.contextOptions != null ? { contextOptions: runningEntry.contextOptions } : {})}
           {...(runningEntry?.cost != null ? { cost: runningEntry.cost } : {})}
+          onCompact={onCompact}
+          account={accounts?.find((account) => account.id === accountOf(runningEntry, engine))}
         />
       )}
     </div>

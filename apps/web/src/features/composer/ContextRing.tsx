@@ -8,6 +8,7 @@ import {
   ContextContentHeader,
   ContextTrigger,
 } from "@/components/ai-elements/context";
+import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import type { ModelCost } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -30,6 +31,9 @@ const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" 
  * are given their contents here instead, priced from the models.dev catalog
  * the server attaches to the model (`cost`).
  *
+ * 「压缩上下文」 sits under the fill, for an engine that can be told to; past
+ * `WARN_AT` it takes the accent, the way Cursor's report only speaks up at 80%.
+ *
  * `contextWindow` comes from the model catalog the composer's `ModelPicker`
  * already fetched; without one the ring measures against
  * `DEFAULT_CONTEXT_WINDOW`, and the card marks the share as approximate — as it
@@ -40,12 +44,15 @@ export function ContextRing({
   contextWindow,
   contextOptions,
   cost,
+  onCompact,
 }: {
   messages: readonly UIMessage[];
   contextWindow?: number | undefined;
   /** The windows the model can run with, smallest first — the fallback when `contextWindow` is unknown. */
   contextOptions?: readonly number[] | undefined;
   cost?: ModelCost | undefined;
+  /** Absent when the engine has no manual compaction, or a turn is running. */
+  onCompact?: (() => void) | undefined;
 }) {
   const context = useMemo(() => contextUsage(messages), [messages]);
   const total = useMemo(() => taskUsage(messages), [messages]);
@@ -70,7 +77,7 @@ export function ContextRing({
         size="sm"
         aria-label={`上下文 ${approximate ? "≈" : ""}${Math.round(ratio * 100)}%`}
         className={cn(
-          "ml-auto h-xl gap-2xs px-2xs font-normal has-[>svg]:px-2xs",
+          "h-xl gap-2xs px-2xs font-normal has-[>svg]:px-2xs",
           ratio >= WARN_AT ? "text-warning hover:text-warning" : "text-fg-muted hover:text-fg",
         )}
       />
@@ -86,6 +93,11 @@ export function ContextRing({
             </span>
           </div>
           <Progress className="h-2xs bg-bg-strong" value={ratio * 100} />
+          {onCompact != null && (
+            <Button type="button" size="xs" variant={ratio >= WARN_AT ? "default" : "secondary"} onClick={onCompact} className="w-full font-normal">
+              压缩上下文
+            </Button>
+          )}
         </ContextContentHeader>
         {total != null && (
           <ContextContentBody className="space-y-2xs">

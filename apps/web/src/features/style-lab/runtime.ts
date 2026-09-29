@@ -101,7 +101,20 @@ export class StyleSession {
       token: "style-lab", remoteSession: false,
       getDraft: async () => structuredClone(this.draft),
       putDraft: async (_key, value) => { this.draft = { text: value.text, attachments: value.attachments.map((file) => ({ ...file, url: file.url ?? this.draft.attachments.find((old) => old.id === file.id)?.url ?? "" })) }; },
-      listModels: async (engine) => ({ engine, source: "样例", fetchedAt: AT, defaultModel: "sample-model", models: [{ id: "sample-model", label: "样例模型", contextWindow: 400000, contextOptions: [200000, 400000], reasoningLevels: ["low", "medium", "high"], defaultReasoningLevel: "medium", serviceTiers: [{ id: "priority", name: "Fast" }], cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 } }] }),
+      listModels: async (engine) => ({ engine, source: "样例", fetchedAt: AT, defaultModel: "sample-model", models: [{ id: "sample-model", label: "样例模型", contextWindow: 400000, contextOptions: [200000, 400000], reasoningLevels: ["low", "medium", "high"], defaultReasoningLevel: "medium", serviceTiers: [{ id: "priority", name: "Fast" }], cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 }, source: { kind: "codex-subscription", name: "Codex" } }] }),
+      getAccounts: async () => ({
+        revision: 1,
+        accounts: [{
+          id: "codex", name: "Codex", loggedIn: true, plan: "pro", engines: ["Vgent", "Codex"],
+          usage: {
+            status: "ready", fetchedAt: AT, balance: "可用点数 120",
+            windows: [
+              { id: "five_hour", label: "5 小时", usedPercent: 42, resetsAt: new Date(Date.now() + 3 * 3_600_000).toISOString() },
+              { id: "weekly", label: "每周", usedPercent: 86, resetsAt: new Date(Date.now() + 2 * 86_400_000).toISOString() },
+            ],
+          },
+        }],
+      }),
       listFiles: async (_id, opts) => ({ root: ROOT, entries: Object.keys(FILES).filter((path) => path.toLowerCase().includes(opts?.q?.toLowerCase() ?? "")).slice(0, opts?.limit ?? 100).map((path) => ({ path, kind: "file" as const })), truncated: false }),
       getFileContent: async (_id, path) => ({ path, content: content(path), truncated: false, binary: false }),
       getFileBlob: async (_id, path) => new Blob([content(path)], { type: path.endsWith(".svg") ? "image/svg+xml" : "text/plain" }),

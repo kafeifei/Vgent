@@ -1166,7 +1166,7 @@ describe("vgent engine", () => {
   };
 
   /** One `doStream` result: a single tool call, streamed the way a provider does it. */
-  const toolCallStream = (toolCallId: string, toolName: string, input: unknown) => ({
+  const toolCallStream = (toolCallId: string, toolName: string, input: unknown, usage: unknown = NO_USAGE) => ({
     stream: simulateReadableStream({
       chunks: [
         { type: "stream-start", warnings: [] },
@@ -1174,7 +1174,7 @@ describe("vgent engine", () => {
         { type: "tool-input-delta", id: toolCallId, delta: JSON.stringify(input) },
         { type: "tool-input-end", id: toolCallId },
         { type: "tool-call", toolCallId, toolName, input: JSON.stringify(input) },
-        { type: "finish", finishReason: { unified: "tool-calls" }, usage: NO_USAGE },
+        { type: "finish", finishReason: { unified: "tool-calls" }, usage },
       ],
     }),
   });
@@ -1255,6 +1255,36 @@ describe("vgent engine", () => {
     // `inputTokens` is the whole prompt, cache reads included — the context size.
     expect(metadata?.usage).toMatchObject({ inputTokens: 1234, outputTokens: 56, cachedInputTokens: 1000, reasoningTokens: 8 });
     expect(metadata?.totalUsage).toMatchObject({ totalTokens: 1290 });
+  });
+
+  it("streams the turn's running usage sum at every step, then settles it", async () => {
+    const dataDir = await tempDir();
+    const repoPath = await tempDir();
+    const step = (input: number, cached: number, output: number) => ({
+      inputTokens: { total: input, noCache: input - cached, cacheRead: cached, cacheWrite: 0 },
+      outputTokens: { total: output },
+      totalTokens: input + output,
+    });
+    const app = makeVgentApp(
+      dataDir,
+      mockModel([toolCallStream("call-w", "write", WRITE_INPUT, step(1000, 0, 40)), textStreamWithUsage("写好了", step(1100, 1000, 20))]),
+    );
+    const thread = await setupVgentThread(app, repoPath);
+    await postJson(app, "/api/settings/allowlist", { tool: "write" });
+
+    const chunks = await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "写个文件")] }));
+    const running = chunks
+      .filter((chunk) => chunk.type === "message-metadata")
+      .map((chunk) => (chunk as { messageMetadata?: ThreadMessageMetadata }).messageMetadata?.totalUsage)
+      .filter((usage) => usage != null);
+    expect(running[0]).toMatchObject({ inputTokens: 1000, outputTokens: 40 });
+    expect(running.at(-1)).toMatchObject({ inputTokens: 2100, cachedInputTokens: 1000, outputTokens: 60 });
+
+    const done = await waitForStatus(app, thread.id, "idle");
+    const metadata = done.messages.at(-1)?.metadata as ThreadMessageMetadata | undefined;
+    // The last step's prompt is the context size; the turn's sum is the 累计.
+    expect(metadata?.usage).toMatchObject({ inputTokens: 1100 });
+    expect(metadata?.totalUsage).toMatchObject({ inputTokens: 2100, outputTokens: 60 });
   });
 
   it("parks on a write approval in allow-reads and writes the file once it is approved", async () => {

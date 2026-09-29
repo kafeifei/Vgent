@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import type { Chat } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
+import { useAccounts } from "@/features/accounts/useAccounts";
 import { toFileParts } from "@/features/composer/attachments";
 import type { SlashCommand } from "@/features/composer/slash";
 import type { ChangesView } from "@/features/changes/useChanges";
@@ -210,6 +211,8 @@ function ThreadChatView({
   // The `/` menu's own rows, after 模式: what this task can be told to do
   // without going through the model.
   const canCompact = engines.find((entry) => entry.id === thread.engine)?.capabilities.compact === true;
+  // The same polled snapshot the account menu reads; the composer picks the account the running model draws on.
+  const { snapshot: accounts } = useAccounts(client);
   const commands = useMemo<SlashCommand[]>(
     () => [
       ...(canCompact
@@ -393,6 +396,8 @@ function ThreadChatView({
             messages={messages}
             {...(changes.snapshot != null ? { changedFiles: changes.snapshot.files } : {})}
             onOpenChanges={() => actions.openChanges()}
+            onCompact={canCompact && !live ? () => void actions.compactThread(thread.id) : undefined}
+            accounts={accounts?.accounts}
           />
         )}
       </div>

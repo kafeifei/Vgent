@@ -123,7 +123,10 @@ export interface ThreadRestorePoint {
 export interface ThreadMessageMetadata {
   /** The last step's usage — its `inputTokens` is the context size at turn end. */
   usage?: UsageInfo;
-  /** All of the turn's steps summed, for cost rather than context. */
+  /**
+   * All of the turn's steps summed, for cost rather than context. While the
+   * turn runs it is the sum of the steps so far; its `finish` settles it.
+   */
   totalUsage?: UsageInfo;
   /**
    * On the summary message `/compact` left behind: how many messages it

@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { CODEX_SUBSCRIPTION_PREFIX } from "@vgent/engine";
-import { CHATGPT_CODEX_BASE_URL, getCodexTokenProvider, createCodexFetch, describeSubscriptionAuth } from "@vgent/providers";
+import { CHATGPT_CODEX_BASE_URL, getCodexTokenProvider, createCodexFetch, describeSubscriptionAuth, type ModelCost } from "@vgent/providers";
 import { gateway as defaultGateway } from "ai";
 import type { EngineId, Logger } from "./types.js";
 import { silentLogger } from "./types.js";
@@ -73,6 +73,12 @@ export interface ModelEntry {
    * never heard of the model.
    */
   vendor?: string;
+  /**
+   * The maker's list price, from the provider catalog — what the context card
+   * prices a task's tokens at. On a subscription nothing is billed per token,
+   * so it only ever says what the same work would cost on the API.
+   */
+  cost?: ModelCost;
 }
 
 export interface ModelSource {
@@ -230,7 +236,7 @@ export interface ModelCatalogOptions {
    * every Claude Code model offers the harness's five and nothing has a choice
    * of window.
    */
-  catalogModelOf?: () => Promise<(modelId: string) => { reasoningLevels?: string[]; contextWindow?: number; vendor?: string } | undefined>;
+  catalogModelOf?: () => Promise<(modelId: string) => { reasoningLevels?: string[]; contextWindow?: number; vendor?: string; cost?: ModelCost } | undefined>;
 }
 
 /** How long a fetched catalog is reused. A picker opening twice must not refetch. */
@@ -290,7 +296,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 function withClaudeCodeReasoning(
   entries: readonly ModelEntry[],
-  modelOf: ((modelId: string) => { reasoningLevels?: string[]; contextWindow?: number } | undefined) | undefined,
+  modelOf: ((modelId: string) => { reasoningLevels?: string[]; contextWindow?: number; cost?: ModelCost } | undefined) | undefined,
   newestFirst: readonly ModelEntry[],
 ): ModelEntry[] {
   const known = (entry: ModelEntry) => {
@@ -309,6 +315,8 @@ function withClaudeCodeReasoning(
       vendor: "anthropic",
       ...reasoningFor("claude-code", listed?.reasoningLevels),
       ...contextOptionsFor("claude-code", undefined, listed?.contextWindow),
+      // An alias is priced as the model it resolves to today.
+      ...(listed?.cost != null ? { cost: listed.cost } : {}),
     };
   });
 }

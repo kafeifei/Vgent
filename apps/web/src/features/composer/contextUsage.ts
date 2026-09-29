@@ -1,5 +1,5 @@
-import { isToolUIPart, type UIMessage } from "ai";
-import type { ChangedFile, ThreadMessageMetadata } from "@/lib/types";
+import { isToolUIPart, type LanguageModelUsage, type UIMessage } from "ai";
+import type { ChangedFile, ModelCost, ThreadMessageMetadata, UsageInfo } from "@/lib/types";
 
 /**
  * The two numbers the review bar above the composer shows: how full the context
@@ -76,11 +76,70 @@ export function contextUsage(messages: readonly UIMessage[]): ContextUsage {
   return { tokens: Math.round(promptChars(messages) / CHARS_PER_TOKEN), source: "estimate" };
 }
 
+/**
+ * The task's tokens so far, for the card behind the ring: every finished
+ * turn's `totalUsage` added up, in the v7 shape AI Elements' `Context` reads.
+ * Undefined until some turn reported one. A turn still running is not in it
+ * yet, and history `/compact` replaced is gone from it with the messages.
+ */
+export function taskUsage(messages: readonly UIMessage[]): LanguageModelUsage | undefined {
+  let found = false;
+  let input = 0;
+  let cacheRead = 0;
+  let cacheWrite = 0;
+  let output = 0;
+  let reasoning = 0;
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    const turn: UsageInfo | undefined = (message.metadata as ThreadMessageMetadata | undefined)?.totalUsage;
+    if (turn == null || !((turn.inputTokens ?? 0) > 0 || (turn.outputTokens ?? 0) > 0)) continue;
+    found = true;
+    input += turn.inputTokens ?? 0;
+    cacheRead += turn.cachedInputTokens ?? 0;
+    cacheWrite += turn.cacheWriteTokens ?? 0;
+    output += turn.outputTokens ?? 0;
+    reasoning += turn.reasoningTokens ?? 0;
+  }
+  if (!found) return undefined;
+  return {
+    inputTokens: input,
+    inputTokenDetails: { noCacheTokens: Math.max(0, input - cacheRead - cacheWrite), cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite },
+    outputTokens: output,
+    outputTokenDetails: { textTokens: Math.max(0, output - reasoning), reasoningTokens: reasoning },
+    totalTokens: input + output,
+  };
+}
+
+export interface UsageCost {
+  /** Everything read in: fresh input, cache hits and cache writes, each at its own price. */
+  input: number;
+  output: number;
+  total: number;
+}
+
+/**
+ * `usage` at `cost` (USD per million tokens). A cache read or write the vendor
+ * does not price apart is charged as fresh input; reasoning is inside
+ * `outputTokens` already and is not charged twice.
+ */
+export function usageCost(usage: LanguageModelUsage, cost: ModelCost): UsageCost {
+  const details = usage.inputTokenDetails;
+  const cacheRead = details.cacheReadTokens ?? 0;
+  const cacheWrite = details.cacheWriteTokens ?? 0;
+  const fresh = details.noCacheTokens ?? Math.max(0, (usage.inputTokens ?? 0) - cacheRead - cacheWrite);
+  const input = (fresh * cost.input + cacheRead * (cost.cacheRead ?? cost.input) + cacheWrite * (cost.cacheWrite ?? cost.input)) / 1e6;
+  const output = ((usage.outputTokens ?? 0) * cost.output) / 1e6;
+  return { input, output, total: input + output };
+}
+
 /** `1234` → `1.2k`, `200000` → `200k`; small counts stay exact. */
 export function formatTokens(tokens: number): string {
   if (tokens < 1000) return String(tokens);
   const thousands = tokens / 1000;
-  return `${thousands < 100 ? thousands.toFixed(1) : Math.round(thousands)}k`;
+  if (thousands < 1000) return `${thousands < 100 ? thousands.toFixed(1) : Math.round(thousands)}k`;
+  const millions = thousands / 1000;
+  // A window is a round number: 1M, not 1.0M.
+  return `${millions < 100 ? millions.toFixed(1).replace(/\.0$/, "") : Math.round(millions)}M`;
 }
 
 export interface ChangeSums {

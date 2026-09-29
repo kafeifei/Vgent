@@ -100,12 +100,14 @@ export function rawErrorText(error: unknown): string {
  */
 function toUsageInfo(usage: LanguageModelUsage): UsageInfo {
   const cached = usage.inputTokenDetails?.cacheReadTokens;
+  const cacheWrite = usage.inputTokenDetails?.cacheWriteTokens;
   const reasoning = usage.outputTokenDetails?.reasoningTokens;
   return {
     ...(usage.inputTokens != null ? { inputTokens: usage.inputTokens } : {}),
     ...(usage.outputTokens != null ? { outputTokens: usage.outputTokens } : {}),
     ...(usage.totalTokens != null ? { totalTokens: usage.totalTokens } : {}),
     ...(cached != null ? { cachedInputTokens: cached } : {}),
+    ...(cacheWrite != null ? { cacheWriteTokens: cacheWrite } : {}),
     ...(reasoning != null ? { reasoningTokens: reasoning } : {}),
   };
 }

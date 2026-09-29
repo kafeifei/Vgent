@@ -1705,6 +1705,18 @@ export function createApp(options: CreateAppOptions): VgentApp {
    * picked under. A harness that keeps its own default (Claude Code) names
    * nothing when nothing was ever picked: the server must not invent one.
    */
+  /**
+   * The maker's price for the model behind a row. `modelKey` names it without
+   * the route (`codex-subscription/gpt-5.5`, `<provider>/<model>`), which is
+   * what the catalog knows it by; a Claude Code alias (`opus`) names no model
+   * and gets no price.
+   */
+  const withCost = (entry: ModelEntry, priceOf: ((modelId: string) => { cost?: ModelEntry["cost"] } | undefined) | undefined): ModelEntry => {
+    const model = entry.modelKey != null ? entry.modelKey.slice(entry.modelKey.indexOf("/") + 1) : entry.id;
+    const cost = priceOf?.(model)?.cost;
+    return cost != null ? { ...entry, cost } : entry;
+  };
+
   const listModels = async (engine: EngineId, refresh = false): Promise<ModelCatalog> => {
     const listing = await modelCatalog.list(engine, { refresh });
     const current = await settings.get();
@@ -1735,7 +1747,9 @@ export function createApp(options: CreateAppOptions): VgentApp {
       : [];
     // What the 模型 table switched off stays in the list, marked: see `ModelEntry.hidden`.
     const copilotModels = engine === "vgent" ? await accounts.copilot.models(refresh).catch(() => []) : [];
-    const models = orderBySource([...markHidden([...listing.models, ...copilotModels], current.hiddenModels?.[engine]), ...fromProviders], current.providerOrder);
+    const priceOf = modelOf ?? (await catalog.get().then((snapshot) => createModelIndex(snapshot.providers), () => undefined));
+    const models = orderBySource([...markHidden([...listing.models, ...copilotModels], current.hiddenModels?.[engine]), ...fromProviders], current.providerOrder)
+      .map((entry) => withCost(entry, priceOf));
     const usable = models.filter((entry) => entry.hidden !== true);
     const defaultModel =
       remembered != null && usable.some((entry) => entry.id === remembered)

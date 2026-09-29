@@ -33,7 +33,7 @@ const SHADCN_URL = (name) => `https://ui.shadcn.com/r/styles/new-york-v4/${name}
  * registry item — the streamdown renderer ships inside `message` as
  * `MessageResponse`.
  */
-const ELEMENTS = ["conversation", "message", "reasoning", "tool", "code-block", "shimmer", "confirmation", "image", "queue"];
+const ELEMENTS = ["conversation", "message", "reasoning", "tool", "code-block", "shimmer", "confirmation", "image", "queue", "context"];
 
 /**
  * shadcn primitives the workbench uses on its own, not through an element:
@@ -82,6 +82,22 @@ const PATCHES = [
     only: "shimmer.tsx",
     why: "shimmer.tsx casts its style object to React's `CSSProperties`, which motion's `MotionStyle` rejects under `exactOptionalPropertyTypes`.",
     apply: (source) => source.replace("} as CSSProperties\n", '} as NonNullable<MotionProps["style"]>\n'),
+  },
+  {
+    id: "v7-usage-details",
+    only: "context.tsx",
+    why: "context.tsx reads v5's flat `usage.reasoningTokens` / `usage.cachedInputTokens`; AI SDK v7 moved them into `outputTokenDetails` / `inputTokenDetails`.",
+    apply: (source) =>
+      source
+        .replaceAll("usage?.reasoningTokens", "usage?.outputTokenDetails.reasoningTokens")
+        .replaceAll("usage?.cachedInputTokens", "usage?.inputTokenDetails.cacheReadTokens"),
+  },
+  {
+    id: "exact-optional-context",
+    only: "context.tsx",
+    why: "context.tsx rebuilds its schema from destructured, possibly-undefined `usage` / `modelId`, which `exactOptionalPropertyTypes` rejects for set-or-absent fields.",
+    apply: (source) =>
+      source.replace("  usage?: LanguageModelUsage;\n  modelId?: ModelId;\n", "  usage?: LanguageModelUsage | undefined;\n  modelId?: ModelId | undefined;\n"),
   },
   {
     id: "exact-optional-context-menu",

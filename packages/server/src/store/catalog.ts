@@ -31,8 +31,9 @@ export interface CatalogStore {
  * 2: models carry `reasoningLevels`. An older file is still a catalog — it is
  * what gets served when models.dev cannot be reached — it just counts as stale,
  * so the next chance to fetch is taken.
+ * 3: models carry `cost`.
  */
-const CATALOG_FILE_VERSION = 2;
+const CATALOG_FILE_VERSION = 3;
 
 interface CatalogFile {
   version: typeof CATALOG_FILE_VERSION;

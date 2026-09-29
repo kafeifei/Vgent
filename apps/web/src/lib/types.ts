@@ -57,6 +57,7 @@ export type {
   UndoApplyResult,
   CatalogProvider,
   CatalogProviderSummary,
+  ModelCost,
   ProviderAgent,
   ProviderAgentConfig,
   ProviderModel,

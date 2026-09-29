@@ -19,10 +19,11 @@ const MODELS_DEV = {
         name: "DeepSeek V4 Pro",
         release_date: "2026-04-01",
         limit: { context: 128000 },
+        cost: { input: 0.5, output: 2, cache_read: 0.05, context_over_200k: { input: 1, output: 4 } },
         reasoning: true,
         reasoning_options: [{ type: "budget_tokens", min: 1024 }, { type: "effort", values: ["high", "max"] }],
       }),
-      "deepseek-v3": model({ id: "deepseek-v3", name: "DeepSeek V3", release_date: "2025-01-01" }),
+      "deepseek-v3": model({ id: "deepseek-v3", name: "DeepSeek V3", release_date: "2025-01-01", cost: { input: 0.3 } }),
       "deepseek-embed": { id: "deepseek-embed", tool_call: false },
       "deepseek-old": model({ id: "deepseek-old", status: "deprecated" }),
       "deepseek-image": model({ id: "deepseek-image", modalities: { output: ["image"] } }),
@@ -50,8 +51,9 @@ describe("normalizeModelsDev", () => {
 
   it("keeps only the models an agent can use, newest first", () => {
     expect(byId("deepseek")?.models).toEqual([
-      { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", contextWindow: 128000, reasoningLevels: ["high", "max"] },
-      // Known to the catalog, and with no effort to set.
+      // The base-tier price only: the long-context surcharge is left out.
+      { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", contextWindow: 128000, reasoningLevels: ["high", "max"], cost: { input: 0.5, output: 2, cacheRead: 0.05 } },
+      // Known to the catalog, and with no effort to set; half a price is no price.
       { id: "deepseek-v3", label: "DeepSeek V3", reasoningLevels: [] },
     ]);
   });

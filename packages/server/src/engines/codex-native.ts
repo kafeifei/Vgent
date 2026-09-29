@@ -2,7 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { CHATGPT_CODEX_BASE_URL, getCodexTokenProvider } from "@vgent/providers";
 import { DEFAULT_CODEX_DATA_DIR, type CodexAuthEnvironment } from "@vgent/engines";
-import type { ModelMessage, TextStreamPart, ToolSet } from "ai";
+import type { LanguageModelUsage, ModelMessage, TextStreamPart, ToolSet } from "ai";
 import { CodexAppServer, type CodexNotification } from "./codex-app-server.js";
 import type { EngineContext, EngineRunner } from "./registry.js";
 
@@ -24,6 +24,72 @@ function lastUserText(messages: readonly ModelMessage[]): string {
   if (last == null) throw new Error("Codex turn has no user message");
   if (typeof last.content === "string") return last.content;
   return last.content.map((part) => "text" in part && typeof part.text === "string" ? part.text : "").join("\n");
+}
+
+const count = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0);
+
+/**
+ * Codex's `TokenUsageBreakdown` → v7 usage. OpenAI counts a cache hit inside
+ * the input and the reasoning inside the output, which is v7's reading too, so
+ * the numbers carry over as they are.
+ */
+function toUsage(raw: unknown): LanguageModelUsage {
+  const breakdown = asObject(raw);
+  const input = count(breakdown.inputTokens);
+  const cacheRead = count(breakdown.cachedInputTokens);
+  const output = count(breakdown.outputTokens);
+  const reasoning = count(breakdown.reasoningOutputTokens);
+  return {
+    inputTokens: input,
+    inputTokenDetails: { noCacheTokens: Math.max(0, input - cacheRead), cacheReadTokens: cacheRead, cacheWriteTokens: count(breakdown.cacheWriteInputTokens) },
+    outputTokens: output,
+    outputTokenDetails: { textTokens: Math.max(0, output - reasoning), reasoningTokens: reasoning },
+    totalTokens: count(breakdown.totalTokens) || input + output,
+  };
+}
+
+function addUsage(a: LanguageModelUsage, b: LanguageModelUsage): LanguageModelUsage {
+  const sum = (x: number | undefined, y: number | undefined) => (x ?? 0) + (y ?? 0);
+  return {
+    inputTokens: sum(a.inputTokens, b.inputTokens),
+    inputTokenDetails: {
+      noCacheTokens: sum(a.inputTokenDetails.noCacheTokens, b.inputTokenDetails.noCacheTokens),
+      cacheReadTokens: sum(a.inputTokenDetails.cacheReadTokens, b.inputTokenDetails.cacheReadTokens),
+      cacheWriteTokens: sum(a.inputTokenDetails.cacheWriteTokens, b.inputTokenDetails.cacheWriteTokens),
+    },
+    outputTokens: sum(a.outputTokens, b.outputTokens),
+    outputTokenDetails: {
+      textTokens: sum(a.outputTokenDetails.textTokens, b.outputTokenDetails.textTokens),
+      reasoningTokens: sum(a.outputTokenDetails.reasoningTokens, b.outputTokenDetails.reasoningTokens),
+    },
+    totalTokens: sum(a.totalTokens, b.totalTokens),
+  };
+}
+
+/**
+ * One model call of the turn, as the step the rest of the server counts and
+ * takes usage from. Codex reports the call's tokens and nothing about its
+ * timing, so the performance figures are zeros rather than guesses.
+ */
+function finishStep(usage: LanguageModelUsage, modelId: string): Part {
+  return {
+    type: "finish-step",
+    response: { id: "", timestamp: new Date(), modelId },
+    usage,
+    performance: {
+      effectiveOutputTokensPerSecond: 0,
+      outputTokensPerSecond: undefined,
+      inputTokensPerSecond: undefined,
+      effectiveTotalTokensPerSecond: 0,
+      stepTimeMs: 0,
+      responseTimeMs: 0,
+      timeToFirstOutputMs: undefined,
+      toolExecutionMs: {},
+    },
+    finishReason: "stop",
+    rawFinishReason: undefined,
+    providerMetadata: undefined,
+  };
 }
 
 function toolName(type: string): string {
@@ -93,6 +159,8 @@ export async function createNativeCodexRunner(
   const toolOpen = new Map<string, { name: string; input: unknown }>();
   const textSeen = new Set<string>();
   let lastError: string | undefined;
+  /** The turn's calls added up, for its `finish`. */
+  let turnUsage: LanguageModelUsage | undefined;
 
   const handle = (event: CodexNotification): void => {
     const params = event.params;
@@ -106,6 +174,16 @@ export async function createNativeCodexRunner(
     const type = asString(item.type);
     if (event.method === "turn/started" && turnId == null) {
       turnId = asString(asObject(params.turn).id);
+      return;
+    }
+    // Sent after every model call: `last` is that call — its input is how full
+    // the context is now — while `total` runs over the whole Codex thread, so
+    // the turn's own sum is kept here from the `last`s.
+    if (event.method === "thread/tokenUsage/updated") {
+      if (turnId == null || asString(params.turnId) !== turnId) return;
+      const usage = toUsage(asObject(params.tokenUsage).last);
+      turnUsage = turnUsage == null ? usage : addUsage(turnUsage, usage);
+      emit(finishStep(usage, options.model ?? ""));
       return;
     }
     if (event.method === "error") {
@@ -168,7 +246,10 @@ export async function createNativeCodexRunner(
       for (const id of reasoningOpen) emit({ type: "reasoning-end", id });
       textOpen.clear(); reasoningOpen.clear();
       if (status === "failed") failStream?.(new Error(lastError ?? "Codex 回合失败"));
-      else closeStream?.();
+      else {
+        if (status === "completed" && turnUsage != null) emit({ type: "finish", finishReason: "stop", rawFinishReason: undefined, totalUsage: turnUsage });
+        closeStream?.();
+      }
     }
   };
   const unsubscribe = server.onNotification(handle);

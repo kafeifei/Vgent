@@ -1,5 +1,5 @@
 import { PROVIDER_PRESETS } from "./presets.js";
-import { PROVIDER_PROTOCOLS, SDK_KINDS, type ProviderAgent, type ProviderModel, type ProviderProtocol } from "./provider-config.js";
+import { PROVIDER_PROTOCOLS, SDK_KINDS, type ModelCost, type ProviderAgent, type ProviderModel, type ProviderProtocol } from "./provider-config.js";
 
 /**
  * The provider catalog: every provider the settings page can connect, where it
@@ -99,6 +99,20 @@ function readReasoningLevels(record: Record<string, unknown>): string[] {
   return [];
 }
 
+const price = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);
+
+/** models.dev's `cost: { input, output, cache_read, cache_write }`, base tier only; absent unless both input and output are priced. */
+function readCost(record: Record<string, unknown>): ModelCost | undefined {
+  if (typeof record.cost !== "object" || record.cost === null) return undefined;
+  const cost = record.cost as Record<string, unknown>;
+  const input = price(cost.input);
+  const output = price(cost.output);
+  if (input == null || output == null) return undefined;
+  const cacheRead = price(cost.cache_read);
+  const cacheWrite = price(cost.cache_write);
+  return { input, output, ...(cacheRead != null ? { cacheRead } : {}), ...(cacheWrite != null ? { cacheWrite } : {}) };
+}
+
 /** One models.dev model → a row the page can tick, or undefined when an agent could not use it. */
 function readModel(key: string, raw: unknown): DatedModel | undefined {
   if (typeof raw !== "object" || raw === null) return undefined;
@@ -113,11 +127,13 @@ function readModel(key: string, raw: unknown): DatedModel | undefined {
   const id = text(record.id) ?? key;
   const label = text(record.name);
   const context = (record.limit as { context?: unknown } | undefined)?.context;
+  const cost = readCost(record);
   return {
     id,
     ...(label != null && label !== id ? { label } : {}),
     ...(typeof context === "number" && Number.isFinite(context) && context > 0 ? { contextWindow: context } : {}),
     reasoningLevels: readReasoningLevels(record),
+    ...(cost != null ? { cost } : {}),
     released: text(record.release_date) ?? "",
   };
 }

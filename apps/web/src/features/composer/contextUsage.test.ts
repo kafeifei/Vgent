@@ -1,7 +1,7 @@
 import type { UIMessage } from "ai";
 import { describe, expect, it } from "vitest";
 import type { ChangedFile, ThreadMessageMetadata } from "@/lib/types";
-import { contextUsage, formatTokens, sumChanges } from "./contextUsage";
+import { contextUsage, formatTokens, sumChanges, taskUsage, usageCost } from "./contextUsage";
 
 const user = (id: string, text: string): UIMessage => ({ id, role: "user", parts: [{ type: "text", text }] });
 
@@ -86,6 +86,53 @@ describe("formatTokens", () => {
     expect(formatTokens(12_345)).toBe("12.3k");
     expect(formatTokens(200_000)).toBe("200k");
     expect(formatTokens(272_000)).toBe("272k");
+    expect(formatTokens(1_000_000)).toBe("1M");
+    expect(formatTokens(3_240_000)).toBe("3.2M");
+  });
+});
+
+describe("taskUsage", () => {
+  it("adds up every turn's totalUsage, not the last step's usage", () => {
+    const messages = [
+      user("u1", "一"),
+      assistant("a1", "好", {
+        usage: { inputTokens: 900 },
+        totalUsage: { inputTokens: 1000, cachedInputTokens: 600, cacheWriteTokens: 100, outputTokens: 50, reasoningTokens: 20 },
+      }),
+      user("u2", "二"),
+      assistant("a2", "好", { usage: { inputTokens: 2000 }, totalUsage: { inputTokens: 3000, cachedInputTokens: 2400, outputTokens: 70 } }),
+    ];
+
+    expect(taskUsage(messages)).toEqual({
+      inputTokens: 4000,
+      inputTokenDetails: { noCacheTokens: 900, cacheReadTokens: 3000, cacheWriteTokens: 100 },
+      outputTokens: 120,
+      outputTokenDetails: { textTokens: 100, reasoningTokens: 20 },
+      totalTokens: 4120,
+    });
+  });
+
+  it("is undefined until some turn reported real numbers", () => {
+    expect(taskUsage([user("u1", "一"), assistant("a1", "好")])).toBeUndefined();
+    expect(taskUsage([assistant("a1", "好", { totalUsage: { inputTokens: 0, outputTokens: 0 } })])).toBeUndefined();
+  });
+});
+
+describe("usageCost", () => {
+  const usage = taskUsage([
+    assistant("a1", "好", { totalUsage: { inputTokens: 1_000_000, cachedInputTokens: 600_000, cacheWriteTokens: 100_000, outputTokens: 100_000 } }),
+  ])!;
+
+  it("prices fresh input, cache reads and cache writes apart", () => {
+    const cost = usageCost(usage, { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 });
+    // 300k fresh × $4 + 600k read × $0.2 + 100k written × $5, per million.
+    expect(cost.input).toBeCloseTo(1.2 + 0.12 + 0.5);
+    expect(cost.output).toBeCloseTo(2);
+    expect(cost.total).toBeCloseTo(3.82);
+  });
+
+  it("charges cache traffic as fresh input when the vendor gives it no price", () => {
+    expect(usageCost(usage, { input: 4, output: 20 }).input).toBeCloseTo(4);
   });
 });
 

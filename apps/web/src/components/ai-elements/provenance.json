@@ -1,6 +1,6 @@
 {
   "note": "Fetched from the official registries by scripts/fetch-ai-elements.mjs. `response` has no registry item of its own — the streamdown renderer ships inside `message` as `MessageResponse`.",
-  "fetchedAt": "2026-09-21T14:42:05.364Z",
+  "fetchedAt": "2026-09-29T09:15:50.553Z",
   "patches": [
     {
       "id": "cn-import",
@@ -23,6 +23,14 @@
       "why": "shimmer.tsx casts its style object to React's `CSSProperties`, which motion's `MotionStyle` rejects under `exactOptionalPropertyTypes`."
     },
     {
+      "id": "v7-usage-details",
+      "why": "context.tsx reads v5's flat `usage.reasoningTokens` / `usage.cachedInputTokens`; AI SDK v7 moved them into `outputTokenDetails` / `inputTokenDetails`."
+    },
+    {
+      "id": "exact-optional-context",
+      "why": "context.tsx rebuilds its schema from destructured, possibly-undefined `usage` / `modelId`, which `exactOptionalPropertyTypes` rejects for set-or-absent fields."
+    },
+    {
       "id": "exact-optional-context-menu",
       "why": "context-menu.tsx passes a destructured, possibly-undefined `checked` back to Radix, whose prop is set-or-absent under `exactOptionalPropertyTypes`."
     }
@@ -39,6 +47,7 @@
     "radix-ui",
     "shiki",
     "streamdown",
+    "tokenlens",
     "use-stick-to-bottom"
   ],
   "items": [
@@ -157,6 +166,24 @@
       ]
     },
     {
+      "name": "context",
+      "kind": "ai-elements",
+      "url": "https://elements.ai-sdk.dev/api/registry/context.json",
+      "sha256": "73e26e24d5b0b2c06d392ff75d3d463f9d18369140385f577c6180040e961c89",
+      "files": [
+        {
+          "registryPath": "registry/default/ai-elements/context.tsx",
+          "localPath": "src/components/ai-elements/context.tsx",
+          "sha256": "51c5046f0fe2ff674316a64feae7582a5cbf1749f57e119c8852da9bad6c23b3",
+          "patches": [
+            "registry-alias",
+            "v7-usage-details",
+            "exact-optional-context"
+          ]
+        }
+      ]
+    },
+    {
       "name": "context-menu",
       "kind": "shadcn",
       "url": "https://ui.shadcn.com/r/styles/new-york-v4/context-menu.json",
@@ -208,6 +235,22 @@
       ]
     },
     {
+      "name": "hover-card",
+      "kind": "shadcn",
+      "url": "https://ui.shadcn.com/r/styles/new-york-v4/hover-card.json",
+      "sha256": "205af771916016bd2d483032060ca4c10eb3f72887230d1acc258c2229e4e63a",
+      "files": [
+        {
+          "registryPath": "registry/new-york-v4/ui/hover-card.tsx",
+          "localPath": "src/components/ui/hover-card.tsx",
+          "sha256": "d646141a4f5b9d6ed47cb6b1854a6afbfeacd0dbbc0520078077b2eeca116956",
+          "patches": [
+            "cn-import"
+          ]
+        }
+      ]
+    },
+    {
       "name": "image",
       "kind": "ai-elements",
       "url": "https://elements.ai-sdk.dev/api/registry/image.json",
@@ -233,6 +276,22 @@
           "sha256": "2affb1d58d6948cb254e6cec888c60dfa46f2f9b9936b3df3fb7fe4b3230ed74",
           "patches": [
             "registry-alias"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "progress",
+      "kind": "shadcn",
+      "url": "https://ui.shadcn.com/r/styles/new-york-v4/progress.json",
+      "sha256": "ca0c7ae4d88b8039a9ee64653569cf8be6a058070d9f719d2294c9d49d56bcab",
+      "files": [
+        {
+          "registryPath": "registry/new-york-v4/ui/progress.tsx",
+          "localPath": "src/components/ui/progress.tsx",
+          "sha256": "1f6eb12292b38dd1601319ff7d6fc7dfefb8b988813962d688b3a9782000980a",
+          "patches": [
+            "cn-import"
           ]
         }
       ]

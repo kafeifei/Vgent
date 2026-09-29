@@ -34,6 +34,7 @@ export type {
   ProviderAgent,
   ProviderAgentConfig,
   ProviderConfig,
+  ModelCost,
   ProviderInput,
   ProviderModel,
   ProviderProtocol,

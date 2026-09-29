@@ -679,6 +679,8 @@ export function Composer({
           {...(onOpenChanges != null ? { onOpenChanges } : {})}
           {...(messages != null ? { messages } : {})}
           {...(contextWindow != null ? { contextWindow } : {})}
+          {...(runningEntry?.contextOptions != null ? { contextOptions: runningEntry.contextOptions } : {})}
+          {...(runningEntry?.cost != null ? { cost: runningEntry.cost } : {})}
         />
       )}
     </div>

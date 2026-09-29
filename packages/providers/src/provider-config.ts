@@ -86,6 +86,22 @@ export interface ProviderModel {
    * rows carry it; a stored provider's models do not — it is looked up fresh.
    */
   reasoningLevels?: string[];
+  /** The vendor's list price, when the catalog has one. Catalog rows only, like `reasoningLevels`. */
+  cost?: ModelCost;
+}
+
+/**
+ * USD per million tokens, as models.dev lists them. Only the base tier: a
+ * long-context surcharge (`context_over_200k`, `tiers`) is left out, so a price
+ * worked out from it is a floor, never an overcharge.
+ */
+export interface ModelCost {
+  input: number;
+  output: number;
+  /** A cache hit, when the vendor prices it apart from fresh input. */
+  cacheRead?: number;
+  /** Writing the prompt cache, when the vendor charges for it. */
+  cacheWrite?: number;
 }
 
 /** How one agent reaches the provider, and the models the user enabled for it. */

@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { UIMessage } from "ai";
 import { GitBranch } from "lucide-react";
-import type { ChangedFile } from "@/lib/types";
+import type { ChangedFile, ModelCost } from "@/lib/types";
 import { ContextRing } from "./ContextRing";
 import { sumChanges } from "./contextUsage";
 
@@ -21,6 +21,8 @@ export function ComposerStatusBar({
   onOpenChanges,
   messages,
   contextWindow,
+  contextOptions,
+  cost,
 }: {
   /** Absent (a detached HEAD, a project that is not a repo) hides the glyph too. */
   branch?: string | undefined;
@@ -33,6 +35,9 @@ export function ComposerStatusBar({
   /** This task's history, for the ring at the right end. Absent = no ring. */
   messages?: readonly UIMessage[] | undefined;
   contextWindow?: number | undefined;
+  contextOptions?: readonly number[] | undefined;
+  /** The running model's list price, for the ring's card. */
+  cost?: ModelCost | undefined;
 }) {
   const sums = changedFiles == null ? null : sumChanges(changedFiles);
 
@@ -61,7 +66,7 @@ export function ComposerStatusBar({
         </button>
       )}
       <span className="flex-1" />
-      {messages != null && <ContextRing messages={messages} {...(contextWindow != null ? { contextWindow } : {})} />}
+      {messages != null && <ContextRing messages={messages} contextWindow={contextWindow} contextOptions={contextOptions} cost={cost} />}
     </div>
   );
 }

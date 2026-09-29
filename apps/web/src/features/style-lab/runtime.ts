@@ -101,7 +101,7 @@ export class StyleSession {
       token: "style-lab", remoteSession: false,
       getDraft: async () => structuredClone(this.draft),
       putDraft: async (_key, value) => { this.draft = { text: value.text, attachments: value.attachments.map((file) => ({ ...file, url: file.url ?? this.draft.attachments.find((old) => old.id === file.id)?.url ?? "" })) }; },
-      listModels: async (engine) => ({ engine, source: "样例", fetchedAt: AT, defaultModel: "sample-model", models: [{ id: "sample-model", label: "样例模型", contextWindow: 400000, contextOptions: [200000, 400000], reasoningLevels: ["low", "medium", "high"], defaultReasoningLevel: "medium", serviceTiers: [{ id: "priority", name: "Fast" }] }] }),
+      listModels: async (engine) => ({ engine, source: "样例", fetchedAt: AT, defaultModel: "sample-model", models: [{ id: "sample-model", label: "样例模型", contextWindow: 400000, contextOptions: [200000, 400000], reasoningLevels: ["low", "medium", "high"], defaultReasoningLevel: "medium", serviceTiers: [{ id: "priority", name: "Fast" }], cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 } }] }),
       listFiles: async (_id, opts) => ({ root: ROOT, entries: Object.keys(FILES).filter((path) => path.toLowerCase().includes(opts?.q?.toLowerCase() ?? "")).slice(0, opts?.limit ?? 100).map((path) => ({ path, kind: "file" as const })), truncated: false }),
       getFileContent: async (_id, path) => ({ path, content: content(path), truncated: false, binary: false }),
       getFileBlob: async (_id, path) => new Blob([content(path)], { type: path.endsWith(".svg") ? "image/svg+xml" : "text/plain" }),

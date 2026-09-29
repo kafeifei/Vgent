@@ -75,6 +75,8 @@ export interface UsageInfo {
   totalTokens?: number;
   /** Of `inputTokens`, the part that was read from the provider's prompt cache. */
   cachedInputTokens?: number;
+  /** Of `inputTokens`, the part written to the prompt cache — Anthropic bills it above fresh input. */
+  cacheWriteTokens?: number;
   reasoningTokens?: number;
 }
 

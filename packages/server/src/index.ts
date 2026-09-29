@@ -204,6 +204,7 @@ export type {
   CatalogEndpoint,
   CatalogProvider,
   CatalogProviderSummary,
+  ModelCost,
   ProviderAgent,
   ProviderAgentConfig,
   ProviderModel,

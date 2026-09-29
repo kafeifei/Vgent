@@ -71,7 +71,7 @@ it("production factory and run manager persist a budget stop, not a clean respon
     expect(calls).toBe(100);
     expect(record!.status).toBe("interrupted");
     expect((record!.messages[0]!.metadata as ThreadMessageMetadata).run).toMatchObject({
-      harness: "vgent",
+      engine: "vgent",
       stopReason: "budget",
       steps: 100,
       providerAttempts: 100,

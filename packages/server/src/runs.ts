@@ -569,7 +569,7 @@ export function createRunManager(options: {
 
     const runRecord: NonNullable<ThreadMessageMetadata["run"]> = {
       id: randomUUID(),
-      harness: thread.engine,
+      engine: thread.engine,
       ...(thread.model ? { model: thread.model } : {}),
       startedAt: new Date().toISOString(),
       stopReason: "running",

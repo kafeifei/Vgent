@@ -156,7 +156,7 @@ export interface ThreadMessageMetadata {
   turnEnd?: TurnEnd;
   run?: {
     id: string;
-    harness: EngineId;
+    engine: EngineId;
     model?: string;
     provider?: string;
     startedAt: string;

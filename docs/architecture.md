@@ -45,7 +45,7 @@ Vgent 是一个 **Web 优先**的本地 coding agent 工作台，底下可换引
 | Skills / 记忆 | Skills 按需读取；记忆工具拥有存储位置、条目索引和使用说明。计划模式不开放记忆写入 |
 | 压缩与恢复 | 保留原有 `prepareStep` 预算核算、历史压缩、缓存及服务端恢复实现；本次组装重构不引入第二套会话状态或执行循环 |
 
-文件协调、输入持久化、结束原因、任务续接与恢复契约见 [harness-reliability.md](./harness-reliability.md)。
+文件协调、输入持久化、结束原因、任务续接与恢复契约见 [engine-reliability.md](./engine-reliability.md)。
 
 ### 模型接入 `@vgent/providers`
 
@@ -188,7 +188,7 @@ docs/
 三条引擎路全部本地跑通并有真实冒烟测试（`VGENT_SMOKE=1`）；桌面壳、worktree 隔离、子代理/MCP/skills、动态模型清单、`pnpm start` 全部落地。全仓构建绿，`pnpm test` 74 文件 / 705 测试通过（另 5 文件 / 13 测试是 `VGENT_SMOKE` 门控的真机冒烟，默认跳过；2026-09-19 Codex 能接说 Responses 协议的提供商之后）。Codex 走提供商这条路验证到哪：`codex exec` 加 bridge 生成的同一套配置，对着本机的假 Responses 服务跑通（请求发到 `<地址>/responses`、带 key、裸模型 id、回复正常渲染）；**经由 harness 的整轮没有跑过**（临时实例不能跑 harness 引擎），也没有对着真实厂商的 key 跑过。
 
 - `packages/sandbox-local`：freecode 移植，`createLocalSandboxProvider`，`loopbackOnly` 预加载已验证 bridge 只绑 127.0.0.1。
-- `packages/engines`：`createClaudeCodeEngine` / `createCodexEngine` → `{ agent, session, dispose }`，`toTUIAgent`，共享逻辑在 `shared.ts`。仓库路径靠覆写 `doStart` 传 `sessionWorkDir`。Claude 保留真实 HOME 复用登录（副作用：`~/.claude/CLAUDE.md` 影响回复）；Codex 用隔离 `CODEX_HOME`（真实 `~/.codex/config.toml` 与 pinned SDK 不兼容），登录态走 env 转发不受影响。Codex 的 permissionMode 只能 `allow-all`，SDK 构造时自己抛错。
+- `packages/engines`：`createClaudeCodeEngine` / `createCodexEngine` → `{ agent, session, dispose }`，`toTUIAgent`，共享逻辑在 `shared.ts`。仓库路径靠覆写 `doStart` 传 `sessionWorkDir`。Claude 保留真实 HOME，复用登录和 `~/.claude/CLAUDE.md`；Codex 用隔离 `CODEX_HOME`（真实 `~/.codex/config.toml` 与 pinned SDK 不兼容），登录态走 env 转发，用户的 `~/.codex/AGENTS.md` 链进隔离目录，全局规则照样生效。Codex 的 permissionMode 只能 `allow-all`，SDK 构造时自己抛错。
 - `packages/providers`：`createCodexSubscriptionModel`（真跑通；接口只支持流式、无 content-type、`response.completed` 的 output 为空需从 `output_item.done` 拼；`originator: codex_cli_rs` 可配）、`createApiKeyModel`（Gateway）、`describeSubscriptionAuth`。无任何 Claude 凭据代码。
 - `packages/tools`：`createCodingTools({ sandbox?, workDir })` → read/write/edit/bash/grep/glob。grep/glob 走宿主 fs（sandbox 接口没有目录列举）。
 - `packages/engine`：`createVgentEngine({ model, repoPath, permissionMode, sessionFile })` → 裸 `ToolLoopAgent`。权限映射 `toolApproval`（bash 分段白名单），超预算 `pruneMessages`，`askUserQuestions` 无 execute（TUI 不支持，Web 用）。冒烟用 `codex-subscription:gpt-5.5` 通过。

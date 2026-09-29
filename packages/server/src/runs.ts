@@ -1464,7 +1464,7 @@ export async function recoverInterruptedThreads(threads: ThreadStore, registry: 
     const summary = await threads.get(entry.id);
     if (summary == null) continue;
     if (entry.status !== summary.status) await threads.update(summary.id, { status: summary.status });
-    if (summary.status === "running") {
+    if (summary.status === "running" || (summary.status === "interrupted" && summary.restartRecovery != null)) {
       const waiting = pendingHumanStatus(summary.messages);
       if (waiting != null) {
         await threads.update(summary.id, { status: waiting, restartRecovery: undefined });
@@ -1487,9 +1487,12 @@ export async function recoverInterruptedThreads(threads: ThreadStore, registry: 
           .catch((error) => log.warn(`恢复线程 ${summary.id} 的待处理引导失败`, error));
       }
     }
-    if (!UNFINISHED_STATUSES.includes(summary.status)) continue;
-    if (summary.status !== "running" && stateless.has(summary.engine)) continue;
-    if (summary.status !== "running" && (await threads.loadHarnessState(summary.id).catch(() => undefined))?.continueFrom != null) {
+    // Desktop shutdown saves the intent before aborting. A second crash in
+    // that window can leave the interrupted turn's tools and metadata open.
+    const recoverable = summary.status === "running" || (summary.status === "interrupted" && summary.restartRecovery != null);
+    if (!recoverable && !UNFINISHED_STATUSES.includes(summary.status)) continue;
+    if (!recoverable && stateless.has(summary.engine)) continue;
+    if (!recoverable && (await threads.loadHarnessState(summary.id).catch(() => undefined))?.continueFrom != null) {
       log.info(`线程 ${summary.id} 的未完成轮次已挂起，等待续跑`);
       continue;
     }
@@ -1523,11 +1526,11 @@ export async function recoverInterruptedThreads(threads: ThreadStore, registry: 
           )
           .map((item) => ({ ...item, accepted: false, delivering: false, promoting: false, claimed: false })),
         status: "interrupted",
-        restartRecovery: summary.status === "running" && summary.archivedAt == null &&
+        restartRecovery: recoverable && summary.archivedAt == null &&
           summary.transition == null && summary.workspace?.reclaimed !== true && summary.outcome == null &&
           record.messages.some(message => message.role === "user")
           ? (record.restartRecovery ?? randomUUID()) : undefined,
-        error: RESTART_INTERRUPT_TEXT,
+        error: summary.status === "interrupted" ? (record.error ?? RESTART_INTERRUPT_TEXT) : RESTART_INTERRUPT_TEXT,
       })
       .catch((error) => log.warn(`恢复线程 ${summary.id} 失败`, error));
   }

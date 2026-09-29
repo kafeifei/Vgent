@@ -288,15 +288,16 @@ describe("restart recovery", () => {
     expect(f.engine.created).toEqual([]);
   });
 
-  it.each(["running", "awaiting-approval", "awaiting-input"] as const)("preserves stateless human waits saved as %s", async status => {
+  it.each(["running", "interrupted", "awaiting-approval", "awaiting-input"] as const)("preserves stateless human waits saved as %s", async status => {
     const f = await fixture(fakeEngine({ stateless: true }));
     for (const approval of [true, false]) {
       const part: UIMessage["parts"][number] = approval
         ? { type: "tool-bash", toolCallId: "approval", state: "approval-requested", input: {}, approval: { id: "approve" } }
         : { type: "tool-askUserQuestions", toolCallId: "question", state: "input-available", input: { questions: [] } };
       const waiting = approval ? "awaiting-approval" : "awaiting-input";
-      if (status !== "running" && status !== waiting) continue;
-      const thread = await f.seed({ status, messages: [user("u", "先问我"), { id: "a", role: "assistant", parts: [part] }] });
+      if (status !== "running" && status !== "interrupted" && status !== waiting) continue;
+      const thread = await f.seed({ status, ...(status === "interrupted" ? { restartRecovery: "before-abort" } : {}),
+        messages: [user("u", "先问我"), { id: "a", role: "assistant", parts: [part] }] });
       await recoverInterruptedThreads(f.threads, f.registry);
       await f.manager().resumeInterrupted(thread.id);
       const restored = (await f.threads.get(thread.id))!;
@@ -483,15 +484,26 @@ describe("restart recovery", () => {
     expect(done.queue ?? []).toEqual([]);
   });
 
-  it("closes unfinished tools and preserves partial UI output but sends error results to the model", async () => {
-    const f = await fixture(fakeEngine({ stateless: true }));
-    const thread = await f.seed({ messages: [user("u", "执行任务"), { id: "a", role: "assistant", parts: [
+  it.each([
+    ["running", true], ["running", false], ["interrupted", true], ["interrupted", false],
+  ] as const)("repairs unfinished tools from %s (stateless: %s), including a second crash before abort", async (status, stateless) => {
+    const f = await fixture(fakeEngine({ stateless }));
+    const thread = await f.seed({ status, ...(status === "interrupted" ? { restartRecovery: "before-abort" } : {}),
+      messages: [{ ...user("u", "执行任务"), metadata: { run: { stopReason: "running" } } }, { id: "a", role: "assistant", parts: [
       { type: "tool-bash", toolCallId: "unfinished", state: "input-available", input: { command: "publish" } },
       { type: "tool-bash", toolCallId: "partial", state: "output-available", input: { command: "build" },
         output: { stdout: "partial log" }, preliminary: true },
     ] }] });
     await recoverInterruptedThreads(f.threads, f.registry);
     const recovered = (await f.threads.get(thread.id))!;
+    expect(recovered.messages[0]?.metadata).toMatchObject({
+      turnEnd: { status: "interrupted", reason: RESTART_INTERRUPT_TEXT },
+      run: { stopReason: "unknown", endedAt: expect.any(String) },
+    });
+    if (status === "interrupted") expect(recovered.restartRecovery).toBe("before-abort");
+    await recoverInterruptedThreads(createThreadStore(f.dir), f.registry);
+    expect((await f.threads.get(thread.id))?.messages).toEqual(recovered.messages);
+    expect((await f.threads.get(thread.id))?.restartRecovery).toBe(recovered.restartRecovery);
     expect(recovered.messages[1]?.parts[0]).toMatchObject({ state: "output-error", errorText: RESTART_PENDING_TOOL_TEXT });
     expect(recovered.messages[1]?.parts[1]).toMatchObject({ state: "output-available", preliminary: true, output: { stdout: "partial log" } });
     const runs = f.manager();

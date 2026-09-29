@@ -5,6 +5,7 @@ import { X } from "lucide-react";
 import { ResizeHandle } from "@/components/ResizeHandle";
 import { TopStrip } from "@/components/TopStrip";
 import { CommandPalette, type Command } from "@/features/cmdk/CommandPalette";
+import { AccountLoginProvider } from "@/features/accounts/AccountLogin";
 import { EmptyState } from "@/features/empty/EmptyState";
 import { FileAccessProvider } from "@/features/files/fileAccess";
 import { FilePictureDialog } from "@/features/files/TaskPicture";
@@ -27,6 +28,7 @@ const ChatStyleLab = lazy(() => import("@/features/style-lab/ChatStyleLab"));
 /** The three-column grid. Widths come from the spacing tokens until a column is dragged to one of its own. */
 export function Shell({ token }: { token: string }) {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
+  const [settingsAccount, setSettingsAccount] = useState<string>();
   const workbench = useWorkbench(token);
   const {
     state,
@@ -148,7 +150,7 @@ export function Shell({ token }: { token: string }) {
   return (
     // No window bar of its own: like Cursor's Agents Window the three columns
     // run the full height, and each column's top strip is the title bar.
-    <ModelCatalogClientContext.Provider value={client}><div className="relative h-full overflow-hidden">
+    <ModelCatalogClientContext.Provider value={client}><AccountLoginProvider client={client}><div className="relative h-full overflow-hidden">
       <div inert={styleLabOpen || undefined} className="h-full">
       <div
         ref={grid}
@@ -162,7 +164,7 @@ export function Shell({ token }: { token: string }) {
       >
         <Sidebar
           client={client}
-          onManageAccount={id => { setSettingsTab(id === "github" ? "remote" : "providers"); actions.openSettings(); }}
+          onManageAccount={id => { setSettingsTab("accounts"); setSettingsAccount(id); actions.openSettings(); }}
           projects={state.projects}
           projectId={activeProjectId}
           threads={visibleThreads}
@@ -173,7 +175,7 @@ export function Shell({ token }: { token: string }) {
           onSelect={actions.selectThread}
           onNewTask={actions.newTask}
           onOpenPalette={actions.openPalette}
-          onOpenSettings={() => { setSettingsTab("general"); actions.openSettings(); }}
+          onOpenSettings={() => { setSettingsTab("general"); setSettingsAccount(undefined); actions.openSettings(); }}
           onToggle={actions.toggleLeft}
           onOpenProject={actions.openProject}
           onOpenFolder={actions.openFolder}
@@ -325,13 +327,13 @@ export function Shell({ token }: { token: string }) {
               <X className="size-md" />
             </button>
             <div className="min-h-0 flex-1">
-              <SettingsView initialTab={settingsTab} onOpenStyleLab={openStyleLab} settings={state.settings} engines={engines} client={client} onClose={actions.closeSettings} />
+              <SettingsView initialTab={settingsTab} initialAccount={settingsAccount} onOpenStyleLab={openStyleLab} settings={state.settings} engines={engines} client={client} onClose={actions.closeSettings} />
             </div>
           </div>
         </div>
       )}
       </div>
       {styleLabOpen && <Suspense fallback={<div className="absolute inset-0 z-30 grid place-items-center bg-bg">加载聊天样式…</div>}><ChatStyleLab onClose={() => setStyleLabOpen(false)} /></Suspense>}
-    </div></ModelCatalogClientContext.Provider>
+    </div></AccountLoginProvider></ModelCatalogClientContext.Provider>
   );
 }

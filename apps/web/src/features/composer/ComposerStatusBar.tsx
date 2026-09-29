@@ -3,7 +3,7 @@ import type { UIMessage } from "ai";
 import { GitBranch } from "lucide-react";
 import type { AccountSummary, ChangedFile, ModelCost } from "@/lib/types";
 import { ContextRing } from "./ContextRing";
-import { QuotaMeter } from "./QuotaMeter";
+import { QuotaMeter, type QuotaSwitch } from "./QuotaMeter";
 import { sumChanges } from "./contextUsage";
 
 /**
@@ -27,6 +27,7 @@ export function ComposerStatusBar({
   cost,
   onCompact,
   account,
+  quotaSwitches,
 }: {
   /** Absent (a detached HEAD, a project that is not a repo) hides the glyph too. */
   branch?: string | undefined;
@@ -45,6 +46,8 @@ export function ComposerStatusBar({
   onCompact?: (() => void) | undefined;
   /** The subscription the task's tokens come from, for the quota card left of the ring. */
   account?: AccountSummary | undefined;
+  /** The same model on the engine's other accounts, offered in the quota card. */
+  quotaSwitches?: readonly QuotaSwitch[] | undefined;
 }) {
   const sums = changedFiles == null ? null : sumChanges(changedFiles);
 
@@ -73,7 +76,7 @@ export function ComposerStatusBar({
         </button>
       )}
       <span className="flex-1" />
-      {account != null && <QuotaMeter account={account} />}
+      {account != null && <QuotaMeter account={account} {...(quotaSwitches != null ? { switches: quotaSwitches } : {})} />}
       {messages != null && (
         <ContextRing messages={messages} contextWindow={contextWindow} contextOptions={contextOptions} cost={cost} onCompact={onCompact} />
       )}

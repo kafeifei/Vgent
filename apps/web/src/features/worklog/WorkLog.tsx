@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { UIMessage } from "ai";
 import { ArrowDownIcon } from "lucide-react";
 import type { ApiClient } from "@/lib/api";
@@ -39,6 +39,7 @@ export function WorkLog({
   actions,
   allowlist,
   client,
+  errorAction,
 }: {
   messages: UIMessage[];
   thread: ThreadSummary;
@@ -48,6 +49,8 @@ export function WorkLog({
   /** The global 「一直允许」 list; only the approval card reads it. */
   allowlist: readonly string[];
   client: Pick<ApiClient, "getSetupLog">;
+  /** What the error box offers to do about it — signing in, when an account is what is missing. */
+  errorAction?: ReactNode;
 }) {
   const turns = useMemo(() => buildTurns(messages, thread.queue, live), [messages, thread.queue, live]);
   // What each turn left in the SVGs the task writes, carried forward turn to turn (see `writtenDrawings`).
@@ -142,9 +145,12 @@ export function WorkLog({
           ))}
 
           {error != null && thread.workspaceState !== "failed" && (
-            <div className="mb-xl rounded-md border border-danger bg-danger-bg px-md py-sm text-danger text-sm">
-              <span className="font-semibold">出错了</span>
-              <span className="ml-xs whitespace-pre-wrap break-words">{error}</span>
+            <div className="mb-xl flex items-start gap-sm rounded-md border border-danger bg-danger-bg px-md py-sm text-danger text-sm">
+              <p className="m-0 min-w-0 flex-1">
+                <span className="font-semibold">出错了</span>
+                <span className="ml-xs whitespace-pre-wrap break-words">{error}</span>
+              </p>
+              {errorAction}
             </div>
           )}
 

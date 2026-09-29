@@ -107,11 +107,12 @@ export class StyleSession {
       token: "style-lab", remoteSession: false,
       getDraft: async () => structuredClone(this.draft),
       putDraft: async (_key, value) => { this.draft = { text: value.text, attachments: value.attachments.map((file) => ({ ...file, url: file.url ?? this.draft.attachments.find((old) => old.id === file.id)?.url ?? "" })) }; },
-      listModels: async (engine) => ({ engine, source: "样例", fetchedAt: AT, defaultModel: "sample-model", models: [{ id: "sample-model", label: "样例模型", contextWindow: 400000, contextOptions: [200000, 400000], reasoningLevels: ["low", "medium", "high"], defaultReasoningLevel: "medium", serviceTiers: [{ id: "priority", name: "Fast", description: "2x speed, increased usage" }, { id: "ultrafast", name: "Ultrafast", description: "The fastest available responses for latency-sensitive work." }], cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 }, source: { kind: "codex-subscription", name: "Codex" } }] }),
+      listModels: async (engine) => ({ engine, source: "样例", fetchedAt: AT, defaultModel: "sample-model", models: [{ id: "sample-model", label: "样例模型", contextWindow: 400000, contextOptions: [200000, 400000], reasoningLevels: ["low", "medium", "high"], defaultReasoningLevel: "medium", serviceTiers: [{ id: "priority", name: "Fast", description: "2x speed, increased usage" }, { id: "ultrafast", name: "Ultrafast", description: "The fastest available responses for latency-sensitive work." }], cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 }, source: { kind: "codex-subscription", name: "Codex · sample@example.com", account: "codex" } }] }),
       getAccounts: async () => ({
         revision: 1,
         accounts: [{
-          id: "codex", name: "Codex", loggedIn: true, plan: "pro", engines: ["Vgent", "Codex"],
+          id: "codex", kind: "codex", name: "Codex", loggedIn: true, email: "sample@example.com", plan: "pro", machine: true,
+          uses: [{ id: "codex", enabled: true }, { id: "vgent", enabled: true }],
           usage: {
             status: "ready", fetchedAt: AT, balance: "可用点数 120",
             windows: [

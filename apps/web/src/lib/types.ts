@@ -64,7 +64,6 @@ export type {
   ProviderModel,
   ProviderProtocol,
   RedactedProviderConfig,
-  ClaudeLoginAttempt,
   SubscriptionAccount,
   SubscriptionId,
   SubscriptionModel,
@@ -146,4 +145,4 @@ export type UIMessagePart = UIMessage["parts"][number];
 
 export type { RemoteAccessState, RemoteDevice } from "@vgent/server";
 
-export type { AccountId, AccountSummary, AccountSnapshot, AccountUsage, UsageWindow } from "@vgent/server";
+export type { AccountId, AccountKind, AccountLoginAttempt, AccountSummary, AccountSnapshot, AccountUsage, AccountUse, UsageWindow } from "@vgent/server";

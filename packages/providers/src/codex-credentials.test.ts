@@ -69,6 +69,8 @@ describe("describeSubscriptionAuth", () => {
       available: true,
       source: "file",
       expiresAt: Math.floor(expiresAt / 1000) * 1000,
+      // Which ChatGPT account the login is in — what tells two logins with one email apart.
+      accountId: "acct-123",
     });
     expect(JSON.stringify(report)).not.toContain("refresh-token-1");
   });

@@ -232,26 +232,10 @@ export function formatContext(tokens: number | undefined): string {
 
 // --- 订阅 ---------------------------------------------------------------
 
-/** Signed in, a subscription is one of「已添加」; otherwise it waits in the 添加 menu. */
-export function isSignedIn(account: SubscriptionAccount): boolean {
-  return account.loggedIn === true;
-}
-
-const SIGN_IN_ORDER: readonly SubscriptionAccount["id"][] = ["codex-subscription", "claude-subscription", "github-copilot"];
-
-/** The logins the 添加 menu offers: the ones not signed in — Codex, Claude, then GitHub. */
-export function toSignIn(accounts: readonly SubscriptionAccount[]): SubscriptionAccount[] {
-  return SIGN_IN_ORDER.flatMap((id) => accounts.find((account) => account.id === id && !isSignedIn(account)) ?? []);
-}
-
-/** The line under a subscription's name: whose login, which plan, who can use it. */
-export function describeSubscription(account: SubscriptionAccount, label: (agent: ProviderAgent) => string): string {
-  const served = `${account.agents.map(label).join(" · ")} 能用`;
-  if (account.loggedIn == null) return `${served} · 暂时无法确认登录状态`;
-  if (!account.loggedIn) return `${served} · 还没登录 · 不用 key`;
-  // Signed in, who can use it is said by the model counts that follow; the account is what is worth the room.
-  const parts = [account.username ? `@${account.username}` : account.email, account.plan != null ? planLabel(account.plan) : undefined, account.method != null ? `登录方式：${account.method}` : undefined].filter((part) => part != null);
-  return parts.length > 0 ? parts.join(" · ") : "已登录";
+/** The line under an account's row: its plan, and how it signs in when that is not the subscription. Who it is, is in the name. */
+export function describeSubscription(account: SubscriptionAccount): string | undefined {
+  const parts = [account.plan != null ? planLabel(account.plan) : undefined, account.method != null ? `登录方式：${account.method}` : undefined].filter((part) => part != null);
+  return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 
 /** `max` → `Max`. The vendors' own words, only capitalised: there is no list of plans to keep up with. */

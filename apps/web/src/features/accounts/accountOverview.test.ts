@@ -4,7 +4,7 @@ import { accountOverview, primaryWindows, quotaValue, resetText } from "./accoun
 
 const now = Date.parse("2026-09-29T12:00:00Z");
 const account = (overrides: Partial<AccountSummary> = {}): AccountSummary => ({
-  id: "codex", name: "Codex", loggedIn: true, engines: ["Codex"], ...overrides,
+  id: "codex", kind: "codex", name: "Codex", loggedIn: true, uses: [], ...overrides,
 });
 const usage = (windows: UsageWindow[], overrides: Partial<NonNullable<AccountSummary["usage"]>> = {}): NonNullable<AccountSummary["usage"]> => ({
   status: "ready", fetchedAt: new Date(now).toISOString(), windows, ...overrides,
@@ -19,7 +19,7 @@ describe("account overview", () => {
     const core = ids.map((id, index) => ({ id, label: `核心${index + 1}`, usedPercent: 20 + index * 15 }));
     const extra = { id: "extra", label: "额外额度", usedPercent: 100 };
     for (const windows of [[extra, ...core.toReversed()], [...core, extra]]) {
-      const value = account({ id, usage: usage(windows, { balance: "余额 $10" }) });
+      const value = account({ id, kind: id, usage: usage(windows, { balance: "余额 $10" }) });
       expect(primaryWindows(value)).toEqual(core);
       expect(accountOverview(value, now)).toEqual({ action: "details", tone: "normal", label: core.map(w => `${w.label} ${w.usedPercent}%`).join(" · ") });
     }

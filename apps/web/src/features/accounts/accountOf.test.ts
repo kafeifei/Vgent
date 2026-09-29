@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { accountOf, meteredWindows } from "./accountOf";
+import { accountOf, accountOfModel, bareSpec, isAccountFailure, meteredWindows } from "./accountOf";
 
 describe("accountOf", () => {
   it("follows the model row's source", () => {
     expect(accountOf({ source: { kind: "claude-subscription", name: "Claude" } }, "claude-code")).toBe("claude");
     expect(accountOf({ source: { kind: "codex-subscription", name: "Codex" } }, "vgent")).toBe("codex");
     expect(accountOf({ source: { kind: "provider", id: "github-copilot", name: "GitHub Copilot" } }, "vgent")).toBe("github");
+  });
+
+  it("follows the account the source names, when there are several", () => {
+    expect(accountOf({ source: { kind: "claude-subscription", name: "Claude · b@example.com", account: "claude-0a1b2c3d" } }, "claude-code")).toBe("claude-0a1b2c3d");
+    expect(accountOf({ source: { kind: "provider", id: "github-copilot", name: "GitHub Copilot · @cat", account: "github-0a1b2c3d" } }, "vgent")).toBe("github-0a1b2c3d");
   });
 
   it("has no account for a provider's key or a gateway, whatever the engine", () => {
@@ -17,6 +22,26 @@ describe("accountOf", () => {
     expect(accountOf(undefined, "claude-code")).toBe("claude");
     expect(accountOf({}, "codex")).toBe("codex");
     expect(accountOf(undefined, "vgent")).toBeUndefined();
+  });
+});
+
+describe("accountOfModel", () => {
+  it("reads the account off the spec, or the platform's first one", () => {
+    expect(accountOfModel("claude-code", "@claude-0a1b2c3d:sonnet")).toBe("claude-0a1b2c3d");
+    expect(accountOfModel("claude-code", "sonnet")).toBe("claude");
+    expect(accountOfModel("claude-code", "deepseek:deepseek-v4")).toBeUndefined();
+    expect(accountOfModel("codex", undefined)).toBe("codex");
+    expect(accountOfModel("vgent", "github-copilot:gpt-4.1")).toBe("github");
+    expect(accountOfModel("vgent", "@codex-0a1b2c3d:codex-subscription:gpt-5.5")).toBe("codex-0a1b2c3d");
+    expect(accountOfModel("vgent", "openai/gpt-5")).toBeUndefined();
+    expect(bareSpec("@codex-0a1b2c3d:codex-subscription:gpt-5.5")).toBe("codex-subscription:gpt-5.5");
+  });
+
+  it("recognises a task that stopped for want of its login", () => {
+    expect(isAccountFailure("Codex 未登录：在「账号」里添加一个 Codex 账号")).toBe(true);
+    expect(isAccountFailure("Not logged in · Please run /login")).toBe(true);
+    expect(isAccountFailure("OAuth token has expired")).toBe(true);
+    expect(isAccountFailure("rate limited")).toBe(false);
   });
 });
 

@@ -1,19 +1,20 @@
 import { CascadeLevel, type CascadeNode } from "@/components/CascadeMenu";
 import { Popover } from "@/components/Popover";
 import { SourceIcon } from "@/components/SourceIcon";
-import { AccountLogo } from "@/features/accounts/AccountMenu";
+import { useAccountLogin } from "@/features/accounts/AccountLogin";
+import { AccountLogo } from "@/features/accounts/AccountLogo";
+import { ACCOUNT_NAMES } from "@/features/accounts/accountOf";
 import { onAccountsChanged } from "@/lib/accountEvents";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, Copy, ExternalLink, GripVertical, LayoutGrid, Plus, Server } from "lucide-react";
 import { Reorder, useDragControls } from "motion/react";
 import { ApiError, type ApiClient, type ProviderCatalog } from "@/lib/api";
 import { useToast } from "@/lib/toast";
-import type { CatalogProviderSummary, ClaudeLoginAttempt, EngineDescriptor, ProviderAgent, ProviderModel, RedactedProviderConfig, RemoteAccessState, SubscriptionAccount, SubscriptionId } from "@/lib/types";
+import type { AccountKind, CatalogProviderSummary, EngineDescriptor, ProviderAgent, ProviderModel, RedactedProviderConfig, SubscriptionAccount, SubscriptionId } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { BUTTON_GHOST, BUTTON_PRIMARY, BUTTON_SECONDARY, Dialog, LetterAvatar, Segmented, SettingsEmpty, SettingsGroup, SettingsPage, SettingsRow, Switch, Tag } from "./layout";
 import { ModelTable } from "./ModelTable";
-import { AGENT_ORDER, EMPTY_CUSTOM_FORM, agentsOf, connectInput, connectableCatalog, customInput, describeSubscription, isSignedIn, orderAdded, summarizeEnabled, summarizeSubscription, toSignIn, withAgentChoices, withShownOrder, type CustomForm } from "./providerModels";
-import { REMOTE_ERROR } from "./RemotePage";
+import { AGENT_ORDER, EMPTY_CUSTOM_FORM, agentsOf, connectInput, connectableCatalog, customInput, describeSubscription, orderAdded, summarizeEnabled, summarizeSubscription, withAgentChoices, withShownOrder, type CustomForm } from "./providerModels";
 import { SubscriptionTable } from "./SubscriptionTable";
 import { INPUT_CLASS } from "./styles";
 
@@ -476,189 +477,6 @@ function EditDialog({
   );
 }
 
-/**
- * A subscription has no key to paste: it is signed in to with the vendor's own
- * CLI, in a terminal. This says which command, and looks again when asked.
- */
-function LoginDialog({ account, onRecheck, onClose }: { account: SubscriptionAccount; onRecheck: () => Promise<boolean>; onClose: () => void }) {
-  const [copied, setCopied] = useState(false);
-  const [checking, setChecking] = useState(false);
-  const [note, setNote] = useState<string>();
-
-  const copy = () => {
-    void navigator.clipboard
-      ?.writeText(account.loginCommand)
-      .then(() => setCopied(true))
-      .catch(() => undefined);
-  };
-
-  const recheck = () => {
-    setChecking(true);
-    setNote(undefined);
-    void onRecheck()
-      .then((signedIn) => {
-        if (signedIn) onClose();
-        else setNote("还是没查到登录。登录完成后再点一次。");
-      })
-      .catch((cause: Error) => setNote(cause.message))
-      .finally(() => setChecking(false));
-  };
-
-  return (
-    <Dialog title={`登录 ${account.name}`} onClose={onClose}>
-      <div className="flex flex-col gap-md px-lg py-md">
-        <p className="text-fg-muted text-md">订阅不用 key。在终端里跑下面这条命令，按它的提示在浏览器里登录；登录存在它自己那里，Vgent 不保存也看不到。</p>
-        <div className="flex items-center gap-xs rounded-md border border-border bg-bg-inset px-sm py-xs">
-          <code className="min-w-0 flex-1 truncate font-mono text-fg text-md">{account.loginCommand}</code>
-          <button type="button" onClick={copy} className={BUTTON_GHOST}>
-            {copied ? <Check className="size-md" /> : <Copy className="size-md" />}
-            {copied ? "已复制" : "复制"}
-          </button>
-        </div>
-        {account.loggedIn == null && <p className="text-fg-faint text-sm">这台机器上没找到它的命令行工具，得先装上。</p>}
-        {account.note != null && <p className="text-fg-faint text-sm">{account.note}</p>}
-        {note != null && <p className="text-danger text-sm">{note}</p>}
-        <div className="flex justify-end gap-xs">
-          <button type="button" onClick={onClose} className={BUTTON_GHOST}>
-            关闭
-          </button>
-          <button type="button" disabled={checking} onClick={recheck} className={BUTTON_PRIMARY}>
-            {checking ? "检查中…" : "我登录好了，重新检查"}
-          </button>
-        </div>
-      </div>
-    </Dialog>
-  );
-}
-
-/** The official CLI owns OAuth and opens the browser; the app watches completion. */
-function ClaudeLoginDialog({ client, onRecheck, onClose }: { client: ApiClient; onRecheck: () => Promise<boolean>; onClose: () => void }) {
-  const [attempt, setAttempt] = useState<ClaudeLoginAttempt>({ state: "running" });
-  const [retry, setRetry] = useState(0);
-  useEffect(() => {
-    let disposed = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const poll = async (start: boolean) => {
-      try {
-        const next = await (start ? client.startClaudeLogin() : client.getClaudeLogin());
-        if (disposed) return;
-        setAttempt(next);
-        if (next.state === "succeeded") {
-          const signedIn = await onRecheck();
-          if (!disposed && !signedIn) setAttempt({ state: "failed", error: "授权已结束，但尚未确认登录，请重试。" });
-        } else if (next.state === "running") {
-          timer = setTimeout(() => void poll(false), 1000);
-        } else if (next.state === "idle") {
-          setAttempt({ state: "failed", error: "登录已取消，请重试。" });
-        }
-      } catch (error) {
-        if (!disposed) setAttempt({ state: "failed", error: error instanceof Error ? error.message : "登录失败，请重试。" });
-      }
-    };
-    void poll(true);
-    return () => { disposed = true; clearTimeout(timer); };
-  }, [client, retry]);
-  const close = () => {
-    void client.cancelClaudeLogin().catch(() => undefined);
-    onClose();
-  };
-  return (
-    <Dialog title="登录 Claude 订阅" onClose={close}>
-      <div className="flex flex-col gap-md px-lg py-md">
-        <p className="text-fg-muted text-md">在浏览器中完成 Claude 授权，完成后这里会自动更新。</p>
-        {attempt.state === "running" && <p className="text-fg-faint text-sm">等待浏览器授权…</p>}
-        {attempt.url != null && <a href={attempt.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-xs text-brand text-md hover:underline">打开授权页面<ExternalLink className="size-md" /></a>}
-        {attempt.error != null && <p className="text-danger text-sm">{attempt.error}</p>}
-        <div className="flex justify-end gap-xs">
-          <button type="button" onClick={close} className={BUTTON_GHOST}>取消</button>
-          {attempt.state === "failed" && <button type="button" onClick={() => { setAttempt({ state: "running" }); setRetry((value) => value + 1); }} className={BUTTON_PRIMARY}>重新登录</button>}
-        </div>
-      </div>
-    </Dialog>
-  );
-}
-
-/**
- * GitHub's device login, the one 远程访问 starts too: remote access and Copilot
- * share the account. The sign-in request is answered only once the login is
- * over, so the code to type comes from polling meanwhile.
- */
-function GitHubLoginDialog({ client, onSignedIn, onClose }: { client: ApiClient; onSignedIn: () => void; onClose: () => void }) {
-  const [authorization, setAuthorization] = useState<RemoteAccessState["authorization"]>(null);
-  const [error, setError] = useState<string>();
-  const [copied, setCopied] = useState(false);
-  const [retry, setRetry] = useState(0);
-  const signingIn = useRef(false);
-  useEffect(() => {
-    let disposed = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    signingIn.current = true;
-    const poll = () => {
-      timer = setTimeout(() => {
-        void client
-          .getRemote()
-          .then((state) => { if (!disposed && signingIn.current) setAuthorization(state.authorization); }, () => undefined)
-          .finally(() => { if (!disposed && signingIn.current) poll(); });
-      }, 1000);
-    };
-    poll();
-    void client.remoteAction("signIn").then(
-      (state) => {
-        signingIn.current = false;
-        if (disposed) return;
-        if (state.account != null) onSignedIn();
-        else setError(state.error != null ? REMOTE_ERROR[state.error] : "登录没有完成，请重试。");
-      },
-      (cause: unknown) => {
-        signingIn.current = false;
-        if (!disposed) setError(cause instanceof Error ? cause.message : String(cause));
-      },
-    );
-    return () => { disposed = true; clearTimeout(timer); };
-  }, [client, retry]);
-  const close = () => {
-    if (signingIn.current) void client.remoteAction("cancelSignIn").catch(() => undefined);
-    onClose();
-  };
-  const copy = (code: string) => {
-    void navigator.clipboard
-      ?.writeText(code)
-      .then(() => setCopied(true))
-      .catch(() => undefined);
-  };
-  return (
-    <Dialog title="登录 GitHub" onClose={close}>
-      <div className="flex flex-col gap-md px-lg py-md">
-        <p className="text-fg-muted text-md">复制验证码，在 GitHub 的设备登录页面完成授权，完成后这里会自动更新。</p>
-        {error == null && authorization == null && <p className="text-fg-faint text-sm">正在向 GitHub 申请验证码…</p>}
-        {error == null && authorization != null && (
-          <div className="flex items-center gap-xs rounded-md border border-border bg-bg-inset px-sm py-xs">
-            <code className="min-w-0 flex-1 truncate font-mono text-fg text-md select-text">{authorization.userCode}</code>
-            <button type="button" onClick={() => copy(authorization.userCode)} className={BUTTON_GHOST}>
-              {copied ? <Check className="size-md" /> : <Copy className="size-md" />}
-              {copied ? "已复制" : "复制"}
-            </button>
-          </div>
-        )}
-        {error != null && <p className="text-danger text-sm">{error}</p>}
-        <div className="flex justify-end gap-xs">
-          <button type="button" onClick={close} className={BUTTON_GHOST}>取消</button>
-          {error != null ? (
-            <button type="button" onClick={() => { setError(undefined); setAuthorization(null); setCopied(false); setRetry((value) => value + 1); }} className={BUTTON_PRIMARY}>重新登录</button>
-          ) : (
-            authorization != null && (
-              <a href={authorization.verificationUri} target="_blank" rel="noreferrer" className={BUTTON_PRIMARY}>
-                前往授权
-                <ExternalLink className="size-md" />
-              </a>
-            )
-          )}
-        </div>
-      </div>
-    </Dialog>
-  );
-}
-
 function ConfirmActionDialog({ title, message, confirmLabel, onConfirm, onClose }: {
   title: string;
   message: string;
@@ -720,32 +538,30 @@ function DraggableRow({ value, draggable, onDrop, children }: { value: string; d
 }
 
 type Open =
-  | { kind: "login"; id: SubscriptionId }
   | { kind: "subscription-models"; id: SubscriptionId }
   | { kind: "connect"; entry: CatalogProviderSummary }
-  | { kind: "github-login" }
   | { kind: "custom" }
   | { kind: "edit"; provider: RedactedProviderConfig }
   | { kind: "models"; providerId: string }
-  | { kind: "disconnect"; providerId: string }
-  | { kind: "logout"; id: SubscriptionId };
+  | { kind: "disconnect"; providerId: string };
 
-/** Which platform mark a subscription wears. */
-const SUBSCRIPTION_LOGO = { "codex-subscription": "codex", "claude-subscription": "claude", "github-copilot": "github" } as const;
+const ACCOUNT_KINDS: readonly AccountKind[] = ["claude", "codex", "github"];
 
 /**
- * 模型提供商: what is connected, and one 添加 menu for the rest — our own
- * logins first, then 自定义, then the whole catalog. The catalog is not ours —
+ * 模型提供商: what is connected — every account that brings models, one row
+ * each, and the providers — and one 添加 menu for the rest: another account
+ * first, then 自定义, then the whole catalog. The catalog is not ours —
  * it is the models.dev list the server caches — so a new vendor shows up
  * without a release.
  */
 export function ProvidersPage({
-  onManageGitHub,
+  onManageAccount,
   client,
   engines,
   onChanged,
 }: {
-  onManageGitHub?: () => void;
+  /** 管理账号: the account's own page. */
+  onManageAccount?: (accountId: string) => void;
   client: ApiClient;
   /** 引擎能力表: which agents can take a provider at all, and what they are called. */
   engines: EngineDescriptor[];
@@ -754,6 +570,7 @@ export function ProvidersPage({
   onChanged?: (() => void) | undefined;
 }) {
   const toast = useToast();
+  const login = useAccountLogin();
   const [providers, setProviders] = useState<RedactedProviderConfig[]>([]);
   const [subscriptions, setSubscriptions] = useState<SubscriptionAccount[]>([]);
   const [catalog, setCatalog] = useState<ProviderCatalog>();
@@ -803,7 +620,7 @@ export function ProvidersPage({
     return () => { active = false; };
   }, [client]);
 
-  const added = useMemo(() => orderAdded(subscriptions.filter(isSignedIn), providers, order), [subscriptions, providers, order]);
+  const added = useMemo(() => orderAdded(subscriptions, providers, order), [subscriptions, providers, order]);
 
   /** A drag is over: the order it left becomes the model picker's. */
   const saveOrder = () => {
@@ -842,16 +659,6 @@ export function ProvidersPage({
     toast(`已断开 ${provider.name}`);
   };
 
-  const logout = async (account: SubscriptionAccount) => {
-    if (account.id === "github-copilot") return;
-    await client.logoutSubscription(account.id);
-    const next = await reloadSubscriptions(false);
-    if (next.some((entry) => entry.id === account.id && isSignedIn(entry))) {
-      throw new Error("退出命令已结束，但仍检测到登录；请检查是否有其他客户端重新登录。");
-    }
-    toast(`已退出 ${account.name}`);
-  };
-
   const reloadCatalog = () => {
     setReloading(true);
     void client
@@ -866,12 +673,10 @@ export function ProvidersPage({
   const modelsOf = open?.kind === "models" ? providers.find((provider) => provider.id === open.providerId) : undefined;
   const disconnectOf = open?.kind === "disconnect" ? providers.find((provider) => provider.id === open.providerId) : undefined;
   const subscriptionOf = (id: SubscriptionId) => subscriptions.find((account) => account.id === id);
-  const loginOf = open?.kind === "login" ? subscriptionOf(open.id) : undefined;
   const subscriptionModelsOf = open?.kind === "subscription-models" ? subscriptionOf(open.id) : undefined;
-  const logoutOf = open?.kind === "logout" ? subscriptionOf(open.id) : undefined;
   const close = () => setOpen(undefined);
 
-  /** 添加: the logins not signed in yet, then 自定义 and the catalog. What is picked opens its own dialog. */
+  /** 添加: another account, then 自定义 and the catalog. What is picked opens its own dialog. */
   const addMenu = (closeMenu: () => void): CascadeNode[] => {
     const choose = (next: Open) => () => {
       closeMenu();
@@ -879,15 +684,16 @@ export function ProvidersPage({
     };
     const connectable = catalog == null ? undefined : connectableCatalog(catalog.providers).length;
     return [
-      // GitHub's login belongs to the host; a remote session cannot start it.
-      ...toSignIn(subscriptions)
-        .filter((account) => account.id !== "github-copilot" || !client.remoteSession)
-        .map((account) => ({
-          key: account.id,
-          label: account.name,
-          icon: <AccountLogo id={SUBSCRIPTION_LOGO[account.id]} />,
-          onPick: choose(account.id === "github-copilot" ? { kind: "github-login" } : { kind: "login", id: account.id }),
-        })),
+      // The host's accounts are signed in to on the host.
+      ...(client.remoteSession ? [] : ACCOUNT_KINDS.map((kind) => ({
+        key: kind,
+        label: `${ACCOUNT_NAMES[kind]} 账号`,
+        icon: <AccountLogo kind={kind} />,
+        onPick: () => {
+          closeMenu();
+          login({ kind });
+        },
+      }))),
       { key: "custom", label: "自定义", icon: <Server className="size-md flex-none" />, separated: true, onPick: choose({ kind: "custom" }) },
       {
         key: "catalog",
@@ -935,25 +741,23 @@ export function ProvidersPage({
               <DraggableRow key={key} value={key} draggable={added.length > 1} onDrop={saveOrder}>
                 {account != null ? (
                   <SettingsRow
-                    leading={<LetterAvatar name={account.name} />}
+                    leading={
+                      <span className="grid size-xl flex-none place-items-center rounded-md border border-border bg-bg-elevated text-fg-muted">
+                        <AccountLogo kind={account.kind} />
+                      </span>
+                    }
                     title={
                       <>
                         <span className="truncate">{account.name}</span>
                         <Tag>订阅</Tag>
                       </>
                     }
-                    help={`${describeSubscription(account, agentLabel)} · 已打开的模型：${summarizeSubscription(account, agentLabel)}`}
+                    help={[describeSubscription(account), `已打开的模型：${summarizeSubscription(account, agentLabel)}`].filter((part) => part != null).join(" · ")}
                   >
                     <button type="button" onClick={() => setOpen({ kind: "subscription-models", id: account.id })} className={BUTTON_SECONDARY}>
                       选模型
                     </button>
-                    {account.id === "github-copilot" ? (
-                      onManageGitHub != null && <button type="button" onClick={onManageGitHub} className={BUTTON_GHOST}>管理账号</button>
-                    ) : (
-                      <button type="button" onClick={() => setOpen({ kind: "logout", id: account.id })} className={BUTTON_GHOST}>
-                        退出
-                      </button>
-                    )}
+                    {onManageAccount != null && <button type="button" onClick={() => onManageAccount(account.accountId)} className={BUTTON_GHOST}>管理账号</button>}
                   </SettingsRow>
                 ) : (
                   <SettingsRow
@@ -988,15 +792,6 @@ export function ProvidersPage({
       {unusable.length > 0 && <p className="text-fg-faint text-sm">{unusable.map((engine) => engine.label).join("、")} 只能跑在它自己的订阅上，接不了要 key 的提供商。</p>}
       {loadError != null && <p className="text-danger text-sm">{loadError}</p>}
 
-      {logoutOf != null && (
-        <ConfirmActionDialog
-          title={`退出 ${logoutOf.name}`}
-          message={`会退出这台机器上的 ${logoutOf.id === "claude-subscription" ? "Claude" : "Codex"} 登录。其他使用同一登录态的应用和正在运行的任务也可能受到影响。`}
-          confirmLabel="退出"
-          onConfirm={() => logout(logoutOf)}
-          onClose={close}
-        />
-      )}
       {disconnectOf != null && (
         <ConfirmActionDialog
           title={`断开 ${disconnectOf.name}`}
@@ -1007,37 +802,6 @@ export function ProvidersPage({
         />
       )}
 
-      {open?.kind === "github-login" && (
-        <GitHubLoginDialog
-          client={client}
-          onSignedIn={() => {
-            toast("已登录 GitHub");
-            close();
-          }}
-          onClose={close}
-        />
-      )}
-      {loginOf?.id === "claude-subscription" && (
-        <ClaudeLoginDialog client={client} onClose={close} onRecheck={() => reloadSubscriptions(true).then((next) => {
-          const signedIn = next.some((account) => account.id === "claude-subscription" && isSignedIn(account));
-          if (signedIn) { toast("已登录 Claude 订阅"); close(); }
-          return signedIn;
-        })} />
-      )}
-      {loginOf != null && loginOf.id !== "claude-subscription" && (
-        <LoginDialog
-          account={loginOf}
-          onRecheck={() =>
-            reloadSubscriptions(true).then((next) => {
-              const now = next.find((account) => account.id === loginOf.id);
-              if (now == null || !isSignedIn(now)) return false;
-              toast(`已登录 ${now.name}`);
-              return true;
-            })
-          }
-          onClose={close}
-        />
-      )}
       {subscriptionModelsOf != null && (
         <Dialog title={`${subscriptionModelsOf.name} · 选模型`} onClose={close} wide>
           <div className="min-h-0 flex-1 overflow-y-auto">

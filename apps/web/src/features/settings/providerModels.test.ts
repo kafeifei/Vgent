@@ -11,12 +11,10 @@ import {
   filterModels,
   formatContext,
   isEnabled,
-  isSignedIn,
   modelRows,
   orderAdded,
   summarizeEnabled,
   summarizeSubscription,
-  toSignIn,
   withModels,
   withShownOrder,
   withSubscriptionSwitch, withAgentChoices } from "./providerModels";
@@ -179,11 +177,11 @@ describe("订阅", () => {
   const labelOf = (agent: string) => (agent === "vgent" ? "自研" : agent === "codex" ? "Codex" : "Claude Code");
   const codex: SubscriptionAccount = {
     id: "codex-subscription",
-    name: "ChatGPT · Codex 订阅",
-    loggedIn: true,
+    accountId: "codex",
+    kind: "codex",
+    name: "Codex · dev@example.com",
     email: "dev@example.com",
     plan: "pro",
-    loginCommand: "codex login",
     agents: ["vgent", "codex"],
     models: [
       { id: "gpt-5.5", label: "GPT-5.5", agents: { vgent: { spec: "codex-subscription:gpt-5.5", enabled: true }, codex: { spec: "gpt-5.5", enabled: true } } },
@@ -199,33 +197,17 @@ describe("订阅", () => {
     expect(keys(["xd", "claude-subscription", "gone"])).toEqual(["xd", "claude-subscription", "codex-subscription", "deepseek"]);
   });
 
-  it("offers the signed-out logins to sign in to: Codex, Claude, then GitHub", () => {
-    const claude: SubscriptionAccount = { ...codex, id: "claude-subscription", name: "Claude 订阅", loggedIn: false };
-    const { loggedIn: _unknown, ...unknown } = codex;
-    expect(toSignIn([claude, codex]).map((account) => account.id)).toEqual(["claude-subscription"]);
-    const github: SubscriptionAccount = { ...codex, id: "github-copilot", name: "GitHub Copilot", loggedIn: false };
-    expect(toSignIn([github, claude, unknown]).map((account) => account.id)).toEqual(["codex-subscription", "claude-subscription", "github-copilot"]);
-  });
-
   it("keeps a signed-out login's place when the rows on screen are dragged", () => {
     expect(withShownOrder(["codex-subscription", "deepseek", "xd"], ["xd", "deepseek"])).toEqual(["codex-subscription", "xd", "deepseek"]);
     expect(withShownOrder(["deepseek"], ["xd", "deepseek", "claude-subscription"])).toEqual(["xd", "deepseek", "claude-subscription"]);
     expect(withShownOrder(undefined, ["xd", "deepseek"])).toEqual(["xd", "deepseek"]);
   });
 
-  it("says whose login it is, or what is missing, in one line", () => {
-    expect(describeSubscription(codex, labelOf)).toBe("dev@example.com · Pro");
-    const { email: _email, plan: _plan, ...bare } = codex;
-    expect(describeSubscription(bare, labelOf)).toBe("已登录");
-    expect(describeSubscription({ ...codex, loggedIn: false }, labelOf)).toBe("自研 · Codex 能用 · 还没登录 · 不用 key");
-    const { loggedIn: _unknown, ...unknown } = codex;
-    expect(describeSubscription(unknown, labelOf)).toContain("暂时无法确认登录状态");
-    expect(describeSubscription({ ...codex, method: "api_key" }, labelOf)).toContain("登录方式：api_key");
-  });
-
-  it("counts as connected only once it is known to be signed in", () => {
-    const { loggedIn: _unknown, ...unknown } = codex;
-    expect([isSignedIn(codex), isSignedIn({ ...codex, loggedIn: false }), isSignedIn(unknown)]).toEqual([true, false, false]);
+  it("says the plan, and how it signs in when that is not the subscription; who it is, is in the name", () => {
+    expect(describeSubscription(codex)).toBe("Pro");
+    const { plan: _plan, ...bare } = codex;
+    expect(describeSubscription(bare)).toBeUndefined();
+    expect(describeSubscription({ ...codex, method: "api_key" })).toBe("Pro · 登录方式：api_key");
   });
 
   it("sums up what each agent has on, and flips one agent's switch without touching the other's", () => {

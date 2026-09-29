@@ -12,16 +12,16 @@ const noop = () => {};
 const resetsAt = "2026-09-29T13:30:00Z";
 const core: UsageWindow = { id: "codex-primary_window", label: "5 小时", usedPercent: 20, used: 2, limit: 10, unit: "次", resetsAt };
 const codex: AccountSummary = {
-  id: "codex", name: "Codex", loggedIn: true, email: "codex@example.com", plan: "测试套餐", engines: ["Codex"],
+  id: "codex", kind: "codex", name: "Codex", loggedIn: true, email: "codex@example.com", plan: "测试套餐", uses: [],
   usage: { status: "ready", fetchedAt: "2026-09-29T12:00:00Z", balance: "余额 $10", windows: [
     core, { id: "codex-secondary_window", label: "每周", usedPercent: 35 },
     { id: "extra", label: "额外额度", usedPercent: 99 },
   ] },
 };
 const snapshot: AccountSnapshot = { revision: 1, accounts: [
-  { ...codex, id: "github", name: "GitHub", usage: { ...codex.usage!, windows: [{ id: "premium_interactions", label: "Premium", usedPercent: 10 }] } },
+  { ...codex, id: "github", kind: "github", name: "GitHub", usage: { ...codex.usage!, windows: [{ id: "premium_interactions", label: "Premium", usedPercent: 10 }] } },
   codex,
-  { ...codex, id: "claude", name: "Claude", usage: { ...codex.usage!, windows: [{ id: "five_hour", label: "5 小时", usedPercent: 40 }, { id: "seven_day", label: "每周", usedPercent: 50 }] } },
+  { ...codex, id: "claude", kind: "claude", name: "Claude", usage: { ...codex.usage!, windows: [{ id: "five_hour", label: "5 小时", usedPercent: 40 }, { id: "seven_day", label: "每周", usedPercent: 50 }] } },
 ] };
 const row = (account: AccountSummary, expanded = true) => renderToStaticMarkup(<AccountRow account={account} expanded={expanded} toggle={noop} manage={noop} />);
 const panel = (props: { error?: string; remote?: boolean } = {}) => renderToStaticMarkup(<AccountPanel snapshot={snapshot} refreshing={false} refresh={async () => {}} manage={noop} remote={false} {...props} />);
@@ -57,15 +57,16 @@ describe("account panel static presentation", () => {
     const html = panel();
     expect(html.split("<section>")).toHaveLength(4);
     expect(html.split('aria-expanded="false"')).toHaveLength(4);
-    for (const name of ["GitHub", "Codex", "Claude"]) expect(html).toContain(`${name}：`);
+    // Every row says who is signed in: two accounts of one platform are told apart by it.
+    for (const name of ["GitHub", "Codex", "Claude"]) expect(html).toContain(`${name} · codex@example.com：`);
     for (const label of ["Premium 10%", "5 小时 20% · 每周 35%", "5 小时 40% · 每周 50%"]) expect(html).toContain(label);
-    for (const hidden of ['role="meter"', 'role="region"', "codex@example.com", "测试套餐", "管理账号", "额外额度", "余额 $10", " 更新"]) expect(html).not.toContain(hidden);
+    for (const hidden of ['role="meter"', 'role="region"', "测试套餐", "管理账号", "额外额度", "余额 $10", " 更新"]) expect(html).not.toContain(hidden);
   });
 
   it("shows full details for the supplied expanded account only", () => {
     const html = row(codex);
     expect(html).toContain('aria-expanded="true"');
-    expect(html).toContain('role="region" aria-label="Codex用量详情"');
+    expect(html).toContain('role="region" aria-label="Codex · codex@example.com用量详情"');
     for (const text of ["5 小时", "每周", "额外额度", "余额 $10", "codex@example.com", "测试套餐", "管理账号", " 更新"]) expect(html).toContain(text);
     expect(html.split('role="meter"')).toHaveLength(4);
     expect(html).not.toContain("GitHub用量详情");
@@ -78,15 +79,15 @@ describe("account panel static presentation", () => {
     { account: { ...codex, usage: { ...codex.usage!, status: "reauth" as const } }, label: "需重新登录" },
   ])("keeps $label a login entry even when expanded is requested", ({ account, label }) => {
     const html = row(account);
-    expect(html).toContain(`aria-label="Codex：${label}，登录"`);
-    for (const hidden of ["aria-expanded", "aria-controls", 'role="region"', 'role="meter"', "codex@example.com", "管理账号"]) expect(html).not.toContain(hidden);
+    expect(html).toContain(`aria-label="Codex · codex@example.com：${label}，登录"`);
+    for (const hidden of ["aria-expanded", "aria-controls", 'role="region"', 'role="meter"', "管理账号"]) expect(html).not.toContain(hidden);
   });
 
   it.each([
     { account: { ...codex, loggedIn: undefined }, label: "登录状态未知" },
     { account: { ...codex, usage: { ...codex.usage!, status: "unavailable" as const, message: "平台暂时离线" } }, label: "用量暂不可用" },
   ])("keeps $label expandable", ({ account, label }) => {
-    expect(row(account, false)).toContain(`aria-label="Codex：${label}，查看详情"`);
+    expect(row(account, false)).toContain(`aria-label="Codex · codex@example.com：${label}，查看详情"`);
     expect(row(account, false)).toContain('aria-expanded="false"');
     const html = row(account);
     expect(html).toContain('aria-expanded="true"');

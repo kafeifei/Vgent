@@ -4,7 +4,7 @@ import { ArrowUp, Check, ChevronDown, File, FileText, Folder, Plus, Square, X } 
 import { UrlFigure } from "@/components/Figure";
 import { ModelPicker, effectiveModel } from "@/components/ModelPicker";
 import type { OptionsSet } from "@/components/modelChoices";
-import { accountOf } from "@/features/accounts/accountOf";
+import { ACCOUNT_NAMES, accountOf, bareSpec, kindOf } from "@/features/accounts/accountOf";
 import { dirName } from "@/features/changes/paths";
 import type { ModelPickPatch } from "@/lib/api";
 import { baseName } from "@/lib/format";
@@ -220,6 +220,23 @@ export function Composer({
   // A typed follow-up uses the same button as an idle send. Once the caller
   // clears the accepted draft, a running task shows Stop again.
   const showSend = !live || value.trim().length > 0 || attachments.length > 0;
+
+  /**
+   * The account the running model draws on, for the quota card. One the list
+   * does not have — signed out, removed — still gets the card, to sign in from.
+   */
+  const quotaAccountId = accountOf(runningEntry, engine);
+  const quotaAccount: AccountSummary | undefined = quotaAccountId == null || accounts == null
+    ? undefined
+    : accounts.find((account) => account.id === quotaAccountId) ??
+      { id: quotaAccountId, kind: kindOf(quotaAccountId), name: ACCOUNT_NAMES[kindOf(quotaAccountId)], loggedIn: false, uses: [] };
+  /** 换号: the same model under the engine's other signed-in accounts, with what the task runs it with. */
+  const quotaSwitches = runningEntry == null || quotaAccount == null ? [] : (catalog?.models ?? []).flatMap((entry) => {
+    const other = entry.source?.account;
+    if (other == null || other === quotaAccount.id || entry.hidden === true || entry.source?.kind !== runningEntry.source?.kind || bareSpec(entry.id) !== bareSpec(runningEntry.id)) return [];
+    if (accounts?.find((account) => account.id === other)?.loggedIn !== true) return [];
+    return [{ id: entry.id, label: entry.source?.name ?? other, onSwitch: () => pickModel(engine, entry.id, { reasoningEffort: reasoningEffort ?? null, serviceTier: serviceTier ?? null, contextWindow: chosenWindow ?? null }) }];
+  });
 
   /**
    * Picking another engine's model can take Plan away. Falling back silently
@@ -690,7 +707,8 @@ export function Composer({
           {...(runningEntry?.contextOptions != null ? { contextOptions: runningEntry.contextOptions } : {})}
           {...(runningEntry?.cost != null ? { cost: runningEntry.cost } : {})}
           onCompact={onCompact}
-          account={accounts?.find((account) => account.id === accountOf(runningEntry, engine))}
+          {...(quotaAccount != null ? { account: quotaAccount } : {})}
+          quotaSwitches={quotaSwitches}
         />
       )}
     </div>

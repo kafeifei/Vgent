@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Globe, Cpu, Plug, Settings2, Wrench } from "lucide-react";
+import { CircleUserRound, Globe, Cpu, Plug, Settings2, Wrench } from "lucide-react";
 import type { ApiClient } from "@/lib/api";
 import { isImeKeyEvent } from "@/lib/ime";
 import { useToast } from "@/lib/toast";
 import type { EngineDescriptor, Settings } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { AccountsPage } from "./AccountsPage";
 import { AppearanceSection } from "./AppearanceSection";
 import { ComputerUseSection } from "./ComputerUseSection";
 import { McpSection } from "./McpSection";
@@ -15,10 +16,11 @@ import { RuntimesSection } from "./RuntimesSection";
 import { WorktreesSection } from "./WorktreesSection";
 import { BUTTON_SECONDARY, SettingsGroup, SettingsPage, SettingsRow } from "./layout";
 
-export type SettingsTab = "general" | "engines" | "providers" | "tools" | "remote";
+export type SettingsTab = "general" | "accounts" | "engines" | "providers" | "tools" | "remote";
 
 const TABS: ReadonlyArray<{ id: SettingsTab; label: string; icon: typeof Cpu }> = [
   { id: "general", label: "通用", icon: Settings2 },
+  { id: "accounts", label: "账号", icon: CircleUserRound },
   { id: "engines", label: "引擎", icon: Cpu },
   { id: "providers", label: "模型与提供商", icon: Plug },
   { id: "tools", label: "工具与扩展", icon: Wrench },
@@ -26,8 +28,10 @@ const TABS: ReadonlyArray<{ id: SettingsTab; label: string; icon: typeof Cpu }> 
 ];
 
 /** Simple preferences save on change; complex forms own their save/cancel flow. */
-export function SettingsView({ initialTab = "general", settings, engines, client, onClose, onOpenStyleLab }: {
+export function SettingsView({ initialTab = "general", initialAccount, settings, engines, client, onClose, onOpenStyleLab }: {
   initialTab?: SettingsTab;
+  /** The account page to open on the 账号 tab. */
+  initialAccount?: string | undefined;
   settings: Settings | null;
   engines: EngineDescriptor[];
   client: ApiClient;
@@ -39,6 +43,9 @@ export function SettingsView({ initialTab = "general", settings, engines, client
   const [saving, setSaving] = useState(false);
   const pending = useRef(false);
   const [tab, setTab] = useState<SettingsTab>(initialTab);
+  const [account, setAccount] = useState<string | undefined>(initialAccount);
+  /** 管理账号 from anywhere in settings: that account's page. */
+  const manageAccount = (id: string) => { setAccount(id); setTab("accounts"); };
 
   useEffect(() => { setCurrent(settings); }, [settings]);
   useEffect(() => {
@@ -101,7 +108,8 @@ export function SettingsView({ initialTab = "general", settings, engines, client
           onAutoUpgrade={(value) => { void save({ autoUpgradeRuntimes: value }); }} />
       </SettingsPage>
     ),
-    providers: <ProvidersPage client={client} engines={engines} onManageGitHub={() => setTab("remote")} />,
+    accounts: <AccountsPage client={client} focus={account} onFocus={setAccount} />,
+    providers: <ProvidersPage client={client} engines={engines} onManageAccount={manageAccount} />,
     tools: (
       <SettingsPage title="工具与扩展">
         <McpSection client={client} servers={current.mcpServers ?? []}
@@ -110,7 +118,7 @@ export function SettingsView({ initialTab = "general", settings, engines, client
           onEnabledChange={(value) => { void save({ computerUseProvider: value ? "cua" : null }); }} />
       </SettingsPage>
     ),
-    remote: <RemotePage client={client} />,
+    remote: <RemotePage client={client} onManageAccount={manageAccount} />,
   };
 
   return (
@@ -118,7 +126,7 @@ export function SettingsView({ initialTab = "general", settings, engines, client
       <nav aria-label="设置" className="flex w-[calc(var(--spacing-3xl)*4)] flex-none flex-col gap-3xs border-border border-r bg-bg-sidebar p-md">
         <h1 className="mb-sm px-sm font-semibold text-fg text-md leading-[var(--spacing-xl)]">设置</h1>
         {TABS.map((entry) => (
-          <button key={entry.id} type="button" aria-current={tab === entry.id ? "page" : undefined} onClick={() => setTab(entry.id)}
+          <button key={entry.id} type="button" aria-current={tab === entry.id ? "page" : undefined} onClick={() => { setTab(entry.id); if (entry.id === "accounts") setAccount(undefined); }}
             className={cn("flex h-row items-center gap-sm rounded-md px-sm text-left text-fg-secondary text-sm hover:bg-bg-hover hover:text-fg", tab === entry.id && "bg-bg-active text-fg")}>
             <entry.icon className="size-lg flex-none" />{entry.label}
           </button>

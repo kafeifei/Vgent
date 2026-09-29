@@ -3,6 +3,8 @@ import { useChat } from "@ai-sdk/react";
 import type { Chat } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
 import { useAccounts } from "@/features/accounts/useAccounts";
+import { useAccountLogin } from "@/features/accounts/AccountLogin";
+import { ACCOUNT_NAMES, accountOfModel, isAccountFailure, kindOf } from "@/features/accounts/accountOf";
 import { toFileParts } from "@/features/composer/attachments";
 import type { SlashCommand } from "@/features/composer/slash";
 import type { ChangesView } from "@/features/changes/useChanges";
@@ -218,6 +220,7 @@ function ThreadChatView({
   const canCompact = engines.find((entry) => entry.id === thread.engine)?.capabilities.compact === true;
   // The same polled snapshot the account menu reads; the composer picks the account the running model draws on.
   const { snapshot: accounts } = useAccounts(client);
+  const login = useAccountLogin();
   const commands = useMemo<SlashCommand[]>(
     () => [
       ...(canCompact
@@ -293,6 +296,21 @@ function ThreadChatView({
           ? "等你处理审批或回答后继续"
           : undefined;
 
+  // Only a task that ended in error has one to show: older builds also left a failed tool call's text here.
+  const shownError = (thread.status === "error" ? thread.error : undefined) ?? (error != null ? transportErrorText(error.message) : undefined);
+  // A task that stopped for want of its account signs in right from the error.
+  const failedAccount = shownError != null && isAccountFailure(shownError) ? accountOfModel(thread.engine, thread.model) : undefined;
+  const knownAccount = failedAccount == null ? undefined : accounts?.accounts.find((account) => account.id === failedAccount);
+  const errorAction = failedAccount == null || client.remoteSession ? undefined : (
+    <button
+      type="button"
+      onClick={() => login(knownAccount != null ? { kind: knownAccount.kind, accountId: knownAccount.id } : { kind: kindOf(failedAccount) })}
+      className="flex-none rounded-md border border-danger px-sm py-3xs text-danger text-sm hover:bg-danger hover:text-bg"
+    >
+      {knownAccount != null ? "重新登录" : `登录 ${ACCOUNT_NAMES[kindOf(failedAccount)]}`}
+    </button>
+  );
+
   return (
     <>
       <div className="min-w-0">
@@ -312,8 +330,8 @@ function ThreadChatView({
           messages={messages}
           thread={thread}
           live={live}
-          // Only a task that ended in error has one to show: older builds also left a failed tool call's text here.
-          error={(thread.status === "error" ? thread.error : undefined) ?? (error != null ? transportErrorText(error.message) : undefined)}
+          error={shownError}
+          {...(errorAction != null ? { errorAction } : {})}
           actions={turnActions}
           allowlist={allowlist ?? []}
           client={client}

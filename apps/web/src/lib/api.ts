@@ -1,7 +1,7 @@
 import type { FileUIPart } from "ai";
 import { modelsChanged } from "./modelEvents";
 import { accountsChanged } from "./accountEvents";
-import type { AccountSnapshot } from "./types";
+import type { AccountKind, AccountLoginAttempt, AccountSnapshot, AccountUse } from "./types";
 import type {
   RemoteAccessState,
   HarnessEngineId,
@@ -31,7 +31,6 @@ import type {
   ProviderModel,
   ProviderProtocol,
   RedactedProviderConfig,
-  ClaudeLoginAttempt,
   SubscriptionAccount,
   SubscriptionId,
   SubscriptionModel,
@@ -201,11 +200,11 @@ async function apiBlob(path: string, token: string): Promise<Blob> {
 export function createClient(token: string) {
   const notify = <T,>(value: T): T => { accountsChanged(client); return value; };
   const notifyModels = <T,>(value: T): T => { modelsChanged(client); return value; };
-  let claudeLoginState = "idle";
+  let loginState = "idle";
   let remoteIdentity: string | undefined;
   let subscriptionIdentity: string | undefined;
   const trackRemote = (state: RemoteAccessState) => {
-    const identity = JSON.stringify(state.account);
+    const identity = JSON.stringify([state.accountId, state.account, state.enabled]);
     if (remoteIdentity != null && remoteIdentity !== identity) notify(state);
     remoteIdentity = identity;
     return state;
@@ -214,8 +213,23 @@ export function createClient(token: string) {
     token,
     remoteSession: token === "vgent-remote-session",
     getAccounts: (usage = false, refresh = false) => api<AccountSnapshot>(`/accounts?usage=${usage ? "1" : "0"}&refresh=${refresh ? "1" : "0"}`, token),
+    /** 登录: a new account of `kind`, or `accountId` again. One runs at a time; the server answers with it as it stands. */
+    startAccountLogin: (kind: AccountKind, accountId?: string) =>
+      api<AccountLoginAttempt>("/accounts/login", token, { method: "POST", json: { kind, ...(accountId != null ? { accountId } : {}) } }).then((attempt) => { loginState = attempt.state; return attempt; }),
+    getAccountLogin: () =>
+      api<AccountLoginAttempt>("/accounts/login", token).then((attempt) => {
+        if (attempt.state === "succeeded" && loginState !== "succeeded") notify(attempt);
+        loginState = attempt.state;
+        return attempt;
+      }),
+    cancelAccountLogin: () => api<AccountLoginAttempt>("/accounts/login", token, { method: "DELETE" }).then((attempt) => { loginState = attempt.state; return attempt; }),
+    /** 退出登录. For the machine's own login, the terminal is signed out too. */
+    logoutAccount: (id: string) => api<AccountSnapshot>(`/accounts/${encodeURIComponent(id)}`, token, { method: "DELETE" }).then(notify),
+    /** One of an account's 用途 switches. */
+    setAccountUse: (id: string, use: AccountUse, enabled: boolean) =>
+      api<AccountSnapshot>(`/accounts/${encodeURIComponent(id)}/uses`, token, { method: "PUT", json: { use, enabled } }).then(notify),
     getRemote: () => api<RemoteAccessState>("/remote", token).then(trackRemote),
-    remoteAction: (action: "signIn" | "cancelSignIn" | "signOut" | "refresh" | "setEnabled" | "rename", input: { enabled?: boolean; name?: string } = {}) =>
+    remoteAction: (action: "selectAccount" | "refresh" | "setEnabled" | "rename", input: { accountId?: string | null; enabled?: boolean; name?: string } = {}) =>
       api<RemoteAccessState>("/remote", token, { method: "POST", json: { action, ...input } }).then(trackRemote),
     health: () => api<{ ok: boolean; version: string }>("/health", token),
 
@@ -452,14 +466,10 @@ export function createClient(token: string) {
       api<RedactedProviderConfig>(`/providers/${encodeURIComponent(id)}`, token, { method: "PATCH", json: input }).then(notifyModels),
     deleteProvider: (id: string) => api<void>(`/providers/${encodeURIComponent(id)}`, token, { method: "DELETE" }).then(notifyModels),
     /** 拉模型清单. With `providerId` and no `apiKey`, the server uses the key it has stored. */
-    /** Shared subscription accounts, with whether each is signed in. `refresh` re-asks the vendors for their model lists. */
-    startClaudeLogin: () => api<ClaudeLoginAttempt>("/subscriptions/claude-subscription/login", token, { method: "POST" }).then(state => { claudeLoginState = state.state; return state; }),
-    getClaudeLogin: () => api<ClaudeLoginAttempt>("/subscriptions/claude-subscription/login", token).then(state => { if (state.state === "succeeded" && claudeLoginState !== "succeeded") notify(state); claudeLoginState = state.state; return state; }),
-    cancelClaudeLogin: () => api<ClaudeLoginAttempt>("/subscriptions/claude-subscription/login", token, { method: "DELETE" }),
-    logoutSubscription: (id: SubscriptionId) => api<{ ok: boolean }>(`/subscriptions/${encodeURIComponent(id)}/logout`, token, { method: "POST" }).then(notify),
+    /** The accounts that bring models, one row each. `refresh` re-asks the vendors for their model lists. */
     listSubscriptions: (refresh = false) =>
       api<{ subscriptions: SubscriptionAccount[] }>(`/subscriptions${refresh ? "?refresh=1" : ""}`, token).then((body) => {
-        const identity = JSON.stringify(body.subscriptions.map(a => [a.id, a.loggedIn, a.email, a.username, a.method]));
+        const identity = JSON.stringify(body.subscriptions.map(a => [a.id, a.agents, a.email, a.username, a.method]));
         if (subscriptionIdentity != null && subscriptionIdentity !== identity) notify(body);
         subscriptionIdentity = identity;
         if (refresh) notifyModels(body);

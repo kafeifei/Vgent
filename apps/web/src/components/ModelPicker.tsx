@@ -16,6 +16,7 @@ import {
 } from "./modelChoices";
 import { Popover } from "./Popover";
 import { reasoningLabel } from "./reasoningLabels";
+import { useAccountLogin } from "@/features/accounts/AccountLogin";
 import { SourceIcon } from "./SourceIcon";
 
 export const ModelCatalogClientContext = createContext<Pick<ApiClient, "listModels"> | null>(null);
@@ -283,6 +284,7 @@ function ModelList({
 }) {
   const [query, setQuery] = useState("");
   const needle = query.trim().toLowerCase();
+  const login = useAccountLogin();
 
   const nodes: CascadeNode[] = choices.flatMap((choice) => {
     const isMine = mine?.key === choice.key;
@@ -326,7 +328,13 @@ function ModelList({
       {/* Every model of every source in one list; it has to be able to scroll. */}
       <CascadeLevel nodes={nodes} revealSelected className="max-h-[calc(var(--spacing-xl)*14)] overflow-y-auto pt-2xs" />
       {nodes.length === 0 && (
-        <div className="px-xs py-2xs text-fg-faint text-sm">{loading ? "加载中…" : needle === "" ? "没有可用的模型" : "没有匹配的模型"}</div>
+        <div className="flex items-center justify-between gap-sm px-xs py-2xs text-fg-faint text-sm">
+          {loading ? "加载中…" : needle === "" ? "没有可用的模型" : "没有匹配的模型"}
+          {/* Nothing to pick means no account yet: sign in right here. */}
+          {!loading && needle === "" && (
+            <button type="button" onClick={() => login()} className="rounded-sm text-fg-muted hover:text-fg">添加账号</button>
+          )}
+        </div>
       )}
       {failures.map((message) => (
         <div key={message} className="px-xs py-2xs text-2xs text-fg-faint">

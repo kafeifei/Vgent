@@ -1,6 +1,6 @@
 import type { AccountSummary, UsageWindow } from "@/lib/types";
 
-const PRIMARY_WINDOWS: Record<AccountSummary["id"], readonly string[]> = {
+const PRIMARY_WINDOWS: Record<AccountSummary["kind"], readonly string[]> = {
   github: ["premium_interactions"],
   codex: ["codex-primary_window", "codex-secondary_window"],
   claude: ["five_hour", "seven_day"],
@@ -8,7 +8,7 @@ const PRIMARY_WINDOWS: Record<AccountSummary["id"], readonly string[]> = {
 
 /** Stable platform IDs, not upstream order or the fullest of unrelated quotas. */
 export function primaryWindows(account: AccountSummary): UsageWindow[] {
-  return PRIMARY_WINDOWS[account.id].flatMap(id => {
+  return PRIMARY_WINDOWS[account.kind].flatMap(id => {
     const window = account.usage?.windows.find(window => window.id === id);
     return window ? [window] : [];
   });

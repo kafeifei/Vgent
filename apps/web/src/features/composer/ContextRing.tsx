@@ -1,4 +1,5 @@
 import { useMemo, type ReactNode } from "react";
+import { CircleDashed } from "lucide-react";
 import type { UIMessage } from "ai";
 import {
   Context,
@@ -56,22 +57,24 @@ export function ContextRing({
 }) {
   const context = useMemo(() => contextUsage(messages), [messages]);
   const total = useMemo(() => taskUsage(messages), [messages]);
+  const unknown = context.source === "unknown";
+  const tokens = context.tokens ?? 0;
   // Not named `window`: that would shadow the global one in a browser module.
   // Unknown, it is the smallest window the model is offered with that still
   // holds what was measured: a prompt bigger than the default proves the
   // default wrong (Claude Code runs Opus 5.5 past 200k with no [1m] asked).
   const limit =
     contextWindow ??
-    contextOptions?.find((option) => option >= context.tokens) ??
+    contextOptions?.find((option) => option >= tokens) ??
     Math.max(DEFAULT_CONTEXT_WINDOW, ...(contextOptions ?? []));
-  const ratio = Math.min(1, Math.max(0, context.tokens / limit));
+  const ratio = Math.min(1, Math.max(0, tokens / limit));
   const approximate = context.source === "estimate" || contextWindow == null;
   const price = total != null && cost != null ? usageCost(total, cost) : undefined;
   const reasoning = total?.outputTokenDetails.reasoningTokens ?? 0;
   const cacheRead = total?.inputTokenDetails.cacheReadTokens ?? 0;
 
   return (
-    <Context usedTokens={Math.min(context.tokens, limit)} maxTokens={limit} {...(total != null ? { usage: total } : {})}>
+    <Context usedTokens={Math.min(tokens, limit)} maxTokens={limit} {...(total != null ? { usage: total } : {})}>
       <ContextTrigger
         variant="ghost"
         size="sm"
@@ -80,19 +83,24 @@ export function ContextRing({
           "h-xl gap-2xs px-2xs font-normal has-[>svg]:px-2xs",
           ratio >= WARN_AT ? "text-warning hover:text-warning" : "text-fg-muted hover:text-fg",
         )}
-      />
+      >
+        {unknown ? (
+          <Button type="button" variant="ghost" size="sm" aria-label="压缩后用量待更新" className="h-xl gap-2xs px-2xs font-normal text-fg-muted hover:text-fg">
+            待更新<CircleDashed className="size-sm" />
+          </Button>
+        ) : undefined}
+      </ContextTrigger>
       <ContextContent side="top" align="end" className="w-64 divide-border border-0 bg-bg-elevated shadow-popover">
         <ContextContentHeader>
           <div className="flex items-center justify-between gap-md text-xs">
             <span className="text-fg">
-              {approximate ? "≈" : ""}
-              {Math.round(ratio * 100)}%
+              {unknown ? "压缩后用量待更新" : `${approximate ? "≈" : ""}${Math.round(ratio * 100)}%`}
             </span>
             <span className="font-mono text-fg-muted">
-              {formatTokens(context.tokens)} / {formatTokens(limit)}
+              {unknown ? "—" : formatTokens(tokens)} / {formatTokens(limit)}
             </span>
           </div>
-          <Progress className="h-2xs bg-bg-strong" value={ratio * 100} />
+          {unknown ? <p className="m-0 text-xs text-fg-muted">下一次模型调用后更新。</p> : <Progress className="h-2xs bg-bg-strong" value={ratio * 100} />}
           {onCompact != null && (
             <Button type="button" size="xs" variant={ratio >= WARN_AT ? "default" : "secondary"} onClick={onCompact} className="w-full font-normal">
               压缩上下文

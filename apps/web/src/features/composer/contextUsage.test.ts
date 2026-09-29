@@ -77,6 +77,36 @@ describe("contextUsage", () => {
   it("is an empty estimate for an empty thread", () => {
     expect(contextUsage([])).toEqual({ tokens: 0, source: "estimate" });
   });
+
+  it("invalidates pre-compact usage until the next model call reports fresh usage", () => {
+    const compact: UIMessage = {
+      ...user("compact", "/compact"),
+      metadata: {
+        compactRequested: { at: "now" },
+        run: { id: "r", engine: "claude-code", startedAt: "then", endedAt: "now", stopReason: "response", finishReason: "stop" },
+      } satisfies ThreadMessageMetadata,
+    };
+    const history = [assistant("before", "旧上下文", { usage: { inputTokens: 504206 } }), compact,
+      assistant("empty", "", { totalUsage: { inputTokens: 0, outputTokens: 0 } })];
+    expect(contextUsage(history)).toEqual({ tokens: undefined, source: "unknown" });
+    expect(contextUsage([...history, user("next", "继续"), assistant("fresh", "好了", { usage: { inputTokens: 7730 } })]))
+      .toEqual({ tokens: 7730, source: "usage" });
+    // Older requests used `compacted`; ordinary summaries must not invalidate
+    // the character estimate of their actual replacement history.
+    compact.metadata = { ...(compact.metadata as ThreadMessageMetadata), compactRequested: undefined, compacted: { before: 14, at: "now" } };
+    expect(contextUsage(history)).toEqual({ tokens: undefined, source: "unknown" });
+    expect(contextUsage([{ ...user("summary", "abcd"), metadata: { compacted: { before: 14, at: "now" } } }]))
+      .toEqual({ tokens: 1, source: "estimate" });
+  });
+
+  it.each(["running", "error", "cancelled"])("keeps the previous usage for an uncompleted %s request", (stopReason) => {
+    expect(contextUsage([
+      assistant("before", "好", { usage: { inputTokens: 504206 } }),
+      { ...user("compact", "/compact"), metadata: {
+        compactRequested: { at: "now" }, run: { id: "r", engine: "claude-code", startedAt: "then", stopReason },
+      } satisfies ThreadMessageMetadata },
+    ])).toEqual({ tokens: 504206, source: "usage" });
+  });
 });
 
 describe("formatTokens", () => {

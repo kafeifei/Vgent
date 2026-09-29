@@ -1395,9 +1395,8 @@ export function createApp(options: CreateAppOptions): VgentApp {
   });
 
   /**
-   * 手动 /compact：把整段历史换成一条摘要。Only the in-house engine can take
-   * it — the harness engines keep their own transcript on disk, so rewriting
-   * the stored messages would desynchronise the two.
+   * 手动 /compact：the in-house engine summarizes stored history; a harness
+   * receives the native command and keeps ownership of its transcript.
    */
   app.post("/api/threads/:id/compact", async (c) => {
     const id = c.req.param("id");
@@ -1421,7 +1420,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
         id: randomUUID(),
         role: "user",
         parts: [{ type: "text", text: "/compact" }],
-        metadata: { compacted: { before: thread.messages.length, at: new Date().toISOString() } } satisfies ThreadMessageMetadata,
+        metadata: { compactRequested: { at: new Date().toISOString() } } satisfies ThreadMessageMetadata,
       };
       await runs.start(id, [request]);
       return c.json(await threadOf(id));

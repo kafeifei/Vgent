@@ -133,6 +133,8 @@ export interface ThreadMessageMetadata {
    * replaced, and when. The work log renders a marker from it.
    */
   compacted?: { before: number; at: string };
+  /** A native /compact request. Completion is recorded by the turn's run, not at submission. */
+  compactRequested?: { at: string };
   /**
    * On a user message: the snapshot taken right before the turn it started.
    * Absent when the task's directory is not a git repo, or the snapshot failed.

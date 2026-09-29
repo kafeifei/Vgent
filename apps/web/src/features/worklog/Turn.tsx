@@ -5,6 +5,7 @@ import { UrlFigure } from "@/components/Figure";
 import { RichMarkdown, TurnDrawingProvider } from "@/components/RichMarkdown";
 import { type AskUserQuestionsInput, type AskUserQuestionsOutput } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { completedCompactionRequest, isCompactionRequest } from "@/lib/compaction";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
 import { Spinner, ToolRow } from "./ToolRow";
@@ -80,13 +81,23 @@ export function Turn({
   const thinkingKey = !settled && turn.blocks.at(-1)?.kind === "reasoning" ? turn.blocks.at(-1)!.key : undefined;
   // A `/compact` summary is an ordinary user message apart from this marker.
   const compacted = turn.user == null ? undefined : compactedOf(turn.user);
+  const compactRequest = isCompactionRequest(turn.user);
+  const compactEvent = turn.blocks.some((block) => block.kind === "compaction");
   // How the turn ended when it did not simply finish. The last turn's error is
   // the log's own banner; every other ending is said here, under its turn.
   const ended = turn.user == null ? undefined : turnEndOf(turn.user);
   return (
     <TurnDrawingProvider drawings={drawings}>
     <section className={cn("flex flex-col gap-block-gap pb-xl text-md leading-chat", dimmed && "opacity-45")}>
-      {turn.user != null && (
+      {compactRequest && !compactEvent && (
+        <div className="px-chat-inset text-fg-muted text-xs" aria-live="polite">
+          {completedCompactionRequest(turn.user) ? "上下文已压缩"
+            : ended != null ? (ended.status === "error" ? "上下文压缩失败" : "上下文压缩已中断")
+            : !settled ? <Shimmer>正在压缩上下文…</Shimmer>
+            : "压缩结束，未确认结果"}
+        </div>
+      )}
+      {turn.user != null && !compactRequest && (
         <div
           ref={ref}
           className={cn(
@@ -122,8 +133,7 @@ export function Turn({
             </div>
           )}
           {turn.user.parts.map((part, index) =>
-            // The `/compact` a harness engine was sent is the marker above, not a message.
-            part.type === "text" && !(compacted != null && part.text === "/compact") ? (
+            part.type === "text" ? (
               <p key={index} className="m-0 whitespace-pre-wrap">
                 {part.text}
               </p>
@@ -159,12 +169,12 @@ export function Turn({
         </div>
       ))}
       {/* Until the first block lands there is nothing else on screen to say the turn is alive. */}
-      {!settled && turn.blocks.length === 0 && (
+      {!compactRequest && !settled && turn.blocks.length === 0 && (
         <div className="px-chat-inset text-fg-muted">
           <Shimmer>思考中…</Shimmer>
         </div>
       )}
-      {settled && turn.answered && turn.blocks.length === 0 && ended == null && <p className="m-0 px-chat-inset text-fg-faint">这一轮模型没有返回内容</p>}
+      {!compactRequest && settled && turn.answered && turn.blocks.length === 0 && ended == null && <p className="m-0 px-chat-inset text-fg-faint">这一轮模型没有返回内容</p>}
       {settled && ended != null && !(isLast && ended.status === "error") && (
         <p className={cn("m-0 px-chat-inset whitespace-pre-wrap break-words text-sm", ended.status === "error" ? "text-danger" : "text-fg-faint")}>
           {ended.status === "error" ? `出错了 · ${ended.reason}` : ended.reason}

@@ -1554,8 +1554,52 @@ describe("createApp", () => {
     const request = record.messages[historyBeforeCompact.length]!;
     expect(request.role).toBe("user");
     expect(request.parts).toEqual([{ type: "text", text: "/compact" }]);
-    expect((request.metadata as ThreadMessageMetadata).compacted).toMatchObject({ before: historyBeforeCompact.length });
+    expect((request.metadata as ThreadMessageMetadata).compactRequested).toEqual({ at: expect.any(String) });
+    expect((request.metadata as ThreadMessageMetadata).compacted).toBeUndefined();
     expect(fake.streamed.at(-1)?.at(-1)).toMatchObject({ role: "user", content: [{ type: "text", text: "/compact" }] });
+  });
+
+  it.each([false, true])("压缩上下文：原生命令无文字回复时保存真实结束状态（失败=%s）", async (fail) => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const factory: EngineFactoryOverride = {
+      async create() {
+        return {
+          async stream() {
+            return { stream: ReadableStream.from((async function* (): AsyncGenerator<TextStreamPart<ToolSet>> {
+              yield { type: "start" };
+              await pending;
+              if (fail) yield { type: "error", error: new Error("compact failed") };
+              yield { type: "finish", finishReason: fail ? "error" : "stop", totalUsage: {
+                inputTokens: 0, outputTokens: 0, totalTokens: 0,
+                inputTokenDetails: { noCacheTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+                outputTokenDetails: { textTokens: 0, reasoningTokens: 0 },
+              } };
+            })()) as ReadableStream<TextStreamPart<ToolSet>> };
+          },
+          hasUnfinishedTurn: () => false,
+          async finish() {},
+          async destroy() { release(); },
+        };
+      },
+    };
+    const dataDir = await tempDir();
+    const app = makeApp(dataDir, factory);
+    const { thread } = await setupThread(app, await tempDir(), "claude-code");
+    await createThreadStore(dataDir).update(thread.id, { messages: historyBeforeCompact });
+    try {
+      const response = await postJson(app, `/api/threads/${thread.id}/compact`, {});
+      const running = await response.json() as ThreadRecord;
+      expect(running.status).toBe("running");
+      expect(running.messages.at(-1)?.metadata).toMatchObject({ compactRequested: { at: expect.any(String) } });
+      expect((running.messages.at(-1)?.metadata as ThreadMessageMetadata).compacted).toBeUndefined();
+    } finally { release(); }
+    const record = await waitForStatus(app, thread.id, fail ? "error" : "idle");
+    expect(record.messages.slice(0, historyBeforeCompact.length)).toEqual(historyBeforeCompact);
+    const metadata = record.messages[historyBeforeCompact.length]!.metadata as ThreadMessageMetadata;
+    expect(metadata.run).toMatchObject({ stopReason: fail ? "error" : "response", finishReason: fail ? "error" : "stop", endedAt: expect.any(String) });
+    if (fail) expect(metadata.turnEnd?.status).toBe("error");
+    else expect(metadata.turnEnd).toBeUndefined();
   });
 
   it("压缩上下文：harness 自己压了，回合里留下一个 data-compaction 标记而不是报未知事件", async () => {

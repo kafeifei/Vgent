@@ -1,5 +1,6 @@
 import { isToolUIPart, type LanguageModelUsage, type UIMessage } from "ai";
 import type { ChangedFile, ModelCost, ThreadMessageMetadata, UsageInfo } from "@/lib/types";
+import { completedCompactionRequest } from "@/lib/compaction";
 
 /**
  * The two numbers the review bar above the composer shows: how full the context
@@ -18,11 +19,11 @@ export const DEFAULT_CONTEXT_WINDOW = 200_000;
 /** Rough characters-per-token, only used when no engine reported real counts. */
 const CHARS_PER_TOKEN = 4;
 
-export interface ContextUsage {
+export type ContextUsage = {
   tokens: number;
   /** `usage` = an engine's own count; `estimate` = the character heuristic below. */
   source: "usage" | "estimate";
-}
+} | { tokens: undefined; source: "unknown" };
 
 /**
  * The prompt size the engine itself reported for its last model call.
@@ -69,6 +70,10 @@ function promptChars(messages: readonly UIMessage[]): number {
 export function contextUsage(messages: readonly UIMessage[]): ContextUsage {
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index];
+    // A native command retains the visible history but replaces the runtime's
+    // context. Without fresh usage, neither the old count nor that history is
+    // an estimate of what the model now sees.
+    if (completedCompactionRequest(message)) return { tokens: undefined, source: "unknown" };
     if (message == null || message.role !== "assistant") continue;
     const tokens = reportedInputTokens(message);
     if (tokens != null) return { tokens, source: "usage" };

@@ -13,11 +13,11 @@ export type ExploreKind = "read" | "search" | "list";
 
 // Shell words that only read. A pipeline is exploration when every stage is
 // one of these (or a filter) and at least one is a primary.
-const READ = new Set(["cat", "head", "tail", "nl", "less", "more", "wc", "stat", "file", "od", "hexdump", "strings", "jq", "bat"]);
+const READ = new Set(["cat", "head", "tail", "nl", "less", "more", "wc", "stat", "file", "od", "hexdump", "strings", "jq", "bat", "pgrep", "mdls"]);
 const SEARCH = new Set(["grep", "egrep", "fgrep", "rg", "ag", "ack"]);
 const LIST = new Set(["ls", "tree", "fd", "du", "pwd"]);
 // Read-only git subcommands. `git branch` prints unless it is given a name.
-const GIT_READ = new Set(["status", "log", "diff", "show", "blame", "ls-files", "rev-parse", "describe", "shortlog", "reflog", "remote"]);
+const GIT_READ = new Set(["status", "log", "diff", "show", "blame", "ls-files", "rev-parse", "describe", "shortlog", "reflog", "remote", "merge-base"]);
 // Stages that shape output without touching anything; they never make a pipeline exploration on their own.
 const FILTER = new Set(["sort", "uniq", "cut", "tr", "awk", "column", "paste", "basename", "dirname", "realpath", "echo", "printf", "true", "which", "type", "test", "[", "xxd"]);
 const SKIP = new Set(["cd", "pushd", "popd", "export", "unset", "set"]);
@@ -43,9 +43,10 @@ function stagesOf(command: string): string[][] | undefined {
     const ch = command[i]!;
     if (quote != null) {
       if (ch === quote) quote = null;
-      else if (ch === "\\" && quote === '"' && i + 1 < command.length) {
+      else if (quote === '"' && (ch === "`" || (ch === "$" && command[i + 1] === "("))) return undefined;
+      else if (ch === "\\" && quote === '"' && /["\\$`\n]/.test(command[i + 1] ?? "")) {
         i += 1;
-        word += command[i];
+        if (command[i] !== "\n") word += command[i];
       } else word += ch;
       has = true;
       continue;
@@ -94,25 +95,41 @@ function stagesOf(command: string): string[][] | undefined {
   return stages;
 }
 
-function stageKind(words: readonly string[]): ExploreKind | "filter" | "skip" | undefined {
+function stageKind(words: readonly string[], depth: number): ExploreKind | "filter" | "skip" | undefined {
   let index = 0;
   // `FOO=bar cmd` — the assignment is not the command. A word that is only
   // an assignment sets a variable, which is fine, and there is nothing else.
   while (index < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index]!)) index += 1;
-  const name = words[index];
+  const name = words[index]?.replace(/^\/(?:usr\/)?bin\//, "");
   if (name == null) return "skip";
   const args = words.slice(index + 1);
   if (SKIP.has(name)) return "skip";
-  if (name === "sudo" || name === "xargs" || name === "sh" || name === "bash" || name === "zsh") return undefined;
+  if (name === "sh" || name === "bash" || name === "zsh") {
+    // Codex reports the executed shell, e.g. `/bin/zsh -lc 'cat a.ts'`.
+    // Only unwrap a literal -c program with known flags and no positional
+    // parameters; scripts and unrecognised invocations stay command rows.
+    let option = 0;
+    while (args[option] === "-l" || args[option] === "--login") option += 1;
+    if (!/^-(?:c|lc|cl)$/.test(args[option] ?? "") || args.length !== option + 2 || depth >= 4) return undefined;
+    return classifyShell(args[option + 1]!, depth + 1);
+  }
+  if (name === "defaults") return args[0] === "read" || args[0] === "read-type" ? "read" : undefined;
   if (name === "sed") return args.some((arg) => arg === "-i" || arg.startsWith("-i") || arg.startsWith("--in-place")) ? undefined : "read";
   if (name === "find") return args.some((arg) => arg === "-delete" || arg === "-exec" || arg === "-execdir" || arg === "-ok") ? undefined : "list";
   if (name === "git") {
-    const sub = args.find((arg) => !arg.startsWith("-"));
+    let subIndex = 0;
+    while (subIndex < args.length) {
+      if (args[subIndex] === "-C" && args[subIndex + 1] != null) subIndex += 2;
+      else if (args[subIndex] === "--no-pager" || args[subIndex] === "--no-optional-locks") subIndex += 1;
+      else break;
+    }
+    const sub = args[subIndex];
     if (sub == null) return undefined;
+    const rest = args.slice(subIndex + 1);
+    if (sub === "worktree") return rest[0] === "list" ? "read" : undefined;
     if (sub === "grep") return "search";
-    if (GIT_READ.has(sub)) return sub === "remote" && args.some((arg) => !arg.startsWith("-") && arg !== "remote" && arg !== "show") ? undefined : "read";
+    if (GIT_READ.has(sub)) return sub === "remote" && rest.some((arg) => !arg.startsWith("-") && arg !== "show") ? undefined : "read";
     if (sub === "branch" || sub === "tag" || sub === "stash") {
-      const rest = args.slice(args.indexOf(sub) + 1);
       const readOnly = rest.every((arg) => arg.startsWith("-") ? /^(-a|-r|-v|-vv|--list|--all|--remotes|--verbose|--contains|--merged|--no-merged|--show-current)$/.test(arg) : sub === "stash" && arg === "list");
       return readOnly && (sub !== "stash" || rest.includes("list")) ? "list" : undefined;
     }
@@ -134,11 +151,15 @@ function stageKind(words: readonly string[]): ExploreKind | "filter" | "skip" | 
  * each call once.
  */
 export function shellExploreKind(command: string): ExploreKind | undefined {
+  return classifyShell(command, 0);
+}
+
+function classifyShell(command: string, depth: number): ExploreKind | undefined {
   const stages = stagesOf(command);
   if (stages == null || stages.length === 0) return undefined;
   const kinds = new Set<ExploreKind>();
   for (const stage of stages) {
-    const kind = stageKind(stage);
+    const kind = stageKind(stage, depth);
     if (kind == null) return undefined;
     if (kind === "read" || kind === "search" || kind === "list") kinds.add(kind);
   }
@@ -153,7 +174,25 @@ export function exploreKindOf(part: ToolPart): ExploreKind | undefined {
   const display = describeTool(part);
   if (display.kind === "read") return "read";
   if (display.kind === "search") return "search";
-  if (display.kind === "bash") return shellExploreKind(field(part.input, "command") ?? "");
+  if (display.kind === "bash") {
+    // Native classifications take precedence, including an explicit unknown.
+    // Only legacy/other Engine calls without this field use the shell fallback.
+    const input = part.input;
+    if (typeof input === "object" && input !== null && "commandActions" in input) {
+      const actions = input.commandActions;
+      if (!Array.isArray(actions) || actions.length === 0) return undefined;
+      const kinds = new Set<ExploreKind>();
+      for (const action of actions) {
+        if (typeof action !== "object" || action === null) return undefined;
+        if (action.type === "read") kinds.add("read");
+        else if (action.type === "search") kinds.add("search");
+        else if (action.type === "listFiles") kinds.add("list");
+        else return undefined;
+      }
+      return kinds.has("search") ? "search" : kinds.has("read") ? "read" : "list";
+    }
+    return shellExploreKind(field(input, "command") ?? "");
+  }
   if (display.kind === "other" && getToolName(part).toLowerCase() === "list") return "list";
   return undefined;
 }
@@ -169,11 +208,11 @@ export function exploreCounts(tools: readonly ToolBlock[]): ExploreCounts {
   return counts;
 }
 
-/** `读取 3 个文件 · 搜索 2 次 · 列出 1 个目录` — the one line a fold of looks shows. */
+/** Counts calls, since a shell call may read several files or inspect repository state. */
 export function exploreLabel(counts: ExploreCounts): string {
   const parts: string[] = [];
-  if (counts.read > 0) parts.push(`读取 ${counts.read} 个文件`);
+  if (counts.read > 0) parts.push(`读取 ${counts.read} 次`);
   if (counts.search > 0) parts.push(`搜索 ${counts.search} 次`);
-  if (counts.list > 0) parts.push(`列出 ${counts.list} 个目录`);
+  if (counts.list > 0) parts.push(`列目录 ${counts.list} 次`);
   return parts.join(" · ");
 }

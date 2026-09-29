@@ -1,5 +1,6 @@
 import { getToolName } from "ai";
 import { exploreKindOf } from "./explore";
+import { describeTool, hasToolFailure } from "./toolMeta";
 import { isOpenApproval, isOpenQuestion, type Block } from "./turns";
 
 type ToolBlock = Extract<Block, { kind: "tool" }>;
@@ -11,24 +12,27 @@ export type RowBlock = Exclude<Block, { kind: "reasoning" }>;
  * reasoning of one stretch of tool calls, hoisted above them as one row, so
  * thinking never sits between every two calls. An `explore` is two or more
  * consecutive looks (reads, searches, listings) on one line with counts.
- * Everything else — a command, an edit, a card, a reply written mid-way — is
- * its own row.
+ * Unclassified shell calls still group as `commands`; their category need not
+ * be guessed to fold them. Edits, cards and replies remain separate rows.
  */
 export type ProcessItem =
   | { kind: "thought"; key: string; parts: ReasoningBlock[] }
-  | { kind: "explore"; key: string; tools: ToolBlock[] }
+  | { kind: "explore" | "commands"; key: string; tools: ToolBlock[] }
   | { kind: "block"; key: string; block: RowBlock };
 
 type ProcessSection =
   | { kind: "steer"; key: string; block: Extract<Block, { kind: "steer" }> }
+  | { kind: "attention"; key: string; block: ToolBlock }
   | { kind: "activity"; key: string; blocks: Block[] };
 
-/** User interjections stay visible between the stretches of work they separate. */
+/** User interjections and work needing attention stay outside completed folds. */
 export function processSectionsOf(blocks: readonly Block[]): ProcessSection[] {
   const sections: ProcessSection[] = [];
   for (const block of blocks) {
     if (block.kind === "steer") {
       sections.push({ kind: "steer", key: block.key, block });
+    } else if (block.kind === "tool" && (hasToolFailure(block.part) || isOpenApproval(block.part) || isOpenQuestion(block.part))) {
+      sections.push({ kind: "attention", key: block.key, block });
     } else {
       const previous = sections.at(-1);
       if (previous?.kind === "activity") previous.blocks.push(block);
@@ -51,19 +55,24 @@ export function processItemsOf(blocks: readonly Block[]): ProcessItem[] {
   const flush = () => {
     if (thought.length > 0) items.push({ kind: "thought", key: thought[0]!.key, parts: thought });
     let pending: ToolBlock[] = [];
-    const flushExplore = () => {
-      if (pending.length >= 2) items.push({ kind: "explore", key: pending[0]!.key, tools: pending });
+    let category: "explore" | "commands" | undefined;
+    const flushGroup = () => {
+      if (pending.length >= 2 && category != null) items.push({ kind: category, key: pending[0]!.key, tools: pending });
       else for (const block of pending) items.push({ kind: "block", key: block.key, block });
       pending = [];
     };
     for (const block of tools) {
-      if (exploreKindOf(block.part) != null) pending.push(block);
+      const next = hasToolFailure(block.part) ? undefined
+        : exploreKindOf(block.part) != null ? "explore"
+        : describeTool(block.part).kind === "bash" ? "commands" : undefined;
+      if (next !== category) flushGroup();
+      category = next;
+      if (next != null) pending.push(block);
       else {
-        flushExplore();
         items.push({ kind: "block", key: block.key, block });
       }
     }
-    flushExplore();
+    flushGroup();
     thought = [];
     tools = [];
   };
@@ -72,7 +81,7 @@ export function processItemsOf(blocks: readonly Block[]): ProcessItem[] {
       thought.push(block);
       continue;
     }
-    if (block.kind === "tool" && !isCard(block)) {
+    if (block.kind === "tool" && !isCard(block) && !hasToolFailure(block.part)) {
       tools.push(block);
       continue;
     }

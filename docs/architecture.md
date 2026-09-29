@@ -588,6 +588,16 @@ build 84 定的「日志里的图只有一种样子」只覆盖了回复里内�
 实现（`features/worklog/`）：`activity.ts` 的 `processItemsOf(blocks)` 把 blocks 变成 `thought` / `explore` / `block` 三种行——正文、插话、压缩标记、审批 / 提问卡切断一段，段内 reasoning 提成一个 `thought`，段内工具按相邻的探索合成 `explore`（≥2 条）；`splitReply` 取末尾连续的 text 作回复，其余是过程；`stepCount` 数工具调用。`Turn.tsx`：未结束 → `ProcessList` 直接画；结束且有调用 → `Fold`（「工作了 N 步」）包住同一个 `ProcessList`，回复接在后面。`explore.ts` 的 `shellExploreKind` 把只读的 Bash（`cat / sed -n / head / git log` 读取，`grep / rg` 搜索，`ls / find / git branch -a` 列目录；`cd` 和变量赋值跳过；`$(…)`、heredoc、`for`、写文件的重定向、`sed -i`、认不出的词一律算命令）归到探索里，Claude Code 引擎满屏 `sed -n` 才合得起来。`describeTool` 显示 Bash 时去掉开头的 `cd <目录>;`（`withoutCd`）。测试：`activity.test.ts`、`explore.test.ts`、`Turn.activity.test.tsx`。
 
 - **工具行点开在右栏，不在行内**（用户：「折叠展开，应该是列出调用过哪些命令，点这些命令右侧栏打开详情」）。`ToolRow` 没有行内展开的盒子（计划行例外，它的清单就是内容，仍在原地开合）；点一行走 `TurnActions.inspect`，`ThreadView` 按种类分流：命令 → 右栏「终端」tab 并滚到那条、闪一下（`RightState.inspect` 带 `toolCallId` + `nonce`，`TerminalPanel` 的行有 `id="term-<toolCallId>"`，定位后停止跟底）；读取 → 「文件」tab 预览那个路径（`openPreview`）；写 / 编辑 → 和文件 chip 一样开「变更」；其余（搜索、子代理、MCP 等）→ 右栏的 `tool` 视图（`rightpane/ToolDetail.tsx`：动词 + 目标、状态、输入 JSON、输出或子代理记录），它不在 tab 条里，只由点击进入。
+### 2026-09-29：同类工具归组与命令分类分开
+
+同类归组不再依赖能否解析 shell。连续的读取 / 搜索 / 列目录调用归为探索组，按调用次数显示「读取 N 次 · 搜索 N 次 · 列目录 N 次」；连续的其余 shell 调用归为「执行 N 条命令」，包含循环、`node -e` 和 Python 脚本。两条起归组，单条保留工具行；两种组互不混合，正文、用户插话、审批 / 提问卡片、压缩记录会截断归组。思考沿用同一工具段内合并的规则。编辑与子代理继续独立展示。
+
+Codex 原生 `commandExecution.commandActions` 从适配器保留到工具输入，优先采用 `read` / `search` / `listFiles`；一条调用有多个动作时按搜索、读取、列目录优先级计数一次。有未知动作或显式空分类时进入普通命令组。只有缺少原生分类的历史记录或其他 Engine 调用才用有限的 shell 识别兜底：支持已知 shell 的字面量 `-c` 程序、只读 Git 检查等，不尝试解释任意脚本。这是展示分类，不是权限或安全判断。
+
+命令行优先展示工具 `title` 或 Bash 输入的 `description`，没有说明才展示原始命令。归组展开列出每次调用，点击仍进入右栏终端；原始输入与输出完整保留。失败、拒绝、非零退出以及待处理审批 / 提问保持独立；即使整个回合已结束，也不藏入「工作了 N 步」折叠中。
+
+回归覆盖 shell 外壳、未知脚本、原生分类保留与优先级、正文边界、用户插话、失败可见性、流式状态和终端详情路由。
+
 ## 2026-09-23：草稿带附件
 
 用户：「聊天框保存的草稿，需要包含附件」。之前草稿只有文字：附件是 `ThreadView` / `EmptyState` 各自的 `useState`，切任务、刷新、重启都丢。

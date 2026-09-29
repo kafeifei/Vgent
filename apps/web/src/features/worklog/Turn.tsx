@@ -134,7 +134,7 @@ export function Turn({
       {afterUser}
 
       {sections.map((section) => {
-        if (section.kind === "steer") return (
+        if (section.kind !== "activity") return (
           <div key={section.key} className="px-chat-inset">
             <BlockView block={section.block} actions={actions} allowlist={allowlist} />
           </div>
@@ -230,8 +230,8 @@ function ProcessList({
       {items.map((item) =>
         item.kind === "thought" ? (
           <ThoughtRow key={item.key} parts={item.parts} thinking={item.parts.some((block) => block.key === thinkingKey)} />
-        ) : item.kind === "explore" ? (
-          <ExploreGroup key={item.key} tools={item.tools} actions={actions} />
+        ) : "tools" in item ? (
+          <ToolGroup key={item.key} tools={item.tools} kind={item.kind} actions={actions} />
         ) : (
           <BlockView key={item.key} block={item.block} actions={actions} allowlist={allowlist} />
         ),
@@ -301,11 +301,11 @@ function ThoughtRow({ parts, thinking }: { parts: Extract<ProcessItem, { kind: "
   );
 }
 
-/** Two or more consecutive looks on one line with counts; the calls are behind it. A running one spins the line. */
-function ExploreGroup({ tools, actions }: { tools: Extract<ProcessItem, { kind: "explore" }>["tools"]; actions: TurnActions }) {
+/** Consecutive tools of one category, with the original calls behind a summary. */
+function ToolGroup({ tools, kind, actions }: { tools: Extract<ProcessItem, { tools: unknown }>["tools"]; kind: "explore" | "commands"; actions: TurnActions }) {
   const [open, setOpen] = useState(false);
   const busy = tools.some((block) => isToolStreaming(block.part));
-  const label = exploreLabel(exploreCounts(tools));
+  const label = kind === "commands" ? `执行 ${tools.length} 条命令` : exploreLabel(exploreCounts(tools));
   return (
     <div>
       <button

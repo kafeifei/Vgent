@@ -61,8 +61,10 @@ export function describeTool(part: ToolPart): ToolDisplay {
         target: field(input, "pattern", "query", "glob", "path") ?? "",
       };
     case "bash":
-    case "shell":
-      return { kind: "bash", verb: "$", target: oneLine(withoutCd(field(input, "command") ?? ""), 120) };
+    case "shell": {
+      const summary = part.title?.trim() || field(input, "description")?.trim();
+      return { kind: "bash", verb: summary ? "执行" : "$", target: oneLine(summary || withoutCd(field(input, "command") ?? ""), 120) };
+    }
     case "write": {
       const file = field(input, "file_path", "path");
       return { kind: "write", verb: "写入", target: file ?? "", ...(file != null ? { file } : {}) };
@@ -121,6 +123,13 @@ export function exitCodeOf(output: unknown): number | undefined {
   if (typeof output !== "object" || output === null) return undefined;
   const value = (output as Record<string, unknown>).exitCode ?? (output as Record<string, unknown>).exit_code;
   return typeof value === "number" ? value : undefined;
+}
+
+/** Failed or denied work stays visible instead of disappearing into a group. */
+export function hasToolFailure(part: ToolPart): boolean {
+  if (part.state === "output-error" || part.state === "output-denied") return true;
+  const code = part.state === "output-available" ? exitCodeOf(part.output) : undefined;
+  return code != null && code !== 0;
 }
 
 /** `+N −M` for a write/edit output that carries a unified diff. */

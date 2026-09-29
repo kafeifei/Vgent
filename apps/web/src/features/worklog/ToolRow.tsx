@@ -11,6 +11,7 @@ import {
   describeTool,
   diffStatOf,
   exitCodeOf,
+  field,
   isToolStreaming,
   type ToolPart,
 } from "./toolMeta";
@@ -57,8 +58,8 @@ export function ChildTranscript({ parts, preliminary }: { parts: UIMessage["part
           const display = describeTool(tool);
           return (
             <div key={index} className="flex min-h-row-tool items-center gap-xs text-fg-muted text-sm">
-              <span className={cn("flex-none", display.kind === "bash" && "font-mono text-code")}>{display.verb}</span>
-              <span className={cn("min-w-0 truncate text-fg-faint", display.kind === "bash" && "font-mono text-code")}>{display.target}</span>
+              <span className={cn("flex-none", display.verb === "$" && "font-mono text-code")}>{display.verb}</span>
+              <span className={cn("min-w-0 truncate text-fg-faint", display.verb === "$" && "font-mono text-code")}>{display.target}</span>
             </div>
           );
         }
@@ -116,14 +117,14 @@ export function ToolRow({
       <button
         type="button"
         onClick={() => (plan != null ? setPlanOpen((value) => !value) : onInspect(part))}
-        title={display.kind === "agent" ? "查看子代理详情" : undefined}
+        title={display.kind === "agent" ? "查看子代理详情" : display.kind === "bash" ? field(part.input, "command") : undefined}
         className="group/tool flex min-h-row-tool w-full items-center gap-xs text-left text-fg-muted text-md leading-chat hover:text-fg"
       >
         {streaming && <Spinner />}
         {display.kind === "agent" && <Bot className="size-md flex-none text-fg-faint" aria-hidden="true" />}
-        <span className={cn("flex-none", display.kind === "bash" && "font-mono text-code")}>{display.verb}</span>
+        <span className={cn("flex-none", display.verb === "$" && "font-mono text-code")}>{display.verb}</span>
         {display.kind !== "agent" && (
-          <span className={cn("min-w-0 truncate text-fg-faint group-hover/tool:text-fg-muted", display.kind === "bash" && "font-mono text-code")}>
+          <span className={cn("min-w-0 truncate text-fg-faint group-hover/tool:text-fg-muted", display.verb === "$" && "font-mono text-code")}>
             {display.target}
           </span>
         )}
@@ -138,6 +139,8 @@ export function ToolRow({
         <span className="ml-auto flex-none text-fg-faint text-xs">
           {part.state === "output-error" ? (
             <span className="text-danger">失败</span>
+          ) : part.state === "output-denied" ? (
+            <span className="text-danger">已拒绝</span>
           ) : exitCode != null ? (
             <span className={cn("font-mono", exitCode !== 0 && "text-danger")}>exit {exitCode}</span>
           ) : streaming ? (

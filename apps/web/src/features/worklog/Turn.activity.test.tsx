@@ -42,15 +42,50 @@ const steps = [
 ];
 
 describe("a running turn", () => {
+  it("folds consecutive scripts and keeps their running state on the group", () => {
+    const html = htmlOf([
+      bash("loop", 'for f in *.ts; do cat "$f"; done'),
+      bash("node", "node -e 'console.log(1)'", "input-available"),
+      { type: "text", text: "接下来查看细节" },
+      { ...bash("single", "node -e 'console.log(2)'"), input: { command: "node -e 'console.log(2)'", description: "查看组件的渲染细节" } } as UIMessage["parts"][number],
+    ], true);
+    expect(html).toContain("执行 2 条命令");
+    expect(html).toContain("animate-spin");
+    expect(html).not.toContain("for f in");
+    expect(html).toContain("查看组件的渲染细节");
+    expect(html.indexOf("执行 2 条命令")).toBeLessThan(html.indexOf("接下来查看细节"));
+    expect(html.indexOf("接下来查看细节")).toBeLessThan(html.indexOf("查看组件的渲染细节"));
+  });
+
+  it("groups Codex commandExecution records by their inner operation and retains a running indicator", () => {
+    const commands = [
+      "/bin/zsh -lc 'cat package.json && rg --files apps | head -80'",
+      "/bin/zsh -lc 'git status --short && git worktree list --porcelain'",
+      "/bin/zsh -lc 'cat apps/desktop/README.md'",
+    ];
+    const parts = commands.map((command, index) => ({
+      type: "dynamic-tool", toolName: "Bash", toolCallId: `codex-${index}`,
+      state: index === 2 ? "input-available" : "output-available", input: { command, cwd: "/repo" },
+    })) as UIMessage["parts"];
+    const html = htmlOf([...parts, bash("build", "/bin/zsh -lc 'pnpm desktop:build'")], true);
+    expect(html).toContain("读取 2 次 · 搜索 1 次");
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain("animate-spin");
+    expect(html).not.toContain("git worktree list");
+    expect(html).not.toContain("cat package.json");
+    expect(html).toContain("pnpm desktop:build");
+    expect(htmlOf(parts)).toContain("工作了 3 步");
+  });
+
   it("is the process in order: one thought row, looks folded with counts, a command on its own line", () => {
     const html = htmlOf(steps.slice(0, 4), true);
     expect(html).toContain("思考");
-    expect(html).toContain("读取 2 个文件");
+    expect(html).toContain("读取 2 次");
     expect(html).not.toContain("sed -n 1,40p");
     expect(html).toContain("pnpm test");
     expect(html).not.toContain("工作了");
-    expect(html.indexOf("思考")).toBeLessThan(html.indexOf("读取 2 个文件"));
-    expect(html.indexOf("读取 2 个文件")).toBeLessThan(html.indexOf("pnpm test"));
+    expect(html.indexOf("思考")).toBeLessThan(html.indexOf("读取 2 次"));
+    expect(html.indexOf("读取 2 次")).toBeLessThan(html.indexOf("pnpm test"));
   });
 
   it("says 思考中… while the thought at its end is still going", () => {
@@ -107,6 +142,16 @@ describe("a running turn", () => {
 });
 
 describe("a finished turn", () => {
+  it.each(["output-error", "output-denied", "output-available"])("keeps failed work visible outside completed folds (%s)", (state) => {
+    const failed = { ...bash("failed", "failing-command", state), output: { exitCode: 2 }, errorText: "failed" } as UIMessage["parts"][number];
+    const html = htmlOf([bash("c1", "hidden-before"), failed, bash("c2", "hidden-after"), { type: "text", text: "结果说明" }]);
+    expect(html).toContain("failing-command");
+    expect(html).not.toContain("hidden-before");
+    expect(html).not.toContain("hidden-after");
+    expect(html.match(/工作了 1 步/g)).toHaveLength(2);
+    expect(html).toContain(state === "output-error" ? "失败" : state === "output-denied" ? "已拒绝" : "exit 2");
+  });
+
   it.each([false, true])("keeps a waiting steer actionable outside the fold (applied: %s)", (applied) => {
     const turn = buildTurns([
       { id: "u", role: "user", parts: [{ type: "text", text: "问" }] },
@@ -172,7 +217,7 @@ describe("a finished turn", () => {
     expect(html).toContain("工作了 3 步");
     expect(html).toContain("改完了");
     expect(html).not.toContain("pnpm test");
-    expect(html).not.toContain("读取 2 个文件");
+    expect(html).not.toContain("读取 2 次");
     expect(html).not.toContain("先看看");
     expect(html.indexOf("工作了 3 步")).toBeLessThan(html.indexOf("改完了"));
   });

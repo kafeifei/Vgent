@@ -1,6 +1,6 @@
 import type { UIMessage } from "ai";
 import { describe, expect, it } from "vitest";
-import { exploreCounts, exploreLabel, shellExploreKind } from "./explore";
+import { exploreCounts, exploreKindOf, exploreLabel, shellExploreKind } from "./explore";
 import { buildTurns, type Block } from "./turns";
 
 const tool = (id: string, name: string, input: Record<string, unknown>, state = "output-available") =>
@@ -13,6 +13,35 @@ const toolBlocks = (parts: UIMessage["parts"]) =>
   ])[0]?.blocks ?? []).filter((block): block is Extract<Block, { kind: "tool" }> => block.kind === "tool");
 
 describe("shellExploreKind", () => {
+  it("recognises Codex shell wrappers and repository/application inspection", () => {
+    expect(shellExploreKind("/bin/zsh -lc 'cat package.json && rg --files apps | head -80'")).toBe("search");
+    expect(shellExploreKind(String.raw`/bin/zsh -lc "rg -n \"debug|安装\" apps -g '!*.lock' | head -180"`)).toBe("search");
+    expect(shellExploreKind("/bin/zsh -lc 'git status --short && git worktree list --porcelain && git branch --show-current'")).toBe("read");
+    expect(shellExploreKind("/bin/zsh -lc 'git merge-base main task && git diff --stat main...task'")).toBe("read");
+    expect(shellExploreKind("/bin/bash -l -c 'git -C /repo --no-pager log -1'")).toBe("read");
+    expect(shellExploreKind("sh -c 'ls src'")).toBe("list");
+    expect(shellExploreKind("/bin/zsh -lc \"pgrep -fl 'Vgent.app|vgent-desktop' || true; mdls -name kMDItemVersion /Applications/Vgent.app 2>/dev/null; defaults read /Applications/Vgent.app/Contents/Info CFBundleShortVersionString; ls -ld /Applications/Vgent.app\"")).toBe("read");
+    expect(shellExploreKind("bash -c \"sh -c 'cat README.md'\"")).toBe("read");
+  });
+
+  it.each([
+    "/bin/zsh -lc 'cat a.ts && pnpm build'",
+    "/bin/zsh -lc 'git worktree add /tmp/new'",
+    "/bin/zsh -lc 'git -C /repo checkout main'",
+    "/bin/zsh -lc 'defaults write app setting value'",
+    "/bin/zsh -lc 'cat a.ts > b.ts'",
+    "/bin/zsh -lc 'sed -i x a.ts'",
+    "/bin/zsh script.sh",
+    "/bin/zsh -lc 'cat a.ts' name extra",
+    "/bin/zsh -ic 'cat a.ts'",
+    "/bin/zsh -lc 'unknown-command'",
+    '/bin/zsh -lc "cat $(touch changed)"',
+    '/bin/zsh -lc \'cat "$(touch changed)"\'',
+    '/bin/zsh -lc "cat `touch changed`"',
+  ])("keeps mutations and ambiguous shell programs out of exploration: %s", (command) => {
+    expect(shellExploreKind(command)).toBeUndefined();
+  });
+
   it("sees a read, a search and a listing through cd, pipes and quotes", () => {
     expect(shellExploreKind("cd /Users/me/Codes/Vgent; sed -n 100,140p packages/server/src/app.ts")).toBe("read");
     expect(shellExploreKind("cat a.ts b.ts | head -50")).toBe("read");
@@ -42,6 +71,20 @@ describe("shellExploreKind", () => {
 });
 
 describe("exploreLabel", () => {
+  it("uses native command actions and counts a compound call once", () => {
+    const tools = toolBlocks([
+      tool("read", "Bash", { command: "custom-reader a.ts", commandActions: [{ type: "read", path: "a.ts" }] }),
+      tool("search", "Bash", { command: "opaque-script", commandActions: [{ type: "read" }, { type: "search", query: "x" }] }),
+      tool("list", "Bash", { command: "opaque-list", commandActions: [{ type: "listFiles", path: "/repo" }] }),
+    ]);
+    expect(exploreCounts(tools)).toEqual({ read: 1, search: 1, list: 1 });
+  });
+
+  it.each([[], [{ type: "unknown" }], [{ type: "read" }, { type: "unknown" }], [null], "invalid"].map(commandActions => ({ commandActions })))("respects unknown or invalid native actions: $commandActions", ({ commandActions }) => {
+    const tools = toolBlocks([tool("native", "Bash", { command: "cat a.ts", commandActions })]);
+    expect(exploreKindOf(tools[0]!.part)).toBeUndefined();
+  });
+
   it("counts each kind of look on one line", () => {
     const tools = toolBlocks([
       tool("c1", "Read", { file_path: "a.ts" }),
@@ -49,6 +92,6 @@ describe("exploreLabel", () => {
       tool("c3", "Grep", { pattern: "x" }),
       tool("c4", "Bash", { command: "ls src" }),
     ]);
-    expect(exploreLabel(exploreCounts(tools))).toBe("读取 2 个文件 · 搜索 1 次 · 列出 1 个目录");
+    expect(exploreLabel(exploreCounts(tools))).toBe("读取 2 次 · 搜索 1 次 · 列目录 1 次");
   });
 });

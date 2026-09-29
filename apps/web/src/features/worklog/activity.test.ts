@@ -1,6 +1,6 @@
 import type { UIMessage } from "ai";
 import { describe, expect, it } from "vitest";
-import { processItemsOf, splitReply, stepCount, thoughtText } from "./activity";
+import { processItemsOf, processSectionsOf, splitReply, stepCount, thoughtText } from "./activity";
 import { buildTurns, type Block } from "./turns";
 
 const tool = (id: string, name: string, input: Record<string, unknown> = { file_path: `${id}.ts`, pattern: "x" }, state = "output-available") =>
@@ -17,7 +17,7 @@ const blocksOf = (parts: UIMessage["parts"]): Block[] =>
 
 const shape = (blocks: Block[]) =>
   processItemsOf(blocks).map((item) =>
-    item.kind === "thought" ? `thought:${item.parts.length}` : item.kind === "explore" ? `explore:${item.tools.length}` : item.block.kind,
+    item.kind === "thought" ? `thought:${item.parts.length}` : "tools" in item ? `${item.kind}:${item.tools.length}` : item.block.kind,
   );
 
 describe("processItemsOf", () => {
@@ -29,7 +29,7 @@ describe("processItemsOf", () => {
     ]);
   });
 
-  it("folds two or more consecutive looks and leaves a lone look and every command alone", () => {
+  it("groups exploration separately from commands and edits", () => {
     expect(
       shape(
         blocksOf([
@@ -44,6 +44,31 @@ describe("processItemsOf", () => {
         ]),
       ),
     ).toEqual(["explore:3", "tool", "tool", "tool", "explore:2"]);
+  });
+
+  it("groups unclassified loops and inline scripts without guessing what they do", () => {
+    expect(shape(blocksOf([
+      tool("read1", "Read"), tool("read2", "Read"),
+      bash("loop", 'F=/app/main.js; for s in setup worktree; do grep "$s" "$F"; done'),
+      reasoning("再看一下"),
+      bash("node", `node -e 'const s=require("fs").readFileSync("app.js","utf8"); console.log(s.slice(0,50))'`),
+      { type: "text", text: "正文保持原位" },
+      bash("single", "python3 -c 'print(1)'"),
+      tool("edit", "Edit"),
+    ]))).toEqual(["thought:1", "explore:2", "commands:2", "text", "tool", "tool"]);
+  });
+
+  it.each(["output-error", "output-denied", "approval-requested"])("keeps %s calls between separate command groups", (state) => {
+    expect(shape(blocksOf([
+      bash("c1", "pnpm test"), bash("c2", "pnpm build"),
+      bash("attention", "pnpm check", state),
+      bash("c3", "node script.js"), bash("c4", "python3 script.py"),
+    ]))).toEqual(["commands:2", "tool", "commands:2"]);
+  });
+
+  it("does not fold a nonzero exit code into an exploration group", () => {
+    const failed = { ...bash("failed", "rg missing"), output: { exitCode: 1 } } as UIMessage["parts"][number];
+    expect(shape(blocksOf([tool("read1", "Read"), failed, tool("read2", "Read")]))).toEqual(["tool", "tool", "tool"]);
   });
 
   it("ends a stretch at a reply, an interjection and a card, which stay in place", () => {
@@ -61,6 +86,18 @@ describe("processItemsOf", () => {
         ]),
       ),
     ).toEqual(["explore:2", "text", "thought:1", "tool", "steer", "tool", "tool"]);
+  });
+});
+
+describe("processSectionsOf", () => {
+  it.each([
+    { name: "Bash", state: "approval-requested" },
+    { name: "askUserQuestions", state: "input-available" },
+  ])("keeps pending $name outside completed activity folds", ({ name, state }) => {
+    const blocks = blocksOf([bash("before", "pnpm test"), tool("pending", name, {}, state), bash("after", "pnpm build")]);
+    const sections = processSectionsOf(blocks);
+    expect(sections.map(section => section.kind)).toEqual(["activity", "attention", "activity"]);
+    expect(sections[1]).toMatchObject({ block: { part: { toolCallId: "pending" } } });
   });
 });
 

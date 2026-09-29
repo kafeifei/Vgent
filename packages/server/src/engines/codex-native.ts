@@ -203,7 +203,9 @@ export async function createNativeCodexRunner(
         emit({ type: "reasoning-start", id });
       } else if (type === "commandExecution" || type === "fileChange" || type === "webSearch") {
         const name = toolName(type);
-        const input = type === "commandExecution" ? { command: item.command, cwd: item.cwd } : type === "fileChange" ? { changes: item.changes } : { query: item.query };
+        const input = type === "commandExecution"
+          ? { command: item.command, cwd: item.cwd, ...(Array.isArray(item.commandActions) ? { commandActions: item.commandActions } : {}) }
+          : type === "fileChange" ? { changes: item.changes } : { query: item.query };
         toolOpen.set(id, { name, input });
         emit({ type: "tool-input-start", id, toolName: name, dynamic: true });
         emit({ type: "tool-input-delta", id, delta: JSON.stringify(input) });

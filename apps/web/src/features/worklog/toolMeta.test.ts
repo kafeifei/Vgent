@@ -20,6 +20,15 @@ describe("describeTool", () => {
     expect(withoutCd("git log | cd x")).toBe("git log | cd x");
   });
 
+  it("prefers an Engine title or description without changing the command or its terminal routing", () => {
+    const command = "node -e 'console.log(1)'";
+    const call = part("tool-bash", { command, description: "提取界面实现片段" });
+    expect(describeTool(call)).toMatchObject({ kind: "bash", verb: "执行", target: "提取界面实现片段" });
+    expect(describeTool({ ...call, title: "查看初始化实现" })).toMatchObject({ target: "查看初始化实现" });
+    expect(describeTool({ ...call, title: "  " })).toMatchObject({ target: "提取界面实现片段" });
+    expect(call.input).toEqual({ command, description: "提取界面实现片段" });
+  });
+
   it("hands write/edit a file for the chip and falls back to the tool name", () => {
     expect(describeTool(part("tool-edit", { file_path: "a/b.ts" })).file).toBe("a/b.ts");
     expect(describeTool(part("tool-write", { file_path: "a/b.ts" })).kind).toBe("write");

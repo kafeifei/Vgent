@@ -6,9 +6,10 @@ Tauri 2 的 macOS 桌面壳。它本身没有界面代码：窗口是一个浏�
 
 ```bash
 pnpm desktop:build          # 仓库根目录执行
+pnpm desktop:install        # 装到 /Applications/Vgent.app
 ```
 
-产物在 `apps/desktop/src-tauri/target/release/bundle/macos/Vgent.app`，双击即可运行。第一次 cargo 编译约 5–10 分钟。
+产物在 `apps/desktop/src-tauri/target/release/bundle/macos/Vgent.app`（设了 `CARGO_TARGET_DIR` 就在它下面），第一次 cargo 编译约 5–10 分钟。`desktop:install` 先核对产物的版本号和 `runtime.json` 里的提交等于当前 main，再原子替换；换下来的旧包改名为 `Vgent.app.old-<时间>`，没有 Vgent 进程在用时移进废纸篓，从不删除，也不启动或退出正在运行的实例。
 
 `tauri build` 之前会自动跑 `scripts/prepare-desktop.mjs`（也可以单独 `pnpm --filter @vgent/desktop prepare:resources`），它做五件事：
 

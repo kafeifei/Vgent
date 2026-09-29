@@ -15,6 +15,7 @@
     "desktop:build": "pnpm --filter @vgent/desktop build",
     "desktop:dev": "pnpm --filter @vgent/desktop dev",
     "desktop:bump": "node apps/desktop/scripts/bump-build.mjs",
+    "desktop:install": "node apps/desktop/scripts/install-app.mjs",
     "test:watch": "vitest",
     "clean": "rm -rf packages/*/dist apps/*/dist"
   },

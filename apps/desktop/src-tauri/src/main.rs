@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backend;
+mod notify;
 mod unfinished;
 
 use backend::{Backend, BackendReady, SpawnError};
@@ -231,10 +232,11 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
-        // 系统通知: the page calls it through `window.__TAURI__.notification`,
-        // the same way it reaches the dialog plugin. Only the three commands
-        // listed in `capabilities/main.json` are open to it.
+        // 系统通知: the page asks the plugin for permission through
+        // `window.__TAURI__.notification`, and sends through `notify_task` so a
+        // click can open the task. `capabilities/main.json` opens exactly those.
         .plugin(tauri_plugin_notification::init())
+        .invoke_handler(tauri::generate_handler![notify::notify_task])
         .manage(lifecycle)
         .setup(|app| {
             let menu = Menu::default(app.handle())?;

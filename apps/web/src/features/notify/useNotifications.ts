@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { ThreadStatus, ThreadSummary } from "@/lib/types";
-import { sendSystemNotification } from "./host";
+import { onNotificationOpen, sendSystemNotification } from "./host";
 import { decideNotification } from "./notify";
 
 /** The gate is `document.hidden || !document.hasFocus()`; this is its positive form. */
@@ -24,6 +24,13 @@ export function useNotifications(options: {
 }): void {
   const { threads, enabled, onSelect, detailOf } = options;
   const seen = useRef<Map<string, ThreadStatus>>(new Map());
+  const latest = useRef(threads);
+  latest.current = threads;
+
+  // A click on a task deleted since it was announced just leaves the window up.
+  useEffect(() => onNotificationOpen((threadId) => {
+    if (latest.current.some((thread) => thread.id === threadId)) onSelect(threadId);
+  }), [onSelect]);
 
   useEffect(() => {
     const ledger = seen.current;
@@ -33,10 +40,10 @@ export function useNotifications(options: {
       ledger.set(thread.id, thread.status);
       const decision = decideNotification({ thread, previous, enabled, focused, detail: detailOf(thread.id) });
       if (decision == null) continue;
-      void sendSystemNotification(decision, () => onSelect(decision.threadId));
+      void sendSystemNotification(decision);
     }
     for (const id of [...ledger.keys()]) {
       if (!threads.some((thread) => thread.id === id)) ledger.delete(id);
     }
-  }, [detailOf, enabled, onSelect, threads]);
+  }, [detailOf, enabled, threads]);
 }

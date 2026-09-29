@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import { ChevronRight, CircleUserRound, RefreshCw } from "lucide-react";
+import { ChevronRight, RefreshCw } from "lucide-react";
 import { Popover } from "@/components/Popover";
 import type { ApiClient } from "@/lib/api";
 import { BUILD_DETAIL, BUILD_LABEL } from "@/lib/build";
@@ -101,7 +101,7 @@ export function AccountMenu({ client, connected, onManage }: { client: ApiClient
   // Keep polling even with the popover closed or no task selected.
   const accounts = useAccounts(client);
   return <Popover side="top" popupRole="dialog" ariaLabel="账号用量" className="w-figure max-w-[calc(100vw-var(--spacing-lg))] p-0" trigger={props => <button {...props} type="button" aria-label="账号用量" className="flex min-w-0 flex-1 items-center gap-sm rounded-md py-2xs text-left hover:bg-bg-hover">
-    <CircleUserRound aria-hidden className="size-lg flex-none text-fg-muted" />
+    <span aria-hidden className="flex flex-none items-center gap-xs text-fg-muted"><AccountLogo id="github" className="size-lg" /><AccountLogo id="codex" className="size-lg" /><AccountLogo id="claude" className="size-lg" /></span>
     <span className="flex min-w-0 flex-1 flex-col"><span className="truncate text-body text-fg">账号用量</span><span title={BUILD_DETAIL} className={cn("truncate text-2xs", connected ? "text-fg-faint" : "text-danger")}>{connected ? BUILD_LABEL : "连接断开"}</span></span>
   </button>}>{close => <AccountPanel {...accounts} remote={client.remoteSession != null} manage={id => { close(); onManage(id); }} />}</Popover>;
 }

@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+import { createClient } from "@/lib/api";
+import { BUILD_LABEL } from "@/lib/build";
 import type { AccountSnapshot, AccountSummary, UsageWindow } from "@/lib/types";
-import { AccountPanel, AccountRow, Quota } from "./AccountMenu";
+import { AccountMenu, AccountPanel, AccountRow, Quota } from "./AccountMenu";
+import { useAccounts } from "./useAccounts";
+
+vi.mock("./useAccounts", () => ({ useAccounts: vi.fn() }));
 
 const noop = () => {};
 const resetsAt = "2026-09-29T13:30:00Z";
@@ -23,6 +28,29 @@ const panel = (props: { error?: string; remote?: boolean } = {}) => renderToStat
 
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-29T12:00:00Z")); });
 afterEach(() => { vi.useRealTimers(); });
+
+describe("account menu trigger branding", () => {
+  const states: { name: string; state: ReturnType<typeof useAccounts>; connected: boolean }[] = [
+    { name: "loading", state: { refreshing: true, refresh: async () => {} }, connected: true },
+    { name: "signed in", state: { snapshot, refreshing: false, refresh: async () => {} }, connected: true },
+    { name: "signed out", state: { snapshot: { ...snapshot, accounts: snapshot.accounts.map(a => ({ ...a, loggedIn: false })) }, refreshing: false, refresh: async () => {} }, connected: true },
+    { name: "disconnected without a snapshot", state: { refreshing: false, error: "读取失败", refresh: async () => {} }, connected: false },
+  ];
+  it.each(states)("keeps all three brands while $name", ({ state, connected }) => {
+    vi.mocked(useAccounts).mockReturnValue(state);
+    const html = renderToStaticMarkup(<AccountMenu client={createClient("test-token")} connected={connected} onManage={noop} />);
+    for (const id of ["github", "codex", "claude"]) {
+      expect(html).toContain(`mask:url(/account-logos/${id}.svg)`);
+      expect(html).toContain(`-webkit-mask:url(/account-logos/${id}.svg)`);
+    }
+    expect(html).toContain('aria-label="账号用量"');
+    expect(html).toContain('aria-haspopup="dialog"');
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain(connected ? BUILD_LABEL : "连接断开");
+    expect(html).not.toContain('role="meter"');
+    expect(html).not.toContain("codex@example.com");
+  });
+});
 
 describe("account panel static presentation", () => {
   it("starts with three compact account rows and no detail content", () => {

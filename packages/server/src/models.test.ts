@@ -379,7 +379,7 @@ describe("contextOptionsFor", () => {
   });
 
   it("gives Claude Code standard or long, and long only to a model the catalog says can do it", () => {
-    expect(contextOptionsFor("claude-code", undefined, 1_000_000)).toEqual({ contextOptions: [200_000, 1_000_000] });
+    expect(contextOptionsFor("claude-code", undefined, 1_000_000)).toEqual({ contextOptions: [200_000, 1_000_000], contextWindow: 200_000 });
     expect(contextOptionsFor("claude-code", undefined, 200_000)).toEqual({});
   });
 });

@@ -6,7 +6,7 @@ import { describeSubscriptionAuth, type ModelCost } from "@vgent/providers";
 import { gateway as defaultGateway } from "ai";
 import type { EngineId, Logger } from "./types.js";
 import { silentLogger } from "./types.js";
-import { CLAUDE_CODE_LONG_CONTEXT } from "./engines/claude-code.js";
+import { CLAUDE_CODE_LONG_CONTEXT, CLAUDE_CODE_STANDARD_CONTEXT } from "./engines/claude-code.js";
 import { DEFAULT_REASONING_LEVEL, defaultLevelFor, reasoningFor } from "./reasoning.js";
 
 /** One selectable model. `id` is what a thread's `model` field is set to. */
@@ -127,20 +127,18 @@ const GATEWAY_SOURCE: ModelSource = { kind: "gateway", name: "AI Gateway", logo:
 const LONG_CONTEXT = 1_000_000;
 const SHORT_CONTEXT_OPTION = 300_000;
 
-/** Claude Code's window when the model name carries no `[1m]`. */
-const CLAUDE_CODE_STANDARD_CONTEXT = 200_000;
-
 /**
  * `ModelEntry.contextOptions` out of the two things known about a model's
  * window: what the engine's own source said, and what the provider catalog
  * lists; a model with a single, long window gets a shorter one added. Claude
- * Code is its own case — its choice is standard or long, and long
- * exists only for a model the catalog says can do it.
+ * Code is its own case — its choice is standard or long, long exists only for
+ * a model the catalog says can do it, and standard is what such a model runs
+ * with unless the task picks long, so it is the entry's `contextWindow` too.
  */
-export function contextOptionsFor(engine: EngineId, own: number | undefined, listed: number | undefined): Pick<ModelEntry, "contextOptions"> {
+export function contextOptionsFor(engine: EngineId, own: number | undefined, listed: number | undefined): Pick<ModelEntry, "contextOptions" | "contextWindow"> {
   if (engine === "claude-code") {
     const long = Math.max(own ?? 0, listed ?? 0);
-    return long >= CLAUDE_CODE_LONG_CONTEXT ? { contextOptions: [CLAUDE_CODE_STANDARD_CONTEXT, long] } : {};
+    return long >= CLAUDE_CODE_LONG_CONTEXT ? { contextOptions: [CLAUDE_CODE_STANDARD_CONTEXT, long], contextWindow: CLAUDE_CODE_STANDARD_CONTEXT } : {};
   }
   const options = [...new Set([own, listed].filter((value): value is number => value != null))].sort((a, b) => a - b);
   // A model known only by a 1M window still gets a choice (用户 2026-09-20): a

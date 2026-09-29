@@ -32,6 +32,7 @@ import { DEFAULT_VGENT_MODEL } from "./engines/vgent.js";
 import type { Files } from "./files.js";
 import { defaultDownloadsDir, saveDownload } from "./downloads.js";
 import { createFiles } from "./files.js";
+import { harnessBootstrapRecipe } from "@vgent/engines";
 import type { HarnessEngineId, HarnessRuntime } from "./harness-runtime.js";
 import { createHarnessRuntime } from "./harness-runtime.js";
 import type { ChangesResponse, DiffBase, Git } from "./git.js";
@@ -394,7 +395,14 @@ export function createApp(options: CreateAppOptions): VgentApp {
         (await threads.list()).some(
           (thread) => thread.engine === engine && (LIVE_FOR_RUNTIME.includes(thread.status) || runs.isRunning(thread.id)),
         ),
+      // Like the upgrade, only for the app's own runtimes: a test server must not write into them.
+      ...(options.autoUpgradeRuntimes === true ? { bootstrapRecipe: harnessBootstrapRecipe } : {}),
     });
+  // An install the last run did not live to finish leaves an engine unable to
+  // start, and a new adapter recipe would pull its CLI back to the adapter's
+  // pins; putting both in order is the first thing a new run does, asked or
+  // not, and no session is created before it is over.
+  const runtimeReady = harnessRuntime.recover();
 
   const pendingWorkspaces = new Map<string, Promise<void>>();
   const whenWorkspaceReady = async (id: string): Promise<void> => {
@@ -407,6 +415,9 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   const runs = createRunManager({
     whenWorkspaceReady,
+    whenEngineReady: async (engine) => {
+      if (engine === "claude-code" || engine === "codex") await runtimeReady;
+    },
     threads,
     projects,
     settings,
@@ -1678,9 +1689,6 @@ export function createApp(options: CreateAppOptions): VgentApp {
       .catch((error: unknown) => log.warn("自动升级引擎运行时失败", error));
   };
   const runtimeTimers: NodeJS.Timeout[] = [];
-  // An install the last run did not live to finish leaves an engine unable to
-  // start; putting it back is the first thing a new run does, asked or not.
-  void harnessRuntime.recover();
   if (options.autoUpgradeRuntimes === true) {
     runtimeTimers.push(setTimeout(autoUpgradeTick, 60_000), setInterval(autoUpgradeTick, RUNTIME_CHECK_MS));
     for (const timer of runtimeTimers) timer.unref();
@@ -1744,8 +1752,9 @@ export function createApp(options: CreateAppOptions): VgentApp {
               source: { kind: "provider" as const, id: provider.id, name: provider.name, ...(hasLogo.has(provider.id) ? { logo: provider.id } : {}) },
               ...(listed?.vendor != null ? { vendor: listed.vendor } : {}),
               ...reasoningFor(engine, listed?.reasoningLevels),
-              ...contextOptionsFor(engine, model.contextWindow, listed?.contextWindow),
               ...(window != null ? { contextWindow: window } : {}),
+              // After the window: Claude Code runs a long-capable model on its standard one.
+              ...contextOptionsFor(engine, model.contextWindow, listed?.contextWindow),
             };
           }),
         )

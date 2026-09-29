@@ -1,8 +1,9 @@
 import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { harnessBootstrapRecipe } from "@vgent/engines";
 import { afterEach, describe, expect, it } from "vitest";
-import { compareVersions, createHarnessRuntime, type HarnessRuntime } from "./harness-runtime.js";
+import { bootstrapIdentity, compareVersions, createHarnessRuntime, type BootstrapRecipe, type HarnessRuntime } from "./harness-runtime.js";
 
 /**
  * A pretend bootstrap directory and a pretend pnpm. "Installing" is writing the
@@ -18,7 +19,20 @@ afterEach(async () => {
 const CLI = "@anthropic-ai/claude-code";
 const SDK = "@anthropic-ai/claude-agent-sdk";
 
-async function fixture(options: { busy?: boolean; brokenVersion?: string; failStagedAdd?: boolean; onStageAdd?: () => Promise<void> } = {}) {
+/** An adapter recipe the way the Claude Code adapter lays one out. */
+const recipeOf = (dependencies: Record<string, string>, bridge: string): BootstrapRecipe => ({
+  harnessId: "claude-code",
+  bootstrapDir: ".harness-bootstrap/claude-code",
+  files: [
+    { path: ".harness-bootstrap/claude-code/package.json", content: JSON.stringify({ dependencies }) },
+    { path: ".harness-bootstrap/claude-code/pnpm-lock.yaml", content: `lock: ${dependencies[CLI]}\n` },
+    { path: ".harness-bootstrap/claude-code/pnpm-workspace.yaml", content: `allowBuilds:\n  '${CLI}@${dependencies[CLI]}': true\n` },
+    { path: ".harness-bootstrap/claude-code/bridge.mjs", content: bridge },
+  ],
+  commands: [{ command: "pnpm install --frozen-lockfile --store-dir .pnpm-store" }, { command: "./node_modules/.bin/claude --version" }],
+});
+
+async function fixture(options: { busy?: boolean; brokenVersion?: string; failStagedAdd?: boolean; onStageAdd?: () => Promise<void>; recipe?: () => BootstrapRecipe | undefined } = {}) {
   const root = await mkdtemp(join(tmpdir(), "vgent-rt-"));
   roots.push(root);
   const dir = join(root, ".harness-bootstrap", "claude-code");
@@ -43,6 +57,7 @@ async function fixture(options: { busy?: boolean; brokenVersion?: string; failSt
     isBusy: async () => busy,
     dataDirs: { "claude-code": root, codex: join(root, "no-codex") },
     now: () => new Date("2026-09-20T00:00:00.000Z"),
+    ...(options.recipe != null ? { bootstrapRecipe: async (engine) => (engine === "claude-code" ? options.recipe?.() : undefined) } : {}),
     fetchJson: async (url) => {
       if (url.includes("claude-agent-sdk")) return { version: "0.3.278", claudeCodeVersion: "2.1.278" };
       return { version: "0.155.1" };
@@ -89,6 +104,22 @@ describe("compareVersions", () => {
     expect(compareVersions("0.155.1", "0.149.1")).toBe(1);
     expect(compareVersions("2.1.9", "2.1.10")).toBe(-1);
     expect(compareVersions("1.0.0", "1.0.0")).toBe(0);
+  });
+});
+
+describe("the adapters' own recipes", () => {
+  // What `adoptRecipe` relies on: the bridge and the three project files flat
+  // in the bootstrap directory, and the runtime pinned in its package.json.
+  it.each([
+    ["claude-code", [CLI, SDK]],
+    ["codex", ["@openai/codex-sdk"]],
+  ] as const)("%s lays its recipe out as expected", async (engine, pinned) => {
+    const recipe = (await harnessBootstrapRecipe(engine))!;
+    expect(recipe.bootstrapDir).toBe(`.harness-bootstrap/${engine}`);
+    for (const file of recipe.files) expect(file.path).toMatch(new RegExp(`^\\.harness-bootstrap/${engine}/[a-z-]+\\.(json|yaml|mjs)$`));
+    const manifest = JSON.parse(recipe.files.find((file) => file.path.endsWith("/package.json"))!.content) as { dependencies: Record<string, string> };
+    for (const name of pinned) expect(manifest.dependencies[name]).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(bootstrapIdentity(recipe)).toMatch(/^[0-9a-f]{16}$/);
   });
 });
 
@@ -269,6 +300,56 @@ describe("createHarnessRuntime", () => {
     );
     expect(await claude()).toMatchObject({ broken: true });
     expect(calls).toEqual([]);
+  });
+
+  it("takes a new bridge on in place rather than let the adapter reinstall its older pins", async () => {
+    let recipe: BootstrapRecipe | undefined;
+    const { runtime, dir, root, calls, claude } = await fixture({ recipe: () => recipe });
+    await writeFile(join(dir, "bridge.mjs"), "old bridge");
+    await runtime.upgrade("claude-code");
+    await runtime.reportTurn("claude-code", { ok: true, produced: true });
+
+    // The next build patched the bridge; the adapter still pins what it always did.
+    recipe = recipeOf({ [CLI]: "2.1.245", [SDK]: "0.3.245" }, "new bridge");
+    await runtime.recover();
+
+    expect(await readFile(join(dir, "bridge.mjs"), "utf8")).toBe("new bridge");
+    expect(await stat(join(dir, `.bootstrap-${bootstrapIdentity(recipe)}.ok`))).toBeDefined();
+    expect(await claude()).toMatchObject({ installed: "2.1.278" });
+    expect(await readFile(join(dir, "pnpm-lock.yaml"), "utf8")).toBe("lock: 2.1.278\n");
+    expect(await readFile(join(dir, "pnpm-workspace.yaml"), "utf8")).toContain(`'${CLI}@2.1.278': true`);
+    expect(calls.filter((call) => call.startsWith("pnpm install "))).toHaveLength(0);
+    expect(await readFile(join(root, ".vgent-runtime.log"), "utf8")).toContain("kept 2.1.278 instead of reinstalling 2.1.245");
+  });
+
+  it("leaves to the adapter a recipe that brings anything new, and one it has already applied", async () => {
+    let recipe: BootstrapRecipe | undefined;
+    const { runtime, dir } = await fixture({ recipe: () => recipe });
+    await writeFile(join(dir, "bridge.mjs"), "old bridge");
+    const marker = (value: BootstrapRecipe) => stat(join(dir, `.bootstrap-${bootstrapIdentity(value)}.ok`)).catch(() => undefined);
+
+    // A newer CLI, or a dependency the installed tree does not have: the adapter's install is what is wanted.
+    for (const next of [
+      recipeOf({ [CLI]: "2.1.300", [SDK]: "0.3.300" }, "newer pins"),
+      recipeOf({ [CLI]: "2.1.245", [SDK]: "0.3.245", ws: "8.21.0" }, "new dependency"),
+    ]) {
+      recipe = next;
+      await runtime.recover();
+      expect(await marker(next)).toBeUndefined();
+      expect(await readFile(join(dir, "bridge.mjs"), "utf8")).toBe("old bridge");
+    }
+
+    // Already installed by the adapter: not rewritten.
+    recipe = recipeOf({ [CLI]: "2.1.245", [SDK]: "0.3.245" }, "same pins");
+    await writeFile(join(dir, `.bootstrap-${bootstrapIdentity(recipe)}.ok`), "");
+    await runtime.recover();
+    expect(await readFile(join(dir, "bridge.mjs"), "utf8")).toBe("old bridge");
+
+    // Never installed: nothing to keep.
+    await rm(join(dir, "node_modules"), { recursive: true });
+    recipe = recipeOf({ [CLI]: "2.1.100", [SDK]: "0.3.100" }, "first install");
+    await runtime.recover();
+    expect(await marker(recipe)).toBeUndefined();
   });
 
   it("ignores turns of an engine it does not keep, and turns when nothing is pending", async () => {

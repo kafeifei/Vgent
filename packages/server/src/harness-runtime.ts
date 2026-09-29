@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { renameSync } from "node:fs";
 import { appendFile, copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
@@ -44,8 +45,12 @@ import { silentLogger } from "./types.js";
  * be readable after the fact.
  *
  * The adapter's own marker (`.bootstrap-<hash>.ok`) is left alone, so it does
- * not reinstall its pins on top. A new adapter release with a different recipe
- * does, and the next check simply upgrades again.
+ * not reinstall its pins on top. A new recipe would make it: the hash covers
+ * the bridge script, which Vgent patches, so every build that touches the
+ * patch changes it. When such a recipe would only move the runtime backwards,
+ * `recover` takes it on in place (`adoptRecipe`); one that pins something
+ * newer, or other dependencies, is the adapter's to install, and the next
+ * check simply upgrades again.
  */
 
 const execFileAsync = promisify(execFile);
@@ -72,6 +77,38 @@ interface RuntimeSpec {
 }
 
 type FetchJson = (url: string) => Promise<unknown>;
+
+/** An adapter's bootstrap recipe, as `HarnessV1.getBootstrap()` gives it. */
+export interface BootstrapRecipe {
+  harnessId: string;
+  bootstrapDir: string;
+  files: ReadonlyArray<{ path: string; content: string }>;
+  commands: ReadonlyArray<{ command: string }>;
+}
+
+/**
+ * The name the adapter's marker carries for a recipe,
+ * `.bootstrap-<identity>.ok`: `@ai-sdk/harness` hashes it this way
+ * (`hashHarnessBootstrap`, schema 1) and does not export the function. Should
+ * the two ever differ, the marker is simply not found and the adapter installs
+ * its own pins, as it would without Vgent.
+ */
+export function bootstrapIdentity(recipe: BootstrapRecipe): string {
+  const hash = createHash("sha256");
+  const push = (value: string): void => {
+    hash.update(value, "utf8");
+    hash.update("\0");
+  };
+  push(recipe.harnessId);
+  push(recipe.bootstrapDir);
+  for (const file of [...recipe.files].sort((a, b) => a.path.localeCompare(b.path))) {
+    push(file.path);
+    push(file.content);
+  }
+  push(JSON.stringify(recipe.commands));
+  push("1");
+  return hash.digest("hex").slice(0, 16);
+}
 
 const REGISTRY = "https://registry.npmjs.org";
 
@@ -177,6 +214,11 @@ export interface HarnessRuntimeOptions {
   /** Overrides each engine's sandbox directory (tests, and nothing else). */
   dataDirs?: Partial<Record<HarnessEngineId, string>>;
   now?: () => Date;
+  /**
+   * The adapter's current recipe for an engine. Absent, a new recipe is never
+   * taken on in place and the adapter reinstalls its pins as it sees fit.
+   */
+  bootstrapRecipe?: (engine: HarnessEngineId) => Promise<BootstrapRecipe | undefined>;
 }
 
 export interface HarnessRuntime {
@@ -190,7 +232,11 @@ export interface HarnessRuntime {
   reportTurn(engine: string, outcome: { ok: boolean; produced: boolean }): Promise<void>;
   /** Check, and upgrade whatever is idle, newer and not known bad. Never throws. */
   autoUpgrade(): Promise<void>;
-  /** Repairs an install that was cut off (the app quit mid-download). Never throws; cheap when there is nothing to do. */
+  /**
+   * Repairs an install that was cut off (the app quit mid-download), and takes
+   * on a new adapter recipe that would only downgrade. Never throws; cheap when
+   * there is nothing to do. A session must not start before the first call is over.
+   */
   recover(): Promise<void>;
 }
 
@@ -637,8 +683,64 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
     }
   };
 
+  /**
+   * 换 bridge 不换 CLI. The adapter keys its install on a hash of the whole
+   * recipe, bridge script included, and on a new one reinstalls its own pins:
+   * a CLI weeks behind the one upgraded here, which the API refuses newer
+   * models to (「Claude Code 2.1.276 does not support this model」) until the
+   * next upgrade tick. When the recipe pins nothing newer than what is
+   * installed and every other dependency exactly as it is, what it would change
+   * is its bridge; that is written here, with the marker, and the adapter
+   * finds itself installed. Anything else is left for the adapter to install.
+   */
+  const adoptRecipe = async (spec: RuntimeSpec): Promise<void> => {
+    if (options.bootstrapRecipe == null || working.has(spec.engine)) return;
+    const recipe = await options.bootstrapRecipe(spec.engine);
+    const prefix = `${spec.bootstrapDir.split(/[\\/]/).join("/")}/`;
+    if (recipe == null || `${recipe.bootstrapDir}/` !== prefix) return;
+    const identity = bootstrapIdentity(recipe);
+    const marker = join(dirOf(spec), `.bootstrap-${identity}.ok`);
+    if (await stat(marker).catch(() => undefined)) return;
+
+    const names = recipe.files.map((file) => (file.path.startsWith(prefix) ? file.path.slice(prefix.length) : ""));
+    if (names.some((name) => name === "" || name.includes("/") || name.includes("\\") || name.startsWith("."))) return;
+    const manifest = recipe.files.find((file) => file.path === `${prefix}package.json`);
+    const dependenciesOf = (value: unknown): Record<string, string> | undefined =>
+      isRecord(value) && isRecord(value.dependencies) ? (value.dependencies as Record<string, string>) : undefined;
+    let wanted: Record<string, string> | undefined;
+    try {
+      wanted = dependenciesOf(manifest == null ? undefined : JSON.parse(manifest.content));
+    } catch {
+      return;
+    }
+    const current = dependenciesOf(await readJson(join(dirOf(spec), "package.json")));
+    const installed = await installedSet(spec);
+    if (wanted == null || current == null || installed == null) return;
+    for (const name of spec.packages) {
+      const pinned = wanted[name];
+      const have = installed[name];
+      if (pinned == null || have == null || compareVersions(have, pinned) < 0) return;
+    }
+    const rest = (deps: Record<string, string>): string =>
+      JSON.stringify(Object.entries(deps).filter(([name]) => !spec.packages.includes(name)).sort(([a], [b]) => a.localeCompare(b)));
+    if (rest(wanted) !== rest(current)) return;
+
+    for (const file of recipe.files) {
+      const name = file.path.slice(prefix.length);
+      if ((PROJECT_FILES as readonly string[]).includes(name)) continue;
+      await writeFile(join(dirOf(spec), name), file.content, { mode: 0o600 });
+    }
+    await writeFile(marker, "", { mode: 0o600 });
+    const pinned = wanted[spec.primary] ?? "?";
+    log.info(`${spec.label} 的 bridge 换了，沿用已装的 ${installed[spec.primary]}，不退回 ${pinned}`);
+    await record(spec, `adopt ${spec.label} recipe ${identity}: new bridge, kept ${installed[spec.primary]} instead of reinstalling ${pinned}`);
+  };
+
   const recoverAll = async (): Promise<void> => {
-    for (const spec of SPECS) await recoverOne(spec).catch((error) => log.error(`恢复 ${spec.label} 失败`, error));
+    for (const spec of SPECS) {
+      await recoverOne(spec).catch((error) => log.error(`恢复 ${spec.label} 失败`, error));
+      await adoptRecipe(spec).catch((error) => log.error(`接管 ${spec.label} 的新 bridge 失败`, error));
+    }
   };
 
   const must = (engine: string): RuntimeSpec => {

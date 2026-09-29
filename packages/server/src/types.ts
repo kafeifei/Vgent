@@ -321,8 +321,9 @@ export interface ThreadRecord {
   /**
    * The context window the task's turns are run with, in tokens — one of the
    * model's `contextOptions`. Absent means the engine's own window for that
-   * model. What it turns into is each engine's: Codex's `model_context_window`,
-   * Claude Code's `[1m]` model suffix, the in-house engine's pruning budget.
+   * model — for Claude Code, its standard 200K. What it turns into is each
+   * engine's: Codex's `model_context_window`, Claude Code's `[1m]` model suffix
+   * and compaction window, the in-house engine's pruning budget.
    */
   contextWindow?: number;
   /** 模式 for the next turn. Absent means `agent`; only a Plan-capable engine may carry `plan`. */

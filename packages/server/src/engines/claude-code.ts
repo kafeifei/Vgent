@@ -46,6 +46,14 @@ const PLAN_INSTRUCTIONS = planModeInstructions({ askTool: false });
 export const CLAUDE_CODE_LONG_CONTEXT = 1_000_000;
 
 /**
+ * The window a Claude Code task runs with when it chose none: the standard
+ * one the picker shows as its default. It has to be said out loud — left to
+ * itself the CLI sizes a model it knows can go long far past it (Opus 5.5
+ * compacts only at 650K), so a task showing 200K would never compact there.
+ */
+export const CLAUDE_CODE_STANDARD_CONTEXT = 200_000;
+
+/**
  * Claude Code takes its 1M window as a suffix on the model name (`opus[1m]`,
  * `claude-opus-5[1m]`) — the same spelling `/model` uses — rather than as a
  * setting. A task that chose the long window gets the suffix; one that chose
@@ -158,18 +166,19 @@ export function createClaudeCodeEngineFactory(): EngineFactory {
       }
 
       // 上下文: Claude Code's long window is asked for on the model name itself.
-      const route = routed == null ? undefined : { ...routed, model: withLongContext(routed.model, ctx.thread.contextWindow) };
-      // The window the task chose is also where the runtime compacts: without
-      // this the CLI compacts at the model's own limit, and a task that chose
-      // 200K on a 1M model would run far past what its ring shows as full.
-      const env = { ...route?.env, ...(ctx.thread.contextWindow != null ? { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(ctx.thread.contextWindow) } : {}) };
+      const window = ctx.thread.contextWindow ?? CLAUDE_CODE_STANDARD_CONTEXT;
+      const route = routed == null ? undefined : { ...routed, model: withLongContext(routed.model, window) };
+      // The window is also where the runtime compacts, chosen or not: without
+      // this the CLI compacts at its own idea of the model's limit, and a task
+      // on 200K would run far past what its ring shows as full.
+      const env = { ...route?.env, CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(window) };
       const instructions = await claudeCodeInstructions(ctx.project.repoPath, ctx.planMode);
 
       const engine = await createClaudeCodeEngine({
         repoPath: ctx.project.repoPath,
         permissionMode: ctx.permissionMode,
-        ...(route != null ? { model: route.model, auth: route.auth } : ctx.thread.model != null ? { model: withLongContext(ctx.thread.model, ctx.thread.contextWindow) } : {}),
-        ...(Object.keys(env).length > 0 ? { env } : {}),
+        ...(route != null ? { model: route.model, auth: route.auth } : ctx.thread.model != null ? { model: withLongContext(ctx.thread.model, window) } : {}),
+        env,
         ...(cua != null ? { tools: asHostTools(cuaTools) } : {}),
         // 推理强度 is the harness's `effort`; thinking itself stays adaptive and
         // `summarized`, which is what puts the reasoning in the stream. A task

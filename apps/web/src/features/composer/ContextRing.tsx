@@ -62,7 +62,7 @@ export function ContextRing({
   // Not named `window`: that would shadow the global one in a browser module.
   // Unknown, it is the smallest window the model is offered with that still
   // holds what was measured: a prompt bigger than the default proves the
-  // default wrong (Claude Code runs Opus 5.5 past 200k with no [1m] asked).
+  // default wrong.
   const limit =
     contextWindow ??
     contextOptions?.find((option) => option >= tokens) ??

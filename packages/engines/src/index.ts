@@ -22,6 +22,7 @@ export {
   type CodexEngine,
   type CodexEngineOptions,
 } from "./codex.js";
+export { harnessBootstrapRecipe } from "./bootstrap.js";
 export { toTUIAgent, type TUIAgent } from "./to-tui-agent.js";
 /**
  * Opaque harness payloads; callers persist them between turns.

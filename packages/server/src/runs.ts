@@ -253,6 +253,12 @@ export function createRunManager(options: {
   /** Wait for a deferred worktree before setup or any turn can start. */
   whenWorkspaceReady?: (id: string) => Promise<void>;
   /**
+   * Wait for the engine's runtime to be in order before a session of it is
+   * created: at start-up the app repairs it, and a session that got there first
+   * would have the adapter reinstall its own, older CLI. Never rejects.
+   */
+  whenEngineReady?: (engine: EngineId) => Promise<void>;
+  /**
    * The task's diff against its baseline, recomputed for the thread record when
    * a turn ends. Injected because the git plumbing belongs to the app, not here;
    * a rejection is logged and the previous value kept — it never fails a turn.
@@ -775,6 +781,7 @@ export function createRunManager(options: {
         // 运行模式 is global and read here, at turn start: an engine that cannot
         // ask runs 全自动 whatever the setting says.
         const permission = effectivePermission(factory.descriptor.capabilities, await settings.get());
+        await options.whenEngineReady?.(thread.engine);
         runner = await factory.create({
           thread,
           project,

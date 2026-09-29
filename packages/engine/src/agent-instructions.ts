@@ -1,9 +1,9 @@
 /**
- * The user's and the project's standing instructions: `AGENTS.md` (the Codex /
- * cross-agent convention) and `CLAUDE.md` (Claude Code's). Claude Code and
- * Codex read theirs on their own; the in-house engine read none, so every rule
- * written there — how this repo ships, which language to answer in — had to be
- * repeated by hand in each task.
+ * The user's and the project's standing instructions. Globally only the
+ * cross-agent `~/.agents/AGENTS.md`: `~/.codex/AGENTS.md` and
+ * `~/.claude/CLAUDE.md` belong to Codex and Claude Code, which read them on
+ * their own. In the project both `AGENTS.md` and `CLAUDE.md` count — that is
+ * where rules like how this repo ships are written down.
  *
  * Unlike skills these are inlined: they are short, and they apply to every turn.
  */
@@ -25,7 +25,7 @@ export interface AgentInstructionsOptions {
    * there, so it is read from here when the worktree has none of that name.
    */
   projectPath?: string;
-  /** Where the global files live. Defaults to the user's home directory. */
+  /** Where the global file lives. Defaults to the user's home directory. */
   home?: string;
 }
 
@@ -43,8 +43,8 @@ const readIfAny = async (path: string): Promise<AgentInstructionsFile | undefine
 };
 
 /**
- * Global files first, then the project's, so the project's come later in the
- * prompt and read as the more specific rule. The same text reached twice (a
+ * The global file first, then the project's, so the project's come later in
+ * the prompt and read as the more specific rule. The same text reached twice (a
  * worktree and its project both tracking `CLAUDE.md`) is kept once.
  */
 export async function loadAgentInstructions({
@@ -52,8 +52,7 @@ export async function loadAgentInstructions({
   projectPath,
   home = homedir(),
 }: AgentInstructionsOptions): Promise<AgentInstructionsFile[]> {
-  const global = [join(home, ".agents", "AGENTS.md"), join(home, ".codex", "AGENTS.md"), join(home, ".claude", "CLAUDE.md")];
-  const candidates = await Promise.all(global.map(readIfAny));
+  const candidates = [await readIfAny(join(home, ".agents", "AGENTS.md"))];
   for (const name of FILE_NAMES) {
     const own = await readIfAny(join(repoPath, name));
     candidates.push(own ?? (projectPath != null && projectPath !== repoPath ? await readIfAny(join(projectPath, name)) : undefined));

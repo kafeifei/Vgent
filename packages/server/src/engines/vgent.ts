@@ -130,8 +130,8 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
         join(homedir(), ".agents", "skills"),
         join(homedir(), ".claude", "skills"),
       ]);
-      // AGENTS.md / CLAUDE.md, global and the project's — the rules the user
-      // already wrote down for Claude Code and Codex hold here too.
+      // ~/.agents/AGENTS.md plus the project's AGENTS.md / CLAUDE.md — the
+      // rules the user already wrote down for this repo hold here too.
       const standing = agentInstructionsSection(
         await loadAgentInstructions({ repoPath: ctx.project.repoPath, projectPath: ctx.projectPath }),
       );

@@ -6,6 +6,10 @@
 
 Vgent 是一个 **Web 优先**的本地 coding agent 工作台，底下可换引擎：现成的 Claude Code、Codex，以及我们自己用 AI SDK 造的引擎。终端入口用官方 `@ai-sdk/tui` 原样提供，不自研 TUI。
 
+### 桌面签名与升级（2026-09-29）
+
+桌面交付使用固定的 `dev.vgent.desktop` 和 Developer ID Application（团队 `UVZM439VGU`）。之前的 ad-hoc 签名以每次变化的 `cdhash` 作为 designated requirement，系统授权不能稳定跨版本沿用。`install-app.mjs` 在替换前校验完整签名、bundle ID、Apple 证书链、Developer ID 类型和团队；缺少正式签名就拒绝安装。仍在使用的旧包放到 `/Applications/.Vgent.app.old-<时间>/Vgent.app`，保留有效的 bundle 名称；兼容清理旧命名的包，按启动时间及显式备份路径识别在用进程。公证与自动更新尚未实现。
+
 ## 三个决策
 
 **0. 主线只有三条边界清楚的路。** Claude Code 原生、Codex 原生、自研引擎（API key / Gateway / Codex 订阅）。每条路里循环、工具、模型属于同一方，不做跨方混搭。

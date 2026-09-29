@@ -3,10 +3,11 @@
 // 先核对产物就是 main 上的当前提交和 build 号，再原子替换；换下来的旧包只在
 // 没有 Vgent 进程可能在用时移进废纸篓，从不删除。不启动、不退出正在运行的 Vgent。
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, renameSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isRetiredPackage, retiredPackageInUse, runningStarts } from "./install-state.mjs";
 
 const desktopRoot = fileURLToPath(new URL("..", import.meta.url));
 const repoRoot = resolve(desktopRoot, "..", "..");
@@ -29,7 +30,11 @@ const head = git("rev-parse", "HEAD");
 if (head !== git("rev-parse", "main")) fail("当前提交不在 main 上，先把 main 快进到它再打包");
 if (git("status", "--porcelain", "--untracked-files=no") !== "") fail("工作区有未提交的改动，产物不等于任何提交");
 if (!existsSync(built)) fail(`找不到产物 ${built}，先 pnpm desktop:build`);
-const version = JSON.parse(readFileSync(join(desktopRoot, "src-tauri", "tauri.conf.json"), "utf8")).version;
+const config = JSON.parse(readFileSync(join(desktopRoot, "src-tauri", "tauri.conf.json"), "utf8"));
+const { version } = config;
+const team = /^Developer ID Application: .+ \(([A-Z0-9]{10})\)$/.exec(config.bundle.macOS.signingIdentity)?.[1];
+if (!team) fail("安装包必须使用固定的 Developer ID Application 签名，临时签名无法跨版本保留系统授权");
+const signingRequirement = `=identifier ${JSON.stringify(config.identifier)} and anchor apple generic and certificate leaf[subject.OU] = "${team}" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists`;
 const builtVersion = run("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleShortVersionString", join(built, "Contents", "Info.plist")]);
 if (builtVersion !== version) fail(`产物是 ${builtVersion}，这个提交是 ${version}；产物可能被别的会话的构建覆盖了`);
 const builtSha = JSON.parse(readFileSync(join(built, "Contents", "Resources", "server", "runtime.json"), "utf8")).gitSha;
@@ -43,17 +48,6 @@ const moveToTrash = (path) => {
   renameSync(path, dest);
 };
 
-/** 正在运行的 Vgent 各进程的启动时间。改名后的旧包里启动的进程，命令行里仍是原路径。 */
-const runningStarts = () => {
-  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  const out = execFileSync("ps", ["-axo", "lstart=,command="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } });
-  return out.split("\n").flatMap((line) => {
-    const m = /^\s*\w{3} (\w{3}) +(\d+) (\d\d):(\d\d):(\d\d) (\d{4})\s+(.*)$/.exec(line);
-    if (m == null || !m[7].startsWith(`${installed}/Contents/MacOS/`)) return [];
-    return [new Date(Number(m[6]), months.indexOf(m[1]), Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5])).getTime()];
-  });
-};
-
 /** 旧包被换下的时间：本脚本写在名字里；更早的命名只能看改名时更新的 ctime。 */
 const retiredAt = (name) => {
   const m = /\.old-(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)$/.exec(name);
@@ -63,25 +57,46 @@ const retiredAt = (name) => {
 };
 
 // 2. 复制到旁边、验签，再两次 rename 换上去。
-const swappedAt = new Date();
 const staging = `${installed}.new`;
 if (existsSync(staging)) moveToTrash(staging);
 run("ditto", [built, staging]);
 run("codesign", ["--verify", "--deep", "--strict", staging]);
-if (existsSync(installed)) renameSync(installed, `${installed}.old-${stampOf(swappedAt)}`);
-renameSync(staging, installed);
+run("codesign", ["--verify", "--test-requirement", signingRequirement, staging]);
+// 旧包保留有效的 .app 名称，避免系统授权框显示 Vgent.app.old-<时间>。
+const swappedAt = new Date();
+const retired = join(applications, `.Vgent.app.old-${stampOf(swappedAt)}`);
+if (existsSync(installed)) {
+  mkdirSync(retired);
+  try {
+    renameSync(installed, join(retired, "Vgent.app"));
+  } catch (error) {
+    rmdirSync(retired);
+    throw error;
+  }
+}
+try {
+  renameSync(staging, installed);
+} catch (error) {
+  if (existsSync(join(retired, "Vgent.app"))) {
+    renameSync(join(retired, "Vgent.app"), installed);
+    rmdirSync(retired);
+  }
+  throw error;
+}
 console.log(`已安装 Vgent ${version}（${head.slice(0, 7)}）到 ${installed}`);
 
 // 3. 每个旧包在「上一个旧包换下」到「它自己换下」之间在岗；这段时间里启动、
 //    现在还活着的进程都跑在它上面。边界那一秒两边都算，宁可多留。
-const starts = runningStarts();
+const starts = runningStarts(execFileSync("ps", ["-axo", "lstart=,command="], {
+  encoding: "utf8", env: { ...process.env, LC_ALL: "C" },
+}), installed);
 const olds = readdirSync(applications)
-  .filter((name) => name.startsWith("Vgent.app.old"))
-  .map((name) => ({ name, at: retiredAt(name) }))
+  .filter(isRetiredPackage)
+  .map((name) => ({ name, path: join(applications, name), at: retiredAt(name) }))
   .sort((a, b) => a.at - b.at);
 let since = -Infinity;
 for (const old of olds) {
-  const inUse = starts.some((t) => t >= since - 1000 && t <= old.at + 1000);
+  const inUse = retiredPackageInUse(old, since, starts, installed);
   if (inUse) {
     console.log(`留着 ${old.name}：还有 Vgent 进程在用它`);
   } else {
@@ -90,6 +105,6 @@ for (const old of olds) {
   }
   since = old.at;
 }
-if (starts.some((t) => t < swappedAt.getTime())) {
+if (starts.length > 0) {
   console.log("Vgent 正在运行，进程仍是旧版；需要用户自己 ⌘Q 后重新打开。");
 }

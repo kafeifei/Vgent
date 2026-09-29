@@ -9,7 +9,9 @@ pnpm desktop:build          # 仓库根目录执行
 pnpm desktop:install        # 装到 /Applications/Vgent.app
 ```
 
-产物在 `apps/desktop/src-tauri/target/release/bundle/macos/Vgent.app`（设了 `CARGO_TARGET_DIR` 就在它下面），第一次 cargo 编译约 5–10 分钟。`desktop:install` 先核对产物的版本号和 `runtime.json` 里的提交等于当前 main，再原子替换；换下来的旧包改名为 `Vgent.app.old-<时间>`，没有 Vgent 进程在用时移进废纸篓，从不删除，也不启动或退出正在运行的实例。
+产物在 `apps/desktop/src-tauri/target/release/bundle/macos/Vgent.app`（设了 `CARGO_TARGET_DIR` 就在它下面），第一次 cargo 编译约 5–10 分钟。`desktop:install` 先核对产物的版本号和 `runtime.json` 里的提交等于当前 main，并验证 bundle ID 和 Developer ID 签名团队，再替换；换下来的旧包保存在 `/Applications/.Vgent.app.old-<时间>/Vgent.app`，保留正常的应用名称。没有 Vgent 进程在用时连目录移进废纸篓，兼容清理以前的 `Vgent.app.old-<时间>`，从不删除，也不启动或退出正在运行的实例。
+
+打包使用 `tauri.conf.json` 中固定的 Developer ID Application 证书（团队 `UVZM439VGU`），构建机器的钥匙串需要有对应私钥。bundle ID 固定为 `dev.vgent.desktop`，让 macOS 的系统授权跨版本沿用；缺少证书时构建失败，不能退回 ad-hoc 签名交付。从旧版 ad-hoc 签名第一次升级后，系统可能要求重新授权一次；仍在运行的旧进程继续使用原来的身份，需用户自己 ⌘Q 重开才切到新包。
 
 `tauri build` 之前会自动跑 `scripts/prepare-desktop.mjs`（也可以单独 `pnpm --filter @vgent/desktop prepare:resources`），它做五件事：
 
@@ -58,7 +60,7 @@ pnpm desktop:dev
 ## 已知限制
 
 - **只支持 macOS**（arm64 / x64），`bundle.targets` 只有 `app`，不出 dmg。
-- **只有 ad-hoc 签名**（`signingIdentity: "-"`），没有公证，没有自动更新。从别的机器拷过去的 `.app` 会被 Gatekeeper 拦。
+- **有 Developer ID 签名，尚无公证和自动更新**。跨机器分发仍需要处理 Gatekeeper 的公证要求。
 - 退出只认 macOS 的正常退出（⌘Q、菜单退出、AppleScript `quit`）。关窗口不会退出。直接对 `vgent-desktop` 进程 `kill` 不会走清理，内置服务会变成孤儿进程（`kill -TERM -<pid>` 手动收掉）。
 - 单窗口，没有多开；桌面实例和命令行 `pnpm server` 共用 `~/.vgent`，`connection.json` 会互相覆盖（壳自己靠 pid 判断，但命令行那边的文件会被抹掉）。
 - Claude Code / Codex 引擎第一次运行时，官方 harness 会在 `~/.vgent/harness/<harness>/` 里用 `pnpm install` 拉自己的 bootstrap（`@anthropic-ai/claude-code` 等不在 `.app` 里）。所以首次使用需要联网，且机器上要有 `pnpm` —— 这也是上面那段登录 shell PATH 的原因之一。

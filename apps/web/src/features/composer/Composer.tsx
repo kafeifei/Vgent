@@ -636,8 +636,8 @@ export function Composer({
               if ("contextWindow" in patch) onPickContext(patch.contextWindow ?? null);
             }}
             {...(modelPicks != null ? { picks: modelPicks } : {})}
-            // A running task refuses the change, so there is nothing to remember either.
-            {...(onRememberPick != null && !live ? { onRemember: onRememberPick } : {})}
+            {...(onRememberPick != null ? { onRemember: onRememberPick } : {})}
+            changesApplyNextTurn={live}
             adoptRemembered={adoptRemembered}
             onCatalog={setCatalog}
             commitDefault={!live}

@@ -31,7 +31,7 @@ afterEach(async () => {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A scripted engine: streams `text` word by word, then persists a fake resume state. */
-function createFakeEngine(options?: { text?: string; deltaDelayMs?: number; writes?: { path: string; text: string }[] }) {
+function createFakeEngine(options?: { text?: string; deltaDelayMs?: number; writes?: { path: string; text: string }[]; beforeText?: () => Promise<void> }) {
   const created: EngineContext[] = [];
   const streamed: ModelMessage[][] = [];
   const text = options?.text ?? "你好 世界 来自 假引擎";
@@ -51,6 +51,7 @@ function createFakeEngine(options?: { text?: string; deltaDelayMs?: number; writ
           const parts = (async function* (): AsyncGenerator<TextStreamPart<ToolSet>> {
             yield { type: "start" };
             yield { type: "text-start", id: "t1" };
+            await options?.beforeText?.();
             for (const word of text.split(" ")) {
               if (delay > 0) await sleep(delay);
               yield { type: "text-delta", id: "t1", text: word };
@@ -281,6 +282,49 @@ describe("createApp", () => {
     expect((await request(app, `/api/threads/${thread.id}`, { method: "PATCH", body: JSON.stringify({ title: "新" }) })).status).toBe(409);
     await readSse(await first);
     await waitForStatus(app, thread.id, "idle");
+  });
+
+  it("saves model choices during a run and applies them to the next queued turn", async () => {
+    const dir = await tempDir();
+    const gate = Promise.withResolvers<void>();
+    const fake = createFakeEngine({ beforeText: () => gate.promise });
+    const app = makeApp(dir, fake.factory);
+    const { thread } = await setupThread(app, dir);
+    const patch = (body: unknown) => request(app, `/api/threads/${thread.id}`, { method: "PATCH", body: JSON.stringify(body) });
+    await patch({ model: "sonnet", reasoningEffort: "low", contextWindow: 200_000 });
+    const first = postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "你好")] });
+    try {
+      await expect.poll(() => fake.created.length).toBe(1);
+      const changed = await patch({ engine: "claude-code", model: "opus", reasoningEffort: "high", serviceTier: "fast" });
+      expect(changed.status).toBe(200);
+      expect(await changed.json()).toMatchObject({ status: "running", model: "opus", reasoningEffort: "high", serviceTier: "fast" });
+      const saved = (await (await request(app, `/api/threads/${thread.id}`)).json()) as ThreadRecord;
+      expect(saved.contextWindow).toBeUndefined();
+      expect((await patch({ contextWindow: 1_000_000, unread: false })).status).toBe(200);
+      expect((await patch({ reasoningEffort: null, serviceTier: null })).status).toBe(200);
+      expect((await patch({ reasoningEffort: 3 })).status).toBe(400);
+      for (const body of [
+        { engine: "vgent", model: "other" },
+        { model: "other", title: "new title" },
+        { model: "other", archived: true },
+        { model: "other", mode: "plan" },
+      ]) expect((await patch(body)).status).toBe(409);
+      expect(fake.created[0]!.thread).toMatchObject({ model: "sonnet", reasoningEffort: "low", contextWindow: 200_000 });
+      const queued = await postJson(app, `/api/threads/${thread.id}/queue`, { text: "继续", mode: "queue" });
+      expect(queued.status).toBe(200);
+    } finally {
+      gate.resolve();
+      await readSse(await first);
+    }
+    await expect.poll(() => fake.created.length).toBe(2);
+    expect(fake.created[1]!.thread).toMatchObject({ model: "opus", contextWindow: 1_000_000 });
+    expect(fake.created[1]!.thread.reasoningEffort).toBeUndefined();
+    expect(fake.created[1]!.thread.serviceTier).toBeUndefined();
+    const finished = await waitForStatus(app, thread.id, "idle");
+    expect(finished.model).toBe("opus");
+    expect(finished.messages.filter((message) => message.role === "user").map((message) =>
+      (message.metadata as ThreadMessageMetadata | undefined)?.run?.model,
+    )).toEqual(["sonnet", "opus"]);
   });
 
   it("已归档的任务不能再往下聊：发消息、排队、压缩都 409，取消归档后照常", async () => {

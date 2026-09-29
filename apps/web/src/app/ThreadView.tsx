@@ -341,29 +341,18 @@ function ThreadChatView({
             engine={thread.engine}
             // A task with history is stuck with its engine; the picker greys the
             // other groups out and says why.
-            engineLocked={thread.messageCount > 0}
+            engineLocked={live || thread.messageCount > 0}
             model={thread.model}
             runMode={runMode}
             modelPicks={modelPicks}
             onRememberPick={actions.rememberModelPick}
-            // Same rule as the 思考 chip below: a running turn already carries
-            // the model it started with, so switching it mid-flight would be a lie.
-            onPickModel={(engine, model, options) =>
-              live ? actions.toast("运行中不能改，先停止") : actions.setModel(thread.id, engine, model, options)
-            }
+            onPickModel={(engine, model, options) => actions.setModel(thread.id, engine, model, options)}
             reasoningEffort={thread.reasoningEffort}
-            // Same rule as the header's pills.
-            onPickReasoning={(level) =>
-              live ? actions.toast("运行中不能改，先停止") : actions.setReasoningEffort(thread.id, level)
-            }
+            onPickReasoning={(level) => actions.setReasoningEffort(thread.id, level)}
             contextWindow={thread.contextWindow}
-            onPickContext={(window) =>
-              live ? actions.toast("运行中不能改，先停止") : actions.setContextWindow(thread.id, window)
-            }
+            onPickContext={(window) => actions.setContextWindow(thread.id, window)}
             serviceTier={thread.serviceTier}
-            onPickServiceTier={(tier) =>
-              live ? actions.toast("运行中不能改，先停止") : actions.setServiceTier(thread.id, tier)
-            }
+            onPickServiceTier={(tier) => actions.setServiceTier(thread.id, tier)}
             mode={thread.mode ?? "agent"}
             onPickMode={(mode) => (live ? actions.toast("运行中不能改，先停止") : actions.setMode(thread.id, mode))}
             queue={queued}

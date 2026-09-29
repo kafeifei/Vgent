@@ -334,6 +334,7 @@ export function ModelPicker({
   model,
   options,
   engineLocked = false,
+  changesApplyNextTurn = false,
   onPick,
   onPickOptions,
   picks,
@@ -354,6 +355,8 @@ export function ModelPicker({
   options?: ModelOptions;
   /** A task with history cannot cross engines: models only another engine runs are not offered. */
   engineLocked?: boolean;
+  /** The active turn keeps its snapshot; these choices configure the next turn. */
+  changesApplyNextTurn?: boolean;
   /**
    * The engine always travels with the model, and so does what it runs with:
    * `options` is what the menu switches the task onto — the new model's
@@ -512,7 +515,12 @@ export function ModelPicker({
             />
           ),
         });
-        return <CascadeLevel nodes={nodes} />;
+        return (
+          <>
+            {changesApplyNextTurn && <p className="px-sm py-xs text-xs text-fg-muted">运行中修改将在下一回合生效</p>}
+            <CascadeLevel nodes={nodes} />
+          </>
+        );
       }}
     </Popover>
   );

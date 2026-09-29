@@ -633,3 +633,7 @@ Codex 原生 `commandExecution.commandActions` 从适配器保留到工具输入
 - **上限回收只收干净的**（Fumie 的磁盘预算也只收 `!dirty`）：有改动的跳过记一条 info；刚新建 / 刚恢复触发整理的那个任务也不收（`enforceWorktreeLimit({ keep })`，对应 Fumie 把当前会话标成 running），否则跳过脏的之后会轮到它。
 - **前端**：`features/workspace/UncommittedConfirm.tsx` 的 `useUncommittedGate` + `UncommittedConfirm`，侧栏行菜单的「归档」（A）和标题栏工作目录菜单的「回收工作目录」共用：先问文件数，0 就直接做，否则菜单原地换成第二步「带着没提交的改动归档？ / N 个文件没提交。改动随任务保存，取消归档时放回；被 git 忽略的文件不保留。」+「确认归档」（↵）/「取消」，和删除的两步同一个样子；数不出来按有改动处理（Fumie：破坏性的界面失败时要保守）。确认之后才挪行、才发请求。主目录任务和已回收的不问。
 - 验证：`workspace.test.ts`（没确认就拒、目录和 ref 都不动、改名只算一个），`app.test.ts`（没确认 409 且任务不动、确认后归档并清掉标记、重启后没确认的退回而确认过的做完、`preserveChanges` 非布尔 400），`worktree-setup.test.ts`（上限不收脏的也不收刚建的）。临时数据目录起 server，无头 Chrome 右键脏任务 → 归档 → 出确认 → 取消后没动 → A 再 ↵ 归档完成；干净任务直接归档不出确认；页面无报错。
+
+## 2026-09-29：运行中选择下一回合的模型
+
+`PATCH /api/threads/:id` 在运行中允许修改 `model`、`reasoningEffort`、`serviceTier`、`contextWindow` 和 `unread`，并接受选择器一并发送的相同 `engine`。混入其它字段或切换引擎仍拒绝。配置写入 ThreadStore，RunManager 当前回合持有的配置快照不变，排队派发从最新记录创建下一轮引擎；每轮消息的 `run.model` 仍记录实际使用的模型。前端放开模型及选项操作与选择记忆，菜单注明「运行中修改将在下一回合生效」。

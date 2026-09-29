@@ -1182,14 +1182,17 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const body = (await c.req.json().catch(() => undefined)) as Record<string, unknown> | undefined;
     const marksRead = "unread" in (body ?? {});
     if (marksRead && typeof body?.unread !== "boolean") throw new BadRequestError("unread 只能是布尔值", "invalid_unread");
-    // 未读 is bookkeeping the client writes while it looks at the task, and a
-    // turn can start under it (排队) — so an unread-only PATCH is the one edit a
-    // running thread still takes. Everything else waits for the turn.
-    if (!(marksRead && Object.keys(body ?? {}).length === 1) && runs.isRunning(id)) {
-      throw new ConflictError(`线程正在运行，无法修改: ${id}`, "thread_running");
-    }
     const current = await threads.get(id);
     if (current == null) throw new NotFoundError(`线程不存在: ${id}`, "thread_not_found");
+    // A running turn owns its configuration snapshot. Model choices are saved
+    // for the next turn, including queued turns; lifecycle edits still wait.
+    const nextTurnFields = new Set(["model", "reasoningEffort", "serviceTier", "contextWindow", "unread"]);
+    const canEditWhileRunning = Object.keys(body ?? {}).every((key) =>
+      nextTurnFields.has(key) || (key === "engine" && body?.engine === current.engine),
+    );
+    if (!canEditWhileRunning && runs.isRunning(id)) {
+      throw new ConflictError(`线程正在运行，无法修改: ${id}`, "thread_running");
+    }
 
     // `engine` and `model` travel together: picking another engine's model on an
     // empty thread is one edit, not two.

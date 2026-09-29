@@ -101,6 +101,22 @@ export const SCENARIOS: ChatScenario[] = [
   { id: "question-done", group: "等待你处理", label: "回答后的记录", hint: "已回答与已跳过的提问历史。", messages: pair("确定验收方式。", { ...question, state: "output-available", output: { action: "answered", answers: { layout: { optionIds: ["comfortable"], freeform: "保持输入框紧凑。" }, coverage: { optionIds: ["tools", "errors"] } } } }, { ...question, toolCallId: "skipped-question", state: "output-available", output: { action: "declined" } }, textPart("按舒适密度验收工具和异常状态。")) },
   { id: "error", group: "异常与恢复", label: "请求失败", hint: "错误横幅、历史失败说明与再次发送。", messages: [{ ...user("检查聊天布局。"), metadata: { turnEnd: { status: "error", reason: "连接中断，回复未完成。" } } }], thread: { status: "error", error: "服务暂时不可用（503）。请稍后重试。", queue: queued } },
   { id: "interrupted", group: "异常与恢复", label: "用户停止", hint: "保留部分内容、停止说明与暂停队列。", messages: [{ ...user("继续检查。"), metadata: { turnEnd: { status: "interrupted", reason: "已由你停止" } } }, assistant([read])], thread: { status: "interrupted", queue: queued } },
+  {
+    id: "restart-folds", group: "异常与恢复", label: "重启后的工作过程",
+    hint: "没有最终回复的中断历史：文字说明留在折叠外，工具按段折叠，子代理部分输出可查看但不再转圈。",
+    messages: [
+      { ...user("检查附件排队。"), metadata: { turnEnd: { status: "interrupted", reason: "服务已重启" } } },
+      assistant([
+        textPart("先检查输入框和队列的附件处理。"), thought, read, bash,
+        textPart("已定位到附件排队入口，正在补充回归测试。"), edit,
+        { type: "dynamic-tool", toolName: "coder", toolCallId: "restart-child", state: "output-available", preliminary: true,
+          input: { task: "补充附件排队测试" },
+          output: { ...assistant([{ ...thought, state: "streaming" }, textPart("已完成部分回归检查，尚未确认最终结果。")], "restart-child-message"), metadata: { subagent: { modelId: "sample-model" } } },
+        },
+      ]),
+    ],
+    thread: { status: "interrupted" },
+  },
   { id: "no-output", group: "异常与恢复", label: "空回复", hint: "模型结束但没有内容的兜底状态。", messages: [user("检查代码。"), assistant([])] },
   { id: "compact-running", group: "异常与恢复", label: "Claude 正在压缩", hint: "压缩过程中只显示压缩状态，不提前报完成或显示思考中。", messages: [{ ...user("/compact"), metadata: { compactRequested: { at: AT } } }, assistant([{ type: "step-start" }])], thread: { engine: "claude-code", status: "running" } },
   { id: "compact-done", group: "异常与恢复", label: "Claude 压缩完成", hint: "原生压缩正常结束，无文字回复；上下文用量等待下一次调用更新。", messages: [user("检查聊天组件。", "before-user"), { ...assistant([textPart("检查完毕。")], "before-assistant"), metadata: { usage: { inputTokens: 504206 } } }, { ...user("/compact"), metadata: { compactRequested: { at: AT }, run: { id: "compact-run", engine: "claude-code", startedAt: AT, endedAt: AT_PLUS(71), stopReason: "response", finishReason: "stop" } } }, assistant([{ type: "step-start" }])], thread: { engine: "claude-code" } },

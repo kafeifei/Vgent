@@ -1,6 +1,6 @@
 import { getToolName, isToolUIPart, type UIMessage } from "ai";
 import type { QueuedMessage, ThreadMessageMetadata } from "@/lib/types";
-import type { ToolPart } from "./toolMeta";
+import { isToolStreaming, type ToolPart } from "./toolMeta";
 
 export type TextPart = Extract<UIMessage["parts"][number], { type: "text" }>;
 export type ReasoningPart = Extract<UIMessage["parts"][number], { type: "reasoning" }>;
@@ -125,7 +125,18 @@ export function buildTurns(messages: readonly UIMessage[], queue: readonly Queue
       turns.push(turn);
     }
     turn.answered = true;
-    turn.blocks.push(...blocksOf(message));
+    const ended = turn.user != null && turnEndOf(turn.user) != null;
+    turn.blocks.push(...blocksOf(message).map((block): Block => {
+      // Recovery can leave preliminary outputs on disk. Keep those bytes for
+      // inspection; only the display projection loses its stale running state.
+      if (ended && block.kind === "tool" && isToolStreaming(block.part)) {
+        return { ...block, part: { ...block.part, interrupted: true as const } };
+      }
+      if (ended && block.kind === "reasoning" && block.part.state === "streaming") {
+        return { ...block, part: { ...block.part, state: "done" } };
+      }
+      return block;
+    }));
   }
   const unmatched = new Map(queue.filter(item => item.mode === "steer").map(item => [item.id, item]));
   const userIds = new Set(messages.filter(message => message.role === "user").map(message => message.id));

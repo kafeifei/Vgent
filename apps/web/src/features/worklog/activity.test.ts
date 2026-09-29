@@ -90,6 +90,33 @@ describe("processItemsOf", () => {
 });
 
 describe("processSectionsOf", () => {
+  it("keeps assistant text as boundaries between completed activity folds", () => {
+    const blocks = blocksOf([
+      { type: "text", text: "先检查" },
+      bash("c1", "pnpm test"), bash("c2", "pnpm build"),
+      { type: "text", text: "继续检查" },
+      bash("c3", "pnpm check"),
+    ]);
+    const sections = processSectionsOf(blocks);
+    expect(sections.map(section => section.kind)).toEqual(["text", "activity", "text", "activity"]);
+    expect(sections.filter(section => section.kind === "activity").map(section => stepCount(section.blocks))).toEqual([2, 1]);
+    expect(stepCount(blocks)).toBe(3);
+    expect(sections[0]).toMatchObject({ key: blocks[0]!.key, block: blocks[0] });
+    expect(sections[2]).toMatchObject({ key: blocks[3]!.key, block: blocks[3] });
+  });
+
+  it("preserves adjacent text sections separately in their original order", () => {
+    const blocks = blocksOf([
+      bash("before", "pnpm test"),
+      { type: "text", text: "第一段" },
+      { type: "text", text: "第二段" },
+      bash("after", "pnpm build"),
+    ]);
+    const sections = processSectionsOf(blocks);
+    expect(sections.map(section => section.kind)).toEqual(["activity", "text", "text", "activity"]);
+    expect(sections.slice(1, 3)).toEqual(blocks.slice(1, 3).map(block => ({ kind: "text", key: block.key, block })));
+  });
+
   it.each([
     { name: "Bash", state: "approval-requested" },
     { name: "askUserQuestions", state: "input-available" },

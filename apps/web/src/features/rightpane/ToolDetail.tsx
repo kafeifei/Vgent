@@ -1,17 +1,19 @@
-import { getToolName, isToolUIPart, type UIMessage } from "ai";
+import { getToolName, type UIMessage } from "ai";
+import { buildTurns } from "@/features/worklog/turns";
 import { DataSection, StructuredData, ToolResult, isRecord } from "./StructuredData";
 import { PlanList } from "@/features/plan/PlanList";
 import { planItemsOf } from "@/features/plan/plan";
 import { ChildTranscript, FileChip } from "@/features/worklog/ToolRow";
-import { asChildMessage, describeTool, diffStatOf, exitCodeOf, field, type ToolPart } from "@/features/worklog/toolMeta";
+import { asChildMessage, describeTool, diffStatOf, exitCodeOf, field, isToolStreaming, type ToolPart } from "@/features/worklog/toolMeta";
 import { cn } from "@/lib/utils";
 
 /** The call a row in the log pointed at, or nothing once its thread is gone. */
 export function findToolPart(messages: readonly UIMessage[], toolCallId: string | undefined): ToolPart | undefined {
   if (toolCallId == null) return undefined;
-  for (const message of messages) {
-    for (const part of message.parts) {
-      if (isToolUIPart(part) && part.toolCallId === toolCallId) return part;
+  // Use the same per-turn display state as the log, not the raw stream flags.
+  for (const turn of buildTurns(messages)) {
+    for (const block of turn.blocks) {
+      if (block.kind === "tool" && block.part.toolCallId === toolCallId) return block.part;
     }
   }
   return undefined;
@@ -33,15 +35,17 @@ export function ToolDetail({ part, onOpenFile }: { part: ToolPart | undefined; o
   const plan = planItemsOf(part);
   const extraInput = plan != null && isRecord(part.input) ? Object.fromEntries(Object.entries(part.input).filter(([key]) => !["items", "plan", "todos"].includes(key))) : null;
   const failed = part.state === "output-error" || (part.state === "output-available" && isRecord(part.output) && part.output.isError === true);
-  const status = part.state === "approval-requested" ? "等待审批" : part.state === "approval-responded" ? "审批已处理" : part.state === "output-denied" ? "已拒绝" : part.state === "output-error" ? "失败" : part.state === "output-available" ? (part.preliminary ? "运行中" : "已完成") : "运行中";
-  const running = part.state === "input-streaming" || part.state === "input-available" || (part.state === "output-available" && part.preliminary === true);
+  const status = part.interrupted ? "已中断" : part.state === "approval-requested" ? "等待审批" : part.state === "approval-responded" ? "审批已处理" : part.state === "output-denied" ? "已拒绝" : part.state === "output-error" ? "失败" : part.state === "output-available" ? (part.preliminary ? "运行中" : "已完成") : "运行中";
+  const running = isToolStreaming(part);
   return (
     <div className="flex min-w-0 flex-col gap-md">
       <div className="flex flex-wrap items-start gap-xs text-fg-muted text-sm">
         <span title={name} className={cn("min-w-0 break-all", display.kind === "bash" && "font-mono text-code")}>{mcp?.[2] ?? display.verb}</span>
         <span className={cn("min-w-0 break-all text-fg", display.kind === "bash" && "font-mono text-code")}>{display.target}</span>
         <span className="ml-auto flex-none text-fg-faint text-xs">
-          {failed ? (
+          {part.interrupted ? (
+            status
+          ) : failed ? (
             <span className="text-danger">失败</span>
           ) : part.state === "output-denied" ? (
             "已拒绝"
@@ -51,6 +55,7 @@ export function ToolDetail({ part, onOpenFile }: { part: ToolPart | undefined; o
         </span>
       </div>
 
+      {part.interrupted && part.state === "output-available" && <p className="text-xs text-fg-muted">回合已中断，以下保留已收到的部分输出。</p>}
       {mcp != null && <p className="-mt-sm text-xs text-fg-faint">{mcp[1]} · MCP</p>}
 
       {display.file != null && part.state === "output-available" && (
@@ -76,7 +81,7 @@ export function ToolDetail({ part, onOpenFile }: { part: ToolPart | undefined; o
             <dt className="shrink-0 text-fg-muted">模型</dt>
             <dd className="min-w-0 break-all text-fg" title={childModel == null ? "这条历史记录没有保存子代理模型" : childModel}>{childModel ?? "未记录"}</dd>
           </dl>
-          <ChildTranscript parts={child.parts} preliminary={part.state === "output-available" && part.preliminary === true} />
+          <ChildTranscript parts={child.parts} preliminary={running} />
         </section>
       )}
       {part.state === "output-available" && child == null && (

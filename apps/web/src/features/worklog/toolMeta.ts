@@ -1,7 +1,10 @@
 import { getToolName, type DynamicToolUIPart, type ToolUIPart, type UIMessage } from "ai";
 import { oneLine } from "@/lib/format";
 
-export type ToolPart = ToolUIPart | DynamicToolUIPart;
+export type ToolPart = (ToolUIPart | DynamicToolUIPart) & {
+  /** Display-only: the owning turn ended before this call produced a final result. */
+  interrupted?: true;
+};
 
 export type ToolKind = "read" | "search" | "bash" | "write" | "edit" | "agent" | "plan" | "other";
 
@@ -125,9 +128,9 @@ export function exitCodeOf(output: unknown): number | undefined {
   return typeof value === "number" ? value : undefined;
 }
 
-/** Failed or denied work stays visible instead of disappearing into a group. */
+/** Failed, denied or interrupted work stays visible instead of disappearing into a group. */
 export function hasToolFailure(part: ToolPart): boolean {
-  if (part.state === "output-error" || part.state === "output-denied") return true;
+  if (part.interrupted || part.state === "output-error" || part.state === "output-denied") return true;
   const code = part.state === "output-available" ? exitCodeOf(part.output) : undefined;
   return code != null && code !== 0;
 }
@@ -174,4 +177,5 @@ export const asChildToolPart = (part: UIMessage["parts"][number]): ToolPart | un
 
 /** True while the call is still waiting on the engine rather than on the human. */
 export const isToolStreaming = (part: ToolPart): boolean =>
-  part.state === "input-streaming" || part.state === "input-available";
+  !part.interrupted && (part.state === "input-streaming" || part.state === "input-available"
+    || (part.state === "output-available" && part.preliminary === true));

@@ -108,7 +108,7 @@ export function ToolRow({
   const [planOpen, setPlanOpen] = useState(true);
   const display = describeTool(part);
   const plan = display.kind === "plan" ? planItemsOf(part) : null;
-  const streaming = isToolStreaming(part) || (display.kind === "agent" && part.state === "output-available" && part.preliminary === true);
+  const streaming = isToolStreaming(part);
   const exitCode = part.state === "output-available" ? exitCodeOf(part.output) : undefined;
   const stat = part.state === "output-available" ? diffStatOf(part.output) : undefined;
 
@@ -137,7 +137,9 @@ export function ToolRow({
           />
         )}
         <span className="ml-auto flex-none text-fg-faint text-xs">
-          {part.state === "output-error" ? (
+          {part.interrupted ? (
+            "已中断"
+          ) : part.state === "output-error" ? (
             <span className="text-danger">失败</span>
           ) : part.state === "output-denied" ? (
             <span className="text-danger">已拒绝</span>

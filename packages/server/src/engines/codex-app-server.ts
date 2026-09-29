@@ -25,8 +25,10 @@ export class CodexAppServer {
   #closed = false;
   #exit: Promise<void>;
 
-  constructor(options: { cwd: string; env: NodeJS.ProcessEnv }) {
-    this.#child = spawn(process.execPath, [codexCli(), "app-server", "--stdio"], {
+  constructor(options: { cwd: string; env: NodeJS.ProcessEnv; modelCatalogPath?: string }) {
+    // Model metadata is loaded when the process starts, before thread/start.
+    const catalogArgs = options.modelCatalogPath == null ? [] : ["-c", `model_catalog_json=${JSON.stringify(options.modelCatalogPath)}`];
+    this.#child = spawn(process.execPath, [codexCli(), "--enable", "fast_mode", ...catalogArgs, "app-server", "--stdio"], {
       cwd: options.cwd,
       env: options.env,
       stdio: ["pipe", "pipe", "pipe"],

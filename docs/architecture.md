@@ -641,3 +641,14 @@ Codex 原生 `commandExecution.commandActions` 从适配器保留到工具输入
 ## 2026-09-29：运行中选择下一回合的模型
 
 `PATCH /api/threads/:id` 在运行中允许修改 `model`、`reasoningEffort`、`serviceTier`、`contextWindow` 和 `unread`，并接受选择器一并发送的相同 `engine`。混入其它字段或切换引擎仍拒绝。配置写入 ThreadStore，RunManager 当前回合持有的配置快照不变，排队派发从最新记录创建下一轮引擎；每轮消息的 `run.model` 仍记录实际使用的模型。前端放开模型及选项操作与选择记忆，菜单注明「运行中修改将在下一回合生效」。
+
+
+## 2026-09-29：模型速度档位与 Codex 请求一致
+
+`ModelPicker` 将首个 `serviceTiers` 的 Fast 开关改为「速度」子菜单，列出标准与目录提供的全部档位；标签、模型列表摘要和每模型选择记忆按实际 tier id 查找。`CascadeMenu` 支持选项的第二行说明；已知英文名称和说明转成中文，保留目录提供的速度倍数。标准清空 `ThreadRecord.serviceTier`，运行中选择仍在下一回合生效。
+
+`codex-catalog.ts` 共用在线目录读取与本机只读缓存读取，保留完整模型元数据，供 UI 做投影、原生运行时直接加载。最近成功获取的在线目录按凭据隔离，供回合复用 10 分钟；显式刷新模型列表仍会重拉。订阅加速回合为原生进程写一份独立临时目录快照，通过启动参数 `model_catalog_json` 传入，并开启 `features.fast_mode`。不能只在 `thread/start.config` 塞目录：进程启动时已创建模型管理器。进程关闭或启动失败时清掉自己的目录快照，不写用户的 Codex 配置或缓存。在线目录成功返回但撤掉某档位时明确拒绝，不回退到旧缓存掩盖；离线才使用本机缓存。
+
+每次 `turn/start` 显式传 `serviceTier`，标准传 `null`，避免恢复线程时继承旧档位；不要在 `thread/start.config.service_tier` 传 null，随包 CLI 会将它读成空字符串并报警。自研引擎继续通过 AI SDK 的 `providerOptions.openai.serviceTier` 传递。没有升级依赖。
+
+验证覆盖：真实随包 Codex app-server 对本地模拟 Responses 服务发出 priority、ultrafast，跨进程恢复后标准请求不带加速；AI SDK 与订阅请求改写后的原始请求保留两档参数；目录撤销/离线/并发快照隔离和清理；浏览器实际选择器的三档切换、每模型记忆、仅支持两档的模型以及运行中提示。未调用付费模型。

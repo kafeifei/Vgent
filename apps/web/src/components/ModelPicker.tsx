@@ -20,6 +20,16 @@ import { SourceIcon } from "./SourceIcon";
 
 export const ModelCatalogClientContext = createContext<Pick<ApiClient, "listModels"> | null>(null);
 
+type SpeedTier = NonNullable<ModelEntry["serviceTiers"]>[number];
+
+export const serviceTierLabel = (tier: SpeedTier): string =>
+  tier.id === "priority" || tier.id === "fast" ? "快速" : tier.id === "ultrafast" ? "超快" : tier.name;
+
+function serviceTierDescription(tier: SpeedTier): string | undefined {
+  if (tier.description === "The fastest available responses for latency-sensitive work.") return "最快响应，适合对延迟敏感的任务";
+  return tier.description?.replace(/([\d.]+)x speed/g, "$1 倍速度").replace(/, increased usage/g, "，用量更多");
+}
+
 export const modelLabel = (model: string | undefined): string => model ?? "默认";
 
 /**
@@ -142,12 +152,12 @@ function variantOf(entry: ModelEntry, options: ModelOptions | ModelPick | undefi
   const context = options?.contextWindow != null && options.contextWindow !== own && windows.includes(options.contextWindow) ? formatContext(options.contextWindow) : undefined;
   const level = levelOf(entry, options?.reasoningEffort);
   const effort = level == null ? undefined : EFFORT_OFF.has(level) ? "不思考" : reasoningLabel(level);
-  const fast = entry.serviceTiers?.[0];
-  return [context, effort, fast != null && options?.serviceTier === fast.id ? fast.name : undefined].filter((part) => part != null).join(" ");
+  const tier = entry.serviceTiers?.find((tier) => tier.id === options?.serviceTier);
+  return [context, effort, tier != null ? serviceTierLabel(tier) : undefined].filter((part) => part != null).join(" ");
 }
 
 /**
- * The rows above 模型: Fast / 上下文 / 推理强度 / 引擎 — what the model the task is
+ * The rows above 模型: 速度 / 上下文 / 推理强度 / 引擎 — what the model the task is
  * already on runs with. They are read off `route`, the engine it runs on, since
  * the same model offers different levels and windows under different engines. A
  * knob the model does not have is simply not a row.
@@ -173,17 +183,23 @@ export function optionNodes({
 
   // The settings page picks a default *model*; what a task runs it with is the task's.
   if (options != null) {
-    // Fast is the one tier on offer today; a model that declared several would want a submenu instead.
-    const fast = entry.serviceTiers?.[0];
-    if (fast != null) {
-      const on = options.serviceTier === fast.id;
+    const tiers = entry.serviceTiers ?? [];
+    if (tiers.length > 0) {
+      const selected = tiers.find((tier) => tier.id === options.serviceTier);
       nodes.push({
-        key: "fast",
-        label: fast.name,
-        toggle: on,
-        ...(fast.description != null ? { title: fast.description } : {}),
-        // A switch is flipped where it stands: the menu stays open.
-        onPick: () => onOptions({ serviceTier: on ? null : fast.id }),
+        key: "speed",
+        label: "速度",
+        hint: selected != null ? serviceTierLabel(selected) : "标准",
+        children: [
+          { key: "standard", label: "标准", description: "默认速度", selected: selected == null, onPick: () => onOptions({ serviceTier: null }) },
+          ...tiers.map((tier) => ({
+            key: tier.id,
+            label: serviceTierLabel(tier),
+            description: serviceTierDescription(tier),
+            selected: selected?.id === tier.id,
+            onPick: () => onOptions({ serviceTier: tier.id }),
+          })),
+        ],
       });
     }
 
@@ -322,7 +338,7 @@ function ModelList({
 }
 
 /**
- * 「选模型」: the knobs first — Fast / 上下文 / 推理强度 / 引擎, each reading as its
+ * 「选模型」: the knobs first — 速度 / 上下文 / 推理强度 / 引擎, each reading as its
  * current value — and 模型 last, its own submenu being the list of them
  * (用户画的层级，2026-09-22，照 Cursor). What the task is on is therefore one
  * click away from any of its settings, and the long list is behind the one row
@@ -398,8 +414,8 @@ export function ModelPicker({
   const modelName = resolved != null ? nameOf(resolved) : undefined;
   const entry = resolved != null ? catalog?.models.find((item) => item.id === resolved) : undefined;
   const level = options != null && entry != null ? levelOf(entry, options.reasoningEffort) : undefined;
-  const fast = entry?.serviceTiers?.[0];
-  const fastName = fast != null && options?.serviceTier === fast.id ? fast.name : undefined;
+  const tier = entry?.serviceTiers?.find((tier) => tier.id === options?.serviceTier);
+  const fastName = tier != null ? serviceTierLabel(tier) : undefined;
   // The composer chip carries 推理强度 and Fast; the settings page names the model alone.
   const chip: ModelChip = {
     label:

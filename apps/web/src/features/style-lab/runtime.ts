@@ -101,7 +101,7 @@ export class StyleSession {
       token: "style-lab", remoteSession: false,
       getDraft: async () => structuredClone(this.draft),
       putDraft: async (_key, value) => { this.draft = { text: value.text, attachments: value.attachments.map((file) => ({ ...file, url: file.url ?? this.draft.attachments.find((old) => old.id === file.id)?.url ?? "" })) }; },
-      listModels: async (engine) => ({ engine, source: "样例", fetchedAt: AT, defaultModel: "sample-model", models: [{ id: "sample-model", label: "样例模型", contextWindow: 400000, contextOptions: [200000, 400000], reasoningLevels: ["low", "medium", "high"], defaultReasoningLevel: "medium", serviceTiers: [{ id: "priority", name: "Fast" }], cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 }, source: { kind: "codex-subscription", name: "Codex" } }] }),
+      listModels: async (engine) => ({ engine, source: "样例", fetchedAt: AT, defaultModel: "sample-model", models: [{ id: "sample-model", label: "样例模型", contextWindow: 400000, contextOptions: [200000, 400000], reasoningLevels: ["low", "medium", "high"], defaultReasoningLevel: "medium", serviceTiers: [{ id: "priority", name: "Fast", description: "2x speed, increased usage" }, { id: "ultrafast", name: "Ultrafast", description: "The fastest available responses for latency-sensitive work." }], cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 }, source: { kind: "codex-subscription", name: "Codex" } }] }),
       getAccounts: async () => ({
         revision: 1,
         accounts: [{

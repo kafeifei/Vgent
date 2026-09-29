@@ -3,6 +3,7 @@ import { DEFAULT_CODEX_DATA_DIR, prepareCodexHome, type CodexAuthEnvironment } f
 import type { LanguageModelUsage, ModelMessage, TextStreamPart, ToolSet } from "ai";
 import { CodexAppServer, type CodexNotification } from "./codex-app-server.js";
 import type { EngineContext, EngineRunner } from "./registry.js";
+import { prepareCodexSpeedCatalog } from "../codex-catalog.js";
 
 type Part = TextStreamPart<ToolSet>;
 type Obj = Record<string, unknown>;
@@ -107,6 +108,9 @@ export async function createNativeCodexRunner(
   const baseUrl = options.auth?.OPENAI_BASE_URL ?? CHATGPT_CODEX_BASE_URL;
   const key = options.auth?.OPENAI_API_KEY ?? credential?.accessToken;
   if (key == null) throw new Error("Codex credential is unavailable");
+  const catalog = options.auth == null && options.serviceTier != null && options.model != null
+    ? await prepareCodexSpeedCatalog(home, options.model, options.serviceTier)
+    : undefined;
   const provider = {
     name: "Vgent Codex",
     base_url: baseUrl,
@@ -116,7 +120,6 @@ export async function createNativeCodexRunner(
     ...(credential?.accountId != null ? { http_headers: { "ChatGPT-Account-ID": credential.accountId } } : {}),
   };
   const config: Obj = {
-    preferred_auth_method: "apikey",
     model_provider: "agent_bridge_openai",
     model_providers: { agent_bridge_openai: provider },
     ...options.codexConfig,
@@ -124,7 +127,10 @@ export async function createNativeCodexRunner(
   const server = new CodexAppServer({
     cwd: ctx.project.repoPath,
     env: { ...process.env, CODEX_HOME: home, CODEX_API_KEY: key },
+    ...(catalog != null ? { modelCatalogPath: catalog.path } : {}),
   });
+  let closing: Promise<void> | undefined;
+  const close = () => closing ??= server.close().finally(() => catalog?.dispose());
   let threadId: string;
   try {
     await server.initialize();
@@ -143,7 +149,7 @@ export async function createNativeCodexRunner(
     if (threadId === "") throw new Error("Codex app-server did not return a thread id");
     await ctx.saveHarnessState({ version: 1, sessionId: ctx.thread.id, codexThreadId: threadId, updatedAt: new Date().toISOString() });
   } catch (error) {
-    await server.close();
+    await close();
     throw error;
   }
 
@@ -264,11 +270,11 @@ export async function createNativeCodexRunner(
           failStream = (error) => { if (emit != null) { emit = undefined; controller.error(error); } };
           controller.enqueue({ type: "start" });
         },
-        cancel() { void server.close(); },
+        cancel() { void close(); },
       });
       const onAbort = () => {
         if (turnId != null) void server.request("turn/interrupt", { threadId, turnId }, 10_000).catch(() => {});
-        void server.close();
+        void close();
       };
       abortSignal.addEventListener("abort", onAbort, { once: true });
       try {
@@ -277,7 +283,8 @@ export async function createNativeCodexRunner(
           input: [{ type: "text", text: lastUserText(messages) }],
           ...(options.model != null ? { model: options.model } : {}),
           ...(options.effort != null ? { effort: options.effort } : {}),
-          ...(options.serviceTier != null ? { serviceTier: options.serviceTier } : {}),
+          // Null clears the previous turn's tier; omission would inherit it.
+          serviceTier: options.serviceTier ?? null,
         });
         turnId = asString(asObject(result.turn).id);
         if (turnId == null) throw new Error("Codex app-server did not return a turn id");
@@ -286,7 +293,7 @@ export async function createNativeCodexRunner(
       } catch (error) {
         abortSignal.removeEventListener("abort", onAbort);
         unsubscribe();
-        await server.close();
+        await close();
         throw error;
       }
     },
@@ -303,13 +310,13 @@ export async function createNativeCodexRunner(
       if (ended) return;
       ended = true;
       unsubscribe();
-      await server.close();
+      await close();
     },
     async destroy() {
       if (ended) return;
       ended = true;
       unsubscribe();
-      await server.close();
+      await close();
     },
   };
 }

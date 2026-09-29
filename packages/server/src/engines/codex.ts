@@ -98,9 +98,8 @@ export function createCodexEngineFactory(): EngineFactory {
       const reasoningEffort = asCodexEffort(effectiveReasoningLevel(ctx.thread.reasoningEffort));
       const route = codexProviderRoute(ctx.thread.model, await createProviderStore(ctx.dataDir, ctx.log).list());
       const model = route?.model ?? ctx.thread.model;
-      // Fast is Codex's own `service_tier` config key, set to the id its catalog
-      // advertises for the model (`priority`). A tier the model does not
-      // advertise is dropped by the CLI itself, with a warning, not an error.
+      // The native runner loads the full catalog before process startup, so
+      // the selected speed is recognized by the runtime as well as the picker.
       const tier = ctx.thread.serviceTier;
       // 上下文: the task's own choice is Codex's `model_context_window`, over
       // whatever the provider's model row said.

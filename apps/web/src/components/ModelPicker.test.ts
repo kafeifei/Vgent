@@ -1,6 +1,32 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ModelCatalog } from "@/lib/types";
-import { effectiveModel, modelChipLabel, modelLabel, resolveModel } from "./ModelPicker";
+import { effectiveModel, modelChipLabel, modelLabel, optionNodes, resolveModel, serviceTierLabel } from "./ModelPicker";
+import type { EngineRoute, ModelChoice } from "./modelChoices";
+
+describe("speed choices", () => {
+  const tiers = [{ id: "priority", name: "Fast", description: "1.5x speed, increased usage" }, { id: "ultrafast", name: "Ultrafast" }];
+  const route: EngineRoute = { engine: "codex", label: "Codex", entry: { id: "model", label: "Model", serviceTiers: tiers } };
+  const choice: ModelChoice = { key: "model", label: "Model", source: { kind: "codex-subscription", name: "Codex" }, routes: [route] };
+  it("selects and clears any advertised tier, including tiers after the first", () => {
+    const onOptions = vi.fn();
+    const nodes = optionNodes({ choice, route, options: { reasoningEffort: undefined, serviceTier: "ultrafast", contextWindow: undefined }, engineLocked: true, onOptions, onEngine: vi.fn() });
+    const speed = nodes.find((node) => node.key === "speed")!;
+    expect(speed.hint).toBe("超快");
+    expect(speed.children?.map((node) => [node.label, node.selected])).toEqual([["标准", false], ["快速", false], ["超快", true]]);
+    expect(speed.children?.[1]?.description).toBe("1.5 倍速度，用量更多");
+    speed.children?.[1]?.onPick?.();
+    expect(onOptions).toHaveBeenLastCalledWith({ serviceTier: "priority" });
+    speed.children?.[2]?.onPick?.();
+    expect(onOptions).toHaveBeenLastCalledWith({ serviceTier: "ultrafast" });
+    speed.children?.[0]?.onPick?.();
+    expect(onOptions).toHaveBeenLastCalledWith({ serviceTier: null });
+    expect(serviceTierLabel({ id: "future", name: "Future" })).toBe("Future");
+  });
+  it("does not invent speeds for a model without them", () => {
+    const nodes = optionNodes({ choice, route: { ...route, entry: { id: "other", label: "Other" } }, options: { reasoningEffort: undefined, serviceTier: undefined, contextWindow: undefined }, engineLocked: true, onOptions: vi.fn(), onEngine: vi.fn() });
+    expect(nodes.some((node) => node.key === "speed")).toBe(false);
+  });
+});
 
 const catalog = (defaultModel?: string): ModelCatalog => ({
   engine: "vgent",

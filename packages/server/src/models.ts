@@ -1,8 +1,8 @@
-import { readFile } from "node:fs/promises";
+import { readCodexModelCache, fetchCodexModelCatalog } from "./codex-catalog.js";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { CODEX_SUBSCRIPTION_PREFIX } from "@vgent/engine";
-import { CHATGPT_CODEX_BASE_URL, getCodexTokenProvider, createCodexFetch, describeSubscriptionAuth, type ModelCost } from "@vgent/providers";
+import { describeSubscriptionAuth, type ModelCost } from "@vgent/providers";
 import { gateway as defaultGateway } from "ai";
 import type { EngineId, Logger } from "./types.js";
 import { silentLogger } from "./types.js";
@@ -399,19 +399,8 @@ function normalizeCodexModels(raw: readonly unknown[]): CodexCatalogModel[] {
 async function readCodexCache(
   home: string,
 ): Promise<{ clientVersion?: string; models: CodexCatalogModel[] } | undefined> {
-  const text = await readFile(join(home, "models_cache.json"), "utf8").catch(() => undefined);
-  if (text == null) return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return undefined;
-  }
-  if (!isRecord(parsed) || !Array.isArray(parsed.models)) return undefined;
-  return {
-    ...(typeof parsed.client_version === "string" ? { clientVersion: parsed.client_version } : {}),
-    models: normalizeCodexModels(parsed.models),
-  };
+  const cache = await readCodexModelCache(home);
+  return cache == null ? undefined : { ...cache, models: normalizeCodexModels(cache.models) };
 }
 
 /**
@@ -425,16 +414,7 @@ async function fetchCodexRemoteCatalog(
   input: { clientVersion: string; signal: AbortSignal },
   env: NodeJS.ProcessEnv,
 ): Promise<CodexCatalogModel[]> {
-  const codexFetch = createCodexFetch({ tokens: getCodexTokenProvider({ env }) });
-  const url = `${CHATGPT_CODEX_BASE_URL}/models?client_version=${encodeURIComponent(input.clientVersion)}`;
-  const response = await codexFetch(url, {
-    method: "GET",
-    headers: { accept: "application/json" },
-    signal: input.signal,
-  });
-  if (!response.ok) throw new Error(`Codex 模型目录返回 ${response.status}`);
-  const body: unknown = await response.json();
-  return isRecord(body) && Array.isArray(body.models) ? normalizeCodexModels(body.models) : [];
+  return normalizeCodexModels(await fetchCodexModelCatalog(input, env));
 }
 
 /** `GET /v1/models` on the public Anthropic API — only ever with an API key. */

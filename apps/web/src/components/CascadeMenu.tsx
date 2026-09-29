@@ -12,6 +12,8 @@ export interface CascadeNode {
   icon?: ReactNode;
   /** The current value, shown dimmed on the right of a row that opens a submenu. */
   hint?: string;
+  /** Optional second line for choices whose speed or cost needs explaining. */
+  description?: string | undefined;
   /** A caption above this row; rows sharing one are captioned once, at the first. */
   section?: string;
   selected?: boolean;
@@ -113,7 +115,10 @@ export function CascadeLevel({
               )}
             >
               {node.icon}
-              <span className="min-w-0 flex-1 truncate">{node.label}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate">{node.label}</span>
+                {node.description != null && <span className="mt-3xs block max-w-64 whitespace-normal text-xs leading-relaxed text-fg-faint">{node.description}</span>}
+              </span>
               {node.hint != null && <span className="max-w-[18ch] flex-none truncate text-fg-faint text-xs">{node.hint}</span>}
               {node.toggle != null && <Toggle on={node.toggle} />}
               {node.selected === true && <span className="flex-none text-brand">✓</span>}

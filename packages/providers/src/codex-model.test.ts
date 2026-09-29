@@ -27,7 +27,7 @@ const REPLAYED_HISTORY: ModelMessage[] = [
 ];
 
 /** Runs one turn against a capturing fetch and returns the body that went out. */
-async function captureRequest(messages: ModelMessage[]): Promise<Record<string, unknown>> {
+async function captureRequest(messages: ModelMessage[], serviceTier?: string): Promise<Record<string, unknown>> {
   let body: string | undefined;
   const model = createCodexSubscriptionModel("gpt-5.5", {
     accessToken: "fake-token",
@@ -37,7 +37,7 @@ async function captureRequest(messages: ModelMessage[]): Promise<Record<string, 
     },
   });
   try {
-    const result = streamText({ model, messages });
+    const result = streamText({ model, messages, maxRetries: 0, ...(serviceTier != null ? { providerOptions: { openai: { serviceTier } } } : {}) });
     for await (const _part of result.stream) {
       // drained only so the call is actually issued
     }
@@ -49,6 +49,10 @@ async function captureRequest(messages: ModelMessage[]): Promise<Record<string, 
 }
 
 describe("createCodexSubscriptionModel", () => {
+  it.each(["priority", "ultrafast"])("preserves %s through AI SDK validation and the subscription body rewrite", async (tier) => {
+    const request = await captureRequest([{ role: "user", content: "OK" }], tier);
+    expect(request.service_tier).toBe(tier);
+  });
   it("replays reasoning inline instead of referencing a stored item", async () => {
     const request = await captureRequest(REPLAYED_HISTORY);
     const input = request.input as Record<string, unknown>[];

@@ -65,7 +65,7 @@ export function ComposerStatusBar({
           type="button"
           title={`${sums.files} 个文件有改动，点开右栏逐个看 diff`}
           onClick={onOpenChanges}
-          className="inline-flex h-xl items-center gap-2xs rounded-full border border-border px-sm text-fg-muted text-sm hover:border-border-strong hover:text-fg"
+          className="inline-flex h-xl shrink-0 items-center gap-2xs whitespace-nowrap rounded-full border border-border px-sm text-fg-muted text-sm hover:border-border-strong hover:text-fg"
         >
           <span>审查</span>
           <span className="font-mono text-diff-add-fg">+{sums.additions}</span>

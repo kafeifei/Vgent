@@ -647,9 +647,9 @@ export function Composer({
                 type="button"
                 {...(chip.title != null ? { title: chip.title } : {})}
                 {...props}
-                className="inline-flex h-7 flex-none items-center gap-3xs rounded-full px-xs text-fg-muted text-sm hover:bg-bg-hover hover:text-fg"
+                className="inline-flex h-7 min-w-0 max-w-[50%] items-center gap-3xs rounded-full px-xs text-fg-muted text-sm hover:bg-bg-hover hover:text-fg"
               >
-                <span className="max-w-[36ch] truncate">{chip.label}</span>
+                <span className="min-w-0 max-w-[36ch] truncate">{chip.label}</span>
                 <ChevronDown className="size-sm flex-none text-fg-faint" />
               </button>
             )}

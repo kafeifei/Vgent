@@ -10,11 +10,11 @@ export type PaneWidths = Partial<Record<PaneKey, number>>;
 /** Narrower than this and a column stops being usable: rows truncate to nothing, tabs wrap. */
 export const PANE_MIN: Record<PaneKey, number> = { left: 200, rightList: 200, rightPane: 320 };
 
-/** The conversation never gets squeezed below this by a side column. */
+/** Reserve this much for the conversation whenever the pane minimums fit. */
 export const CENTER_MIN = 420;
 
-/** What an undragged column takes, near enough to budget the other side against. */
-const PANE_DEFAULT: Record<PaneKey, number> = { left: 260, rightList: 260, rightPane: 420 };
+/** Fallbacks for callers without CSS; the workbench supplies its current tokens. */
+export const PANE_DEFAULT: Record<PaneKey, number> = { left: 260, rightList: 260, rightPane: 420 };
 
 /**
  * The widths to lay out with, in a window of this size. A width dragged in a
@@ -25,14 +25,20 @@ export function fitPaneWidths(
   widths: PaneWidths,
   windowWidth: number,
   shown: { left: boolean; right: PaneKey | null },
+  defaults: Readonly<Record<PaneKey, number>> = PANE_DEFAULT,
 ): PaneWidths {
   const fitted: PaneWidths = {};
-  const leftTaken = shown.left ? (widths.left ?? PANE_DEFAULT.left) : 0;
-  if (shown.right != null && widths[shown.right] != null) {
-    fitted[shown.right] = clampPaneWidth(shown.right, widths[shown.right] as number, windowWidth, leftTaken);
+  const leftTaken = shown.left ? (widths.left ?? defaults.left) : 0;
+  if (shown.right != null) {
+    const key = shown.right;
+    const width = clampPaneWidth(key, widths[key] ?? defaults[key], windowWidth, leftTaken);
+    if (widths[key] != null || width !== defaults[key]) fitted[key] = width;
   }
-  const rightTaken = shown.right == null ? 0 : (fitted[shown.right] ?? PANE_DEFAULT[shown.right]);
-  if (shown.left && widths.left != null) fitted.left = clampPaneWidth("left", widths.left, windowWidth, rightTaken);
+  const rightTaken = shown.right == null ? 0 : (fitted[shown.right] ?? defaults[shown.right]);
+  if (shown.left) {
+    const width = clampPaneWidth("left", leftTaken, windowWidth, rightTaken);
+    if (widths.left != null || width !== defaults.left) fitted.left = width;
+  }
   return fitted;
 }
 

@@ -16,7 +16,7 @@ import { GROUPING_LABELS } from "@/features/sidebar/grouping";
 import type { QueueItem } from "@/features/worklog/queue";
 import { oneLine } from "@/lib/format";
 import { previewKindOf } from "@/lib/preview";
-import { type PaneKey, type PaneWidths, clampPaneWidth, fitPaneWidths, loadPaneWidths, savePaneWidths } from "@/lib/paneWidths";
+import { type PaneKey, type PaneWidths, PANE_DEFAULT, clampPaneWidth, fitPaneWidths, loadPaneWidths, savePaneWidths } from "@/lib/paneWidths";
 import { usePrefs, usePrefsSync } from "@/lib/prefs";
 import { RightPaneToggle } from "@/features/taskheader/TaskHeader";
 import { ThreadView } from "./ThreadView";
@@ -46,7 +46,7 @@ export function Shell({ token }: { token: string }) {
     failedFirstSend,
     actions,
   } = workbench;
-  const { toggleTheme, toggleDensity } = usePrefs();
+  const { density, toggleTheme, toggleDensity } = usePrefs();
   // 主题和密度存在 server 上：桌面 app 每次启动换端口，浏览器本地存储等于清空。
   usePrefsSync(
     state.settings,
@@ -131,7 +131,16 @@ export function Shell({ token }: { token: string }) {
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
-  const fitted = fitPaneWidths(widths, windowWidth, { left: left !== "off", right: showRight ? rightKey : null });
+  const paneDefaults = useMemo(() => {
+    const style = getComputedStyle(document.documentElement);
+    const read = (key: PaneKey, token: string) => Number.parseFloat(style.getPropertyValue(token)) || PANE_DEFAULT[key];
+    return {
+      left: read("left", "--spacing-sidebar"),
+      rightList: read("rightList", "--spacing-rightlist"),
+      rightPane: read("rightPane", "--spacing-rightpane"),
+    };
+  }, [density]);
+  const fitted = fitPaneWidths(widths, windowWidth, { left: left !== "off", right: showRight ? rightKey : null }, paneDefaults);
   const leftTrack = fitted.left != null ? `${fitted.left}px` : "var(--spacing-sidebar)";
   const rightTrack =
     fitted[rightKey] != null ? `${fitted[rightKey]}px` : right.tab === "home" ? "var(--spacing-rightlist)" : "var(--spacing-rightpane)";
@@ -178,7 +187,7 @@ export function Shell({ token }: { token: string }) {
           onRename={actions.rename}
         />
 
-        <main className="grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto]">
+        <main className="grid min-h-0 min-w-0 grid-cols-1 grid-rows-[auto_minmax(0,1fr)_auto]">
           {view === "thread" && thread != null ? (
             <ThreadView
               thread={thread}

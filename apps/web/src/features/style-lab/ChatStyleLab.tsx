@@ -161,7 +161,7 @@ function Scene({ session, right, setRight, left, toggleLeft, onReset, onEmpty }:
   const grid = useRef<HTMLDivElement>(null);
   return <ModelCatalogClientContext value={client}>
     <div ref={grid} className="relative grid min-h-0 flex-1" style={{ gridTemplateColumns: `minmax(0,1fr) ${right ? `min(${paneWidth}px, 48%)` : "0px"}` }}>
-      <main className="grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto]">
+      <main className="grid min-h-0 min-w-0 grid-cols-1 grid-rows-[auto_minmax(0,1fr)_auto]">
         <ThreadView thread={thread} failedFirstSend={false} actions={actions} client={client} changes={changes} rightOpen={right} leftOpen={left} engines={ENGINES} runMode="allow-reads" modelPicks={{}} allowlist={allowlist} onQueue={setQueue} onMessages={setMessages} onOpenPicture={setPicture} />
       </main>
       {right && <RightPane queue={queue} open tab={tab} onTab={setTab} changes={changes} client={client} threadId={thread.id} refreshKey={thread.updatedAt} preview={preview} onPreviewTaken={() => setPreview(null)} inspect={inspect} messages={messages} thread={thread} place="样例项目" live={isLiveThread(thread)} onBuild={async (_id, content) => { session.patch({ mode: "agent" }); await session.send(content); }} onOpenPicture={setPicture} onOpenFile={openFile} />}

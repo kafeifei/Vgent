@@ -320,7 +320,7 @@ function ThreadChatView({
         />
       </FileAccessProvider>
 
-      <div className="bg-bg px-md pb-xs">
+      <div className="min-w-0 bg-bg px-md pb-xs">
         {thread.archivedAt != null ? (
           // The draft stays on the server meanwhile, so 取消归档 brings the composer back as it was.
           <ArchivedBar onUnarchive={() => actions.archiveThread(thread.id, false)} />

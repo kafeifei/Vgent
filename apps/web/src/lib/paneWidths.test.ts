@@ -25,6 +25,24 @@ describe("fitPaneWidths", () => {
     expect(fitPaneWidths({ rightList: 300 }, 1400, { left: true, right: "rightPane" })).toEqual({});
     expect(fitPaneWidths({ left: 1200 }, 1400, { left: true, right: null })).toEqual({ left: 1400 - CENTER_MIN });
   });
+
+  it("fits default panes too, including a mixed default and dragged layout", () => {
+    expect(fitPaneWidths({}, 971, { left: true, right: "rightPane" })).toEqual({ left: 231, rightPane: 320 });
+    expect(fitPaneWidths({ rightPane: 500 }, 971, { left: true, right: "rightPane" })).toEqual({ left: 231, rightPane: 320 });
+    expect(fitPaneWidths({ left: 500 }, 1200, { left: true, right: "rightPane" })).toEqual({ left: 460, rightPane: 320 });
+  });
+
+  it("uses the current density's tokens and restores them in a larger window", () => {
+    const compact = { left: 236, rightList: 260, rightPane: 420 };
+    expect(fitPaneWidths({}, 1000, { left: true, right: "rightPane" }, compact)).toEqual({ rightPane: 344 });
+    expect(fitPaneWidths({}, 1200, { left: true, right: "rightPane" }, compact)).toEqual({});
+    expect(fitPaneWidths({}, 800, { left: false, right: "rightPane" }, compact)).toEqual({ rightPane: 380 });
+    expect(fitPaneWidths({}, 800, { left: true, right: "rightList" }, compact)).toEqual({ left: 200, rightList: 200 });
+  });
+
+  it("keeps pane minimums when the window cannot fit all three columns", () => {
+    expect(fitPaneWidths({}, 800, { left: true, right: "rightPane" })).toEqual({ left: 200, rightPane: 320 });
+  });
 });
 
 describe("parsePaneWidths", () => {

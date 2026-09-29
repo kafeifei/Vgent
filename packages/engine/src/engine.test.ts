@@ -350,7 +350,7 @@ describe("reasoning options", () => {
     await agent.generate({ prompt: "hi" });
 
     expect(model.doGenerateCalls[0]?.providerOptions).toEqual({
-      openai: { reasoningSummary: "auto", reasoningEffort: "medium" },
+      openai: { reasoningSummary: "auto", reasoningEffort: "medium", promptCacheKey: expect.any(String) },
     });
   });
 

@@ -148,6 +148,7 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
         engine = createVgentEngine({
           model,
           providers,
+          sessionId: ctx.thread.id,
           repoPath: ctx.project.repoPath,
           projectPath: ctx.projectPath,
           outputDir: join(ctx.dataDir, "outputs", ctx.thread.id),

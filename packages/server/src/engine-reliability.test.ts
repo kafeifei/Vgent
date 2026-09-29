@@ -154,3 +154,68 @@ it("the production factory describes a scratch session and refreshes approval fa
     expect(second).toContain("Applicable standing approvals");
   } finally { await runs.stopAll(); }
 });
+
+it("restores the complete request prefix across UI history turns and isolates thread cache sessions", async () => {
+  const { simulateReadableStream } = await import("ai");
+  const dataDir = await temp(), repoPath = await temp();
+  const threads = createThreadStore(dataDir), projects = createProjectStore(dataDir), settings = createSettingsStore(dataDir);
+  const project = await projects.create({ repoPath });
+  const thread = await threads.create({ projectId: project.id, engine: "vgent" });
+  const other = await threads.create({ projectId: project.id, engine: "vgent" });
+  const plan = { items: [{ text: "CACHE_PLAN_SENTINEL", status: "in_progress" }] };
+  let calls = 0;
+  const model = new MockLanguageModelV3({
+    provider: "codex-subscription.responses",
+    doStream: async () => ({ stream: simulateReadableStream({
+      chunks: ++calls === 1 ? [
+        { type: "stream-start", warnings: [] },
+        { type: "tool-input-start", id: "plan", toolName: "updatePlan" },
+        { type: "tool-input-delta", id: "plan", delta: JSON.stringify(plan) },
+        { type: "tool-input-end", id: "plan" },
+        { type: "tool-call", toolCallId: "plan", toolName: "updatePlan", input: JSON.stringify(plan) },
+        { type: "finish", finishReason: { unified: "tool-calls" }, usage },
+      ] : [
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "text" },
+        { type: "text-delta", id: "text", delta: "Plan recorded." },
+        { type: "text-end", id: "text" },
+        { type: "finish", finishReason: { unified: "stop" }, usage },
+      ], chunkDelayInMs: null, initialDelayInMs: null,
+    }) }),
+  });
+  const runs = createRunManager({ threads, projects, settings, dataDir, registry: createEngineRegistry({ vgent: createVgentEngineFactory({ model }) }) });
+  try {
+    for (const [id, userId, text] of [
+      [thread.id, "cache-user-one", "Make a plan."],
+      [thread.id, "cache-user-two", "Continue with CACHE_NEW_PROVENANCE."],
+      [other.id, "cache-other-user", "A separate task."],
+    ] as const) {
+      const current = (await threads.get(id))!;
+      const messages = [...current.messages, { id: userId, role: "user" as const, parts: [{ type: "text" as const, text }] }];
+      const hub = await runs.start(id, messages);
+      for await (const _ of hub.subscribe()) { /* drain */ }
+      // The hub closes before the final assistant history is persisted.
+      let record = (await threads.get(id))!;
+      for (let i = 0; i < 200 && record.status === "running"; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        record = (await threads.get(id))!;
+      }
+      expect(record.status).toBe("idle");
+      expect(record.messages.at(-1)?.role).toBe("assistant");
+    }
+    expect(model.doStreamCalls).toHaveLength(4);
+    for (const [index, call] of model.doStreamCalls.entries()) {
+      const id = index === 3 ? other.id : thread.id;
+      expect(call.providerOptions?.openai?.promptCacheKey).toBe(id);
+      expect(call.headers?.["session-id"]).toBe(id);
+    }
+    const [initial, planned, resumed] = model.doStreamCalls.map((call) => call.prompt);
+    expect(planned!.at(-1)).toMatchObject({ role: "system", content: expect.stringContaining("CACHE_PLAN_SENTINEL") });
+    expect(resumed!.slice(0, planned!.length)).toEqual(planned);
+    expect(resumed![0]).toEqual(initial![0]);
+    expect(resumed![0]!.role).toBe("system");
+    expect(JSON.stringify(resumed![0])).not.toContain("CACHE_NEW_PROVENANCE");
+    expect(resumed!.at(-1)).toMatchObject({ role: "system", content: expect.stringContaining("cache-user-two: Continue with CACHE_NEW_PROVENANCE.") });
+    expect((await threads.get(thread.id))!.taskState?.items).toEqual(plan.items);
+  } finally { await runs.stopAll(); }
+});

@@ -51,6 +51,14 @@ Vgent 是一个 **Web 优先**的本地 coding agent 工作台，底下可换引
 
 文件协调、输入持久化、结束原因、任务续接与恢复契约见 [engine-reliability.md](./engine-reliability.md)。
 
+#### 自研引擎请求缓存
+
+- `prompt-caching.ts` 直接使用 AI SDK 的 `providerOptions.openai.promptCacheKey`：服务端取稳定 `thread.id`，子代理取持久 `taskId`（恢复沿用，不和主代理共用）；CLI 有 session 文件时取绝对路径的 SHA-256，无会话标识时使用本引擎实例的 UUID。仅 Codex 订阅额外传 `session-id`；不改 `store:false`、推理强度、摘要或服务档位。
+- 对已识别的 OpenAI Responses（含 Codex 订阅和配置为 `openai` 的提供商），计划、续接状态、记忆来源改为消息尾部的 system 快照：变化才追加，不重写历史前的 instructions。最新快照替代旧状态，但不替代最新用户纠正。项目规则、权限和收尾指令仍走原路径；其它协议保持原来 instructions 注入，避免 Gemini / Bedrock 等拒绝中途 system 消息。
+- 复用 `context-cache.ts` 的原始历史前缀校验和现有保存文件，不另建缓存服务或压缩机制。用 SDK 的 `initialMessages + responseMessages` 对应有效请求上下文；引导插入后停止覆盖 canonical checkpoint，编辑历史时校验失败即回退。切到不支持的协议时去掉内部快照。缓存写入失败不阻断执行；含 URL / 二进制等不能无损 JSON 保存的前缀不复用、不保存，附件本身仍原样发送。
+- 参考 [Codex 的会话缓存亲和性](https://github.com/openai/codex/blob/8ffd91e42aa001b7e897bea812b02f89264f9fa0/codex-rs/core/src/client.rs#L575-L596) 和 [OpenCode 的会话 cache key](https://github.com/anomalyco/opencode/blob/f66b86ceec1a497417f750b88a06cf6923c5c75f/packages/opencode/src/provider/transform.ts#L1323-L1335)。官方 harness 的原生会话、压缩和登录链路不动。
+- `prompt-caching.smoke.test.ts` 在 `VGENT_SMOKE=1` 时发三个真实请求；`VGENT_SMOKE_CODEX_MODEL` 选模型。只输出 SDK `onStepEnd` 的逐请求用量，同时核对真实请求的 key、header、前缀和 `store:false`。缓存命中由后端决定，不作为易波动的测试断言，也不存原始请求或凭据。
+
 ### 模型接入 `@vgent/providers`
 
 自研引擎的模型来源分两类：

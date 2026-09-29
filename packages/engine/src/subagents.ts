@@ -1,3 +1,7 @@
+import { promptCaching } from "./prompt-caching.js";
+import { appendRuntimeContext, isRuntimeContext } from "./runtime-context.js";
+import { restoreContext, saveContext } from "./context-cache.js";
+import type { ProviderConfig } from "@vgent/providers";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -54,6 +58,7 @@ what you changed, in which files, how you verified it, and anything left open. N
 
 export interface CreateSubagentToolsOptions extends AgentSetupOptions {
   model: LanguageModel;
+  providers?: readonly ProviderConfig[] | undefined;
   /** Defaults to 30 for explore and 60 for coder. */
   maxSteps?: number;
   contextTokenBudget?: number;
@@ -88,6 +93,10 @@ async function* streamChild(
   resumeTaskId?: string,
 ): AsyncGenerator<UIMessage> {
   const taskId = resumeTaskId ?? randomUUID();
+  const caching = promptCaching(options.model, taskId, options.providers);
+  const appendState = caching.allowSystemInMessages === true;
+  const taskContext = options.taskContext?.() ?? "";
+  const contextDir = options.outputDir ? join(options.outputDir, `child-${taskId}`) : undefined;
   const accessed = new Set<string>();
   let closing = false;
   const setup = createAgentSetup({
@@ -98,7 +107,7 @@ async function* streamChild(
     ...(kind === "explore" ? { allowedTools: ["read", "grep", "glob"] } : {}),
     role: [
       kind === "coder" ? CODER_INSTRUCTIONS : EXPLORE_INSTRUCTIONS,
-      options.taskContext?.(),
+      appendState ? "" : taskContext,
       "Keep the final report under 3000 characters: findings/changes, evidence, risks, unfinished work. State limitations explicitly.",
     ].filter(Boolean).join("\n\n"),
     onRead: async (path) => {
@@ -110,11 +119,16 @@ async function* streamChild(
   const maxSteps = options.maxSteps ?? (kind === "coder" ? CODER_MAX_STEPS : EXPLORE_MAX_STEPS);
   const agent = new ToolLoopAgent({
     model: options.model,
-    ...(options.providerOptions == null ? {} : { providerOptions: options.providerOptions }),
+    ...caching,
+    ...(options.providerOptions == null ? {} : { providerOptions: {
+      ...caching.providerOptions,
+      ...options.providerOptions,
+      openai: { ...caching.providerOptions?.openai, ...options.providerOptions.openai },
+    } }),
     instructions: setup.instructions,
     tools,
     stopWhen: [isStepCount(maxSteps)],
-    prepareStep: async ({ messages, stepNumber, initialInstructions }) => {
+    prepareStep: async ({ messages, stepNumber, initialInstructions, initialMessages, responseMessages }) => {
       closing = stepNumber >= maxSteps - 1 && maxSteps > 1;
       const instructions = [
         initialInstructions,
@@ -123,12 +137,15 @@ async function* streamChild(
       ]
         .filter(Boolean)
         .join("\n\n");
+      let restored = stepNumber === 0 && contextDir ? await restoreContext(contextDir, messages) : messages;
+      if (!appendState) restored = restored.filter((message) => !isRuntimeContext(message));
       const fitted = await fitContext({
         model: options.model,
-        messages,
+        messages: restored,
         budget: options.contextTokenBudget ?? 150000,
         overhead:
           estimateTokens(instructions) +
+          (appendState ? estimateTokens(appendRuntimeContext([], taskContext)) : 0) +
           1024 +
           estimateTokens(
             await Promise.all(
@@ -141,7 +158,9 @@ async function* streamChild(
           ),
         ...(abortSignal ? { abortSignal } : {}),
       });
-      return { messages: fitted.messages, instructions, ...(closing ? { activeTools: [], toolChoice: "none" as const } : {}) };
+      const effective = appendState ? appendRuntimeContext(fitted.messages, taskContext) : fitted.messages;
+      if (contextDir && appendState) await saveContext(contextDir, [...initialMessages, ...responseMessages], effective);
+      return { messages: effective, instructions, ...(closing ? { activeTools: [], toolChoice: "none" as const } : {}) };
     },
   });
   let history: UIMessage[] = [];

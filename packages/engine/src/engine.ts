@@ -1,6 +1,8 @@
 import { restoreContext, saveContext } from "./context-cache.js";
 import { observeProvider, type FailureClass } from "./failures.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { promptCaching } from "./prompt-caching.js";
+import { appendRuntimeContext, isRuntimeContext } from "./runtime-context.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { fitContext, estimateTokens } from "./context.js";
 import { agentInstructionsSection, loadScopedInstructions } from "./agent-instructions.js";
@@ -61,6 +63,8 @@ export interface VgentEngineOptions {
   repoPath: string;
   projectPath?: string;
   outputDir?: string;
+  /** Stable task ID across turns; children use their own persistent task IDs. */
+  sessionId?: string;
   taskState?: TaskState;
   saveTaskState?: (state: TaskState) => Promise<void>;
   memorySources?: readonly { id: string; text: string }[];
@@ -270,6 +274,11 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
   );
   const { sessionFile, onEvent, skills, memoryDir } = options;
   const resolvedModel = resolveModel(options.model, options.providers) as Parameters<typeof wrapLanguageModel>[0]["model"];
+  const sessionId = options.sessionId ?? (sessionFile
+    ? createHash("sha256").update(resolve(sessionFile)).digest("hex")
+    : randomUUID());
+  const caching = promptCaching(resolvedModel, sessionId, options.providers);
+  const appendState = caching.allowSystemInMessages === true;
   const outcome: EngineOutcome = {
     model: resolvedModel.modelId,
     provider: resolvedModel.provider,
@@ -332,6 +341,7 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
         ? createSubagentTools({
             ...setupOptions,
             model: subagentModel!,
+            providers: options.providers,
             // Expose supported reasoning summaries; retain the child's default effort.
             providerOptions: reasoningProviderOptions(subagentModel!, options.reasoning?.summary === false ? { summary: false } : {}),
             contextTokenBudget,
@@ -350,19 +360,27 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
   // they cover the turn. `persisted` skips what earlier turns already wrote,
   // since each call re-sends the whole history.
   let persisted = 0;
+  let steered = false;
 
   // Keyed on the string the caller named when there is one, so a spec that was
   // just resolved is still recognised for what it is.
-  const providerOptions = reasoningProviderOptions(
+  const reasoningOptions = reasoningProviderOptions(
     typeof options.model === "string" ? options.model : model,
     options.reasoning ?? {},
     options.serviceTier,
   );
 
+  const providerOptions = caching.providerOptions || reasoningOptions ? {
+    ...caching.providerOptions,
+    ...reasoningOptions,
+    openai: { ...caching.providerOptions?.openai, ...reasoningOptions?.openai },
+  } : undefined;
+
   const reasoning = portableReasoning(options.model, options.providers ?? [], options.reasoning);
 
   const agent = new ToolLoopAgent({
     model,
+    ...caching,
     ...(reasoning == null ? {} : { reasoning }),
     // Merged with, not replacing, the defaults `createCodexSubscriptionModel`
     // pins on the model (`store: false`): `defaultSettingsMiddleware` merges
@@ -372,18 +390,17 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
     tools,
     toolApproval: setup.toolApproval,
     stopWhen: [isStepCount(maxSteps)],
-    prepareStep: async ({ messages, stepNumber, initialInstructions }) => {
+    prepareStep: async ({ messages, stepNumber, initialInstructions, initialMessages, responseMessages }) => {
       // 插话: what the user said while the last step ran is put in front of the
       // model now. The list this returns becomes the base of every later step,
       // so a message goes in once. Not before the first step — that one is
       // already answering a message, and the rest of a queue is not a reply to it.
       const said = stepNumber > 0 ? ((await options.pendingUserMessages?.()) ?? []) : [];
+      if (said.length > 0) steered = true;
       const current = said.length === 0 ? messages : [...messages, ...said.map((text): ModelMessage => ({ role: "user", content: text }))];
       const scoped = agentInstructionsSection(await loadScopedInstructions(repoPath, [...accessed]));
       const state = planState.get();
-      const instructions = [
-        initialInstructions,
-        scoped,
+      const runtimeState = [
         state ? `Task continuation state (verify evidence; latest user corrections govern):\n${JSON.stringify(state)}` : "",
         options.memorySources?.length
           ? `User message IDs for memory provenance:\n${options.memorySources
@@ -394,6 +411,7 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
       ]
         .filter(Boolean)
         .join("\n\n");
+      const instructions = [initialInstructions, scoped, appendState ? "" : runtimeState].filter(Boolean).join("\n\n");
       const closing = stepNumber >= maxSteps - 1 && maxSteps > 1;
       toolsMayRun = !closing;
       const finalInstructions =
@@ -401,7 +419,9 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
         (closing
           ? "\nExecution budget is nearly exhausted. Make no further tool calls; report verified progress, remaining work and the next action. Do not claim the task is complete without evidence."
           : "");
-      const restored = stepNumber === 0 && options.outputDir ? await restoreContext(options.outputDir, current) : current;
+      let restored = stepNumber === 0 && options.outputDir ? await restoreContext(options.outputDir, current) : current;
+      // A task can change provider between turns; never replay internal system snapshots to unsupported protocols.
+      if (!appendState) restored = restored.filter((message) => !isRuntimeContext(message));
       const overhead =
         estimateTokens(finalInstructions) +
         estimateTokens(
@@ -419,7 +439,8 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
         messages: restored,
         model,
         budget: contextTokenBudget,
-        overhead: overhead + 1024,
+        // Reserve the current snapshot even if compaction removes all previous snapshots.
+        overhead: overhead + 1024 + (appendState ? estimateTokens(appendRuntimeContext([], runtimeState)) * usageRatio : 0),
         ratio: usageRatio,
         ...(turnSignal ? { abortSignal: turnSignal } : {}),
         ...(options.outputDir
@@ -433,17 +454,25 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
             }
           : {}),
       });
-      if (stepNumber === 0 && options.outputDir && fitted.compacted) await saveContext(options.outputDir, current, fitted.messages);
-      lastEstimate = estimateTokens(fitted.messages) + overhead;
+      const effective = appendState ? appendRuntimeContext(fitted.messages, runtimeState) : fitted.messages;
+      if (options.outputDir && appendState && !steered) {
+        // SDK originals exclude injected messages. Exact-prefix validation safely rejects edited
+        // history, steering/approval shape changes and incompatible UI transcript conversions.
+        await saveContext(options.outputDir, [...initialMessages, ...responseMessages], effective);
+      } else if (stepNumber === 0 && options.outputDir && fitted.compacted) {
+        await saveContext(options.outputDir, current, effective);
+      }
+      lastEstimate = estimateTokens(effective) + overhead;
       if (closing) outcome.stopReason = "budget";
       return {
-        messages: fitted.messages,
+        messages: effective,
         instructions: finalInstructions,
         ...(closing ? { activeTools: [], toolChoice: "none" as const } : {}),
       };
     },
     onStart: async ({ messages }) => {
       toolsMayRun = true;
+      steered = false;
       outcome.steps = 0;
       outcome.providerAttempts = 0;
       outcome.stopReason = "unknown";

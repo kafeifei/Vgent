@@ -101,8 +101,12 @@ describe("explore subagent", () => {
     const child = new MockLanguageModelV3({ provider: "codex-subscription.responses", modelId: "child-model", doStream: {
       stream: simulateReadableStream({ chunks: textStep("Done."), chunkDelayInMs: null, initialDelayInMs: null }),
     } });
-    const engine = createVgentEngine({ model: parentModel("explore", { prompt: "Inspect" }, "Done"), subagentModel: child, repoPath, reasoning: { effort: "high", ...(summary === false ? { summary } : {}) } });
-    await engine.agent.generate({ prompt: "Delegate" });
+    const engine = createVgentEngine({ model: parentModel("explore", { prompt: "Inspect" }, "Done"), subagentModel: child, repoPath, sessionId: "parent-cache-session", reasoning: { effort: "high", ...(summary === false ? { summary } : {}) } });
+    const result = await engine.agent.generate({ prompt: "Delegate" });
+    const { taskId } = JSON.parse(summarizeSubagentMessage(result.toolResults[0]!.output as UIMessage));
+    expect(taskId).not.toBe("parent-cache-session");
+    expect(child.doStreamCalls[0]?.providerOptions?.openai?.promptCacheKey).toBe(taskId);
+    expect(child.doStreamCalls[0]?.headers?.["session-id"]).toBe(taskId);
     expect(child.doStreamCalls[0]?.providerOptions?.openai?.reasoningSummary).toBe(summary === false ? undefined : "auto");
     expect(child.doStreamCalls[0]?.providerOptions?.openai?.reasoningEffort).toBeUndefined();
   });
@@ -341,4 +345,57 @@ it("passes the same project and skill capabilities into the child's actual model
   } finally {
     await rm(projectPath, { recursive: true, force: true });
   }
+});
+
+it("keeps each child's cache session and saved runtime prefix across steps and resume", async () => {
+  const steps = [
+    toolCallStep("child-read-one", "read", { file_path: "hello-vgent.txt" }),
+    toolCallStep("child-read-two", "read", { file_path: "hello-vgent.txt" }),
+    textStep("First report."), textStep("Resumed report."), textStep("Separate report."),
+  ];
+  const child = new MockLanguageModelV3({
+    provider: "codex-subscription.responses",
+    doStream: steps.map((chunks) => ({ stream: simulateReadableStream({ chunks, chunkDelayInMs: null, initialDelayInMs: null }) })),
+  });
+  const outputDir = join(repoPath, ".reports");
+  let taskContext = "PARENT_STATE_ORIGINAL";
+  const options = {
+    model: child, repoPath, permissionMode: "allow-reads" as const, outputDir,
+    taskContext: () => taskContext,
+    providerOptions: { openai: { reasoningSummary: "auto", reasoningEffort: "high" } },
+  };
+  const run = async (input: unknown, toolCallId: string) => {
+    // Recreate tools to exercise durable restoration, not an in-memory session.
+    const tools = createSubagentTools(options);
+    const execute = tools.explore!.execute as (input: unknown, options: unknown) => AsyncIterable<UIMessage>;
+    let last: UIMessage | undefined;
+    for await (const value of execute(input, { toolCallId, messages: [] })) last = value;
+    return JSON.parse(summarizeSubagentMessage(last));
+  };
+  const first = await run({ prompt: "Inspect twice." }, "first");
+  expect(first.status).toBe("completed");
+  expect(first.taskId).toEqual(expect.any(String));
+  const saved = JSON.parse(await readFile(join(outputDir, `child-${first.taskId}`, "context-state.json"), "utf8"));
+  expect(saved.messages.some((message: { role: string; content: unknown }) => message.role === "system" && String(message.content).includes("PARENT_STATE_ORIGINAL"))).toBe(true);
+  taskContext = "PARENT_STATE_CHANGED";
+  const resumed = await run({ prompt: "Continue.", resume_task_id: first.taskId }, "resume");
+  const separate = await run({ prompt: "Another child." }, "separate");
+  expect(resumed.taskId).toBe(first.taskId);
+  expect(separate.taskId).not.toBe(first.taskId);
+  expect(child.doStreamCalls).toHaveLength(5);
+  for (const [index, call] of child.doStreamCalls.entries()) {
+    const taskId = index === 4 ? separate.taskId : first.taskId;
+    expect(call.providerOptions?.openai).toMatchObject({ promptCacheKey: taskId, reasoningSummary: "auto", reasoningEffort: "high" });
+    expect(call.headers?.["session-id"]).toBe(taskId);
+  }
+  const initial = child.doStreamCalls[0]!.prompt;
+  const lastStep = child.doStreamCalls[2]!.prompt;
+  const restored = child.doStreamCalls[3]!.prompt;
+  expect(initial[0]!.role).toBe("system");
+  expect(JSON.stringify(initial[0])).not.toContain("PARENT_STATE_ORIGINAL");
+  expect(restored[0]).toEqual(initial[0]);
+  expect(restored.slice(0, lastStep.length)).toEqual(lastStep);
+  // The saved effective context is the actual provider prefix (after instructions).
+  expect(restored.slice(1, 1 + saved.messages.length)).toEqual(saved.messages);
+  expect(restored.at(-1)).toMatchObject({ role: "system", content: expect.stringContaining("PARENT_STATE_CHANGED") });
 });

@@ -261,7 +261,7 @@ describe.skipIf(!hasGit)("include-files 和取消归档", () => {
     // Ignored files come back the way they came the first time: copied fresh, or rebuilt.
     expect(await readFile(join(path, ".env"), "utf8")).toBe("SECRET=2\n");
     expect(await readFile(join(path, "marker"), "utf8")).toBe("installed\n");
-  });
+  }, 30_000);
 });
 
 describe.skipIf(!hasGit)("worktree 上限", () => {

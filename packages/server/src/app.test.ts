@@ -1225,7 +1225,7 @@ describe("createApp", () => {
     const wrongReceipt = await patch({ archived: true, preserveChanges: "yes" });
     expect(wrongReceipt.status).toBe(400);
     expect(await wrongReceipt.json()).toMatchObject({ error: { code: "invalid_preserve_changes" } });
-  });
+  }, 30_000);
 
   it("归档先换状态：worktree 还在回收时任务已经在已归档里，显示归档中", async () => {
     const repo = await gitRepo();

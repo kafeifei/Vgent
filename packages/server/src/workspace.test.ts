@@ -48,6 +48,8 @@ const threadOf = (id: string, workspace: ThreadWorkspace): Pick<ThreadRecord, "i
 
 const status = async (repoPath: string): Promise<string> => (await run(repoPath, "status", "--porcelain")).stdout;
 
+// Real git all the way down: a reclaim-and-restore round trip is ~100 git
+// processes in a row, which a loaded full-suite run stretches past vitest's 5s.
 describe.skipIf(!hasGit)("workspace", () => {
   it("creates a worktree whose edits never reach the project's working tree", async () => {
     const dataDir = await tempDir("vgent-ws-data-");
@@ -288,4 +290,4 @@ describe.skipIf(!hasGit)("workspace", () => {
     // The ownership file and the anchor ref go either way.
     await expect(readFile(join(dataDir, "workspaces", `${committedId}.json`), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
-});
+}, 30_000);

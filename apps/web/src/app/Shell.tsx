@@ -21,7 +21,7 @@ import { type PaneKey, type PaneWidths, PANE_DEFAULT, clampPaneWidth, fitPaneWid
 import { usePrefs, usePrefsSync } from "@/lib/prefs";
 import { RightPaneToggle } from "@/features/taskheader/TaskHeader";
 import { ThreadView } from "./ThreadView";
-import { isLiveThread, useWorkbench } from "./useWorkbench";
+import { isCompacting, isLiveThread, useWorkbench } from "./useWorkbench";
 
 const ChatStyleLab = lazy(() => import("@/features/style-lab/ChatStyleLab"));
 
@@ -91,6 +91,7 @@ export function Shell({ token }: { token: string }) {
       ...(thread != null &&
       engines.find((entry) => entry.id === thread.engine)?.capabilities.compact === true &&
       !isLiveThread(thread) &&
+      !isCompacting(thread) &&
       thread.archivedAt == null
         ? [{ id: "compact", label: "压缩上下文", hint: "/compact", run: () => void actions.compactThread(thread.id) }]
         : []),
@@ -240,6 +241,7 @@ export function Shell({ token }: { token: string }) {
             preview={right.preview}
             onPreviewTaken={actions.clearPreview}
             inspect={right.inspect}
+            summary={right.summary}
             messages={messages}
             thread={thread}
             place={isNoProject(thread?.projectId) ? NO_PROJECT_NAME : state.projects.find((entry) => entry.id === thread?.projectId)?.name}

@@ -3,6 +3,7 @@ import type { UIMessage } from "ai";
 import { ArrowDownIcon } from "lucide-react";
 import type { ApiClient } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { Shimmer } from "@/components/ai-elements/shimmer";
 import type { ThreadSummary } from "@/lib/types";
 import { RestoredBar } from "./RestoredBar";
 import { Turn, type TurnActions } from "./Turn";
@@ -143,6 +144,17 @@ export function WorkLog({
               />
             </div>
           ))}
+
+          {/* 压缩中 / 压缩失败: where the summary's line will be, or would have been. */}
+          {thread.compaction != null && (
+            <div className="px-chat-inset pb-xl text-xs" aria-live="polite">
+              {thread.compaction.error == null ? (
+                <Shimmer className="text-fg-muted">正在压缩上下文…</Shimmer>
+              ) : (
+                <span className="text-danger">上下文压缩失败：{thread.compaction.error}</span>
+              )}
+            </div>
+          )}
 
           {error != null && thread.workspaceState !== "failed" && (
             <div className="mb-xl flex items-start gap-sm rounded-md border border-danger bg-danger-bg px-md py-sm text-danger text-sm">

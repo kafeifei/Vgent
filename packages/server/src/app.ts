@@ -1475,9 +1475,40 @@ export function createApp(options: CreateAppOptions): VgentApp {
   });
 
   /**
-   * 手动 /compact：the in-house engine summarizes stored history; a harness
-   * receives the native command and keeps ownership of its transcript.
+   * 手动 /compact：the in-house engine summarizes in the background and appends
+   * the summary as a marker, the history left as it was; a harness receives
+   * the native command and keeps ownership of its transcript.
+   *
+   * In the background because a summary of a long task takes a minute: a
+   * request held open that long, once per click, used up the browser's few
+   * connections to this server and every other task stalled behind them. One
+   * at a time per task; the record says it is going on, so the log and the
+   * composer can, and a turn waits for it.
    */
+  const compacting = new Set<string>();
+  const compactInBackground = async (id: string, startedAt: string): Promise<void> => {
+    let outcome: ThreadPatch;
+    try {
+      const thread = await threadOf(id);
+      const spec = thread.model ?? DEFAULT_VGENT_MODEL;
+      const model = options.compactModel ?? (await accountModel(spec, { copilot: accounts.copilot, accounts: engineAccounts })) ?? resolveModel(spec, await providers.list());
+      const window = thread.contextWindow ?? (await listModels("vgent").then((catalog) => catalog.models.find((entry) => entry.id === spec)?.contextWindow, () => undefined));
+      const marker = await compactThread({ thread, model, ...(window != null ? { window } : {}) });
+      // No turn could start meanwhile, so nothing was appended behind our back.
+      outcome = { messages: [...(await threadOf(id)).messages, marker], compaction: undefined };
+    } catch (error) {
+      log.warn(`压缩线程 ${id} 失败`, error);
+      const reason = error instanceof Error ? error.message : String(error);
+      outcome = { compaction: { startedAt, error: reason.slice(0, 500) } };
+    }
+    // Let go and write in the same tick: the store writes a thread's changes in
+    // the order they were asked for, so a 压缩 started right after lands after this.
+    compacting.delete(id);
+    await threads.update(id, outcome).catch((error: unknown) => log.warn(`保存线程 ${id} 的压缩结果失败`, error));
+    // What was sent while it ran went into the queue.
+    void runs.dispatchQueue(id).catch((error: unknown) => log.warn(`线程 ${id} 的排队消息没能发出`, error));
+  };
+
   app.post("/api/threads/:id/compact", async (c) => {
     const id = c.req.param("id");
     if (runs.isRunning(id)) throw new ConflictError("任务运行中，等它结束再压缩", "thread_running");
@@ -1506,17 +1537,18 @@ export function createApp(options: CreateAppOptions): VgentApp {
       return c.json(await threadOf(id));
     }
 
-    const spec = thread.model ?? DEFAULT_VGENT_MODEL;
-    const model = options.compactModel ?? (await accountModel(spec, { copilot: accounts.copilot, accounts: engineAccounts })) ?? resolveModel(spec, await providers.list());
-    const { messages } = await compactThread({ thread, model }).catch((error: unknown) => {
-      throw new UpstreamModelError(`压缩失败: ${error instanceof Error ? error.message : String(error)}`);
-    });
-    // Snapshot the pre-compact history before it's overwritten; if that fails,
-    // abort rather than discard messages nothing kept a copy of.
-    await threads.snapshotBeforeCompact(id, thread.messages).catch((error: unknown) => {
-      throw new VgentServerError({ message: `压缩快照失败: ${error instanceof Error ? error.message : String(error)}`, status: 500, code: "snapshot_failed" });
-    });
-    return c.json(await threads.update(id, { messages }));
+    if (compacting.has(id)) throw new ConflictError("正在压缩，稍等", "compact_running");
+    compacting.add(id);
+    const startedAt = new Date().toISOString();
+    let record: ThreadRecord;
+    try {
+      record = await threads.update(id, { compaction: { startedAt } });
+    } catch (error) {
+      compacting.delete(id);
+      throw error;
+    }
+    void compactInBackground(id, startedAt);
+    return c.json(record, 202);
   });
 
   app.delete("/api/threads/:id", async (c) => {

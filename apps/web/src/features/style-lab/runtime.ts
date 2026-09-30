@@ -3,7 +3,7 @@ import { getToolName, isToolUIPart, type ChatTransport, type FileUIPart, type UI
 import type { ApiClient } from "@/lib/api";
 import type { DraftValue } from "@/lib/drafts";
 import type { ChangesResponse, ThreadRecord, ThreadSummary } from "@/lib/types";
-import { AT, DIFF, FILES, PLAN, ROOT, assistant, textPart, type ChatScenario } from "./fixtures";
+import { AT, DIFF, FILES, PLAN, ROOT, textPart, user, type ChatScenario } from "./fixtures";
 
 /** Missing handlers fail closed. No production client, token, fetch or filesystem access enters a lab session. */
 export function localClient(handlers: Partial<ApiClient>): ApiClient {
@@ -181,7 +181,11 @@ export class StyleSession {
   compact = async () => {
     await this.stop();
     const before = this.chat.messages.length;
-    this.chat.messages = [{ ...assistant([textPart("已检查聊天组件，接下来继续调整样式。")], crypto.randomUUID()), metadata: { compacted: { before, at: new Date().toISOString() } } }];
+    // Like the server: the history stays, the summary is appended as a marker.
+    this.chat.messages = [
+      ...this.chat.messages,
+      { ...user("上下文已压缩，以下是之前对话的摘要：\n\n已检查聊天组件，接下来继续调整样式。", crypto.randomUUID()), metadata: { compacted: { before, at: new Date().toISOString() } } },
+    ];
     this.patch({ status: "idle" });
   };
   queue = (text: string, mode: "steer" | "queue" = "queue", files: FileUIPart[] = []) => {

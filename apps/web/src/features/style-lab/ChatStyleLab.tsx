@@ -103,6 +103,7 @@ function Scene({ session, right, setRight, left, toggleLeft, onReset, onEmpty }:
   const [file, setFile] = useState<string | null>(scenario.file ?? null);
   const [preview, setPreview] = useState<PreviewRequest | null>(null);
   const [inspect, setInspect] = useState<InspectRequest | null>(scenario.inspect ? { toolCallId: scenario.inspect, nonce: 0 } : null);
+  const [summary, setSummary] = useState<string | null>(null);
   const [picture, setPicture] = useState<string | null>(null);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [messages, setMessages] = useState<UIMessage[]>(session.chat.messages);
@@ -116,6 +117,7 @@ function Scene({ session, right, setRight, left, toggleLeft, onReset, onEmpty }:
     openChanges: (path) => { setFile(path ?? null); setTab("changes"); setRight(true); },
     focusTerminal: (toolCallId) => { setInspect({ toolCallId, nonce: Date.now() }); setTab("term"); setRight(true); },
     inspectTool: (toolCallId) => { setInspect({ toolCallId, nonce: Date.now() }); setTab("tool"); setRight(true); },
+    openSummary: (messageId) => { setSummary(messageId); setTab("summary"); setRight(true); },
     forkThread: (_id, messageId) => {
       const index = session.chat.messages.findIndex((message) => message.id === messageId);
       session.chat.messages = session.chat.messages.slice(0, index + 1);
@@ -160,7 +162,7 @@ function Scene({ session, right, setRight, left, toggleLeft, onReset, onEmpty }:
       <main className="grid min-h-0 min-w-0 grid-cols-1 grid-rows-[auto_minmax(0,1fr)_auto]">
         <ThreadView thread={thread} failedFirstSend={false} actions={actions} client={client} changes={changes} rightOpen={right} leftOpen={left} engines={ENGINES} runMode="allow-reads" modelPicks={{}} allowlist={allowlist} onQueue={setQueue} onMessages={setMessages} onOpenPicture={setPicture} />
       </main>
-      {right && <RightPane queue={queue} open tab={tab} onTab={setTab} changes={changes} client={client} threadId={thread.id} refreshKey={thread.updatedAt} preview={preview} onPreviewTaken={() => setPreview(null)} inspect={inspect} messages={messages} thread={thread} place="样例项目" live={isLiveThread(thread)} onBuild={async (_id, content) => { session.patch({ mode: "agent" }); await session.send(content); }} onOpenPicture={setPicture} onOpenFile={openFile} />}
+      {right && <RightPane queue={queue} open tab={tab} onTab={setTab} changes={changes} client={client} threadId={thread.id} refreshKey={thread.updatedAt} preview={preview} onPreviewTaken={() => setPreview(null)} inspect={inspect} summary={summary} messages={messages} thread={thread} place="样例项目" live={isLiveThread(thread)} onBuild={async (_id, content) => { session.patch({ mode: "agent" }); await session.send(content); }} onOpenPicture={setPicture} onOpenFile={openFile} />}
       <div className="pointer-events-none absolute top-0 right-0 z-10 flex h-topbar items-center pr-sm"><RightPaneToggle open={right} pending={queue.length} onToggle={() => setRight(!right)} className="pointer-events-auto" /></div>
       {right && <ResizeHandle side="right" offset={`min(${paneWidth}px, 48%)`} onStart={() => Math.min(paneWidth, (grid.current?.clientWidth ?? 1000) * .48)} onDrag={(width) => setPaneWidth(Math.max(220, Math.min(width, (grid.current?.clientWidth ?? 1000) * .48)))} onEnd={() => {}} onReset={() => setPaneWidth(360)} />}
       {picture && <FileAccessProvider value={fileAccess}><FilePictureDialog path={picture} onClose={() => setPicture(null)} /></FileAccessProvider>}

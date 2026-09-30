@@ -11,14 +11,15 @@ import { TerminalPanel } from "@/features/terminal/TerminalPanel";
 import type { QueueItem } from "@/features/worklog/queue";
 import type { InspectRequest, PreviewRequest } from "@/app/useWorkbench";
 import { findToolPart, ToolDetail } from "./ToolDetail";
+import { SummaryPanel } from "./SummaryPanel";
 import type { ApiClient } from "@/lib/api";
 import type { ThreadSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** 「home」 is the pane before anything is opened in it: a plain list of what it can show. */
-export type RightTab = "home" | "changes" | "files" | "term" | "plan" | "queue" | "tool";
+export type RightTab = "home" | "changes" | "files" | "term" | "plan" | "queue" | "tool" | "summary";
 
-const TABS: ReadonlyArray<{ id: Exclude<RightTab, "home" | "tool">; label: string; Icon: typeof FileDiff }> = [
+const TABS: ReadonlyArray<{ id: Exclude<RightTab, "home" | "tool" | "summary">; label: string; Icon: typeof FileDiff }> = [
   { id: "changes", label: "变更", Icon: FileDiff },
   { id: "files", label: "文件", Icon: FolderTree },
   { id: "term", label: "终端", Icon: Terminal },
@@ -56,6 +57,7 @@ export function RightPane({
   preview,
   onPreviewTaken,
   inspect,
+  summary,
   messages,
   thread,
   place,
@@ -79,6 +81,8 @@ export function RightPane({
   onPreviewTaken: () => void;
   /** The tool call a log row was clicked for. */
   inspect: InspectRequest | null;
+  /** The 上下文已压缩 line that was clicked: its message id. */
+  summary: string | null;
   /** The active thread's messages, for 终端 and 计划. Empty without a live thread. */
   messages: UIMessage[];
   /** The project the task runs on, named at the top of the list. */
@@ -200,6 +204,10 @@ export function RightPane({
         ) : tab === "tool" ? (
           <FileAccessProvider value={threadId == null ? null : { client, threadId, refreshKey, openFile: onOpenFile }}>
             <ToolDetail part={findToolPart(messages, inspect?.toolCallId)} onOpenFile={onOpenFile} />
+          </FileAccessProvider>
+        ) : tab === "summary" ? (
+          <FileAccessProvider value={threadId == null ? null : { client, threadId, refreshKey, openFile: onOpenFile }}>
+            <SummaryPanel messages={messages} messageId={summary} />
           </FileAccessProvider>
         ) : tab === "term" ? (
           <TerminalPanel messages={messages} focus={inspect} />

@@ -97,7 +97,7 @@ it("a crash after claiming a queued request but before starting never drops it",
 });
 
 it("manual compaction preserves recent original turns and their user constraints", async () => {
-  const { compactThread } = await import("./compact.js");
+  const { compactThread, sinceCompaction } = await import("./compact.js");
   const dataDir = await temp();
   const store = createThreadStore(dataDir);
   const thread = await store.create({ projectId: "p", engine: "vgent" });
@@ -114,9 +114,13 @@ it("manual compaction preserves recent original turns and their user constraints
       warnings: [],
     },
   });
-  const result = await compactThread({ thread: { ...thread, messages }, model });
-  expect(result.messages.slice(-4)).toEqual(messages.slice(-4));
-  expect(JSON.stringify(result.messages)).toContain("Do not restart");
+  const marker = await compactThread({ thread: { ...thread, messages }, model });
+  expect(marker.metadata).toMatchObject({ compacted: { before: 4, keptFrom: "m4" } });
+  // The history stays; the model reads the summary, then the kept turns word for word.
+  const read = sinceCompaction([...messages, marker]);
+  expect(read[0]).toBe(marker);
+  expect(read.slice(-4)).toEqual(messages.slice(-4));
+  expect(JSON.stringify(read)).toContain("Do not restart");
   expect(JSON.stringify(model.doGenerateCalls[0]!.prompt)).not.toContain("history 7");
 });
 

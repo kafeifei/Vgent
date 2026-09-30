@@ -168,11 +168,14 @@ describe("createThreadStore", () => {
     const doomed = await store.create({ projectId: "p1", title: "要压缩的", engine: "claude-code" });
     const other = await store.create({ projectId: "p1", title: "另一个", engine: "claude-code" });
 
-    await store.snapshotBeforeCompact(doomed.id, [{ id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] }]);
-    await store.snapshotBeforeCompact(doomed.id, [{ id: "m2", role: "user", parts: [{ type: "text", text: "hi again" }] }]);
-    await store.snapshotBeforeCompact(other.id, [{ id: "m3", role: "user", parts: [{ type: "text", text: "unrelated" }] }]);
-
+    // What an older build's 压缩 left beside the record.
     const threadsDir = join(dir, "threads");
+    const snapshot = (id: string, at: string) =>
+      writeFile(join(threadsDir, `${id}.pre-compact.${at}.json`), JSON.stringify({ version: 1, threadId: id, createdAt: at, messages: [] }));
+    await snapshot(doomed.id, "2026-09-30T05-03-30-182Z");
+    await snapshot(doomed.id, "2026-09-30T05-04-03-550Z");
+    await snapshot(other.id, "2026-09-30T05-04-09-269Z");
+
     const doomedSnapshots = () => readdir(threadsDir).then((entries) => entries.filter((entry) => entry.startsWith(`${doomed.id}.pre-compact.`)));
     const otherSnapshots = () => readdir(threadsDir).then((entries) => entries.filter((entry) => entry.startsWith(`${other.id}.pre-compact.`)));
     expect(await doomedSnapshots()).toHaveLength(2);

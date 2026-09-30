@@ -1,6 +1,6 @@
 import { isToolUIPart, type LanguageModelUsage, type UIMessage } from "ai";
 import type { ChangedFile, ModelCost, ThreadMessageMetadata, UsageInfo } from "@/lib/types";
-import { completedCompactionRequest } from "@/lib/compaction";
+import { completedCompactionRequest, isCompactionMarker, sinceCompaction } from "@/lib/compaction";
 
 /**
  * The two numbers the review bar above the composer shows: how full the context
@@ -74,6 +74,9 @@ export function contextUsage(messages: readonly UIMessage[]): ContextUsage {
     // context. Without fresh usage, neither the old count nor that history is
     // an estimate of what the model now sees.
     if (completedCompactionRequest(message)) return { tokens: undefined, source: "unknown" };
+    // The in-house engine's summary: the model now reads it and the turns it
+    // kept, not the history the last count was taken on.
+    if (isCompactionMarker(message)) return { tokens: Math.round(promptChars(sinceCompaction(messages) ?? []) / CHARS_PER_TOKEN), source: "estimate" };
     if (message == null || message.role !== "assistant") continue;
     const tokens = reportedInputTokens(message);
     if (tokens != null) return { tokens, source: "usage" };

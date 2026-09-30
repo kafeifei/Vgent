@@ -24,10 +24,10 @@ import { useDraft } from "@/lib/drafts";
 import { previewKindOf } from "@/lib/preview";
 import { CHAT_THROTTLE_MS, transportErrorText } from "@/lib/threadChats";
 import type { EngineDescriptor, ModelPick, PermissionMode, ThreadSummary } from "@/lib/types";
-import { isLiveThread, type WorkbenchActions } from "./useWorkbench";
+import { isCompacting, isLiveThread, type WorkbenchActions } from "./useWorkbench";
 
 export type ThreadViewActions = Pick<WorkbenchActions,
-  "whenReady" | "getChat" | "focusChat" | "toast" | "allowTools" | "openPreview" | "openChanges" | "focusTerminal" | "inspectTool" | "forkThread" | "setRightTab" | "openRight" | "toggleLeft" | "compactThread" | "newTask" | "queueMessage" | "send" | "stop" | "rememberModelPick" | "setModel" | "setReasoningEffort" | "setContextWindow" | "setServiceTier" | "setMode" | "sendQueued" | "editQueued" | "deleteQueued" | "reorderQueue" | "steerQueued" | "reclaimWorkspace" | "restoreWorkspace" | "archiveThread" | "countUncommitted"
+  "whenReady" | "getChat" | "focusChat" | "toast" | "allowTools" | "openPreview" | "openChanges" | "focusTerminal" | "inspectTool" | "openSummary" | "forkThread" | "setRightTab" | "openRight" | "toggleLeft" | "compactThread" | "newTask" | "queueMessage" | "send" | "stop" | "rememberModelPick" | "setModel" | "setReasoningEffort" | "setContextWindow" | "setServiceTier" | "setMode" | "sendQueued" | "editQueued" | "deleteQueued" | "reorderQueue" | "steerQueued" | "reclaimWorkspace" | "restoreWorkspace" | "archiveThread" | "countUncommitted"
 >;
 
 /** Waits for the thread's history to land before mounting the chat view. */
@@ -135,6 +135,7 @@ function ThreadChatView({
   const { messages, status, error, addToolApprovalResponse, addToolOutput } = useChat({ chat, throttle: CHAT_THROTTLE_MS });
 
   const live = isLiveThread(thread) || status === "streaming" || status === "submitted";
+  const compacting = isCompacting(thread);
   const queue = useMemo(() => pendingQueue(messages), [messages]);
 
   useEffect(() => onQueue(queue), [onQueue, queue]);
@@ -193,6 +194,7 @@ function ThreadChatView({
       fork: (messageId) => actions.forkThread(thread.id, messageId),
       restoreLatest: () => restoreCheckpoint({ latest: true }),
       sendSteer: (itemId, interrupt) => actions.sendQueued(thread.id, itemId, { interrupt }),
+      openSummary: actions.openSummary,
     }),
     [actions, addToolApprovalResponse, addToolOutput, openFile, restoreCheckpoint, thread.id],
   );
@@ -231,14 +233,14 @@ function ThreadChatView({
               label: "压缩上下文",
               hint: "把这段对话压成摘要，腾出上下文",
               section: "操作",
-              disabledReason: live ? "运行中不能压缩" : undefined,
+              disabledReason: live ? "运行中不能压缩" : compacting ? "正在压缩" : undefined,
               run: () => void actions.compactThread(thread.id),
             },
           ]
         : []),
       { id: "new", label: "新任务", hint: "回到空白页开一个新任务", section: "操作", run: actions.newTask },
     ],
-    [actions, canCompact, live, thread.id],
+    [actions, canCompact, compacting, live, thread.id],
   );
 
   /** One in-flight submit at a time: the text now stays until the server answers. */
@@ -253,10 +255,11 @@ function ThreadChatView({
       actions.toast("正在准备 worktree，请稍候");
       return;
     }
-    // Enter steers text; files and Command+Enter wait for the next turn.
-    if (live) {
+    // Enter steers text; files and Command+Enter wait for the next turn. While
+    // a summary is being written there is no turn to steer: it waits for one.
+    if (live || compacting) {
       sending.current = true;
-      void draft.submit(() => actions.queueMessage(thread.id, text, attachments.length ? "queue" : delivery, toFileParts(attachments))).finally(() => {
+      void draft.submit(() => actions.queueMessage(thread.id, text, attachments.length || compacting ? "queue" : delivery, toFileParts(attachments))).finally(() => {
         sending.current = false;
       });
       return;
@@ -406,7 +409,7 @@ function ThreadChatView({
             messages={messages}
             {...(changes.snapshot != null ? { changedFiles: changes.snapshot.files } : {})}
             onOpenChanges={() => actions.openChanges()}
-            onCompact={canCompact && !live ? () => void actions.compactThread(thread.id) : undefined}
+            onCompact={canCompact && !live && !compacting ? () => void actions.compactThread(thread.id) : undefined}
             accounts={accounts?.accounts}
           />
         )}

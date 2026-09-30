@@ -127,10 +127,17 @@ export interface ThreadMessageMetadata {
    */
   totalUsage?: UsageInfo;
   /**
-   * On the summary message `/compact` left behind: how many messages it
-   * replaced, and when. The work log renders a marker from it.
+   * On the marker a 压缩 appends: a user message whose text is the summary.
+   * The history before it stays; what the model reads from here on is this
+   * summary, the messages from `keptFrom` up to the marker (the latest turns,
+   * kept word for word), and whatever comes after. `before` is how many
+   * messages the summary stands for. The work log draws the marker as a line
+   * that opens the summary in the right pane.
+   *
+   * An older build left the same field on a summary that *replaced* the
+   * history, followed by an acknowledgement; it reads the same way.
    */
-  compacted?: { before: number; at: string };
+  compacted?: { before: number; at: string; keptFrom?: string };
   /** A native /compact request. Completion is recorded by the turn's run, not at submission. */
   compactRequested?: { at: string };
   /**
@@ -386,6 +393,12 @@ export interface ThreadRecord {
    * finishes it the same way; a move without it touches nothing dirty.
    */
   archivePreserveChanges?: true;
+  /**
+   * 压缩中: a summary is being written. No turn starts meanwhile — sending
+   * queues — and the log shows it. `error` is why the last one failed, until
+   * the next attempt or the next turn.
+   */
+  compaction?: { startedAt: string; error?: string };
   createdAt: string;
   updatedAt: string;
   messages: UIMessage[];

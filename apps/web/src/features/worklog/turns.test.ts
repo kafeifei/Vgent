@@ -1,6 +1,6 @@
 import type { UIMessage } from "ai";
 import { describe, expect, it } from "vitest";
-import { buildTurns, compactedOf } from "./turns";
+import { buildTurns } from "./turns";
 
 const user = (id: string, text: string): UIMessage => ({ id, role: "user", parts: [{ type: "text", text }] });
 
@@ -109,17 +109,6 @@ describe("插话", () => {
   it("ignores a data part that is not one", () => {
     const turns = buildTurns([user("u1", "问"), assistant("a1", [{ type: "data-other", data: {} } as unknown as UIMessage["parts"][number], { type: "text", text: "答" }])]);
     expect(turns[0]?.blocks.map((block) => block.kind)).toEqual(["text"]);
-  });
-});
-
-describe("compactedOf", () => {
-  it("reads the /compact marker off the summary message and ignores ordinary ones", () => {
-    const summary: UIMessage = {
-      ...user("u1", "上下文已压缩，以下是之前对话的摘要：\n\n…"),
-      metadata: { compacted: { before: 12, at: "2026-09-18T00:00:00.000Z" } },
-    };
-    expect(compactedOf(summary)?.before).toBe(12);
-    expect(compactedOf(user("u2", "普通消息"))).toBeUndefined();
   });
 });
 

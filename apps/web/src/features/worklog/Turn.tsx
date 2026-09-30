@@ -5,7 +5,7 @@ import { UrlFigure } from "@/components/Figure";
 import { RichMarkdown, TurnDrawingProvider } from "@/components/RichMarkdown";
 import { type AskUserQuestionsInput, type AskUserQuestionsOutput } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { completedCompactionRequest, isCompactionRequest } from "@/lib/compaction";
+import { completedCompactionRequest, isCompactionMarker, isCompactionRequest } from "@/lib/compaction";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
 import { Spinner, ToolRow } from "./ToolRow";
@@ -16,7 +16,7 @@ import { exploreCounts, exploreLabel } from "./explore";
 import { isToolStreaming, type ToolPart } from "./toolMeta";
 import type { Block, Turn as TurnModel } from "./turns";
 import { formatTokens } from "@/features/composer/contextUsage";
-import { approvalAnchor, compactedOf, isOpenApproval, isOpenQuestion, questionAnchor, turnEndOf } from "./turns";
+import { approvalAnchor, isOpenApproval, isOpenQuestion, questionAnchor, turnEndOf } from "./turns";
 
 export interface TurnActions {
   respondToApproval: (approvalId: string, approved: boolean) => void;
@@ -31,6 +31,8 @@ export interface TurnActions {
   /** 回到最新, for a task an older build left standing at an earlier checkpoint. */
   restoreLatest: () => void;
   sendSteer?: (messageId: string, interrupt: boolean) => Promise<unknown> | void;
+  /** 上下文已压缩: the summary that marker carries, in the right pane. */
+  openSummary?: (messageId: string) => void;
 }
 
 /** Sticks the newest user box to the top of the log and shadows it once stuck. */
@@ -82,13 +84,27 @@ export function Turn({
   const sections = processSectionsOf(process);
   // A thought at the very end of a live turn is the one still going.
   const thinkingKey = !settled && turn.blocks.at(-1)?.kind === "reasoning" ? turn.blocks.at(-1)!.key : undefined;
-  // A `/compact` summary is an ordinary user message apart from this marker.
-  const compacted = turn.user == null ? undefined : compactedOf(turn.user);
   const compactRequest = isCompactionRequest(turn.user);
   const compactEvent = turn.blocks.some((block) => block.kind === "compaction");
   // How the turn ended when it did not simply finish. The last turn's error is
   // the log's own banner; every other ending is said here, under its turn.
   const ended = turn.user == null ? undefined : turnEndOf(turn.user);
+  // 压缩 left a summary here: one line, the summary itself in the right pane.
+  // An older build's summary came with a reply, which says nothing either.
+  if (isCompactionMarker(turn.user)) {
+    const id = turn.user!.id;
+    return (
+      <section className="pb-xl">
+        <button
+          type="button"
+          onClick={() => actions.openSummary?.(id)}
+          className="px-chat-inset text-fg-muted text-xs hover:text-fg"
+        >
+          上下文已压缩
+        </button>
+      </section>
+    );
+  }
   return (
     <TurnDrawingProvider drawings={drawings}>
     <section className={cn("flex flex-col gap-block-gap pb-xl text-md leading-chat", dimmed && "opacity-45")}>
@@ -109,7 +125,6 @@ export function Turn({
             pinned && "shadow-sm",
           )}
         >
-          {compacted != null && <p className="m-0 mb-2xs text-fg-muted text-xs">上下文已压缩（原 {compacted.before} 条消息）</p>}
           {/* 附件 first, the way they sat above the text in the composer. */}
           {turn.user.parts.some((part) => part.type === "file") && (
             <div className="mb-xs flex flex-wrap gap-xs">

@@ -32,6 +32,7 @@ import { restoreNote } from "./restore.js";
 import { pendingHumanStatus, restartNote, RESTART_RESUME_TEXT } from "./restart.js";
 import { compactionChunk, isCompactionPart } from "./compaction.js";
 import { expandSteers, steerChunk, withoutPromotedSteers } from "./steer.js";
+import { sinceCompaction } from "./compact.js";
 import type { ProjectStore } from "./store/projects.js";
 import type { SettingsStore } from "./store/settings.js";
 import { DEFAULT_THREAD_TITLE, type ThreadStore, type ThreadPatch } from "./store/threads.js";
@@ -731,7 +732,9 @@ export function createRunManager(options: {
       // Keep partial outputs in the UI log, but never pass them to the model as
       // final tool success after an interrupted turn.
       let interrupted = false;
-      const modelHistory = messages.map(message => {
+      // 压缩: the model reads on from the latest summary; the stored history
+      // keeps every message for the log.
+      const modelHistory = sinceCompaction(messages).map(message => {
         if (message.role === "user") interrupted = (message.metadata as ThreadMessageMetadata | undefined)?.turnEnd?.status === "interrupted";
         if (!interrupted || message.role !== "assistant") return message;
         return { ...message, parts: message.parts.map(part =>
@@ -1106,6 +1109,11 @@ export function createRunManager(options: {
     if (thread.workspaceState != null) {
       throw new ConflictError(thread.error ?? "工作目录尚未就绪，请稍后重试", "workspace_not_ready");
     }
+    // 压缩中: the summary is appended when it is done, and a turn writing the
+    // history meanwhile would lose it. The client queues instead.
+    if (thread.compaction != null && thread.compaction.error == null) {
+      throw new ConflictError("正在压缩上下文，压完再发", "thread_compacting");
+    }
     if (thread.workspace?.reclaimed === true) {
       throw new ConflictError("此任务的工作目录已回收，请先恢复后再运行", "workspace_reclaimed");
     }
@@ -1161,6 +1169,8 @@ export function createRunManager(options: {
       consumeQueueIds: messages.filter((message) => message.role === "user").map((message) => message.id),
       status: "running",
       error: undefined,
+      // A failed 压缩 is behind the task once it moves on.
+      ...(thread.compaction != null ? { compaction: undefined } : {}),
       // The task is working again, so whatever it was wound up as no longer
       // describes what is on disk.
       outcome: undefined,
@@ -1231,6 +1241,7 @@ export function createRunManager(options: {
       if (options.queue == null || runs.has(threadId)) return;
       const thread = await threads.get(threadId).catch(() => undefined);
       if (thread == null || thread.archivedAt != null || thread.transition != null || thread.status !== "idle") return;
+      if (thread.compaction != null && thread.compaction.error == null) return;
       if ((thread.queue?.length ?? 0) === 0) return;
       const item = await runQueued(threadId).catch((error: unknown) => {
         log.warn(`线程 ${threadId} 的排队消息没能发出`, error);
@@ -1470,6 +1481,12 @@ export async function recoverInterruptedThreads(threads: ThreadStore, registry: 
     // The thread file is authoritative: a crash can precede the index write.
     const summary = await threads.get(entry.id);
     if (summary == null) continue;
+    // A summary that was being written when the process went is not coming.
+    if (summary.compaction != null && summary.compaction.error == null) {
+      await threads
+        .update(summary.id, { compaction: { ...summary.compaction, error: "服务重启，压缩中断了，再压一次" } })
+        .catch((error) => log.warn(`标记线程 ${summary.id} 的压缩中断失败`, error));
+    }
     if (entry.status !== summary.status) await threads.update(summary.id, { status: summary.status });
     if (summary.status === "running" || (summary.status === "interrupted" && summary.restartRecovery != null)) {
       const waiting = pendingHumanStatus(summary.messages);

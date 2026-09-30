@@ -11,7 +11,7 @@ import type { EngineDescriptor } from "./engines/capabilities.js";
 import { createEngineRegistry, type EngineContext, type EngineFactoryOverride } from "./engines/registry.js";
 import { DEFAULT_VGENT_MODEL } from "./engines/vgent.js";
 import { ConflictError, EngineUnavailableError } from "./errors.js";
-import { createThreadStore, type ThreadPreCompactSnapshot } from "./store/threads.js";
+import { createThreadStore } from "./store/threads.js";
 import type { HarnessState, Project, Settings, ThreadMessageMetadata, ThreadRecord, ThreadSummary } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -1074,7 +1074,7 @@ describe("createApp", () => {
     expect(afterTurn.changeStats).toEqual({ files: 2, additions: 2, deletions: 0 });
     expect(afterTurn.baselineCommit).toMatch(/^[0-9a-f]{40}$/);
 
-    // `/compact` replaces the messages; the baseline is on the record, not on one of them.
+    // Older builds' `/compact` replaced the messages; the baseline is on the record, not on one of them.
     await createThreadStore(dataDir).update(thread.id, { messages: [userMessage("s1", "摘要")] });
     expect((await record()).baselineCommit).toBe(afterTurn.baselineCommit);
     expect((await changesOf()).files).toHaveLength(2);
@@ -1469,11 +1469,36 @@ describe("createApp", () => {
     userMessage("m3", "再加个按钮"),
   ];
 
-  /** The `<id>.pre-compact.*.json` sidecars left in `<dataDir>/threads/` for one thread. */
-  const snapshotFilesFor = async (dataDir: string, threadId: string): Promise<string[]> =>
-    (await readdir(join(dataDir, "threads"))).filter((entry) => entry.startsWith(`${threadId}.pre-compact.`));
+  /** The record once its 压缩 has settled one way or the other. */
+  const settledCompaction = async (dataDir: string, threadId: string): Promise<ThreadRecord> => {
+    const store = createThreadStore(dataDir);
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const record = (await store.get(threadId)) as ThreadRecord;
+      if (record.compaction == null || record.compaction.error != null) return record;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error("压缩一直没结束");
+  };
 
-  it("压缩上下文：把自研引擎任务的历史换成一条摘要，并记下原来的条数，同时在盘上留一份旧消息快照", async () => {
+  /** A summariser that answers only when told to, so a test can look at a 压缩 in progress. */
+  const heldSummariser = () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => {
+        await held;
+        return {
+          content: [{ type: "text" as const, text: "摘要内容" }],
+          finishReason: { unified: "stop" as const, raw: "stop" },
+          usage: { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } },
+          warnings: [],
+        };
+      },
+    }) as unknown as LanguageModel;
+    return { model, release };
+  };
+
+  it("压缩上下文：后台写摘要，原来的历史一条不少，摘要作为标记追加在末尾", async () => {
     const dataDir = await tempDir();
     const app = createApp({ dataDir, token: TOKEN, compactModel: summariser("摘要内容") });
     apps.push(app);
@@ -1484,56 +1509,73 @@ describe("createApp", () => {
     await createThreadStore(dataDir).update(thread.id, { messages: historyBeforeCompact });
 
     const response = await postJson(app, `/api/threads/${thread.id}/compact`, {});
-    expect(response.status).toBe(200);
-    const record = (await response.json()) as ThreadRecord;
-    expect(record.messages).toHaveLength(2);
-    expect(JSON.stringify(record.messages[0]!.parts)).toContain("摘要内容");
-    expect((record.messages[0]!.metadata as ThreadMessageMetadata).compacted).toMatchObject({ before: 3 });
-    expect(record.messages[1]!.role).toBe("assistant");
+    expect(response.status).toBe(202);
+    expect(((await response.json()) as ThreadRecord).compaction).toEqual({ startedAt: expect.any(String) });
 
-    const snapshots = await snapshotFilesFor(dataDir, thread.id);
-    expect(snapshots).toHaveLength(1);
-    const snapshot = JSON.parse(await readFile(join(dataDir, "threads", snapshots[0]!), "utf8")) as ThreadPreCompactSnapshot;
-    expect(snapshot).toMatchObject({ version: 1, threadId: thread.id, messages: historyBeforeCompact });
+    const record = await settledCompaction(dataDir, thread.id);
+    expect(record.compaction).toBeUndefined();
+    expect(record.messages.slice(0, 3)).toEqual(historyBeforeCompact);
+    expect(record.messages).toHaveLength(4);
+    const marker = record.messages[3]!;
+    expect(marker.role).toBe("user");
+    expect(JSON.stringify(marker.parts)).toContain("摘要内容");
+    expect((marker.metadata as ThreadMessageMetadata).compacted).toMatchObject({ before: 3 });
+    expect((await readdir(join(dataDir, "threads"))).filter((entry) => entry.includes(".pre-compact."))).toEqual([]);
   });
 
-  it("压缩上下文：同一线程连续压缩两次，两份快照都留下且互不覆盖", async () => {
+  it("压缩上下文：同一任务一次只压一个，压缩中发消息被挡住，压完照常", async () => {
     const dataDir = await tempDir();
-    const app = createApp({ dataDir, token: TOKEN, compactModel: summariser("摘要内容") });
+    const { model, release } = heldSummariser();
+    const app = createApp({ dataDir, token: TOKEN, compactModel: model });
     apps.push(app);
     const { thread } = await setupThread(app, await tempDir(), "vgent");
     await createThreadStore(dataDir).update(thread.id, { messages: historyBeforeCompact });
 
-    expect((await postJson(app, `/api/threads/${thread.id}/compact`, {})).status).toBe(200);
-    // The route's own minimum is "at least 2 messages", and a compact always
-    // leaves exactly 2 (the summary + the ack), so it can run right again.
-    expect((await postJson(app, `/api/threads/${thread.id}/compact`, {})).status).toBe(200);
+    expect((await postJson(app, `/api/threads/${thread.id}/compact`, {})).status).toBe(202);
+    const again = await postJson(app, `/api/threads/${thread.id}/compact`, {});
+    expect(again.status).toBe(409);
+    expect(await again.json()).toMatchObject({ error: { code: "compact_running" } });
+    const chat = await postJson(app, `/api/chat/${thread.id}`, { messages: [...historyBeforeCompact, userMessage("m4", "继续")] });
+    expect(chat.status).toBe(409);
+    expect(await chat.json()).toMatchObject({ error: { code: "thread_compacting" } });
 
-    const snapshots = await snapshotFilesFor(dataDir, thread.id);
-    expect(snapshots).toHaveLength(2);
+    release();
+    const record = await settledCompaction(dataDir, thread.id);
+    expect(record.compaction).toBeUndefined();
+    expect(record.messages).toHaveLength(4);
+    // Done, so a second one may start.
+    expect((await postJson(app, `/api/threads/${thread.id}/compact`, {})).status).toBe(202);
+    await settledCompaction(dataDir, thread.id);
   });
 
-  // Root ignores directory write permissions, which would make the chmod below a no-op.
-  it.skipIf(process.getuid?.() === 0)("压缩上下文：快照写失败就整体失败，线程消息保持原样", async () => {
+  it("压缩上下文：失败记在任务上，历史不动，再压一次就清掉", async () => {
     const dataDir = await tempDir();
-    const app = createApp({ dataDir, token: TOKEN, compactModel: summariser("摘要内容") });
+    let fail = true;
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => {
+        if (fail) throw new Error("upstream 500");
+        return {
+          content: [{ type: "text" as const, text: "摘要内容" }],
+          finishReason: { unified: "stop" as const, raw: "stop" },
+          usage: { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } },
+          warnings: [],
+        };
+      },
+    }) as unknown as LanguageModel;
+    const app = createApp({ dataDir, token: TOKEN, compactModel: model });
     apps.push(app);
     const { thread } = await setupThread(app, await tempDir(), "vgent");
     await createThreadStore(dataDir).update(thread.id, { messages: historyBeforeCompact });
 
-    const threadsDir = join(dataDir, "threads");
-    await chmod(threadsDir, 0o500); // read+traverse only: writing the new snapshot file fails.
-    try {
-      const response = await postJson(app, `/api/threads/${thread.id}/compact`, {});
-      expect(response.status).toBe(500);
-      expect(await response.json()).toMatchObject({ error: { code: "snapshot_failed" } });
-    } finally {
-      await chmod(threadsDir, 0o700); // restore before afterEach removes the temp dir.
-    }
+    expect((await postJson(app, `/api/threads/${thread.id}/compact`, {})).status).toBe(202);
+    const failed = await settledCompaction(dataDir, thread.id);
+    expect(failed.compaction?.error).toContain("upstream 500");
+    expect(failed.messages).toEqual(historyBeforeCompact);
 
-    expect((await snapshotFilesFor(dataDir, thread.id)).length).toBe(0);
-    const record = (await createThreadStore(dataDir).get(thread.id)) as ThreadRecord;
-    expect(record.messages).toEqual(historyBeforeCompact);
+    fail = false;
+    const retry = await postJson(app, `/api/threads/${thread.id}/compact`, {});
+    expect(((await retry.json()) as ThreadRecord).compaction).toEqual({ startedAt: expect.any(String) });
+    expect((await settledCompaction(dataDir, thread.id)).messages).toHaveLength(4);
   });
 
   it("压缩上下文：Claude Code 是让它自己压——/compact 作为一轮送进去，带着标记", async () => {

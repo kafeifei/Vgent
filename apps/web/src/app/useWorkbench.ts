@@ -7,7 +7,7 @@ import { pruneDrafts } from "@/lib/drafts";
 import { ThreadChats } from "@/lib/threadChats";
 import { useServerState } from "@/lib/useServerState";
 import { useToast } from "@/lib/toast";
-import type { EngineDescriptor, EngineId, Project, ThreadMessageMetadata, ThreadMode, ThreadStatus, ThreadSummary, WorkspaceMode } from "@/lib/types";
+import type { EngineDescriptor, EngineId, Project, ThreadMode, ThreadStatus, ThreadSummary, WorkspaceMode } from "@/lib/types";
 import { LIVE_STATUSES } from "@/lib/types";
 import { repoRelative } from "@/features/changes/paths";
 import { toFileParts, type Attachment } from "@/features/composer/attachments";
@@ -34,6 +34,8 @@ export interface RightState {
   preview: PreviewRequest | null;
   /** The tool call a log row asked to see: 终端 scrolls to it, the detail view shows it. */
   inspect: InspectRequest | null;
+  /** The 上下文已压缩 line asked to see: that marker's message id. */
+  summary: string | null;
 }
 
 export interface InspectRequest {
@@ -47,7 +49,7 @@ export interface PreviewRequest {
 }
 
 /** The pane starts as Cursor's does: open, as the short list of what it can show. */
-const RIGHT_INITIAL: RightState = { open: true, tab: "home", file: null, preview: null, inspect: null };
+const RIGHT_INITIAL: RightState = { open: true, tab: "home", file: null, preview: null, inspect: null, summary: null };
 
 const readThreadFromUrl = (): string | null => new URLSearchParams(window.location.search).get("thread");
 
@@ -61,6 +63,9 @@ function writeThreadToUrl(threadId: string | null): void {
 
 export const isLiveThread = (thread: ThreadSummary | undefined): boolean =>
   thread != null && (LIVE_STATUSES as readonly string[]).includes(thread.status);
+
+/** 压缩中: no turn starts until the summary is written, so what is sent meanwhile queues. */
+export const isCompacting = (thread: ThreadSummary | undefined): boolean => thread?.compaction != null && thread.compaction.error == null;
 
 /**
  * All of the workbench's state in one hook: the server snapshot, the per-thread
@@ -319,6 +324,9 @@ export function useWorkbench(token: string) {
       inspectTool: (toolCallId: string) =>
         setRight((state) => ({ ...state, open: true, tab: "tool", inspect: { toolCallId, nonce: (state.inspect?.nonce ?? 0) + 1 } })),
 
+      /** 上下文已压缩: what the model reads in place of everything before that line. */
+      openSummary: (messageId: string) => setRight((state) => ({ ...state, open: true, tab: "summary", summary: messageId })),
+
       /** The 文件 tab took the request; a remount must not replay it. */
       clearPreview: () => setRight((state) => (state.preview == null ? state : { ...state, preview: null })),
 
@@ -566,17 +574,12 @@ export function useWorkbench(token: string) {
           (error: Error) => toast(error.message),
         ),
 
-      // The chat itself needs no nudge: the record's `updatedAt` moves, and
-      // `ThreadChats.refreshIfStale` re-fetches the (now two-message) history.
+      // Nothing to say on success: the in-house engine's summary is written in
+      // the background, and the log shows it going on and then its line; a
+      // harness engine's request went in as a turn, with its own marker.
       compactThread: (threadId: string): Promise<void> =>
         client.compactThread(threadId).then(
-          (record) => {
-            // A harness engine compacts in its own runtime: the request went in
-            // as a turn, and the log shows the marker when that turn lands.
-            if (record.status === "running") return;
-            const before = (record.messages[0]?.metadata as ThreadMessageMetadata | undefined)?.compacted?.before;
-            toast(`已压缩：${before ?? record.messages.length} 条消息 → 摘要`);
-          },
+          () => undefined,
           (error: Error) => toast(error.message),
         ),
 

@@ -49,10 +49,6 @@ export interface Turn {
   answered: boolean;
 }
 
-/** Set on the summary message `/compact` leaves behind; absent on an ordinary user message. */
-export const compactedOf = (message: UIMessage): ThreadMessageMetadata["compacted"] =>
-  (message.metadata as ThreadMessageMetadata | undefined)?.compacted;
-
 /** How this user message's turn ended, when it failed or was cut short; absent for a normal finish. */
 export const turnEndOf = (message: UIMessage): ThreadMessageMetadata["turnEnd"] =>
   (message.metadata as ThreadMessageMetadata | undefined)?.turnEnd;

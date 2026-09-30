@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { access, mkdir, readdir, rm } from "node:fs/promises";
+import { mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { isToolUIPart, type UIMessage } from "ai";
 import { ConflictError, NotFoundError } from "../errors.js";
@@ -32,15 +32,12 @@ interface ThreadIndexFile {
   threads: ThreadSummary[];
 }
 
-/** The `<id>.pre-compact.<ts>.json` sidecar `snapshotBeforeCompact` writes: the full message array `/compact` is about to replace. */
-export interface ThreadPreCompactSnapshot {
-  version: 1;
-  threadId: string;
-  createdAt: string;
-  messages: UIMessage[];
-}
-
-/** Marks a thread file's name as belonging to a pre-compact snapshot rather than the thread record itself. */
+/**
+ * Marks a thread file's name as a pre-compact snapshot, not a record: an older
+ * build's 压缩 replaced the history and kept the old one beside it, as
+ * `<id>.pre-compact.<ts>.json`. None are written any more; the ones on disk
+ * are skipped by the index and removed with their thread.
+ */
 const PRE_COMPACT_INFIX = ".pre-compact.";
 
 export interface CreateThreadInput {
@@ -98,6 +95,8 @@ export type ThreadPatch = Partial<{
   queue: QueuedMessage[] | undefined;
   /** `undefined` un-archives. */
   archivedAt: string | undefined;
+  /** 压缩中, or why the last one failed. `undefined` once it is over, or superseded. */
+  compaction: ThreadRecord["compaction"] | undefined;
   /** 归档中 / 恢复中. `undefined` once the worktree side of it is done — or taken back. */
   transition: ThreadTransition | undefined;
   /** Goes with `transition: "archiving"`, and away once the move is done or taken back. */
@@ -116,13 +115,6 @@ export interface ThreadStore {
    * does both.
    */
   saveMessages(id: string, messages: UIMessage[]): Promise<void>;
-  /**
-   * Writes the messages `/compact` is about to replace to a sidecar snapshot
-   * file, before the thread record itself is overwritten. Throws if the
-   * snapshot cannot be written, so the caller can abort the compact instead
-   * of discarding history nothing kept a copy of.
-   */
-  snapshotBeforeCompact(id: string, messages: UIMessage[]): Promise<void>;
   remove(id: string): Promise<void>;
   saveHarnessState(id: string, state: HarnessState): Promise<void>;
   loadHarnessState(id: string): Promise<HarnessState | undefined>;
@@ -181,29 +173,6 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
   const indexPath = join(dir, "index.json");
   const recordPath = (id: string) => join(dir, `${id}.json`);
   const harnessPath = (id: string) => join(dir, `${id}.harness.json`);
-  const snapshotPath = (id: string, ts: string) => join(dir, `${id}${PRE_COMPACT_INFIX}${ts}.json`);
-
-  const exists = async (path: string): Promise<boolean> => {
-    try {
-      await access(path);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
-  /** A filename-safe timestamp, bumped with a suffix on the rare collision so no snapshot is ever overwritten. */
-  const uniqueSnapshotPath = async (id: string): Promise<{ path: string; createdAt: string }> => {
-    const createdAt = new Date().toISOString();
-    const base = createdAt.replaceAll(":", "-").replaceAll(".", "-");
-    let ts = base;
-    let path = snapshotPath(id, ts);
-    for (let attempt = 1; await exists(path); attempt++) {
-      ts = `${base}-${attempt}`;
-      path = snapshotPath(id, ts);
-    }
-    return { path, createdAt };
-  };
 
   const listeners = new Set<() => void>();
   const chains = new Map<string, Promise<unknown>>();
@@ -437,6 +406,10 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
           if (patch.transition == null) delete next.transition;
           else next.transition = patch.transition;
         }
+        if ("compaction" in patch) {
+          if (patch.compaction == null) delete next.compaction;
+          else next.compaction = patch.compaction;
+        }
         if ("archivePreserveChanges" in patch) {
           if (patch.archivePreserveChanges == null) delete next.archivePreserveChanges;
           else next.archivePreserveChanges = patch.archivePreserveChanges;
@@ -456,14 +429,6 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
         const current = await readRecord(id);
         if (current == null) return;
         await writeJsonAtomic(recordPath(id), { ...current, messages, updatedAt: new Date().toISOString() } satisfies ThreadRecord);
-      });
-    },
-
-    async snapshotBeforeCompact(id, messages) {
-      await ensureReady();
-      await serialize(id, async () => {
-        const { path, createdAt } = await uniqueSnapshotPath(id);
-        await writeJsonAtomic(path, { version: 1, threadId: id, createdAt, messages } satisfies ThreadPreCompactSnapshot);
       });
     },
 

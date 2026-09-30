@@ -66,12 +66,12 @@ describe("native /compact", () => {
     expect(html).not.toContain("正在压缩");
   });
 
-  it("keeps the in-house summary and its original message count", () => {
+  it("draws the in-house summary as one line, its text and an older build's reply left to the right pane", () => {
     const html = htmlOf({
       id: "summary", role: "user", parts: [{ type: "text", text: "上下文摘要正文" }],
       metadata: { compacted: { before: 14, at: "now" } },
     }, false, [{ type: "text", text: "收到" }]);
-    expect(html).toContain("上下文已压缩（原 14 条消息）");
-    expect(html).toContain("上下文摘要正文");
+    expect(html).toContain("上下文已压缩");
+    for (const text of ["上下文摘要正文", "收到", "原 14 条", "bg-bg-elevated"]) expect(html).not.toContain(text);
   });
 });

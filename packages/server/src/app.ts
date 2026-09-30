@@ -373,7 +373,13 @@ export function createApp(options: CreateAppOptions): VgentApp {
       if (account.loggedIn === false) throw new EngineUnavailableError(`${name} 账号 ${account.email ?? account.username ?? ""} 需要重新登录`.replace("  ", " "), "account_unavailable");
     },
   };
-  const registry = options.registry ?? createEngineRegistry(undefined, { copilot: accounts.copilot, accounts: engineAccounts });
+  const registry =
+    options.registry ??
+    createEngineRegistry(undefined, {
+      copilot: accounts.copilot,
+      accounts: engineAccounts,
+      windowOf: async (model) => (await listModels("vgent")).models.find((entry) => entry.id === model)?.contextWindow,
+    });
   const git = options.git ?? createGit();
   const files = options.files ?? createFiles();
   const integrator = options.integrator ?? createIntegrator({ log });

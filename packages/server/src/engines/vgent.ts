@@ -67,6 +67,12 @@ export interface VgentEngineFactoryOptions {
   copilot?: (account: AccountId) => { available(): Promise<void>; model(id: string): Promise<LanguageModel> };
   /** Where a Codex account keeps its login, and whether an account is still there. */
   accounts?: { codexHome(id: AccountId): string; ensure(id: AccountId): Promise<void> };
+  /**
+   * The window the model list gives a model — the one the composer's ring is
+   * drawn against — for a task that chose none. Unset or unknown, the engine
+   * falls back to its own default budget.
+   */
+  windowOf?: (model: string) => Promise<number | undefined>;
 }
 
 /**
@@ -166,6 +172,9 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
         mcp = await connectMcpServers(settings.mcpServers ?? [], { log: ctx.log });
         const spec = ctx.thread.model ?? DEFAULT_VGENT_MODEL;
         const model = override ?? (await accountModel(spec, options)) ?? spec;
+        // A task that chose no window runs on the model's own, the one its ring
+        // shows — not on the engine's 150K default, which is smaller than most.
+        const window = ctx.thread.contextWindow ?? (await options.windowOf?.(spec).catch(() => undefined));
         const { workspace } = ctx.thread;
         engine = createVgentEngine({
           model,
@@ -202,7 +211,7 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
             ctx.thread.reasoningEffort === PROVIDER_DEFAULT_LEVEL ? {} : { effort: effectiveReasoningLevel(ctx.thread.reasoningEffort) },
           // 上下文: the in-house engine has no window setting to pass on — what it
           // owns is when to start pruning, so a chosen window moves that line.
-          ...(ctx.thread.contextWindow != null ? { contextTokenBudget: Math.floor(ctx.thread.contextWindow * CONTEXT_BUDGET_SHARE) } : {}),
+          ...(window != null ? { contextTokenBudget: Math.floor(window * CONTEXT_BUDGET_SHARE) } : {}),
           // Fast: the Responses API's `service_tier`, for the models that offer one.
           ...(ctx.thread.serviceTier != null ? { serviceTier: ctx.thread.serviceTier } : {}),
           // Everything the model cannot work out for itself: which model it is,

@@ -47,7 +47,7 @@ const fileName = (path: string): string => path.slice(path.lastIndexOf("/") + 1)
 /** Everything a tool call says about files: the path it was given, and a shell command's text. */
 function touchedBy(part: Extract<Block, { kind: "tool" }>["part"]): string[] {
   const input = (typeof part.input === "object" && part.input !== null ? part.input : {}) as Record<string, unknown>;
-  return [describeTool(part).file, input.path, input.file_path, input.command].filter((value): value is string => typeof value === "string");
+  return [describeTool(part).file, input.path, input.file_path, input.filePath, input.command].filter((value): value is string => typeof value === "string");
 }
 
 /**

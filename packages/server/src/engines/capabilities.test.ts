@@ -14,8 +14,8 @@ const settingsWith = (runMode: PermissionMode, allowlist: string[] = []): Settin
 
 describe("引擎能力表", () => {
   it("names every engine the registry serves", () => {
-    expect(engineDescriptors(registry).map((entry) => entry.id)).toEqual(["codex", "claude-code", "vgent"]);
-    expect(engineDescriptors(registry).map((entry) => entry.label)).toEqual(["Codex", "Claude Code", "Vgent"]);
+    expect(engineDescriptors(registry).map((entry) => entry.id)).toEqual(["codex", "claude-code", "vgent", "opencode"]);
+    expect(engineDescriptors(registry).map((entry) => entry.label)).toEqual(["Codex", "Claude Code", "Vgent", "OpenCode"]);
   });
 
   it("matches 产品文档's table", () => {
@@ -40,6 +40,16 @@ describe("引擎能力表", () => {
       customProviders: true,
     });
     expect(Object.values(registry.vgent.descriptor.capabilities).every(Boolean)).toBe(true);
+    expect(registry.opencode.descriptor.capabilities).toEqual({
+      approvals: true,
+      askUser: true,
+      planMode: true,
+      compact: false,
+      knownDefaultModel: true,
+      extensions: false,
+      steer: true,
+      customProviders: true,
+    });
   });
 });
 
@@ -51,7 +61,7 @@ describe("effectivePermission", () => {
   });
 
   it("gives every engine that can ask the global run mode", () => {
-    for (const engine of ["claude-code", "vgent"] as const) {
+    for (const engine of ["claude-code", "vgent", "opencode"] as const) {
       for (const mode of MODES) {
         expect(effectivePermission(registry[engine].descriptor.capabilities, settingsWith(mode)).permissionMode).toBe(mode);
       }

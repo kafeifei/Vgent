@@ -21,3 +21,14 @@ The same two patches fix it at both ends:
 Validation: `engines/claude-code-question.test.ts` drives the real bridge runtime over a WebSocket (abort withdraws, late result dropped and reported, no mis-delivery), checks that the bundled Claude bridge carries the fix, and runs the adapter session against a scripted channel (in-time answer, answer after the turn ended, answer the bridge dropped mid-finish, attach replay, abort, closed channel). `VGENT_SMOKE=1 pnpm --filter @vgent/engines test claude-code-question.smoke` runs the real Claude Code with a five-second question timeout: an answer given in time, and one given after the question expired and the bridge turn ended; both must finish with the chosen color.
 
 Upstream-worthy: the missing hook timeout, the ignored hook `signal`, and the unbounded `bufferedToolResults` / stale `pendingToolResults` are bugs in the published packages. Drop these hunks once upstream sets a long AskUserQuestion timeout, withdraws requests on the hook's signal, and has `doContinueTurn` handle a continuation whose bridge turn already ended.
+
+# OpenCode permission order
+
+`@ai-sdk/harness-opencode 1.0.123`, bridge only (`src/bridge/index.ts` + `dist/bridge/index.mjs`, the latter without its `sourceMappingURL`):
+
+- OpenCode publishes `permission.asked` while the tool part is still `pending`, one event before the `running` update that makes the bridge emit the `tool-call`. The bridge forwarded the approval request at once, and the host (`HarnessAgent`) refuses an approval for a call it has not seen: "emitted approval request … for unknown tool call", and the turn died. The patched event loop holds such a request until the bridge has emitted that call (checked after each emitted event), and answers it after three seconds regardless; a subagent's request is never held. Timers are cleared when the loop ends.
+- `apply_patch` — what OpenCode gives GPT models in place of edit and write — goes on the wire as `edit`. Unmapped, the host did not know the tool, marked the call as an input error, and the approval answer for it was rejected as a malformed message.
+
+Validation: `engines/opencode.test.ts` checks that the bootstrap's bridge carries the hold. `VGENT_SMOKE=1 pnpm --filter @vgent/engines test opencode.smoke` runs real OpenCode on the machine's Codex login: one read turn, and one edit under `allow-reads` that must emit the call before its approval request and write the file once approved.
+
+Upstream-worthy: both. Drop them when the bridge emits pending tool calls (or waits for them) and maps `apply_patch`.

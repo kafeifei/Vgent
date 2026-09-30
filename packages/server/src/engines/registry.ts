@@ -6,6 +6,7 @@ import type { EngineId, HarnessState, Logger, PermissionMode, Project, ThreadRec
 import type { EngineDescriptor } from "./capabilities.js";
 import { createClaudeCodeEngineFactory } from "./claude-code.js";
 import { createCodexEngineFactory } from "./codex.js";
+import { createOpenCodeEngineFactory, type OpenCodeEngineFactoryOptions } from "./opencode.js";
 import { createVgentEngineFactory } from "./vgent.js";
 
 /**
@@ -171,14 +172,21 @@ export function engineDescriptors(registry: EngineRegistry): EngineDescriptor[] 
  */
 export type EngineFactoryOverride = Omit<EngineFactory, "descriptor"> & { descriptor?: EngineDescriptor };
 
-/** All three engines, each backed by its real runtime. */
-export function createEngineRegistry(overrides?: Partial<Record<EngineId, EngineFactoryOverride>>, options: VgentEngineFactoryOptions & { accounts?: EngineAccounts } = {}): EngineRegistry {
+/** All four engines, each backed by its real runtime. */
+export function createEngineRegistry(
+  overrides?: Partial<Record<EngineId, EngineFactoryOverride>>,
+  options: VgentEngineFactoryOptions & { accounts?: EngineAccounts; openCodeModelOf?: OpenCodeEngineFactoryOptions["modelOf"] } = {},
+): EngineRegistry {
   // Insertion order is the order every list shows the agents in — the model
-  // picker's groups, the settings tables' columns: Codex, Claude Code, Vgent.
+  // picker's groups, the settings tables' columns: Codex, Claude Code, Vgent, OpenCode.
   const base: EngineRegistry = {
     codex: createCodexEngineFactory(options.accounts),
     "claude-code": createClaudeCodeEngineFactory(options.accounts),
     vgent: createVgentEngineFactory(options),
+    opencode: createOpenCodeEngineFactory({
+      ...(options.accounts != null ? { accounts: options.accounts } : {}),
+      ...(options.openCodeModelOf != null ? { modelOf: options.openCodeModelOf } : {}),
+    }),
   };
   if (overrides == null) return base;
   for (const id of engineIds(base)) {

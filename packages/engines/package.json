@@ -19,11 +19,12 @@
     "test": "vitest run --root ../.. --project @vgent/engines"
   },
   "dependencies": {
-    "ai": "7.0.111",
     "@ai-sdk/harness": "1.0.121",
     "@ai-sdk/harness-claude-code": "1.0.125",
     "@ai-sdk/harness-codex": "1.0.123",
+    "@ai-sdk/harness-opencode": "1.0.123",
+    "@vgent/engine": "workspace:*",
     "@vgent/sandbox-local": "workspace:*",
-    "@vgent/engine": "workspace:*"
+    "ai": "7.0.111"
   }
 }

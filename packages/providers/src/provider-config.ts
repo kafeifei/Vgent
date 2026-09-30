@@ -9,7 +9,7 @@
  */
 
 /** The agents a provider's models can be offered to. */
-export const PROVIDER_AGENTS = ["vgent", "claude-code", "codex"] as const;
+export const PROVIDER_AGENTS = ["vgent", "claude-code", "codex", "opencode"] as const;
 export type ProviderAgent = (typeof PROVIDER_AGENTS)[number];
 
 /**

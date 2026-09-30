@@ -379,6 +379,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
       copilot: accounts.copilot,
       accounts: engineAccounts,
       windowOf: async (model) => (await listModels("vgent")).models.find((entry) => entry.id === model)?.contextWindow,
+      openCodeModelOf: async (model) => (await listModels("opencode")).models.find((entry) => entry.id === model),
     });
   const git = options.git ?? createGit();
   const files = options.files ?? createFiles();

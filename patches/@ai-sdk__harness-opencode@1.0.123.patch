@@ -1,0 +1,241 @@
+diff --git a/dist/bridge/index.mjs b/dist/bridge/index.mjs
+index 8b422b9055b4affd292c28ddfc17ad6fcbde83ec..4ad6b488aca2e48f4d61284c1f9c753cfbd41f8a 100644
+--- a/dist/bridge/index.mjs
++++ b/dist/bridge/index.mjs
+@@ -1816,7 +1816,9 @@ var OPENCODE_TO_WIRE = {
+   task: "agent",
+   agent: "agent",
+   askUserQuestions: "question",
+-  subtask: "agent"
++  subtask: "agent",
++  // Vgent patch: OpenCode hands GPT models `apply_patch` in place of edit and write.
++  apply_patch: "edit"
+ };
+ var PUBLIC_TO_NATIVE = {
+   read: "view",
+@@ -2611,6 +2613,34 @@ async function consumeEvents({
+     }
+     processEvent(event);
+   };
++  const heldPermissions = /* @__PURE__ */ new Map();
++  const answerPermission = (held) => held.event.type === "permission.v2.asked" ? handlePermissionV2({
++    client,
++    sessionId: held.sessionId,
++    permissionMode,
++    builtinToolFiltering,
++    turn,
++    emit,
++    event: held.event
++  }) : handlePermission({
++    client,
++    sessionId: held.sessionId,
++    permissionMode,
++    builtinToolFiltering,
++    turn,
++    emit,
++    event: held.event
++  });
++  const toolCallIsOut = (callID) => state.toolNames.has(callID) || state.toolCallsEmitted.has(callID);
++  const releaseHeldPermissions = async () => {
++    for (const [callID, held] of heldPermissions) {
++      if (!toolCallIsOut(callID)) continue;
++      heldPermissions.delete(callID);
++      clearTimeout(held.timer);
++      await answerPermission(held);
++    }
++  };
++  try {
+   for await (const rawEvent of stream) {
+     if (signal.aborted || turn.abortSignal.aborted) break;
+     const event = unwrapOpenCodeEvent(rawEvent);
+@@ -2626,34 +2656,34 @@ async function consumeEvents({
+         emit,
+         event
+       });
+-    } else if (event.type === "permission.v2.asked") {
+-      await handlePermissionV2({
+-        client,
+-        sessionId: scopedSessionId,
+-        permissionMode,
+-        builtinToolFiltering,
+-        turn,
+-        emit,
+-        event
+-      });
+-    } else if (event.type === "permission.asked") {
+-      await handlePermission({
+-        client,
+-        sessionId: scopedSessionId,
+-        permissionMode,
+-        builtinToolFiltering,
+-        turn,
+-        emit,
+-        event
+-      });
++    } else if (event.type === "permission.v2.asked" || event.type === "permission.asked") {
++      const props = event.properties ?? {};
++      const rawCallID = event.type === "permission.v2.asked" ? props.source?.callID : asOpenCodeObject(props.tool)?.callID;
++      const callID = !isDescendant && typeof rawCallID === "string" && rawCallID !== "" ? rawCallID : void 0;
++      const held = { event, sessionId: scopedSessionId, timer: void 0 };
++      if (callID != null && !toolCallIsOut(callID)) {
++        held.timer = setTimeout(() => {
++          if (heldPermissions.get(callID) !== held) return;
++          heldPermissions.delete(callID);
++          void answerPermission(held).catch((error) => console.error("[harness:opencode] permission reply failed", error));
++        }, 3e3);
++        heldPermissions.set(callID, held);
++      } else {
++        await answerPermission(held);
++      }
+     } else if (isDescendant) {
+       processDescendantEvent(scopedSessionId, event);
+     } else {
+       emitStreamEvent(event);
++      if (heldPermissions.size > 0) await releaseHeldPermissions();
+     }
+     if (isDescendant) continue;
+     if (onEvent?.(event)) break;
+   }
++  } finally {
++    for (const held of heldPermissions.values()) clearTimeout(held.timer);
++    heldPermissions.clear();
++  }
+ }
+ function getSubagentStepId(event) {
+   if (event?.type === "message.part.updated") {
+@@ -3113,4 +3143,3 @@ function emitFatal(message) {
+ `);
+   process.exit(1);
+ }
+-//# sourceMappingURL=index.mjs.map
+\ No newline at end of file
+diff --git a/src/bridge/index.ts b/src/bridge/index.ts
+index ceb7c43623e0dce2dd6eb3ea824a24f9045778bd..1fde460b1d434a55db426be6c136492a4feef45a 100644
+--- a/src/bridge/index.ts
++++ b/src/bridge/index.ts
+@@ -96,6 +96,9 @@ const OPENCODE_TO_WIRE: Readonly<Record<string, string>> = {
+   agent: 'agent',
+   askUserQuestions: 'question',
+   subtask: 'agent',
++  // Vgent patch: OpenCode hands GPT models `apply_patch` in place of edit and
++  // write. On the wire it is an edit, so the host knows the call.
++  apply_patch: 'edit',
+ };
+ 
+ const PUBLIC_TO_NATIVE: Readonly<Record<string, string>> = {
+@@ -1068,6 +1071,47 @@ async function consumeEvents({
+     }
+     processEvent(event);
+   };
++  // Vgent patch: OpenCode asks for a permission while the tool part is still
++  // `pending`, one event before the update that makes this bridge emit the
++  // tool call. The host refuses an approval request for a call it has not seen,
++  // so such a request waits until the call is out (or three seconds pass).
++  type HeldPermission = {
++    event: OpenCodeEvent;
++    sessionId: string;
++    timer: ReturnType<typeof setTimeout> | undefined;
++  };
++  const heldPermissions = new Map<string, HeldPermission>();
++  const answerPermission = (held: HeldPermission) =>
++    held.event.type === 'permission.v2.asked'
++      ? handlePermissionV2({
++          client,
++          sessionId: held.sessionId,
++          permissionMode,
++          builtinToolFiltering,
++          turn,
++          emit,
++          event: held.event,
++        })
++      : handlePermission({
++          client,
++          sessionId: held.sessionId,
++          permissionMode,
++          builtinToolFiltering,
++          turn,
++          emit,
++          event: held.event,
++        });
++  const toolCallIsOut = (callID: string) =>
++    state.toolNames.has(callID) || state.toolCallsEmitted.has(callID);
++  const releaseHeldPermissions = async () => {
++    for (const [callID, held] of heldPermissions) {
++      if (!toolCallIsOut(callID)) continue;
++      heldPermissions.delete(callID);
++      clearTimeout(held.timer);
++      await answerPermission(held);
++    }
++  };
++  try {
+   for await (const rawEvent of stream) {
+     if (signal.aborted || turn.abortSignal.aborted) break;
+     const event = unwrapOpenCodeEvent(rawEvent);
+@@ -1088,34 +1132,49 @@ async function consumeEvents({
+         emit,
+         event,
+       });
+-    } else if (event.type === 'permission.v2.asked') {
+-      await handlePermissionV2({
+-        client,
+-        sessionId: scopedSessionId,
+-        permissionMode,
+-        builtinToolFiltering,
+-        turn,
+-        emit,
++    } else if (
++      event.type === 'permission.v2.asked' ||
++      event.type === 'permission.asked'
++    ) {
++      const props = event.properties ?? {};
++      const rawCallID =
++        event.type === 'permission.v2.asked'
++          ? props.source?.callID
++          : asOpenCodeObject(props.tool)?.callID;
++      const callID =
++        !isDescendant && typeof rawCallID === 'string' && rawCallID !== ''
++          ? rawCallID
++          : undefined;
++      const held: HeldPermission = {
+         event,
+-      });
+-    } else if (event.type === 'permission.asked') {
+-      await handlePermission({
+-        client,
+         sessionId: scopedSessionId,
+-        permissionMode,
+-        builtinToolFiltering,
+-        turn,
+-        emit,
+-        event,
+-      });
++        timer: undefined,
++      };
++      if (callID != null && !toolCallIsOut(callID)) {
++        held.timer = setTimeout(() => {
++          if (heldPermissions.get(callID) !== held) return;
++          heldPermissions.delete(callID);
++          void answerPermission(held).catch(error =>
++            console.error('[harness:opencode] permission reply failed', error),
++          );
++        }, 3_000);
++        heldPermissions.set(callID, held);
++      } else {
++        await answerPermission(held);
++      }
+     } else if (isDescendant) {
+       processDescendantEvent(scopedSessionId, event);
+     } else {
+       emitStreamEvent(event);
++      if (heldPermissions.size > 0) await releaseHeldPermissions();
+     }
+     if (isDescendant) continue;
+     if (onEvent?.(event)) break;
+   }
++  } finally {
++    for (const held of heldPermissions.values()) clearTimeout(held.timer);
++    heldPermissions.clear();
++  }
+ }
+ 
+ function getSubagentStepId(event: OpenCodeEvent | undefined) {

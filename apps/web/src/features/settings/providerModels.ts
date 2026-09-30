@@ -8,7 +8,7 @@ import type { CatalogProvider, CatalogProviderSummary, ProviderAgent, ProviderMo
  */
 
 /** The agents, in the order the model table's columns stand. */
-export const AGENT_ORDER: readonly ProviderAgent[] = ["vgent", "claude-code", "codex"];
+export const AGENT_ORDER: readonly ProviderAgent[] = ["vgent", "claude-code", "codex", "opencode"];
 
 function checkURL(value: string, what: string): string | undefined {
   try {
@@ -92,6 +92,8 @@ export function customInput(form: CustomForm, usable: readonly ProviderAgent[]):
   if (usable.includes("codex") && form.protocol === "openai-compatible" && form.codexResponses) {
     agents.codex = { baseURL, protocol: "openai", models: [] };
   }
+  // OpenCode builds the same AI SDK package the in-house engine does, so it takes the same address as it is.
+  if (usable.includes("opencode")) agents.opencode = { baseURL, protocol: form.protocol, models: [] };
   if (Object.keys(agents).length === 0) return { error: "没有能用这个提供商的 agent" };
   const apiKey = form.apiKey.trim();
   return { input: { name, ...(apiKey !== "" ? { apiKey } : {}), agents } };
@@ -120,6 +122,10 @@ export function withAgentChoices(
 ): { agents: RedactedProviderConfig["agents"] } | { error: string } {
   const next = { ...agents };
   const shared = next.vgent;
+  // OpenCode follows the shared address the way Codex does, keeping its own models.
+  if (next.opencode != null && shared != null && (before.opencode == null || before.opencode.baseURL === before.vgent?.baseURL)) {
+    next.opencode = { ...next.opencode, baseURL: shared.baseURL, protocol: shared.protocol };
+  }
   if (usable.includes("codex") && shared?.protocol === "openai-compatible") {
     // Codex follows the shared address — unless it was given one of its own, which is not ours to overwrite.
     const follows = before.codex == null || before.codex.baseURL === before.vgent?.baseURL;

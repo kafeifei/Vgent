@@ -83,7 +83,7 @@ export function anthropicSdkBaseURL(baseURL: string): string {
 }
 
 /** Anthropic's own API takes `x-api-key`; the compatible endpoints document the Bearer form, which is what the `claude` CLI sends them too. */
-function isAnthropicFirstParty(baseURL: string): boolean {
+export function isAnthropicFirstParty(baseURL: string): boolean {
   try {
     return new URL(baseURL).hostname === "api.anthropic.com";
   } catch {
@@ -98,7 +98,7 @@ function isAnthropicFirstParty(baseURL: string): boolean {
  * files, so the provider is wrapped with an explicit default. A call that sets
  * its own `maxOutputTokens` still wins.
  */
-const ANTHROPIC_COMPATIBLE_MAX_OUTPUT_TOKENS = 16_000;
+export const ANTHROPIC_COMPATIBLE_MAX_OUTPUT_TOKENS = 16_000;
 
 /** `bedrock-runtime.<region>.amazonaws.com` → the region, which the Bedrock package wants said separately. */
 export function bedrockRegionOf(baseURL: string): string | undefined {

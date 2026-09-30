@@ -28,6 +28,15 @@ export const field = (input: unknown, ...names: string[]): string | undefined =>
   return undefined;
 };
 
+/**
+ * The first file an `apply_patch` call touches (`*** Add File: b.txt`). OpenCode
+ * gives GPT models that tool in place of edit and write, and it arrives as an edit.
+ */
+const patchedFile = (input: unknown): string | undefined => {
+  const patch = field(input, "patchText", "patch");
+  return patch == null ? undefined : /^\*\*\* (?:Add|Update|Delete) File: (.+)$/m.exec(patch)?.[1]?.trim();
+};
+
 /** Item count from whichever array shape a plan tool's input carries. */
 const planCount = (input: unknown): number | undefined => {
   if (typeof input !== "object" || input === null) return undefined;
@@ -47,14 +56,15 @@ export function withoutCd(command: string): string {
 
 /**
  * Tool call → one muted log line. Names cover both our own tools
- * (`read`/`bash`/…) and the Claude Code harness ones (`Read`/`Bash`/…).
+ * (`read`/`bash`/…) and the Claude Code harness ones (`Read`/`Bash`/…);
+ * OpenCode's spell the path `filePath`.
  */
 export function describeTool(part: ToolPart): ToolDisplay {
   const name = getToolName(part);
   const input = part.input;
   switch (name.toLowerCase()) {
     case "read":
-      return { kind: "read", verb: "读取", target: field(input, "file_path", "path") ?? "" };
+      return { kind: "read", verb: "读取", target: field(input, "file_path", "filePath", "path") ?? "" };
     case "grep":
     case "glob":
     case "search":
@@ -69,12 +79,12 @@ export function describeTool(part: ToolPart): ToolDisplay {
       return { kind: "bash", verb: summary ? "执行" : "$", target: oneLine(summary || withoutCd(field(input, "command") ?? ""), 120) };
     }
     case "write": {
-      const file = field(input, "file_path", "path");
+      const file = field(input, "file_path", "filePath", "path");
       return { kind: "write", verb: "写入", target: file ?? "", ...(file != null ? { file } : {}) };
     }
     case "edit":
     case "multiedit": {
-      const file = field(input, "file_path", "path");
+      const file = field(input, "file_path", "filePath", "path") ?? patchedFile(input);
       return { kind: "edit", verb: "编辑", target: file ?? "", ...(file != null ? { file } : {}) };
     }
     case "explore":
@@ -96,7 +106,7 @@ export function describeTool(part: ToolPart): ToolDisplay {
       return { kind: "plan", verb: "计划", target: count != null ? `${count} 项` : "" };
     }
     default:
-      return { kind: "other", verb: name, target: oneLine(field(input, "file_path", "path", "pattern", "command", "description") ?? "", 100) };
+      return { kind: "other", verb: name, target: oneLine(field(input, "file_path", "filePath", "path", "pattern", "command", "url", "description") ?? "", 100) };
   }
 }
 

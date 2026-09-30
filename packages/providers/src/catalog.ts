@@ -168,7 +168,11 @@ function readProvider(key: string, raw: unknown): CatalogProvider | undefined {
   const vgentURL = protocol === "anthropic" && catalogURL != null ? withoutVersionSuffix(catalogURL) : (catalogURL ?? kind.defaultBaseURL);
   const hint = templated ? api : vgentURL == null ? kind.baseURLHint : undefined;
 
-  const agents: CatalogProvider["agents"] = { vgent: { protocol, ...(vgentURL != null ? { baseURL: vgentURL } : {}) } };
+  // OpenCode builds the very same AI SDK package from the same address.
+  const agents: CatalogProvider["agents"] = {
+    vgent: { protocol, ...(vgentURL != null ? { baseURL: vgentURL } : {}) },
+    opencode: { protocol, ...(vgentURL != null ? { baseURL: vgentURL } : {}) },
+  };
   const claudeURL = protocol === "anthropic" ? vgentURL : claudeCodeBaseURLFor(vgentURL);
   if (claudeURL != null) agents["claude-code"] = { protocol: "anthropic", baseURL: claudeURL };
   // Codex speaks OpenAI's Responses API and nothing else. The catalog says who
@@ -186,7 +190,10 @@ const LOCAL_PROVIDERS: readonly CatalogProvider[] = [
     name: "Ollama（本机）",
     npm: SDK_KINDS["openai-compatible"].npm,
     docsUrl: "https://docs.ollama.com/api/openai-compatibility",
-    agents: { vgent: { protocol: "openai-compatible", baseURL: "http://127.0.0.1:11434/v1" } },
+    agents: {
+      vgent: { protocol: "openai-compatible", baseURL: "http://127.0.0.1:11434/v1" },
+      opencode: { protocol: "openai-compatible", baseURL: "http://127.0.0.1:11434/v1" },
+    },
     keyless: true,
     models: [],
   },
@@ -225,6 +232,7 @@ export function builtinCatalog(): CatalogProvider[] {
       agents[agent as ProviderAgent] = { protocol: config.protocol, baseURL: config.baseURL };
       for (const model of config.models) if (!models.has(model.id)) models.set(model.id, model);
     }
+    if (agents.vgent != null) agents.opencode ??= { ...agents.vgent };
     return {
       id: preset.id,
       name: preset.name,

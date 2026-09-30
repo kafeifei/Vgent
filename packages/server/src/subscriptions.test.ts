@@ -66,6 +66,10 @@ describe("createSubscriptionService", () => {
       // A gateway model: the in-house agent's own, but no account's.
       { id: "openai/gpt-5", label: "GPT-5", source: { kind: "gateway", name: "AI Gateway" } },
     ],
+    opencode: [
+      { id: "codex-subscription:gpt-5.5", label: "GPT-5.5", contextWindow: 272_000, source: codex },
+      { id: "codex-subscription:gpt-5.5-mini", label: "GPT-5.5 mini", source: codex },
+    ],
   };
   const uses = (...on: AccountUse[]) => (["models", "remote"] as const).map((id) => ({ id, enabled: on.includes(id) }));
   const ACCOUNTS: AccountSummary[] = [
@@ -82,7 +86,7 @@ describe("createSubscriptionService", () => {
   it("gives every signed-in account that brings models a row of its own, named after who is signed in", async () => {
     const rows = await service().list(DEFAULT_SETTINGS);
     expect(rows.map((row) => [row.id, row.accountId, row.name, row.agents])).toEqual([
-      ["codex-subscription", "codex", "Codex · a@example.com", ["vgent", "codex"]],
+      ["codex-subscription", "codex", "Codex · a@example.com", ["vgent", "codex", "opencode"]],
       ["claude-subscription", "claude", "Claude · a@example.com", ["claude-code"]],
       ["claude-subscription@claude-0a1b2c3d", "claude-0a1b2c3d", "Claude · b@example.com", ["claude-code"]],
     ]);
@@ -94,11 +98,28 @@ describe("createSubscriptionService", () => {
     expect(rows[2]?.models).toEqual([{ id: "sonnet", label: "sonnet", agents: { "claude-code": { spec: "@claude-0a1b2c3d:sonnet", enabled: true } } }]);
   });
 
-  it("gives one row per Codex model with both agents' ids for it, and leaves the gateway's models out", async () => {
+  it("gives one row per Codex model with every agent's id for it, and leaves the gateway's models out", async () => {
     const [row] = await service().list({ ...DEFAULT_SETTINGS, hiddenModels: { vgent: ["codex-subscription:gpt-5.5-mini"] } });
     expect(row?.models).toEqual([
-      { id: "gpt-5.5", label: "GPT-5.5", contextWindow: 272_000, agents: { vgent: { spec: "codex-subscription:gpt-5.5", enabled: true }, codex: { spec: "gpt-5.5", enabled: true } } },
-      { id: "gpt-5.5-mini", label: "GPT-5.5 mini", agents: { vgent: { spec: "codex-subscription:gpt-5.5-mini", enabled: false }, codex: { spec: "gpt-5.5-mini", enabled: true } } },
+      {
+        id: "gpt-5.5",
+        label: "GPT-5.5",
+        contextWindow: 272_000,
+        agents: {
+          vgent: { spec: "codex-subscription:gpt-5.5", enabled: true },
+          codex: { spec: "gpt-5.5", enabled: true },
+          opencode: { spec: "codex-subscription:gpt-5.5", enabled: true },
+        },
+      },
+      {
+        id: "gpt-5.5-mini",
+        label: "GPT-5.5 mini",
+        agents: {
+          vgent: { spec: "codex-subscription:gpt-5.5-mini", enabled: false },
+          codex: { spec: "gpt-5.5-mini", enabled: true },
+          opencode: { spec: "codex-subscription:gpt-5.5-mini", enabled: true },
+        },
+      },
     ]);
   });
 

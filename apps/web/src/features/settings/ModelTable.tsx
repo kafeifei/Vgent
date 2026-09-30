@@ -117,8 +117,9 @@ export function ModelTable({
   const [error, setError] = useState<string>();
 
   const agents = agentsOf(provider, availableAgents);
-  const endpoint = provider.agents.vgent ?? provider.agents["claude-code"] ?? provider.agents.codex;
-  const forcedAgents = agents.filter((agent) => provider.agents[agent] == null);
+  const endpoint = provider.agents.vgent ?? provider.agents.opencode ?? provider.agents["claude-code"] ?? provider.agents.codex;
+  // OpenCode borrowing the in-house engine's address speaks the very same protocol; nothing to warn about.
+  const forcedAgents = agents.filter((agent) => provider.agents[agent] == null && !(agent === "opencode" && provider.agents.vgent != null));
 
   const discover = useCallback(
     (quiet: boolean) => {

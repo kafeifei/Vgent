@@ -3,7 +3,7 @@ import type { McpServerConfig } from "@vgent/engine";
 import type { HarnessAgentContinueTurnState, HarnessAgentResumeSessionState } from "@vgent/engines";
 import type { FileUIPart, UIMessage } from "ai";
 
-export type EngineId = "claude-code" | "codex" | "vgent";
+export type EngineId = "claude-code" | "codex" | "vgent" | "opencode";
 export type PermissionMode = "allow-reads" | "allow-edits" | "allow-all";
 export type ThreadStatus = "idle" | "running" | "awaiting-approval" | "awaiting-input" | "interrupted" | "error";
 

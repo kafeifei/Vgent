@@ -1,10 +1,10 @@
 # Vgent
 
-终端 coding agent 的壳，引擎可插拔：Claude Code、Codex（AI SDK 官方 harness 适配器）和自研引擎（`ToolLoopAgent` 实现的 `HarnessV1` 适配器）。**先读 `docs/product.md`（做什么、每个功能落在任务生命周期哪一步；落不上的不做），再读 `docs/architecture.md`（怎么实现）。**
+终端 coding agent 的壳，引擎可插拔：Claude Code、Codex、OpenCode（AI SDK 官方 harness 适配器）和自研引擎（`ToolLoopAgent` 实现的 `HarnessV1` 适配器）。**先读 `docs/product.md`（做什么、每个功能落在任务生命周期哪一步；落不上的不做），再读 `docs/architecture.md`（怎么实现）。**
 
 ## 用词
 
-- **引擎**：Claude Code、Codex、Vgent 这一层运行时。界面、文档和自有代码都叫引擎（Engine）。
+- **引擎**：Claude Code、Codex、OpenCode、Vgent 这一层运行时。界面、文档和自有代码都叫引擎（Engine）。
 - **harness**：只指 AI SDK 的 harness 适配器（`@ai-sdk/harness*`、`HarnessAgent`、`HarnessV1`），Claude Code 和 Codex 经它接入。
 - **模型**、**提供商**（模型的接入渠道）、**agent / 子代理**（执行任务的实例）各说各的，不拿来指引擎。
 
@@ -31,7 +31,7 @@ curl -sL -o docs/ai-sdk/llms.txt https://ai-sdk.dev/llms.txt
 ```bash
 pnpm start                                          # build + 起 server（自带 web）+ 开浏览器 + 注册当前仓库
 pnpm build && pnpm test                             # 全量，冒烟默认跳过
-VGENT_SMOKE=1 pnpm --filter @vgent/engines test     # 真跑 Claude Code 引擎（用本机登录）
+VGENT_SMOKE=1 pnpm --filter @vgent/engines test     # 真跑 Claude Code / Codex / OpenCode 引擎（用本机登录）
 VGENT_SMOKE=1 pnpm --filter @vgent/providers test   # 真跑 Codex 订阅 provider
 node apps/cli/dist/index.js --engine claude-code --repo <path> --permission allow-reads
 ```

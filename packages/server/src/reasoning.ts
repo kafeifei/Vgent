@@ -28,7 +28,7 @@ export function defaultLevelFor(levels: readonly string[], declared: string | un
   return declared != null && levels.includes(declared) ? declared : undefined;
 }
 
-type ReasoningEngine = "claude-code" | "codex" | "vgent";
+type ReasoningEngine = "claude-code" | "codex" | "vgent" | "opencode";
 
 /**
  * What each engine can *carry* to the model. Claude Code's `effort` and Codex's
@@ -39,6 +39,8 @@ const CARRIED_LEVELS: Record<ReasoningEngine, readonly string[]> = {
   "claude-code": CLAUDE_CODE_EFFORTS,
   codex: ["low", "medium", "high", "xhigh", "max"],
   vgent: ["none", "minimal", "low", "medium", "high", "xhigh"],
+  // OpenCode's variant names: it derives the set per model and ignores one the model lacks.
+  opencode: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
 };
 
 /** What is offered for a model nobody knows anything about. */
@@ -46,6 +48,7 @@ const UNKNOWN_MODEL_LEVELS: Record<ReasoningEngine, readonly string[]> = {
   "claude-code": CLAUDE_CODE_EFFORTS,
   codex: ["low", "medium", "high", "xhigh"],
   vgent: [PROVIDER_DEFAULT_LEVEL, "low", "medium", "high"],
+  opencode: [PROVIDER_DEFAULT_LEVEL, "low", "medium", "high"],
 };
 
 /**

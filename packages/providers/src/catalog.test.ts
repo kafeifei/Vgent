@@ -109,13 +109,18 @@ describe("normalizeModelsDev", () => {
   });
 
   it("maps the catalog's npm package to the protocol, and falls back to the package's own address", () => {
-    expect(byId("xai")?.agents).toEqual({ vgent: { protocol: "xai", baseURL: SDK_KINDS.xai.defaultBaseURL } });
+    // OpenCode builds the same package from the same address as the in-house engine.
+    expect(byId("xai")?.agents).toEqual({
+      vgent: { protocol: "xai", baseURL: SDK_KINDS.xai.defaultBaseURL },
+      opencode: { protocol: "xai", baseURL: SDK_KINDS.xai.defaultBaseURL },
+    });
   });
 
   it("offers Claude Code the vendor's Anthropic endpoint: the same address for an Anthropic provider, Cindy's for the ones it knows", () => {
     // models.dev gives the AI SDK form (`…/v1`); what is stored is the `claude` CLI's form, without it.
     expect(byId("minimax")?.agents).toEqual({
       vgent: { protocol: "anthropic", baseURL: "https://api.minimax.io/anthropic" },
+      opencode: { protocol: "anthropic", baseURL: "https://api.minimax.io/anthropic" },
       "claude-code": { protocol: "anthropic", baseURL: "https://api.minimax.io/anthropic" },
     });
     expect(byId("deepseek")?.agents["claude-code"]).toEqual({ protocol: "anthropic", baseURL: "https://api.deepseek.com/anthropic" });

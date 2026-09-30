@@ -122,7 +122,7 @@ export interface SubscriptionService {
 /** The engines each platform's models run on, in the table's column order. */
 const ENGINES: Record<AccountKind, EngineId[]> = {
   claude: ["claude-code"],
-  codex: ["vgent", "codex"],
+  codex: ["vgent", "codex", "opencode"],
   github: ["vgent"],
 };
 

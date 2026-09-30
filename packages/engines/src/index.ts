@@ -22,6 +22,13 @@ export {
   type CodexEngine,
   type CodexEngineOptions,
 } from "./codex.js";
+export {
+  createOpenCodeEngine,
+  DEFAULT_OPENCODE_DATA_DIR,
+  openCodeAuthContent,
+  type OpenCodeEngine,
+  type OpenCodeEngineOptions,
+} from "./opencode.js";
 export { harnessBootstrapRecipe } from "./bootstrap.js";
 export { toTUIAgent, type TUIAgent } from "./to-tui-agent.js";
 /**

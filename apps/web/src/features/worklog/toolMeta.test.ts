@@ -13,6 +13,13 @@ describe("describeTool", () => {
     expect(describeTool(part("tool-Task", { description: "查找续流实现" }))).toMatchObject({ verb: "子代理" });
   });
 
+  it("reads OpenCode's `filePath` like the other engines' path fields", () => {
+    expect(describeTool(part("tool-read", { filePath: "/repo/a.txt" }))).toMatchObject({ verb: "读取", target: "/repo/a.txt" });
+    expect(describeTool(part("tool-edit", { filePath: "/repo/a.txt", oldString: "a", newString: "b" }))).toMatchObject({ verb: "编辑", file: "/repo/a.txt" });
+    expect(describeTool(part("tool-webfetch", { url: "https://example.com" }))).toMatchObject({ target: "https://example.com" });
+    expect(describeTool(part("tool-edit", { patchText: "*** Begin Patch\n*** Add File: b.txt\n+world\n*** End Patch" }))).toMatchObject({ verb: "编辑", file: "b.txt" });
+  });
+
   it("drops the leading cd from a command's line and keeps the rest", () => {
     expect(withoutCd("cd /Users/me/Codes/Vgent; git status --short")).toBe("git status --short");
     expect(withoutCd("cd \"/tmp/a b\" && ls")).toBe("ls");

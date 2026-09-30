@@ -435,7 +435,7 @@ describe("createApp", () => {
     const dir = await tempDir();
     const app = makeApp(dir);
     const body = (await (await request(app, "/api/engines")).json()) as { engines: EngineDescriptor[] };
-    expect(body.engines.map((entry) => entry.id)).toEqual(["codex", "claude-code", "vgent"]);
+    expect(body.engines.map((entry) => entry.id)).toEqual(["codex", "claude-code", "vgent", "opencode"]);
     expect(body.engines[0]).toMatchObject({ label: "Codex", capabilities: { approvals: false } });
     expect(body.engines[1]).toMatchObject({ label: "Claude Code", capabilities: { approvals: true, compact: true } });
   });

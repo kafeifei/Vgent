@@ -172,6 +172,7 @@ describe("provider routes", () => {
       "claude-code": true,
       codex: true,
       vgent: true,
+      opencode: true,
     });
   });
 

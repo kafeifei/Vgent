@@ -568,6 +568,25 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
   const buildCodex = async (): Promise<Omit<ModelCatalog, "engine" | "fetchedAt">> =>
     codexRows(codexEntry("codex", await catalogModelOf()));
 
+  /**
+   * OpenCode runs a Codex login's models as its own `openai/<slug>`, on that
+   * account's token — the same rows as the other two engines, so the picker
+   * shows each once. Named like the in-house engine's. Only the levels OpenCode
+   * has a variant for, no speed tiers (OpenCode lists `-fast` as models of their
+   * own), and the window as Codex says it, with no longer one to choose.
+   */
+  const openCodeEntry = (entry: CodexCatalogModel, account: CatalogAccount): ModelEntry => {
+    const { reasoningLevels, defaultReasoningLevel, serviceTiers: _tiers, contextOptions: _options, ...rest } = codexEntry("vgent", undefined)(entry, account);
+    const levels = reasoningFor("opencode", reasoningLevels);
+    return {
+      ...rest,
+      ...(reasoningLevels != null ? levels : {}),
+      ...(reasoningLevels != null && defaultReasoningLevel != null && levels.reasoningLevels?.includes(defaultReasoningLevel) === true ? { defaultReasoningLevel } : {}),
+    };
+  };
+
+  const buildOpenCode = async (): Promise<Omit<ModelCatalog, "engine" | "fetchedAt">> => codexRows(openCodeEntry);
+
   const buildVgent = async (): Promise<Omit<ModelCatalog, "engine" | "fetchedAt">> => {
     const modelOf = await catalogModelOf();
     const [codex, gatewayModels] = await Promise.all([codexRows(codexEntry("vgent", modelOf)), listGatewayModels()]);
@@ -626,7 +645,13 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
 
   const build = async (engine: EngineId): Promise<ModelCatalog> => {
     const partial =
-      engine === "codex" ? await buildCodex() : engine === "vgent" ? await buildVgent() : await buildClaudeCode();
+      engine === "codex"
+        ? await buildCodex()
+        : engine === "vgent"
+          ? await buildVgent()
+          : engine === "opencode"
+            ? await buildOpenCode()
+            : await buildClaudeCode();
     return { engine, fetchedAt: new Date(now()).toISOString(), ...partial };
   };
 

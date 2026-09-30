@@ -84,7 +84,7 @@ function ConnectDialog({
     setBusy(true);
     setError(undefined);
     try {
-      const endpoint = result.input.agents.vgent ?? result.input.agents["claude-code"] ?? result.input.agents.codex;
+      const endpoint = result.input.agents.vgent ?? result.input.agents.opencode ?? result.input.agents["claude-code"] ?? result.input.agents.codex;
       let discovered: ProviderModel[] | undefined;
       if (endpoint != null) {
         try {

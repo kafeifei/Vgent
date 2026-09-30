@@ -4,9 +4,11 @@ Accounts are logins Vgent can use: Claude, Codex and GitHub, any number of each 
 
 | Platform | Where one account's login lives | Uses |
 | --- | --- | --- |
-| Claude | The machine's own login (`~/.claude`, keychain `Claude Code-credentials`), or a Vgent-owned config directory `<dataDir>/accounts/<id>` passed as `CLAUDE_CONFIG_DIR` — Claude Code then keeps the login in keychain `Claude Code-credentials-<sha256(dir)[:8]>` | Claude Code models |
-| Codex | The machine's `CODEX_HOME` (default `~/.codex`), or `<dataDir>/accounts/<id>` as `CODEX_HOME` | Codex engine models, Vgent engine models |
-| GitHub | One item per account under keychain service `dev.vgent.remote.<data dir digest>`, account name = account id (the first keeps `github`, where the single remote login used to be) | Copilot models, remote access |
+| Claude | The machine's own login (`~/.claude`, keychain `Claude Code-credentials`), or a Vgent-owned config directory `<dataDir>/accounts/<id>` passed as `CLAUDE_CONFIG_DIR` — Claude Code then keeps the login in keychain `Claude Code-credentials-<sha256(dir)[:8]>` | models |
+| Codex | The machine's `CODEX_HOME` (default `~/.codex`), or `<dataDir>/accounts/<id>` as `CODEX_HOME` | models |
+| GitHub | One item per account under keychain service `dev.vgent.remote.<data dir digest>`, account name = account id (the first keeps `github`, where the single remote login used to be) | models (Copilot), remote access |
+
+`models` switches an account's models in or out of every engine that runs them: the engine is the model's business, never an account setting. Records written by build 196, which had one switch per engine, lose those keys on read.
 
 Ids: the machine's logins are `claude` and `codex`, the first GitHub account `github`; every other account is `<kind>-<8 hex>`. A model on a platform's first account keeps its old spec (`sonnet`, `gpt-5.5`, `codex-subscription:gpt-5.5`, `github-copilot:<id>`); any other account prefixes it: `@codex-1a2b3c4d:gpt-5.5`. Engines split the prefix off (`splitAccountSpec`) and run with that account's `CLAUDE_CONFIG_DIR`, Codex home or Copilot access. Model keys, hidden-model switches, 提供商排序 keys (`subscriptionKey`) and picker headings are per account, so two accounts of one platform are two sources.
 

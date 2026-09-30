@@ -33,6 +33,16 @@ const isRecordShape = (value: unknown): value is AccountRecord => {
 const isAccountsFile = (value: unknown): value is AccountsFile =>
   typeof value === "object" && value !== null && Array.isArray((value as AccountsFile).accounts) && (value as AccountsFile).accounts.every(isRecordShape);
 
+/**
+ * The switches a record keeps, of the uses there are. Build 196 had one per
+ * engine (`claude-code`, `codex`, `vgent`, `copilot`); a model is not the
+ * engine's to switch, so those are dropped and the models are on.
+ */
+function withKnownUses(record: AccountRecord): AccountRecord {
+  const { uses, ...rest } = record;
+  return uses?.models === false ? { ...rest, uses: { models: false } } : rest;
+}
+
 /** Where an account the machine's CLI does not own keeps its login: `<dataDir>/accounts/<id>`. */
 export const accountHome = (dataDir: string, id: AccountId): string => join(dataDir, "accounts", id);
 
@@ -74,7 +84,7 @@ export function createAccountRegistry(dataDir: string, log: Logger = silentLogge
 
   const read = async (): Promise<AccountRecord[]> => {
     const file = await readJsonOrQuarantine<AccountsFile>(path, { validate: isAccountsFile, log });
-    return file?.accounts ?? (await seed());
+    return file?.accounts.map(withKnownUses) ?? (await seed());
   };
   const write = async (accounts: AccountRecord[]) => {
     await mkdir(dataDir, { recursive: true, mode: 0o700 });

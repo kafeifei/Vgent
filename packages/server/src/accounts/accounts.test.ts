@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -111,7 +111,7 @@ describe("account service", () => {
       ["claude", "claude", "a@example.com", true],
       ["claude-0a1b2c3d", "claude", "b@example.com", false],
     ]);
-    expect(snapshot.accounts[0]?.uses).toEqual([{ id: "claude-code", enabled: true }]);
+    expect(snapshot.accounts[0]?.uses).toEqual([{ id: "models", enabled: true }]);
     expect(JSON.stringify(snapshot)).not.toContain("orgId");
   });
 
@@ -155,9 +155,9 @@ describe("account service", () => {
     const home = join(dataDir, "accounts", "claude-0a1b2c3d");
     await mkdir(home, { recursive: true });
     await registry.add({ id: "claude-0a1b2c3d", kind: "claude" });
-    await service.setUse("claude-0a1b2c3d", "claude-code", false);
-    expect((await registry.get("claude-0a1b2c3d"))?.uses).toEqual({ "claude-code": false });
-    await expect(service.setUse("claude", "copilot", true)).rejects.toThrow("没有这个用途");
+    await service.setUse("claude-0a1b2c3d", "models", false);
+    expect((await registry.get("claude-0a1b2c3d"))?.uses).toEqual({ models: false });
+    await expect(service.setUse("claude", "remote", true)).rejects.toThrow("没有这个用途");
     await service.logout("claude-0a1b2c3d");
     expect(logouts).toEqual([home]);
     expect(await registry.list()).toEqual([]);
@@ -182,6 +182,18 @@ describe("account service", () => {
     await service.logout("github");
     expect([...items.keys()]).toEqual([second]);
     expect((await service.list({ refresh: true })).accounts.map((a) => a.username)).toEqual(["cat"]);
+  });
+
+  it("drops the per-engine switches an earlier build kept, and keeps a switched-off account off", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "vgent-accounts-"));
+    cleanups.push(() => rm(dataDir, { recursive: true, force: true }));
+    await writeFile(join(dataDir, "accounts.json"), JSON.stringify({ version: 1, accounts: [
+      { id: "codex-0a1b2c3d", kind: "codex", uses: { vgent: false }, addedAt: "2026-09-29T00:00:00.000Z" },
+      { id: "claude-0a1b2c3d", kind: "claude", uses: { models: false, "claude-code": false }, addedAt: "2026-09-29T00:00:00.000Z" },
+    ] }));
+    const registry = createAccountRegistry(dataDir);
+    expect((await registry.get("codex-0a1b2c3d"))?.uses).toBeUndefined();
+    expect((await registry.get("claude-0a1b2c3d"))?.uses).toEqual({ models: false });
   });
 
   it("does not read subscription credentials for a Claude API-key login", async () => {

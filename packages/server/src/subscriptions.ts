@@ -5,7 +5,7 @@ import { accountSourceName, type ModelCatalogService, type ModelEntry } from "./
 import type { EngineId, Settings } from "./types.js";
 import type { AccountService } from "./accounts/service.js";
 import { accountOfSubscriptionKey, splitAccountSpec, subscriptionKey } from "./accounts/spec.js";
-import type { AccountId, AccountKind, AccountSummary, AccountUse } from "./accounts/types.js";
+import type { AccountId, AccountKind, AccountSummary } from "./accounts/types.js";
 
 /**
  * 订阅: the accounts an Engine can run on without a key. Each one that brings
@@ -120,10 +120,10 @@ export interface SubscriptionService {
 }
 
 /** The engines each platform's models run on, in the table's column order. */
-const ENGINES: Record<AccountKind, Array<{ engine: EngineId; use: AccountUse }>> = {
-  claude: [{ engine: "claude-code", use: "claude-code" }],
-  codex: [{ engine: "vgent", use: "vgent" }, { engine: "codex", use: "codex" }],
-  github: [{ engine: "vgent", use: "copilot" }],
+const ENGINES: Record<AccountKind, EngineId[]> = {
+  claude: ["claude-code"],
+  codex: ["vgent", "codex"],
+  github: ["vgent"],
 };
 
 /** The model a row stands for, whichever engine names it: its id without the account and the subscription prefix. */
@@ -142,7 +142,7 @@ export function createSubscriptionService(options: {
 
   /** Engines this account's models run on right now: switched on, and the engine lists them. */
   const agentsOf = (account: AccountSummary): EngineId[] =>
-    ENGINES[account.kind].filter(({ use }) => account.uses.some((entry) => entry.id === use && entry.enabled)).map(({ engine }) => engine);
+    account.uses.some((entry) => entry.id === "models" && entry.enabled) ? ENGINES[account.kind] : [];
 
   const rows = async (account: AccountSummary, settings: Settings, refresh: boolean): Promise<{ models: SubscriptionModel[]; warning?: string }> => {
     const agents = agentsOf(account);

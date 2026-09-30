@@ -67,13 +67,13 @@ describe("createSubscriptionService", () => {
       { id: "openai/gpt-5", label: "GPT-5", source: { kind: "gateway", name: "AI Gateway" } },
     ],
   };
-  const uses = (...on: AccountUse[]) => (["claude-code", "codex", "vgent", "copilot", "remote"] as const).map((id) => ({ id, enabled: on.includes(id) }));
+  const uses = (...on: AccountUse[]) => (["models", "remote"] as const).map((id) => ({ id, enabled: on.includes(id) }));
   const ACCOUNTS: AccountSummary[] = [
-    { id: "codex", kind: "codex", name: "Codex", loggedIn: true, email: "a@example.com", machine: true, uses: uses("codex", "vgent") },
-    { id: "claude", kind: "claude", name: "Claude", loggedIn: true, email: "a@example.com", plan: "max", machine: true, uses: uses("claude-code") },
-    { id: "claude-0a1b2c3d", kind: "claude", name: "Claude", loggedIn: true, email: "b@example.com", uses: uses("claude-code") },
+    { id: "codex", kind: "codex", name: "Codex", loggedIn: true, email: "a@example.com", machine: true, uses: uses("models") },
+    { id: "claude", kind: "claude", name: "Claude", loggedIn: true, email: "a@example.com", plan: "max", machine: true, uses: uses("models") },
+    { id: "claude-0a1b2c3d", kind: "claude", name: "Claude", loggedIn: true, email: "b@example.com", uses: uses("models") },
     // Signed out, or on for nothing that brings models: not a subscription row.
-    { id: "claude-11111111", kind: "claude", name: "Claude", loggedIn: false, uses: uses("claude-code") },
+    { id: "claude-11111111", kind: "claude", name: "Claude", loggedIn: false, uses: uses("models") },
     { id: "github", kind: "github", name: "GitHub", loggedIn: true, username: "octo", uses: uses("remote") },
   ];
   const service = (accounts = ACCOUNTS) =>
@@ -102,11 +102,9 @@ describe("createSubscriptionService", () => {
     ]);
   });
 
-  it("drops the columns of an engine the account is switched off for", async () => {
-    const accounts = ACCOUNTS.map((account) => (account.id === "codex" ? { ...account, uses: uses("codex") } : account));
-    const [row] = await service(accounts).list(DEFAULT_SETTINGS);
-    expect(row?.agents).toEqual(["codex"]);
-    expect(row?.models[0]?.agents).toEqual({ codex: { spec: "gpt-5.5", enabled: true } });
+  it("leaves out an account whose models are switched off", async () => {
+    const accounts = ACCOUNTS.map((account) => (account.id === "codex" ? { ...account, uses: uses() } : account));
+    expect((await service(accounts).list(DEFAULT_SETTINGS)).map((row) => row.accountId)).toEqual(["claude", "claude-0a1b2c3d"]);
   });
 
   it("answers one account's rows by its key, and nothing for one that is not there", async () => {

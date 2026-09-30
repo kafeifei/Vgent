@@ -9,9 +9,9 @@ import { AccountsPage } from "./AccountsPage";
 vi.mock("@/features/accounts/useAccounts", () => ({ useAccounts: vi.fn() }));
 
 const accounts: AccountSummary[] = [
-  { id: "claude", kind: "claude", name: "Claude", loggedIn: true, email: "a@example.com", plan: "max", machine: true, uses: [{ id: "claude-code", enabled: true }] },
-  { id: "claude-0a1b2c3d", kind: "claude", name: "Claude", loggedIn: false, email: "b@example.com", uses: [{ id: "claude-code", enabled: false }] },
-  { id: "github", kind: "github", name: "GitHub", loggedIn: true, username: "octo", uses: [{ id: "copilot", enabled: true }, { id: "remote", enabled: false }] },
+  { id: "claude", kind: "claude", name: "Claude", loggedIn: true, email: "a@example.com", plan: "max", machine: true, uses: [{ id: "models", enabled: true }] },
+  { id: "claude-0a1b2c3d", kind: "claude", name: "Claude", loggedIn: false, email: "b@example.com", uses: [{ id: "models", enabled: false }] },
+  { id: "github", kind: "github", name: "GitHub", loggedIn: true, username: "octo", uses: [{ id: "models", enabled: true }, { id: "remote", enabled: false }] },
 ];
 const render = (focus?: string) => {
   vi.mocked(useAccounts).mockReturnValue({ snapshot: { accounts, revision: 1 }, refreshing: false, refresh: async () => {} });
@@ -30,7 +30,9 @@ describe("账号", () => {
 
   it("opens one account on what it is switched on for, and signing out", () => {
     const html = render("github");
-    expect(html).toContain('aria-label="Copilot 模型"');
+    // Models, not engines: which engine runs a model is the model's business.
+    expect(html).toContain('aria-label="模型"');
+    expect(html).not.toContain("引擎");
     expect(html).toContain('aria-label="远程访问"');
     expect(html).toContain('aria-checked="true"');
     expect(html).toContain('aria-checked="false"');

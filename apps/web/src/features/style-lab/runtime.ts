@@ -112,7 +112,7 @@ export class StyleSession {
         revision: 1,
         accounts: [{
           id: "codex", kind: "codex", name: "Codex", loggedIn: true, email: "sample@example.com", plan: "pro", machine: true,
-          uses: [{ id: "codex", enabled: true }, { id: "vgent", enabled: true }],
+          uses: [{ id: "models", enabled: true }],
           usage: {
             status: "ready", fetchedAt: AT, balance: "可用点数 120",
             windows: [

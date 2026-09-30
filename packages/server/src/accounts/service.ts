@@ -345,7 +345,7 @@ export function createAccountService(options: {
 
   /** Copilot's models for every GitHub account switched on for it, each under its own account. */
   async function copilotModels(refresh = false): Promise<ModelEntry[]> {
-    const accounts = await usable("github", "copilot");
+    const accounts = await usable("github", "models");
     const lists = await Promise.all(accounts.map(async (account) => {
       const entries = await copilot(account.id).models(refresh).catch(() => [] as ModelEntry[]);
       return entries.map((entry) => {

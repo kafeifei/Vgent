@@ -9,7 +9,7 @@ import { silentLogger } from "./types.js";
 import { CLAUDE_CODE_LONG_CONTEXT, CLAUDE_CODE_STANDARD_CONTEXT } from "./engines/claude-code.js";
 import { DEFAULT_REASONING_LEVEL, defaultLevelFor, reasoningFor } from "./reasoning.js";
 import { DEFAULT_ACCOUNT, accountModelKey, accountSpec, subscriptionKey } from "./accounts/spec.js";
-import type { AccountId, AccountSummary, AccountUse } from "./accounts/types.js";
+import type { AccountId, AccountSummary } from "./accounts/types.js";
 
 /** One selectable model. `id` is what a thread's `model` field is set to. */
 export interface ModelEntry {
@@ -256,7 +256,7 @@ export interface ModelCatalogOptions {
    * is not signed in still lists its built-in model.
    */
   accounts?: {
-    usable(kind: "claude" | "codex", use: AccountUse): Promise<CatalogAccount[]>;
+    usable(kind: "claude" | "codex", use: "models"): Promise<CatalogAccount[]>;
     codexHome(id: AccountId): string;
   };
 }
@@ -472,9 +472,9 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
     });
 
   /** The accounts an engine lists models for; without an account service, the machine's own login. */
-  const accountsFor = async (kind: "claude" | "codex", use: AccountUse): Promise<CatalogAccount[]> => {
+  const accountsFor = async (kind: "claude" | "codex"): Promise<CatalogAccount[]> => {
     if (options.accounts == null) return [{ id: DEFAULT_ACCOUNT[kind] }];
-    return options.accounts.usable(kind, use).catch((error: unknown) => {
+    return options.accounts.usable(kind, "models").catch((error: unknown) => {
       log.warn("读取账号失败", error);
       return [];
     });
@@ -511,10 +511,9 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
    * shows, as it always did; the app instead lists nothing and offers to sign in.
    */
   const codexRows = async (
-    use: "codex" | "vgent",
     row: (entry: CodexCatalogModel, account: CatalogAccount) => ModelEntry,
   ): Promise<{ models: ModelEntry[]; source: string; warning?: string }> => {
-    const accounts = await accountsFor("codex", use);
+    const accounts = await accountsFor("codex");
     const listings = await Promise.all(accounts.map(async (account) => ({ account, ...(await listCodexModels(homeOf(account.id))) })));
     const signedIn = listings.filter((listing) => listing.models.length > 0);
     const warnings = [...new Set([...(accounts.length === 0 ? [CODEX_LOGGED_OUT] : []), ...listings.flatMap((listing) => (listing.warning != null ? [listing.warning] : []))])];
@@ -567,11 +566,11 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
   });
 
   const buildCodex = async (): Promise<Omit<ModelCatalog, "engine" | "fetchedAt">> =>
-    codexRows("codex", codexEntry("codex", await catalogModelOf()));
+    codexRows(codexEntry("codex", await catalogModelOf()));
 
   const buildVgent = async (): Promise<Omit<ModelCatalog, "engine" | "fetchedAt">> => {
     const modelOf = await catalogModelOf();
-    const [codex, gatewayModels] = await Promise.all([codexRows("vgent", codexEntry("vgent", modelOf)), listGatewayModels()]);
+    const [codex, gatewayModels] = await Promise.all([codexRows(codexEntry("vgent", modelOf)), listGatewayModels()]);
     const models = [...codex.models, ...gatewayModels.models];
     const sources = [...(codex.models.length > 0 ? [codex.source] : []), ...(gatewayModels.models.length > 0 ? ["gateway"] : [])];
     const warnings = [codex.warning, gatewayModels.warning].filter((value): value is string => value != null);
@@ -617,7 +616,7 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
     const listed = withClaudeCodeReasoning([...CLAUDE_CODE_BUILTIN, ...full], modelOf, fromCatalog);
     return {
       // Each Claude account offers the same models, under its own heading.
-      models: (await accountsFor("claude", "claude-code")).flatMap((account) =>
+      models: (await accountsFor("claude")).flatMap((account) =>
         listed.map((entry) => ({ ...entry, id: accountSpec(account.id, entry.id), modelKey: accountModelKey(account.id, entry.id), source: claudeSource(account) })),
       ),
       source: sources.join("+"),

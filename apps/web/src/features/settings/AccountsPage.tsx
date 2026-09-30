@@ -15,10 +15,7 @@ import { BUTTON_GHOST, BUTTON_SECONDARY, Dialog, SettingsEmpty, SettingsGroup, S
 
 /** What each use is called on an account's page. */
 const USE_LABELS: Record<AccountUse, string> = {
-  "claude-code": "Claude Code 模型",
-  codex: "Codex 引擎的模型",
-  vgent: "Vgent 引擎的模型",
-  copilot: "Copilot 模型",
+  models: "模型",
   remote: "远程访问",
 };
 

@@ -3,11 +3,12 @@ export type AccountKind = "claude" | "codex" | "github";
 /** An account's id: the machine's own logins are `claude` / `codex`, the first GitHub one `github`, the rest `<kind>-<hex>`. */
 export type AccountId = string;
 /**
- * What an account can be switched on for. `remote` is not stored with the
- * account: remote access runs as one GitHub account at a time and keeps that
- * choice itself.
+ * What an account can be switched on for: its models — in the picker of
+ * whichever engine runs them; the model decides that, not the account — and,
+ * for GitHub, remote access. `remote` is not stored with the account: remote
+ * access runs as one GitHub account at a time and keeps that choice itself.
  */
-export type AccountUse = "claude-code" | "codex" | "vgent" | "copilot" | "remote";
+export type AccountUse = "models" | "remote";
 export interface UsageWindow {
   id: string;
   label: string;
@@ -60,7 +61,7 @@ export interface AccountLoginAttempt {
 
 /** The uses each platform has, in display order. */
 export const ACCOUNT_USES: Record<AccountKind, readonly AccountUse[]> = {
-  claude: ["claude-code"],
-  codex: ["codex", "vgent"],
-  github: ["copilot", "remote"],
+  claude: ["models"],
+  codex: ["models"],
+  github: ["models", "remote"],
 };

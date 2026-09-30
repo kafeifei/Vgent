@@ -12,7 +12,7 @@ const MAX_ROWS = 80;
 
 const AGENT_COLUMN = "w-[calc(var(--spacing-3xl)*2)] flex-none";
 
-/** The header of a model table: a column per agent, each a button that flips every listed row at once. */
+/** A visible select-all switch per engine, covering every matching model (not just the rendered rows). */
 export function ModelTableHeader<Agent extends string>({
   agents,
   agentLabel,
@@ -22,8 +22,8 @@ export function ModelTableHeader<Agent extends string>({
 }: {
   agents: readonly Agent[];
   agentLabel: (agent: Agent) => string;
-  /** How many rows a column click reaches. */
-  count: number;
+  /** How many matching models this engine can toggle. */
+  count: (agent: Agent) => number;
   allOn: (agent: Agent) => boolean;
   onToggleAll: (agent: Agent, on: boolean) => void;
 }) {
@@ -31,18 +31,21 @@ export function ModelTableHeader<Agent extends string>({
     <div className="flex items-center gap-sm border-border border-b bg-bg-inset px-md py-2xs text-fg-faint text-sm">
       <span className="flex-1">模型</span>
       {agents.map((agent) => {
-        const on = count > 0 && allOn(agent);
+        const total = count(agent);
+        const on = total > 0 && allOn(agent);
         return (
-          <button
-            key={agent}
-            type="button"
-            disabled={count === 0}
-            onClick={() => onToggleAll(agent, !on)}
-            title={on ? `${agentLabel(agent)}：关掉列出的这 ${count} 个` : `${agentLabel(agent)}：打开列出的这 ${count} 个`}
-            className={cn(AGENT_COLUMN, "text-right hover:text-fg disabled:hover:text-fg-faint")}
-          >
-            {agentLabel(agent)}
-          </button>
+          <div key={agent} className={cn(AGENT_COLUMN, "flex flex-col items-end gap-2xs")}>
+            <span>{agentLabel(agent)}</span>
+            <label className="flex items-center gap-xs">
+              <span>全选</span>
+              <Switch
+                checked={on}
+                disabled={total === 0}
+                onChange={(next) => onToggleAll(agent, next)}
+                label={`${agentLabel(agent)}：全选匹配的 ${total} 个模型`}
+              />
+            </label>
+          </div>
         );
       })}
     </div>
@@ -224,7 +227,7 @@ export function ModelTable({
       <ModelTableHeader
         agents={agents}
         agentLabel={agentLabel}
-        count={matching.length}
+        count={() => matching.length}
         allOn={(agent) => matching.every((model) => isEnabled(provider, agent, model.id))}
         onToggleAll={(agent, on) => save(agent, matching, on)}
       />

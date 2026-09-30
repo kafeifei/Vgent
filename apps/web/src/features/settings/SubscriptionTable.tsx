@@ -31,6 +31,7 @@ export function SubscriptionTable({
   const [query, setQuery] = useState("");
   const needle = query.trim().toLowerCase();
   const rows = account.models.filter(model => `${model.id} ${model.label}`.toLowerCase().includes(needle));
+  const rowsFor = (agent: ProviderAgent) => rows.filter((model) => model.agents[agent] != null);
   const [error, setError] = useState<string>();
   const [reloading, setReloading] = useState(false);
 
@@ -83,9 +84,9 @@ export function SubscriptionTable({
       <ModelTableHeader
         agents={account.agents}
         agentLabel={agentLabel}
-        count={rows.length}
-        allOn={(agent) => rows.length > 0 && rows.every((model) => model.agents[agent]?.enabled !== false)}
-        onToggleAll={(agent, on) => save(agent, rows, on)}
+        count={(agent) => rowsFor(agent).length}
+        allOn={(agent) => rowsFor(agent).every((model) => model.agents[agent]?.enabled === true)}
+        onToggleAll={(agent, on) => save(agent, rowsFor(agent), on)}
       />
       <div className="flex flex-col divide-y divide-border">
         {rows.map((model) => (

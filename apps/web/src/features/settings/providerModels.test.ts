@@ -133,6 +133,17 @@ describe("the model table", () => {
     expect(off.agents.vgent?.models).toEqual([]);
   });
 
+  it("selects and clears search matches without changing other models or engines", () => {
+    const models = [{ id: "v4-pro" }, { id: "v4-flash" }, { id: "v5-preview" }];
+    const matching = filterModels(models, "v4");
+    const initial = withModels(connected, "vgent", [{ id: "v5-preview" }], true);
+    const on = withModels({ ...connected, agents: initial.agents }, "vgent", matching, true);
+    expect(on.agents.vgent?.models.map(model => model.id)).toEqual(["v4-pro", "v5-preview", "v4-flash"]);
+    const off = withModels({ ...connected, agents: on.agents }, "vgent", matching, false);
+    expect(off.agents.vgent?.models).toEqual([{ id: "v5-preview" }]);
+    expect(off.agents["claude-code"]).toEqual(connected.agents["claude-code"]);
+  });
+
   it("force-enables an unconfigured agent by reusing an existing endpoint", () => {
     const input = withModels(connected, "codex", [{ id: "v4-pro", label: "V4 Pro" }], true);
     expect(input.agents.codex).toEqual({
@@ -208,6 +219,14 @@ describe("订阅", () => {
     const { plan: _plan, ...bare } = codex;
     expect(describeSubscription(bare)).toBeUndefined();
     expect(describeSubscription({ ...codex, method: "api_key" })).toBe("Pro · 登录方式：api_key");
+  });
+
+  it("toggles only matching subscription models and preserves the other engine", () => {
+    const matching = filterModels(codex.models, " MINI ");
+    const on = withSubscriptionSwitch(codex.models, "vgent", matching.map(model => model.id), true);
+    expect(on.map(model => model.agents.vgent?.enabled)).toEqual([true, true]);
+    const off = withSubscriptionSwitch(on, "vgent", matching.map(model => model.id), false);
+    expect(off).toEqual(codex.models);
   });
 
   it("sums up what each agent has on, and flips one agent's switch without touching the other's", () => {

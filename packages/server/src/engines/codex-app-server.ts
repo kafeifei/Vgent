@@ -15,6 +15,31 @@ function codexCli(): string {
   return join(dirname(require.resolve("@openai/codex/package.json")), "bin", "codex.js");
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function groupAlive(pgid: number): boolean {
+  try { process.kill(-pgid, 0); return true; } catch { return false; }
+}
+
+/** Stop what is left of a process group after its leader exited. */
+async function drainGroup(pgid: number): Promise<void> {
+  if (!groupAlive(pgid)) return;
+  // Members started after the first SIGTERM never received it.
+  try { process.kill(-pgid, "SIGTERM"); } catch { return; }
+  const killAt = Date.now() + 2_000;
+  const giveUpAt = killAt + 3_000;
+  let killed = false;
+  while (groupAlive(pgid) && Date.now() < giveUpAt) {
+    if (!killed && Date.now() >= killAt) {
+      try { process.kill(-pgid, "SIGKILL"); } catch { return; }
+      killed = true;
+    }
+    await delay(20);
+  }
+}
+
 /** One native Codex app-server process, scoped to one active Vgent turn. */
 export class CodexAppServer {
   readonly #child: ChildProcessWithoutNullStreams;
@@ -99,11 +124,15 @@ export class CodexAppServer {
     } else {
       this.#child.kill("SIGTERM");
     }
-    await Promise.race([this.#exit, new Promise<void>((resolve) => setTimeout(resolve, 3_000))]);
+    await Promise.race([this.#exit, delay(3_000)]);
     if (!this.#closed && pid != null && process.platform !== "win32") {
       try { process.kill(-pid, "SIGKILL"); } catch { this.#child.kill("SIGKILL"); }
     }
     await this.#exit;
+    // The shim exits with the native binary, but helpers the binary started
+    // (the startup plugin sync runs git inside CODEX_HOME) can still be
+    // writing. Return only once the whole group is gone.
+    if (pid != null && process.platform !== "win32") await drainGroup(pid);
   }
 
   #read(chunk: string): void {

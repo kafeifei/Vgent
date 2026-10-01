@@ -25,6 +25,6 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
-    "@ai-sdk/sandbox-just-bash": "1.0.115"
+    "@ai-sdk/sandbox-just-bash": "1.0.121"
   }
 }

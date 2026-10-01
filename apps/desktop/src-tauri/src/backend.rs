@@ -439,15 +439,15 @@ mod tests {
         ))
     }
 
-    /// Only meaningful once `scripts/prepare-desktop.mjs` has fetched the sidecar.
+    /// Needs the sidecar `scripts/prepare-desktop.mjs` fetches, so it is `ignore`d by
+    /// default and reported as ignored — a silent early return used to report it as
+    /// passed on every machine that had not run the script. Run it with `cargo test -- --ignored`.
     #[test]
     #[cfg(target_os = "macos")]
+    #[ignore = "needs the bundled Node from scripts/prepare-desktop.mjs; run with --ignored"]
     fn spawn_waits_for_our_own_connection_file_and_shuts_down_cleanly() {
         let node = bundled_node();
-        if !node.is_file() {
-            eprintln!("跳过：未准备内置 Node（先跑 scripts/prepare-desktop.mjs）");
-            return;
-        }
+        assert!(node.is_file(), "未准备内置 Node（先跑 scripts/prepare-desktop.mjs）");
         let directory = scratch("spawn");
         let data_dir = directory.join("data");
         std::fs::create_dir_all(&data_dir).unwrap();
@@ -487,12 +487,10 @@ setInterval(() => {{}}, 1000);
 
     #[test]
     #[cfg(target_os = "macos")]
+    #[ignore = "needs the bundled Node from scripts/prepare-desktop.mjs; run with --ignored"]
     fn a_startup_failure_keeps_the_stderr_tail_for_the_native_dialog() {
         let node = bundled_node();
-        if !node.is_file() {
-            eprintln!("跳过：未准备内置 Node（先跑 scripts/prepare-desktop.mjs）");
-            return;
-        }
+        assert!(node.is_file(), "未准备内置 Node（先跑 scripts/prepare-desktop.mjs）");
         let directory = scratch("failure");
         let script = directory.join("main.js");
         std::fs::write(
@@ -520,12 +518,10 @@ setInterval(() => {{}}, 1000);
     /// terminal to tell; its last words and the signal must be in the log.
     #[test]
     #[cfg(target_os = "macos")]
+    #[ignore = "needs the bundled Node from scripts/prepare-desktop.mjs; run with --ignored"]
     fn an_unexpected_death_ends_the_log_with_its_signal() {
         let node = bundled_node();
-        if !node.is_file() {
-            eprintln!("跳过：未准备内置 Node（先跑 scripts/prepare-desktop.mjs）");
-            return;
-        }
+        assert!(node.is_file(), "未准备内置 Node（先跑 scripts/prepare-desktop.mjs）");
         let directory = scratch("killed");
         let script = directory.join("main.js");
         std::fs::write(
@@ -572,12 +568,10 @@ setInterval(() => {{}}, 1000);
     /// that is never going to be written.
     #[test]
     #[cfg(target_os = "macos")]
+    #[ignore = "needs the bundled Node from scripts/prepare-desktop.mjs; run with --ignored"]
     fn a_locked_data_directory_fails_fast_as_already_running() {
         let node = bundled_node();
-        if !node.is_file() {
-            eprintln!("跳过：未准备内置 Node（先跑 scripts/prepare-desktop.mjs）");
-            return;
-        }
+        assert!(node.is_file(), "未准备内置 Node（先跑 scripts/prepare-desktop.mjs）");
         let directory = scratch("locked");
         let data_dir = directory.join("data");
         std::fs::create_dir_all(&data_dir).unwrap();

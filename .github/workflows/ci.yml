@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    # macOS: it is the platform Vgent is built and tested on (keychain, git and
+    # symlink behaviour), and what the suite has been green on.
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # The pnpm version comes from `packageManager` in package.json.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # The grep tool is tested through ripgrep as well as the built-in fallback;
+      # without it on PATH that half is reported as skipped.
+      - run: brew install ripgrep
+
+      # Typecheck of every package (tsc -b), then the unit tests. The `VGENT_SMOKE`
+      # tests need a real Claude Code / Codex login and are skipped by default.
+      - run: pnpm build
+      - run: pnpm test
+
+      # `pnpm build` only typechecks the web app; this is the real bundle.
+      - run: pnpm --filter @vgent/web build
+
+  # The desktop shell's own tests. Tauri's build script insists that the bundled
+  # Node and the resource folders exist; the tests only need a Node to run
+  # stand-in scripts, so the runner's official one takes the place of the one
+  # `scripts/prepare-desktop.mjs` fetches. `--include-ignored` runs the tests that
+  # spawn that Node — without it they are reported as ignored, never as passed.
+  desktop:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Stand in for the bundled sidecar
+        run: |
+          triple="$(rustc -vV | sed -n 's/^host: //p')"
+          mkdir -p apps/desktop/src-tauri/binaries apps/desktop/src-tauri/resources/server apps/desktop/src-tauri/resources/web
+          cp "$(node -p process.execPath)" "apps/desktop/src-tauri/binaries/vgent-node-${triple}"
+
+      - run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml -- --include-ignored

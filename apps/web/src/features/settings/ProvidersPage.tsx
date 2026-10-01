@@ -6,7 +6,7 @@ import { AccountLogo } from "@/features/accounts/AccountLogo";
 import { ACCOUNT_NAMES } from "@/features/accounts/accountOf";
 import { onAccountsChanged } from "@/lib/accountEvents";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Check, Copy, ExternalLink, GripVertical, LayoutGrid, Plus, Server } from "lucide-react";
+import { ExternalLink, GripVertical, LayoutGrid, Plus, Server } from "lucide-react";
 import { Reorder, useDragControls } from "motion/react";
 import { ApiError, type ApiClient, type ProviderCatalog } from "@/lib/api";
 import { useToast } from "@/lib/toast";

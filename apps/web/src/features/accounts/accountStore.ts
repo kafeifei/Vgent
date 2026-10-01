@@ -17,7 +17,7 @@ export function createAccountStore(client: Pick<ApiClient, "getAccounts">) {
   const listeners = new Set<() => void>();
   const publish = (next: State) => { state = next; for (const fn of listeners) fn(); };
   const refresh = (force = false, usage = false): Promise<void> => {
-    if (pending) return usage && !pendingUsage ? pending.then(() => { if (force || canFallback()) return refresh(force, usage); }) : pending;
+    if (pending) return usage && !pendingUsage ? pending.then(() => (force || canFallback() ? refresh(force, usage) : undefined)) : pending;
     const current = generation;
     publish({ ...state, refreshing: true, error: undefined });
     const promise = client.getAccounts(usage, force).then(snapshot => {

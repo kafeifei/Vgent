@@ -259,7 +259,7 @@ export function createAccountService(options: {
 
     const id = relogin ?? (await targetFor(kind));
     const home = homeOf(id);
-    const fresh = relogin == null && !isDefaultAccount(id);
+    const fresh = !isDefaultAccount(id) && (relogin == null || (await registry.get(id)) == null);
     // A new account's directory goes when its login does not happen.
     const cleanup = async () => { if (fresh && home != null) await rm(home, { recursive: true, force: true }); };
     attempt.cleanup = cleanup;
@@ -277,17 +277,19 @@ export function createAccountService(options: {
       void cli.done.then(async () => {
         if (!current()) return;
         const who = await whoIs(id);
+        if (!current()) return;
         if (who == null) { await cleanup(); return finish({ state: "failed", error: "授权已结束，但没有确认到登录，请重试。" }); }
-        if (fresh) {
-          const others = (await registry.list()).filter((record) => record.kind === kind && record.id !== id).map((record) => record.id);
-          const duplicate = await Promise.all([DEFAULT_ACCOUNT[kind], ...others].filter((other) => other !== id).map(whoIs)).then((all) => all.includes(who));
-          if (duplicate) {
-            await logoutCli(kind, home).catch(() => undefined);
-            await cleanup();
-            return finish({ state: "failed", error: "这个账号已经添加过了。" });
-          }
-          await registry.add({ id, kind });
+        // Every target must be checked, including the machine's slot and a
+        // re-login. An expired machine login can disappear from the snapshot.
+        const others = (await registry.list()).filter((record) => record.kind === kind && record.id !== id).map((record) => record.id);
+        const duplicate = await Promise.all([DEFAULT_ACCOUNT[kind], ...others].filter((other) => other !== id).map(whoIs)).then((all) => all.includes(who));
+        if (!current()) return;
+        if (duplicate) {
+          await logoutCli(kind, home).catch(() => undefined);
+          await cleanup();
+          return finish({ state: "failed", error: "这个账号已经添加过了。" });
         }
+        if (!isDefaultAccount(id)) await registry.add({ id, kind });
         finish({ state: "succeeded", accountId: id });
       }, async (error: unknown) => {
         if (!current()) return;

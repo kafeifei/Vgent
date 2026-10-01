@@ -4,7 +4,7 @@ import type { Chat } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
 import { useAccounts } from "@/features/accounts/useAccounts";
 import { useAccountLogin } from "@/features/accounts/AccountLogin";
-import { ACCOUNT_NAMES, accountOfModel, isAccountFailure, kindOf } from "@/features/accounts/accountOf";
+import { accountOfModel, isAccountFailure, kindOf } from "@/features/accounts/accountOf";
 import { toFileParts } from "@/features/composer/attachments";
 import type { SlashCommand } from "@/features/composer/slash";
 import type { ChangesView } from "@/features/changes/useChanges";
@@ -303,14 +303,13 @@ function ThreadChatView({
   const shownError = (thread.status === "error" ? thread.error : undefined) ?? (error != null ? transportErrorText(error.message) : undefined);
   // A task that stopped for want of its account signs in right from the error.
   const failedAccount = shownError != null && isAccountFailure(shownError) ? accountOfModel(thread.engine, thread.model) : undefined;
-  const knownAccount = failedAccount == null ? undefined : accounts?.accounts.find((account) => account.id === failedAccount);
   const errorAction = failedAccount == null || client.remoteSession ? undefined : (
     <button
       type="button"
-      onClick={() => login(knownAccount != null ? { kind: knownAccount.kind, accountId: knownAccount.id } : { kind: kindOf(failedAccount) })}
+      onClick={() => login({ kind: kindOf(failedAccount), accountId: failedAccount })}
       className="flex-none rounded-md border border-danger px-sm py-3xs text-danger text-sm hover:bg-danger hover:text-bg"
     >
-      {knownAccount != null ? "重新登录" : `登录 ${ACCOUNT_NAMES[kindOf(failedAccount)]}`}
+      重新登录
     </button>
   );
 

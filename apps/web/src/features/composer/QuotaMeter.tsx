@@ -36,7 +36,7 @@ export function QuotaMeter({ account, switches = [] }: { account: AccountSummary
         type="button"
         variant="ghost"
         size="sm"
-        onClick={() => login(account.uses.length > 0 ? { kind: account.kind, accountId: account.id } : { kind: account.kind })}
+        onClick={() => login({ kind: account.kind, accountId: account.id })}
         className="h-xl gap-2xs px-2xs font-normal text-warning hover:text-warning has-[>svg]:px-2xs"
       >
         <AccountLogo kind={account.kind} className="size-md" />

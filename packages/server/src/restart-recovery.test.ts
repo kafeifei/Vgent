@@ -15,6 +15,12 @@ import type { HarnessState, ThreadRecord } from "./types.js";
 
 const dirs: string[] = [];
 const cleanups: (() => Promise<void>)[] = [];
+// Fake engines and their models must not depend on the machine's real logins.
+const appTestOptions = {
+  probeClaudeLogin: async () => ({ loggedIn: false }),
+  accountOptions: { probeCodex: async () => ({ codex: { available: false, source: null } }) },
+  catalogFetch: async () => { throw new Error("offline test"); },
+};
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
   await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true, maxRetries: 5 })));
@@ -124,12 +130,12 @@ describe("restart recovery", () => {
   it("app shutdown after losing the desktop parent preserves recovery for the next launch", async () => {
     const f = await fixture(fakeEngine({ gate: deferred() }));
     const thread = await f.seed();
-    const first = createApp({ dataDir: f.dir, token: "restart-test-token", registry: f.registry });
+    const first = createApp({ dataDir: f.dir, token: "restart-test-token", registry: f.registry, ...appTestOptions });
     cleanups.push(() => first.shutdown());
     await expect.poll(() => f.engine.inputs.length).toBe(1);
     await first.shutdown({ recoverRunning: true });
     expect(await createThreadStore(f.dir).get(thread.id)).toMatchObject({ status: "interrupted", restartRecovery: expect.any(String) });
-    const next = createApp({ dataDir: f.dir, token: "restart-test-token", registry: f.registry });
+    const next = createApp({ dataDir: f.dir, token: "restart-test-token", registry: f.registry, ...appTestOptions });
     cleanups.push(() => next.shutdown());
     await expect.poll(async () => (await f.threads.get(thread.id))?.status).toBe("idle");
     expect(f.engine.inputs).toHaveLength(2);
@@ -226,7 +232,7 @@ describe("restart recovery", () => {
       continueFrom: { harnessId: "fake", specificationVersion: 1, data: { bridge: "dead" } },
     } as unknown as HarnessState;
     await f.threads.saveHarnessState(thread.id, state);
-    const app = createApp({ dataDir: f.dir, token: "restart-test-token", registry: f.registry });
+    const app = createApp({ dataDir: f.dir, token: "restart-test-token", registry: f.registry, ...appTestOptions });
     cleanups.push(() => app.shutdown());
     await expect.poll(async () => (await f.threads.get(thread.id))?.status).toBe("idle");
     expect(f.engine.inputs).toHaveLength(1);

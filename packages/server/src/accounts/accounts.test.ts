@@ -2,6 +2,7 @@ import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { SubscriptionAuthStatus } from "@vgent/providers";
 import type { ClaudeLoginStatus } from "../subscriptions.js";
 import { createGitHubAccounts } from "./github.js";
 import { createAccountRegistry, type AccountRegistry } from "./registry.js";
@@ -76,12 +77,13 @@ async function serviceFixture(options: { claude?: Record<string, ClaudeLoginStat
   const registry = createAccountRegistry(dataDir);
   const { github, items } = githubFixture(registry, options.users);
   const claude = { ...(options.claude ?? {}) };
+  const codex: Record<string, SubscriptionAuthStatus> = {};
   const logouts: Array<string | undefined> = [];
   const logins: Array<{ home: string | undefined; finish: () => void; fail: () => void }> = [];
   const service = createAccountService({
     dataDir, registry, github,
     probeClaude: probeByDir(claude),
-    probeCodex: signedOutCodex,
+    probeCodex: async ({ env } = {}) => ({ codex: codex[env?.CODEX_HOME ?? ""] ?? { available: false, source: null } }),
     ...(options.fetch ? { fetch: options.fetch } : {}),
     cli: {
       login: async (_kind, home) => {
@@ -91,10 +93,25 @@ async function serviceFixture(options: { claude?: Record<string, ClaudeLoginStat
         logins.push({ home, finish, fail });
         return { url: () => "https://claude.ai/oauth/authorize?x=1", done, cancel: () => fail() };
       },
-      logout: async (_kind, home) => { logouts.push(home); delete claude[home ?? "machine"]; },
+      logout: async (kind, home) => {
+        logouts.push(home);
+        if (kind === "claude") delete claude[home ?? "machine"];
+        else delete codex[home!];
+      },
     },
   });
-  return { dataDir, registry, service, claude, logins, logouts, items };
+  return { dataDir, registry, service, claude, codex, logins, logouts, items };
+}
+
+async function cliAccountFixture(kind: "claude" | "codex") {
+  const fixture = await serviceFixture();
+  const homeOf = (id: string) => kind === "codex" ? fixture.service.codexHome(id) : id === "claude" ? undefined : join(fixture.dataDir, "accounts", id);
+  const signIn = (id: string, email = "a@example.com", group = "o1") => {
+    const home = homeOf(id);
+    if (kind === "claude") fixture.claude[home ?? "machine"] = { loggedIn: true, email, orgId: group };
+    else fixture.codex[home!] = { available: true, source: null, email, accountId: group };
+  };
+  return { ...fixture, homeOf, signIn };
 }
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -158,6 +175,74 @@ describe("account service", () => {
     expect(logouts).toEqual([home]);
     expect(await registry.list()).toEqual([]);
     await expect(access(home)).rejects.toThrow();
+  });
+
+  describe.each(["claude", "codex"] as const)("%s login recovery", (kind) => {
+    it.each([false, true])("rejects a duplicate when an empty machine slot is signed in (re-login: %s)", async relogin => {
+      const { service, registry, signIn, logins, logouts, homeOf } = await cliAccountFixture(kind);
+      const existing = `${kind}-0a1b2c3d`;
+      await registry.add({ id: existing, kind });
+      signIn(existing);
+      await service.startLogin(kind, relogin ? kind : undefined);
+      expect(logins[0]?.home).toBe(homeOf(kind));
+      signIn(kind);
+      logins[0]!.finish();
+      await vi.waitFor(() => expect(service.loginStatus().state).toBe("failed"));
+      expect(service.loginStatus().error).toContain("已经添加过了");
+      expect(logouts).toEqual([homeOf(kind)]);
+      expect((await service.list({ refresh: true })).accounts.map(a => a.id)).toEqual([existing]);
+    });
+
+    it("rejects a re-login into another account's identity and keeps the account's switches", async () => {
+      const { service, registry, signIn, logins, logouts, homeOf } = await cliAccountFixture(kind);
+      const target = `${kind}-0a1b2c3d`;
+      signIn(kind);
+      await registry.add({ id: target, kind, uses: { models: false } });
+      signIn(target, "b@example.com", "o2");
+      await service.startLogin(kind, target);
+      signIn(target);
+      logins[0]!.finish();
+      await vi.waitFor(() => expect(service.loginStatus().state).toBe("failed"));
+      expect(service.loginStatus().error).toContain("已经添加过了");
+      expect(logouts).toEqual([homeOf(target)]);
+      expect(await registry.get(target)).toMatchObject({ uses: { models: false } });
+      const accounts = (await service.list({ refresh: true })).accounts;
+      expect(accounts.find(a => a.id === kind)?.loggedIn).toBe(true);
+      expect(accounts.find(a => a.id === target)?.loggedIn).toBe(false);
+    });
+
+    it("renews the original slot without duplicating it or confusing another workspace on the same email", async () => {
+      const { service, registry, signIn, logins, logouts, homeOf } = await cliAccountFixture(kind);
+      const target = `${kind}-0a1b2c3d`;
+      signIn(kind);
+      await registry.add({ id: target, kind, uses: { models: false } });
+      signIn(target, "a@example.com", "o2");
+      await service.startLogin(kind, target);
+      expect(logins[0]?.home).toBe(homeOf(target));
+      logins[0]!.finish();
+      await vi.waitFor(() => expect(service.loginStatus()).toMatchObject({ state: "succeeded", accountId: target }));
+      expect(logouts).toEqual([]);
+      expect(await registry.list()).toEqual([expect.objectContaining({ id: target, uses: { models: false } })]);
+      expect((await service.list({ refresh: true })).accounts.map(a => a.id)).toEqual([kind, target]);
+    });
+
+    it("restores a missing account at the id pinned by the task, and cleans up an unsuccessful recovery", async () => {
+      const { service, registry, signIn, logins, homeOf } = await cliAccountFixture(kind);
+      const target = `${kind}-0a1b2c3d`;
+      signIn(kind);
+      await mkdir(homeOf(target)!, { recursive: true });
+      await service.startLogin(kind, target);
+      logins[0]!.fail();
+      await vi.waitFor(() => expect(service.loginStatus().state).toBe("failed"));
+      await expect(access(homeOf(target)!)).rejects.toThrow();
+      expect(await registry.list()).toEqual([]);
+      await service.startLogin(kind, target);
+      signIn(target, "b@example.com", "o2");
+      logins[1]!.finish();
+      await vi.waitFor(() => expect(service.loginStatus()).toMatchObject({ state: "succeeded", accountId: target }));
+      expect((await registry.list()).map(a => a.id)).toEqual([target]);
+      expect((await service.list({ refresh: true })).accounts.map(a => a.id)).toEqual([kind, target]);
+    });
   });
 
   it("signs in to the machine's own login while it is free, and cancels cleanly", async () => {

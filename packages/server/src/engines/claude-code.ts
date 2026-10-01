@@ -24,7 +24,6 @@ const DESCRIPTOR: EngineDescriptor = {
     askUser: true,
     planMode: true,
     compact: true,
-    knownDefaultModel: false,
     extensions: false,
     // The harness's `experimental_steer`: the adapter hands the message to the runtime's streaming input.
     steer: true,

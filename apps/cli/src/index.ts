@@ -70,7 +70,7 @@ async function createEngine(): Promise<{ agent: TUIAgent; dispose(): Promise<voi
       return createCodexEngine({ repoPath, permissionMode });
     case "vgent": {
       if (values.model == null) {
-        throw new Error('--engine vgent requires --model, e.g. --model codex-subscription:gpt-5.5.');
+        throw new Error('--engine vgent requires --model: a gateway "provider/model" spec or "codex-subscription:<modelId>".');
       }
       const mcp = await connectMcpServers(
         values.mcp == null ? [] : parseMcpServers(JSON.parse(await readFile(resolve(values.mcp), "utf8"))),

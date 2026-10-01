@@ -114,7 +114,6 @@ SVG 永远只通过 `<img>` 显示，不放进页面；不做清洗，下载下�
 | 计划 / 待办 | ✓ TodoWrite | ✓ update_plan（目前不出 UI 部件） | ✓ updatePlan | ✓ todowrite |
 | Plan 模式 | ✓ 只读 + 提示词 | ✗（不能只读） | ✓ 只读工具 + 提示词 | ✓ 只读 + 提示词 |
 | 压缩上下文 | 引擎自管 | 引擎自管 | ✓ 手动 + 超预算裁剪 | 引擎自管（窗口按我们的目录告诉它） |
-| 默认模型可知 | ✗ | ✗ | ✓ | ✓ 同自研 |
 | MCP / skills / 记忆 | ✗ 未接 | ✗ 未接 | ✓ | ✗ 未接 |
 | 引导（运行中发的消息进当前回合） | ✓ harness 的 `experimental_steer` | ✓ 原生 app-server 的 `turn/steer` | ✓ 两步之间从队列取 | ✓ harness 的 `experimental_steer`（只报「已接收」，没有「已送入」） |
 | 用订阅 | ✓ Claude 订阅 | ✓ Codex 订阅 | ✓ Codex 订阅（Claude 订阅不行，条款所限） | ✓ Codex 订阅（Vgent 的账号，不用 OpenCode 自己的登录） |

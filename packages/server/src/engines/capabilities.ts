@@ -21,8 +21,6 @@ export interface EngineCapabilities {
    * asked to compact it itself (`/compact` is a prompt it understands).
    */
   compact: boolean;
-  /** We know which model it falls back to; otherwise only the harness does. */
-  knownDefaultModel: boolean;
   /** MCP servers, skills and memory. */
   extensions: boolean;
   /**

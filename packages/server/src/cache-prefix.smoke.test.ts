@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { createCodexSubscriptionModel } from "@vgent/providers";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { createCodexSubscriptionModel, listedCodexModels, readCodexModelCache } from "@vgent/providers";
 import type { UIMessage } from "ai";
 import { afterEach, expect, it } from "vitest";
 import { createEngineRegistry } from "./engines/registry.js";
@@ -19,7 +19,11 @@ import { createThreadStore } from "./store/threads.js";
  * it — a request that does not begin with the previous one throws away the
  * provider's prompt cache from the first difference on.
  */
-const smoke = process.env.VGENT_SMOKE === "1" ? it : it.skip;
+// Unless one is named, the first model the login's own catalog lists.
+const codexModel =
+  process.env.VGENT_SMOKE_CODEX_MODEL ??
+  listedCodexModels((await readCodexModelCache(resolve(process.env.CODEX_HOME ?? join(homedir(), ".codex"))))?.models ?? [])[0]?.slug;
+const smoke = process.env.VGENT_SMOKE === "1" && codexModel != null ? it : it.skip;
 const dirs: string[] = [];
 afterEach(async () => {
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
@@ -55,7 +59,7 @@ smoke(
 
     const requests: Request[] = [];
     const usage: Array<{ input: number; cached: number }> = [];
-    const model = createCodexSubscriptionModel(process.env.VGENT_SMOKE_CODEX_MODEL ?? "gpt-5.5", {
+    const model = createCodexSubscriptionModel(codexModel as string, {
       fetch: async (url, init) => {
         const body = JSON.parse(String(init?.body)) as Request;
         requests.push({ tools: body.tools, instructions: body.instructions, input: body.input });

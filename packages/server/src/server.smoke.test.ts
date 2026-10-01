@@ -393,7 +393,7 @@ describe("@vgent/server (smoke)", () => {
       const app = createApp({ dataDir, token: TOKEN, log: consoleLogger });
       try {
         const project = (await (await postJson(app, "/api/projects", { repoPath })).json()) as Project;
-        const created = await postJson(app, "/api/threads", { projectId: project.id, engine: "codex", model: "gpt-5.5" });
+        const created = await postJson(app, "/api/threads", { projectId: project.id, engine: "codex" });
         expect(created.status).toBe(200);
         const threadId = ((await created.json()) as ThreadRecord).id;
         const response = await postJson(app, `/api/chat/${threadId}`, {
@@ -448,7 +448,7 @@ describe("@vgent/server (smoke)", () => {
         // 运行模式 defaults to 自动改文件, which would write without asking; this
         // test is about the approval path, so it picks 询问 itself.
         await request(appA, "/api/settings", { method: "PUT", body: JSON.stringify({ runMode: "allow-reads" }) });
-        // No model: the factory falls back to `DEFAULT_VGENT_MODEL`.
+        // No model: the turn takes the first one the engine's list offers.
         const created = await postJson(appA, "/api/threads", {
           projectId: project.id,
           title: "自研引擎冒烟",

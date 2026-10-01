@@ -33,21 +33,37 @@ function serviceTierDescription(tier: SpeedTier): string | undefined {
 
 export const modelLabel = (model: string | undefined): string => model ?? "默认";
 
+/** Which listing a model id belongs to, read as the server's `listingOf` reads it: its account, then the source before the first `:`. */
+const listingOf = (id: string): string => {
+  const account = /^@((?:claude|codex|github)-[0-9a-f]{8}):/.exec(id)?.[1];
+  const spec = account == null ? id : id.slice(account.length + 2);
+  const colon = spec.indexOf(":");
+  return `${account ?? ""} ${colon > 0 ? spec.slice(0, colon) : ""}`;
+};
+
 /**
- * The model that actually runs: the task's own choice, else the default the
- * server names, else the first model the catalog lists. A harness that keeps
- * its own default (Claude Code) names nothing, and「Claude Code 默认」is not a
- * model — the first listed one is selected instead. Undefined only while the
- * catalog is still loading or empty.
+ * A choice the list has stopped offering though its source still lists others,
+ * by the server's rule (`isWithdrawn`): the task's next turn runs on the default.
+ */
+export function isWithdrawn(model: string, catalog: ModelCatalog): boolean {
+  if (catalog.warning != null || catalog.models.some((entry) => entry.id === model)) return false;
+  const listing = listingOf(model);
+  return catalog.models.some((entry) => listingOf(entry.id) === listing);
+}
+
+/**
+ * The model that actually runs: the task's own choice while the list still
+ * offers it, else the default the server names, else the first model the
+ * catalog lists. Undefined only while the catalog is still loading or empty.
  */
 export function resolveModel(model: string | undefined, catalog: ModelCatalog | null | undefined): string | undefined {
-  if (model != null) return model;
+  if (model != null && (catalog == null || !isWithdrawn(model, catalog))) return model;
   if (catalog == null) return undefined;
   const visible = catalog.models.filter((entry) => entry.hidden !== true);
   if (catalog.defaultModel != null && (visible.length === 0 || visible.some((entry) => entry.id === catalog.defaultModel))) {
     return catalog.defaultModel;
   }
-  return visible[0]?.id;
+  return visible[0]?.id ?? model;
 }
 
 export const effectiveModel = resolveModel;

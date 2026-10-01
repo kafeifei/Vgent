@@ -23,7 +23,6 @@ const DESCRIPTOR: EngineDescriptor = {
     askUser: false,
     planMode: false,
     compact: false,
-    knownDefaultModel: false,
     extensions: false,
     steer: true,
     customProviders: true,

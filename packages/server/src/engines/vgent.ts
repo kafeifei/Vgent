@@ -32,7 +32,6 @@ const DESCRIPTOR: EngineDescriptor = {
     askUser: true,
     planMode: true,
     compact: true,
-    knownDefaultModel: true,
     extensions: true,
     // Pulled: the loop is ours, so the queue is read between steps (`takeSteers`).
     steer: true,
@@ -40,8 +39,8 @@ const DESCRIPTOR: EngineDescriptor = {
   },
 };
 
-/** What a `vgent` thread runs on when it names no model of its own. */
-export const DEFAULT_VGENT_MODEL = "codex-subscription:gpt-5.5";
+/** A task with no model of its own and an empty list to take the default from. */
+export const NO_MODEL = "没有可用的模型：在「账号」里登录 Codex，或在「提供商」里添加一个";
 
 /** Either of these lets the AI Gateway authenticate a `provider/model` spec. */
 const GATEWAY_ENV_VARS = ["AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"] as const;
@@ -128,7 +127,8 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
     // classifier the registry resolves with, so the two cannot disagree.
     async ensureAvailable({ thread, dataDir }) {
       if (override != null) return;
-      const { accountId, spec } = splitAccountSpec(thread.model ?? DEFAULT_VGENT_MODEL);
+      if (thread.model == null) throw new EngineUnavailableError(NO_MODEL);
+      const { accountId, spec } = splitAccountSpec(thread.model);
       if (accountId != null) await options.accounts?.ensure(accountId);
       if (spec.startsWith("github-copilot:") && options.copilot) { await options.copilot(accountId ?? DEFAULT_ACCOUNT.github).available(); return; }
       const described = describeModelSpec(spec, await createProviderStore(dataDir).list());
@@ -181,11 +181,12 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
       let engine: ReturnType<typeof createVgentEngine>;
       try {
         mcp = await connectMcpServers(settings.mcpServers ?? [], { log: ctx.log });
-        const spec = ctx.thread.model ?? DEFAULT_VGENT_MODEL;
-        const model = override ?? (await accountModel(spec, options)) ?? spec;
+        const spec = ctx.thread.model;
+        const model = override ?? (spec != null ? ((await accountModel(spec, options)) ?? spec) : undefined);
+        if (model == null) throw new EngineUnavailableError(NO_MODEL);
         // A task that chose no window runs on the model's own, the one its ring
         // shows — not on the engine's 150K default, which is smaller than most.
-        const window = ctx.thread.contextWindow ?? (await options.windowOf?.(spec).catch(() => undefined));
+        const window = ctx.thread.contextWindow ?? (spec != null ? await options.windowOf?.(spec).catch(() => undefined) : undefined);
         const { workspace } = ctx.thread;
         engine = createVgentEngine({
           model,

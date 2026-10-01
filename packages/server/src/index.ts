@@ -104,7 +104,7 @@ export {
 export { effectivePermission, type EngineCapabilities, type EngineDescriptor } from "./engines/capabilities.js";
 export { createClaudeCodeEngineFactory } from "./engines/claude-code.js";
 export { createCodexEngineFactory } from "./engines/codex.js";
-export { createVgentEngineFactory, DEFAULT_VGENT_MODEL, type VgentEngineFactoryOptions } from "./engines/vgent.js";
+export { createVgentEngineFactory, type VgentEngineFactoryOptions } from "./engines/vgent.js";
 export {
   createModelCatalog,
   type CodexCatalogModel,

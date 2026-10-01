@@ -1,14 +1,14 @@
-import { readCodexModelCache, fetchCodexModelCatalog } from "./codex-catalog.js";
+import { fetchCodexModelCatalog } from "./codex-catalog.js";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { CODEX_SUBSCRIPTION_PREFIX } from "@vgent/engine";
-import { describeSubscriptionAuth, type ModelCost } from "@vgent/providers";
+import { describeSubscriptionAuth, listedCodexModels, readCodexModelCache, type CodexCatalogEntry, type ModelCost } from "@vgent/providers";
 import { gateway as defaultGateway } from "ai";
 import type { EngineId, Logger } from "./types.js";
 import { silentLogger } from "./types.js";
 import { CLAUDE_CODE_LONG_CONTEXT, CLAUDE_CODE_STANDARD_CONTEXT } from "./engines/claude-code.js";
 import { DEFAULT_REASONING_LEVEL, defaultLevelFor, reasoningFor } from "./reasoning.js";
-import { DEFAULT_ACCOUNT, accountModelKey, accountSpec, subscriptionKey } from "./accounts/spec.js";
+import { DEFAULT_ACCOUNT, accountModelKey, accountSpec, splitAccountSpec, subscriptionKey } from "./accounts/spec.js";
 import type { AccountId, AccountSummary } from "./accounts/types.js";
 
 /** One selectable model. `id` is what a thread's `model` field is set to. */
@@ -124,6 +124,29 @@ export function orderBySource(models: readonly ModelEntry[], order: readonly str
     .map(({ entry }) => entry);
 }
 
+/**
+ * Which listing a model id belongs to: its account, then what names the source
+ * before the first `:` (`codex-subscription`, `github-copilot`, a provider's
+ * id), or nothing for a bare id. `apps/web` reads ids the same way.
+ */
+const listingOf = (id: string): string => {
+  const { accountId, spec } = splitAccountSpec(id);
+  const colon = spec.indexOf(":");
+  return `${accountId ?? ""} ${colon > 0 ? spec.slice(0, colon) : ""}`;
+};
+
+/**
+ * A model the list has stopped offering — GPT-5.5 once Codex retired it: every
+ * source answered, its own still lists other models, and not this one. A source
+ * that lists nothing (signed out, unreachable) or answered from a fallback says
+ * nothing about the model, so a task keeps it and fails with the real reason.
+ */
+export function isWithdrawn(id: string, catalog: Pick<ModelCatalog, "models" | "warning">): boolean {
+  if (catalog.warning != null || catalog.models.some((entry) => entry.id === id)) return false;
+  const listing = listingOf(id);
+  return catalog.models.some((entry) => listingOf(entry.id) === listing);
+}
+
 /** Who an account is, as far as a model list cares: what its heading in the picker says. */
 type CatalogAccount = Pick<AccountSummary, "id" | "email" | "username">;
 
@@ -187,8 +210,8 @@ export interface ModelCatalog {
    * The model id the server actually uses for this engine when a task names
    * none, so「默认」in the picker still resolves to a real model — the client
    * needs it for the model chip, the 思考 levels and the ring's denominator.
-   * Undefined when only the harness knows (Claude Code and Codex pick their
-   * own default, and inventing one here would make the chip lie).
+   * The last choice while the list still offers it, else the first model
+   * listed; undefined only when nothing is.
    */
   defaultModel?: string;
 }
@@ -252,8 +275,7 @@ export interface ModelCatalogOptions {
   /**
    * The accounts behind the lists: the signed-in ones switched on for an
    * engine, first account first, and where a Codex account keeps its login.
-   * Unset — a test, the CLI — it is the machine's own login, and a Codex that
-   * is not signed in still lists its built-in model.
+   * Unset — a test, the CLI — it is the machine's own login.
    */
   accounts?: {
     usable(kind: "claude" | "codex", use: "models"): Promise<CatalogAccount[]>;
@@ -274,9 +296,6 @@ const FALLBACK_CODEX_CLIENT_VERSION = "0.155.0";
 
 /** Either of these lets the AI Gateway authenticate a `provider/model` spec. */
 const GATEWAY_ENV_VARS = ["AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"] as const;
-
-/** What Codex offers when nothing better is known: no account signed in, and no catalog to read. */
-const CODEX_BUILTIN: CodexCatalogModel[] = [{ slug: "gpt-5.5", display_name: "gpt-5.5" }];
 
 /**
  * The Claude Agent SDK has no list endpoint, and the harness passes `model`
@@ -383,27 +402,23 @@ function codexHome(env: NodeJS.ProcessEnv): string {
 }
 
 /** Keeps the listable models, newest-first by Codex's own `priority`. */
-function normalizeCodexModels(raw: readonly unknown[]): CodexCatalogModel[] {
-  return raw
-    .filter((entry): entry is Record<string, unknown> => isRecord(entry) && typeof entry.slug === "string")
-    .filter((entry) => entry.visibility === "list")
-    .map((entry) => {
-      const levels = asReasoningLevels(entry.supported_reasoning_levels);
-      const tiers = asServiceTiers(entry.service_tiers);
-      return {
-        slug: entry.slug as string,
-        ...(typeof entry.display_name === "string" ? { display_name: entry.display_name } : {}),
-        ...(typeof entry.description === "string" ? { description: entry.description } : {}),
-        ...(typeof entry.priority === "number" ? { priority: entry.priority } : {}),
-        ...(typeof entry.context_window === "number" ? { context_window: entry.context_window } : {}),
-        ...(levels != null ? { supported_reasoning_levels: levels } : {}),
-        ...(tiers != null ? { service_tiers: tiers } : {}),
-        ...(typeof entry.default_reasoning_level === "string" && entry.default_reasoning_level !== ""
-          ? { default_reasoning_level: entry.default_reasoning_level }
-          : {}),
-      };
-    })
-    .sort((a, b) => (a.priority ?? Number.MAX_SAFE_INTEGER) - (b.priority ?? Number.MAX_SAFE_INTEGER));
+function normalizeCodexModels(raw: readonly CodexCatalogEntry[]): CodexCatalogModel[] {
+  return listedCodexModels(raw).map((entry) => {
+    const levels = asReasoningLevels(entry.supported_reasoning_levels);
+    const tiers = asServiceTiers(entry.service_tiers);
+    return {
+      slug: entry.slug,
+      ...(typeof entry.display_name === "string" ? { display_name: entry.display_name } : {}),
+      ...(typeof entry.description === "string" ? { description: entry.description } : {}),
+      ...(typeof entry.priority === "number" ? { priority: entry.priority } : {}),
+      ...(typeof entry.context_window === "number" ? { context_window: entry.context_window } : {}),
+      ...(levels != null ? { supported_reasoning_levels: levels } : {}),
+      ...(tiers != null ? { service_tiers: tiers } : {}),
+      ...(typeof entry.default_reasoning_level === "string" && entry.default_reasoning_level !== ""
+        ? { default_reasoning_level: entry.default_reasoning_level }
+        : {}),
+    };
+  });
 }
 
 /**
@@ -502,13 +517,12 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
     }
 
     if (cache != null && cache.models.length > 0) return { models: cache.models, source: "codex-cache", warning };
-    return { models: CODEX_BUILTIN, source: "builtin", warning: "找不到 Codex 模型目录，已改用内置清单" };
+    return { models: [], source: "builtin", warning: "找不到 Codex 模型目录" };
   };
 
   /**
    * Every Codex account's models for one engine, each under its own heading.
-   * With no account service and nobody signed in, the built-in model still
-   * shows, as it always did; the app instead lists nothing and offers to sign in.
+   * Nobody signed in lists nothing, and the picker offers to sign in.
    */
   const codexRows = async (
     row: (entry: CodexCatalogModel, account: CatalogAccount) => ModelEntry,
@@ -518,7 +532,6 @@ export function createModelCatalog(options: ModelCatalogOptions = {}): ModelCata
     const signedIn = listings.filter((listing) => listing.models.length > 0);
     const warnings = [...new Set([...(accounts.length === 0 ? [CODEX_LOGGED_OUT] : []), ...listings.flatMap((listing) => (listing.warning != null ? [listing.warning] : []))])];
     const models = signedIn.flatMap(({ account, models: entries }) => entries.map((entry) => row(entry, account)));
-    if (models.length === 0 && options.accounts == null) models.push(...CODEX_BUILTIN.map((entry) => row(entry, { id: DEFAULT_ACCOUNT.codex })));
     const sources = [...new Set(signedIn.map((listing) => listing.source))];
     return { models, source: sources.length > 0 ? sources.join("+") : "builtin", ...(warnings.length > 0 ? { warning: warnings.join("；") } : {}) };
   };

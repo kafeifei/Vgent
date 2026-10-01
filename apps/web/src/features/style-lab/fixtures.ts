@@ -32,7 +32,7 @@ export const FILES: Record<string, string> = {
   "assets/preview.svg": SVG,
   "package.json": '{\n  "name": "chat-style-sample",\n  "scripts": { "test": "vitest run" }\n}',
 };
-export const ENGINES: EngineDescriptor[] = [{ id: "vgent", label: "Vgent", capabilities: { approvals: true, askUser: true, planMode: true, compact: true, knownDefaultModel: true, extensions: true, steer: true, customProviders: true } }];
+export const ENGINES: EngineDescriptor[] = [{ id: "vgent", label: "Vgent", capabilities: { approvals: true, askUser: true, planMode: true, compact: true, extensions: true, steer: true, customProviders: true } }];
 export const textPart = (text: string): UIMessage["parts"][number] => ({ type: "text", text });
 export const user = (text: string, id = "user-1"): UIMessage => ({ id, role: "user", parts: [textPart(text)] });
 export const assistant = (parts: UIMessage["parts"], id = "assistant-1"): UIMessage => ({ id, role: "assistant", parts });

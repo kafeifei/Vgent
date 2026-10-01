@@ -2,14 +2,18 @@
  * Run with the matching source-alias tsconfig for baseline/candidate comparison.
  */
 import { mkdtemp, mkdir, writeFile, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { createVgentEngine, resolveModel } from "@vgent/engine";
+import { listedCodexModels, readCodexModelCache } from "@vgent/providers";
 import { wrapLanguageModel, type ModelMessage } from "ai";
 
 const output = process.env.VGENT_EVAL_OUTPUT;
 if (!output || process.env.VGENT_LIVE_EVAL !== "1") throw new Error("Set VGENT_LIVE_EVAL=1 and VGENT_EVAL_OUTPUT explicitly.");
-const modelId = process.env.VGENT_EVAL_MODEL ?? "codex-subscription:gpt-5.5";
+// Unless one is named, the first model the Codex login's own catalog lists.
+const firstCodexModel = listedCodexModels((await readCodexModelCache(resolve(process.env.CODEX_HOME ?? join(homedir(), ".codex"))))?.models ?? [])[0]?.slug;
+const modelId = process.env.VGENT_EVAL_MODEL ?? (firstCodexModel != null ? `codex-subscription:${firstCodexModel}` : undefined);
+if (modelId == null) throw new Error("Set VGENT_EVAL_MODEL: no Codex catalog to take the first model from.");
 const version = process.env.VGENT_EVAL_VERSION ?? "candidate";
 const repeat = Number(process.env.VGENT_EVAL_REPEATS ?? 3);
 if (!Number.isInteger(repeat) || repeat < 1 || repeat > 3) throw new Error("At most three repeats.");

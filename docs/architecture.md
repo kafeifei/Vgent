@@ -693,3 +693,15 @@ Codex 原生 `commandExecution.commandActions` 从适配器保留到工具输入
 每次 `turn/start` 显式传 `serviceTier`，标准传 `null`，避免恢复线程时继承旧档位；不要在 `thread/start.config.service_tier` 传 null，随包 CLI 会将它读成空字符串并报警。自研引擎继续通过 AI SDK 的 `providerOptions.openai.serviceTier` 传递。没有升级依赖。
 
 验证覆盖：真实随包 Codex app-server 对本地模拟 Responses 服务发出 priority、ultrafast，跨进程恢复后标准请求不带加速；AI SDK 与订阅请求改写后的原始请求保留两档参数；目录撤销/离线/并发快照隔离和清理；浏览器实际选择器的三档切换、每模型记忆、仅支持两档的模型以及运行中提示。未调用付费模型。
+
+## 2026-10-01：默认模型只从清单来，下架的模型换成默认
+
+起因：GPT-5.5 2026-10-14 从 ChatGPT 和 Codex 下线（API 不受影响），而自研引擎和 OpenCode 没指定模型时写死回退 `codex-subscription:gpt-5.5`，Codex 目录拉不到时还有一份内置的 `gpt-5.5` 清单。两处都删了，`DEFAULT_VGENT_MODEL` 和能力表里的 `knownDefaultModel` 一起去掉。
+
+规则只有一条，四个引擎一样：`GET /api/engines/:engine/models` 的 `defaultModel` 是上一次开任务的选择（还在清单里且没关掉），否则清单第一个；清单空就没有默认，不编造。自研引擎 / OpenCode 的任务没有模型、清单也空时报「没有可用的模型」。
+
+任务存着的模型被清单撤下时（`models.ts` 的 `isWithdrawn`）：同一来源（账号前缀 + 第一个 `:` 前的来源名）还列着别的模型、唯独没有它，且这次所有来源都完整回答了（没有 `warning`），才算下架。登出、拉取失败、退回缓存都不算，任务留着原模型，由引擎报真实原因。`RunManager` 每轮开始前用 `modelFor` 解析，换了就先写回任务记录，所以记录上就是实际跑的模型；压缩上下文用同一个解析。web 的 `resolveModel` 按同一条规则显示。
+
+冒烟测试和 `engine-eval` 不再写模型名：没设 `VGENT_SMOKE_CODEX_MODEL` / `VGENT_EVAL_MODEL` 就取本机 Codex 缓存目录里排第一的模型（`@vgent/providers` 的 `readCodexModelCache` + `listedCodexModels`，服务端排序也用它）。
+
+没动的：拉 Codex 目录时报的 `client_version` 取自本机缓存（现在 0.158.0）或兜底 0.155.0。官方默认的 GPT-6.1 Sol 要 0.159.1 以上才会列出，所以清单第一个暂时是 GPT-6 Astra；Codex 引擎随包的 `@openai/codex` 是 0.156.1。

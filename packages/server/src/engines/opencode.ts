@@ -20,7 +20,7 @@ import { createProviderStore } from "../store/providers.js";
 import type { EngineDescriptor } from "./capabilities.js";
 import { stripDeniedApprovalResults } from "./harness-messages.js";
 import type { EngineAccounts, EngineContext, EngineFactory, EngineRunner } from "./registry.js";
-import { DEFAULT_VGENT_MODEL } from "./vgent.js";
+import { NO_MODEL } from "./vgent.js";
 
 /**
  * 引擎能力表, the OpenCode row. Manual compaction is left off: the adapter can
@@ -37,7 +37,6 @@ const DESCRIPTOR: EngineDescriptor = {
     planMode: true,
     compact: false,
     // A task that names no model runs on the Codex login's default, like the in-house engine.
-    knownDefaultModel: true,
     extensions: false,
     // The harness's `experimental_steer`: the bridge prompts the busy OpenCode session, which takes it at its next step.
     steer: true,
@@ -150,7 +149,8 @@ export function createOpenCodeEngineFactory(options: OpenCodeEngineFactoryOption
     descriptor: DESCRIPTOR,
 
     async ensureAvailable({ thread }) {
-      const { accountId, spec } = splitAccountSpec(thread.model ?? DEFAULT_VGENT_MODEL);
+      if (thread.model == null) throw new EngineUnavailableError(NO_MODEL);
+      const { accountId, spec } = splitAccountSpec(thread.model);
       if (!spec.startsWith(CODEX_SUBSCRIPTION_PREFIX)) return;
       if (accountId != null) {
         await accounts?.ensure(accountId);
@@ -164,7 +164,8 @@ export function createOpenCodeEngineFactory(options: OpenCodeEngineFactoryOption
     async create(ctx: EngineContext): Promise<EngineRunner> {
       const continueFrom = ctx.continuesTurn ? ctx.harnessState?.continueFrom : undefined;
       const resumeFrom = continueFrom == null ? ctx.harnessState?.resumeFrom : undefined;
-      const model = ctx.thread.model ?? DEFAULT_VGENT_MODEL;
+      const model = ctx.thread.model;
+      if (model == null) throw new EngineUnavailableError(NO_MODEL);
       const level = ctx.thread.reasoningEffort;
       const listed = await options.modelOf?.(model).catch(() => undefined);
       const route = openCodeRoute(model, await createProviderStore(ctx.dataDir, ctx.log).list(), {

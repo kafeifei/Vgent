@@ -1040,6 +1040,31 @@ describe("run lifecycle", () => {
     await readSse(await post);
   });
 
+  it("runs a turn on the model `modelFor` names and writes it to the task first", async () => {
+    const dir = await tempDir();
+    const threads = createThreadStore(dir);
+    const projects = createProjectStore(dir);
+    const project = await projects.create({ repoPath: dir });
+    const thread = await threads.create({ projectId: project.id, engine: "claude-code", model: "retired" });
+    const engine = createApprovalEngine();
+    const runs = createRunManager({
+      threads,
+      projects,
+      settings: createSettingsStore(dir),
+      registry: createEngineRegistry({ "claude-code": engine.factory }),
+      dataDir: dir,
+      modelFor: async (record) => (record.model === "retired" ? "current" : record.model),
+    });
+    const hub = await runs.start(thread.id, [userMessage("u1", "你好")]);
+    for await (const _chunk of hub.subscribe()) {
+      // drain
+    }
+    await runs.stopAll();
+
+    expect(engine.created[0]?.thread.model).toBe("current");
+    expect((await threads.get(thread.id))?.model).toBe("current");
+  });
+
   it("serves the replay stream while a finished run is still persisting", async () => {
     const dir = await tempDir();
     const threads = createThreadStore(dir);

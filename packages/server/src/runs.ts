@@ -234,6 +234,12 @@ export function createRunManager(options: {
    */
   changeStats?: (thread: ThreadRecord) => Promise<ChangeStats | undefined>;
   /**
+   * The model a turn of this task runs on, from the engine's list: the task's
+   * own, or the default when it named none or the list withdrew it. A change is
+   * written to the task before the turn starts, so the record says what ran.
+   */
+  modelFor?: (thread: ThreadRecord) => Promise<string | undefined>;
+  /**
    * Where a finished 计划 turn's answer goes. Injected because the plan store
    * belongs to the app, not here; a rejection is logged and the turn stands.
    */
@@ -1071,8 +1077,10 @@ export function createRunManager(options: {
     await finishing.get(threadId);
     // Read after both waits: the preceding turn may have written its final
     // assistant message while this follow-up was waiting for its slot.
-    const thread = await threads.get(threadId);
-    if (thread == null) throw new NotFoundError(`线程不存在: ${threadId}`, "thread_not_found");
+    const stored = await threads.get(threadId);
+    if (stored == null) throw new NotFoundError(`线程不存在: ${threadId}`, "thread_not_found");
+    const model = (await options.modelFor?.(stored)) ?? stored.model;
+    const thread = model !== stored.model ? await threads.update(threadId, { model }) : stored;
     if (thread.archivedAt != null) throw new ConflictError("任务已归档，请先取消归档", "thread_archived");
     // 归档中 / 恢复中: the worktree is being taken apart or put back.
     if (thread.transition != null) {

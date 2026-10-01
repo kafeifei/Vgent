@@ -9,7 +9,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp, type CreateAppOptions, type VgentApp } from "./app.js";
 import type { EngineDescriptor } from "./engines/capabilities.js";
 import { createEngineRegistry, type EngineContext, type EngineFactoryOverride } from "./engines/registry.js";
-import { DEFAULT_VGENT_MODEL } from "./engines/vgent.js";
 import { ConflictError, EngineUnavailableError } from "./errors.js";
 import { createThreadStore } from "./store/threads.js";
 import type { HarnessState, Project, Settings, ThreadMessageMetadata, ThreadRecord, ThreadSummary } from "./types.js";
@@ -1696,9 +1695,10 @@ describe("createApp", () => {
 
   it("serves a model catalog per engine and rejects an unknown one", async () => {
     // Without a key the Claude Code catalog is the builtin alias list, so the
-    // route answers without touching the network.
+    // route answers without touching the network. Signed in here whatever this
+    // machine's own Claude login says: a signed-out account lists nothing.
     vi.stubEnv("ANTHROPIC_API_KEY", "");
-    const app = makeApp(await tempDir());
+    const app = makeApp(await tempDir(), undefined, undefined, { probeClaudeLogin: async () => ({ loggedIn: true, email: "dev@example.com" }) });
 
     const unknown = await request(app, "/api/engines/nope/models");
     expect(unknown.status).toBe(400);
@@ -1713,8 +1713,8 @@ describe("createApp", () => {
   });
 
   it("names the model each engine falls back to when a task picks none", async () => {
-    // A codex home with no login and no gateway key keeps both lists builtin,
-    // so the route answers without touching the network.
+    // No Codex login and no gateway key: the in-house engine lists only what a
+    // provider brings, so the route answers without touching the network.
     vi.stubEnv("ANTHROPIC_API_KEY", "");
     vi.stubEnv("CODEX_HOME", await tempDir());
     vi.stubEnv("AI_GATEWAY_API_KEY", "");
@@ -1723,14 +1723,20 @@ describe("createApp", () => {
     const defaultModelOf = async (engine: string): Promise<string | undefined> =>
       ((await (await request(app, `/api/engines/${engine}/models`)).json()) as { defaultModel?: string }).defaultModel;
 
-    expect(await defaultModelOf("vgent")).toBe(DEFAULT_VGENT_MODEL);
-    // Claude Code's harness picks its own; the server must not invent one.
-    expect(await defaultModelOf("claude-code")).toBeUndefined();
+    // Nothing listed, nothing invented.
+    expect(await defaultModelOf("vgent")).toBeUndefined();
 
-    // `defaultModel` belongs to `defaultEngine` — here Claude Code — so it
-    // answers for that engine only; the others keep their own answer.
-    await request(app, "/api/settings", { method: "PUT", body: JSON.stringify({ defaultEngine: "claude-code", defaultModel: "sonnet" }) });
-    expect(await defaultModelOf("claude-code")).toBe("sonnet");
-    expect(await defaultModelOf("vgent")).toBe(DEFAULT_VGENT_MODEL);
+    await request(app, "/api/providers", {
+      method: "POST",
+      body: JSON.stringify({ name: "Local", agents: { vgent: { baseURL: "http://127.0.0.1:1234/v1", protocol: "openai-compatible", models: [{ id: "first" }, { id: "second" }] } } }),
+    });
+    // Never picked: the first model listed.
+    expect(await defaultModelOf("vgent")).toBe("local:first");
+
+    // Picked once, it is the default — for the engine it was picked under only.
+    await request(app, "/api/settings", { method: "PUT", body: JSON.stringify({ defaultEngine: "vgent", defaultModel: "local:second" }) });
+    expect(await defaultModelOf("vgent")).toBe("local:second");
+    await request(app, "/api/settings", { method: "PUT", body: JSON.stringify({ defaultEngine: "claude-code", defaultModel: "local:second" }) });
+    expect(await defaultModelOf("vgent")).toBe("local:first");
   });
 });

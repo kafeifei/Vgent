@@ -1,19 +1,23 @@
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { convertToModelMessages, readUIMessageStream, tool, type ModelMessage, type UIMessage } from "ai";
 import { z } from "zod";
-import { createCodexSubscriptionModel } from "@vgent/providers";
+import { createCodexSubscriptionModel, listedCodexModels, readCodexModelCache } from "@vgent/providers";
 import { expect, it } from "vitest";
 import { createVgentEngine } from "./engine.js";
 
 // Opt-in real subscription requests. Log SDK usage/structural checks, never credentials or prompts.
-const smoke = process.env.VGENT_SMOKE === "1" ? it : it.skip;
+// Unless one is named, the first model the login's own catalog lists.
+const codexModel =
+  process.env.VGENT_SMOKE_CODEX_MODEL ??
+  listedCodexModels((await readCodexModelCache(resolve(process.env.CODEX_HOME ?? join(homedir(), ".codex"))))?.models ?? [])[0]?.slug;
+const smoke = process.env.VGENT_SMOKE === "1" && codexModel != null ? it : it.skip;
 smoke("reports real per-request cache reads across runtime-state updates and recreated engines", async () => {
   const repoPath = await mkdtemp(join(tmpdir(), "vgent-cache-smoke-"));
   const sessionId = randomUUID();
-  const modelId = process.env.VGENT_SMOKE_CODEX_MODEL ?? "gpt-5.5";
+  const modelId = codexModel as string;
   const requests: Array<{ instructions: unknown; input: unknown[] }> = [];
   const model = createCodexSubscriptionModel(modelId, {
     fetch: async (url, init) => {
@@ -62,7 +66,7 @@ smoke("reports real per-request cache reads across runtime-state updates and rec
 smoke("reports cache reads across hosted discovery, dependent tools and UI-persisted turns", async () => {
   const repoPath = await mkdtemp(join(tmpdir(), "vgent-search-cache-smoke-"));
   const sessionId = randomUUID();
-  const modelId = process.env.VGENT_SMOKE_CODEX_MODEL ?? "gpt-5.5";
+  const modelId = codexModel as string;
   type Item = Record<string, unknown>;
   const requests: Array<{ settings: Record<string, unknown>; input: Item[] }> = [];
   let turn = 0;

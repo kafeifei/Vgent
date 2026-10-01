@@ -62,6 +62,19 @@ describe("effectiveModel", () => {
     expect(resolveModel(undefined, listed)).toBe("sonnet");
     expect(resolveModel("opus", listed)).toBe("opus");
   });
+
+  it("moves a task off a model its source no longer lists, as the server does", () => {
+    const listed = catalog("codex-subscription:gpt-6.1-sol");
+    listed.models = [
+      { id: "codex-subscription:gpt-6.1-sol", label: "GPT-6.1 Sol" },
+      { id: "github-copilot:gpt-5.5", label: "GPT-5.5" },
+    ];
+    expect(resolveModel("codex-subscription:gpt-5.5", listed)).toBe("codex-subscription:gpt-6.1-sol");
+    // A source that lists nothing says nothing: the task keeps its model.
+    expect(resolveModel("@codex-0a1b2c3d:codex-subscription:gpt-5.5", listed)).toBe("@codex-0a1b2c3d:codex-subscription:gpt-5.5");
+    // Nor does a list that came back incomplete.
+    expect(resolveModel("codex-subscription:gpt-5.5", { ...listed, warning: "Codex 在线目录不可用，已改用本地缓存" })).toBe("codex-subscription:gpt-5.5");
+  });
 });
 
 describe("modelChipLabel", () => {

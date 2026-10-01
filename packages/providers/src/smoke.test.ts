@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { generateText, streamText } from "ai";
 import { describe, expect, it } from "vitest";
 import { createCodexSubscriptionModel } from "./codex-model.js";
+import { listedCodexModels, readCodexModelCache } from "./codex-catalog.js";
 import { describeSubscriptionAuth } from "./codex-credentials.js";
 
 /**
@@ -13,7 +14,8 @@ import { describeSubscriptionAuth } from "./codex-credentials.js";
 const enabled = process.env.VGENT_SMOKE === "1";
 const codexHome = resolve(process.env.CODEX_HOME ?? join(homedir(), ".codex"));
 const codexLoggedIn = existsSync(join(codexHome, "auth.json"));
-const codexModelId = process.env.VGENT_SMOKE_CODEX_MODEL ?? "gpt-5.5";
+// Unless one is named, the first model the login's own catalog lists.
+const codexModelId = process.env.VGENT_SMOKE_CODEX_MODEL ?? listedCodexModels((await readCodexModelCache(codexHome))?.models ?? [])[0]?.slug ?? "";
 
 describe.skipIf(!enabled)("live subscription smoke", () => {
   it.skipIf(!codexLoggedIn)("reports the codex login", async () => {
@@ -22,7 +24,7 @@ describe.skipIf(!enabled)("live subscription smoke", () => {
     expect(report.codex.source).toBe("file");
   });
 
-  it.skipIf(!codexLoggedIn)(
+  it.skipIf(!codexLoggedIn || codexModelId === "")(
     "generates text through the ChatGPT Codex endpoint",
     async () => {
       const result = await generateText({
@@ -34,7 +36,7 @@ describe.skipIf(!enabled)("live subscription smoke", () => {
     120_000,
   );
 
-  it.skipIf(!codexLoggedIn)(
+  it.skipIf(!codexLoggedIn || codexModelId === "")(
     "streams text through the ChatGPT Codex endpoint",
     async () => {
       const result = streamText({

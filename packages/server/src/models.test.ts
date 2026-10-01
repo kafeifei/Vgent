@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { contextOptionsFor, createModelCatalog, type CodexCatalogModel, type GatewayModelSource } from "./models.js";
+import { contextOptionsFor, createModelCatalog, isWithdrawn, type CodexCatalogModel, type GatewayModelSource } from "./models.js";
 
 const dirs: string[] = [];
 
@@ -55,13 +55,13 @@ const CACHED_MODELS = [
 const rejectRemote = () => Promise.reject(new Error("offline"));
 
 describe("createModelCatalog", () => {
-  it("falls back to the builtin list with a warning when Codex is not logged in", async () => {
+  it("lists nothing, with a warning, when Codex is not logged in", async () => {
     const catalog = createModelCatalog({ env: { CODEX_HOME: await tempDir() }, fetchCodexRemote: rejectRemote });
 
     const result = await catalog.list("codex");
 
     expect(result).toMatchObject({ engine: "codex", source: "builtin" });
-    expect(result.models.map((entry) => entry.id)).toEqual(["gpt-5.5"]);
+    expect(result.models).toEqual([]);
     expect(result.warning).toContain("Codex 未登录");
   });
 
@@ -165,7 +165,7 @@ describe("createModelCatalog", () => {
 
     expect(called).toBe(false);
     expect(result).toMatchObject({ source: "builtin" });
-    expect(result.models.map((entry) => entry.id)).toEqual(["codex-subscription:gpt-5.5"]);
+    expect(result.models).toEqual([]);
   });
 
   it("serves the builtin Claude Code aliases without an API key", async () => {
@@ -404,6 +404,29 @@ describe("Claude Code's full model ids", () => {
     const result = await catalog.list("claude-code");
     expect(result).toMatchObject({ source: "builtin" });
     expect(result.models.map((entry) => entry.id)).toEqual(["sonnet", "opus", "haiku"]);
+  });
+});
+
+describe("isWithdrawn", () => {
+  const listed = (...ids: string[]) => ({ models: ids.map((id) => ({ id, label: id })) });
+
+  it("withdraws a model its own source has stopped listing", () => {
+    expect(isWithdrawn("codex-subscription:gpt-5.5", listed("codex-subscription:gpt-6.1-sol", "github-copilot:gpt-5.5"))).toBe(true);
+    expect(isWithdrawn("gpt-5.5", listed("gpt-6.1-sol"))).toBe(true);
+    expect(isWithdrawn("@codex-0a1b2c3d:codex-subscription:gpt-5.5", listed("@codex-0a1b2c3d:codex-subscription:gpt-6.1-sol"))).toBe(true);
+  });
+
+  it("keeps a model that is listed, or whose source lists nothing", () => {
+    expect(isWithdrawn("codex-subscription:gpt-6.1-sol", listed("codex-subscription:gpt-6.1-sol"))).toBe(false);
+    // Signed out of Codex: only Copilot answers, which says nothing about Codex's models.
+    expect(isWithdrawn("codex-subscription:gpt-5.5", listed("github-copilot:gpt-5.5"))).toBe(false);
+    // Another account of the same platform is another source.
+    expect(isWithdrawn("@codex-0a1b2c3d:codex-subscription:gpt-5.5", listed("codex-subscription:gpt-6.1-sol"))).toBe(false);
+    expect(isWithdrawn("local:llama3:8b", listed("other:model"))).toBe(false);
+  });
+
+  it("withdraws nothing from a list some source did not answer in full", () => {
+    expect(isWithdrawn("codex-subscription:gpt-5.5", { ...listed("codex-subscription:gpt-6.1-sol"), warning: "Codex 在线目录不可用，已改用本地缓存" })).toBe(false);
   });
 });
 

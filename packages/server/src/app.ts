@@ -31,7 +31,7 @@ import { compactThread } from "./compact.js";
 import { BadRequestError, ConflictError, EngineUnavailableError, NotFoundError, UnauthorizedError, UpstreamModelError, VgentServerError } from "./errors.js";
 import type { EngineRegistry } from "./engines/registry.js";
 import { createEngineRegistry, engineDescriptors, engineIds } from "./engines/registry.js";
-import { DEFAULT_VGENT_MODEL, accountModel } from "./engines/vgent.js";
+import { NO_MODEL, accountModel } from "./engines/vgent.js";
 import type { Files } from "./files.js";
 import { defaultDownloadsDir, saveDownload } from "./downloads.js";
 import { createFiles } from "./files.js";
@@ -44,7 +44,7 @@ import { pickFile, pickFolder } from "./folder-picker.js";
 import { isNoProject, projectOfThread, scratchDirOf } from "./no-project.js";
 import { planFork } from "./fork.js";
 import { asIntegrateAction, changeStatsOf, createIntegrator, taskTarget, type Integrator, type TaskTarget } from "./integrate.js";
-import { contextOptionsFor, createModelCatalog, orderBySource, type ModelCatalog, type ModelEntry } from "./models.js";
+import { contextOptionsFor, createModelCatalog, isWithdrawn, orderBySource, type ModelCatalog, type ModelEntry } from "./models.js";
 import { reasoningFor } from "./reasoning.js";
 import { createSubscriptionService, markHidden, withHiddenModels, type ClaudeLoginStatus } from "./subscriptions.js";
 import { createQueueStore } from "./queue.js";
@@ -457,6 +457,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     dataDir,
     log,
     changeStats: changeStatsFor,
+    modelFor: (thread) => modelFor(thread),
     savePlan: (threadId, content) => plans.put(threadId, content).then(() => {}),
     onTurnSettled: ({ engine, ok, produced }) => harnessRuntime.reportTurn(engine, { ok, produced }),
     queue,
@@ -1492,8 +1493,9 @@ export function createApp(options: CreateAppOptions): VgentApp {
     let outcome: ThreadPatch;
     try {
       const thread = await threadOf(id);
-      const spec = thread.model ?? DEFAULT_VGENT_MODEL;
-      const model = options.compactModel ?? (await accountModel(spec, { copilot: accounts.copilot, accounts: engineAccounts })) ?? resolveModel(spec, await providers.list());
+      const spec = await modelFor(thread);
+      if (spec == null && options.compactModel == null) throw new EngineUnavailableError(NO_MODEL);
+      const model = options.compactModel ?? (await accountModel(spec as string, { copilot: accounts.copilot, accounts: engineAccounts })) ?? resolveModel(spec as string, await providers.list());
       const window = thread.contextWindow ?? (await listModels("vgent").then((catalog) => catalog.models.find((entry) => entry.id === spec)?.contextWindow, () => undefined));
       const marker = await compactThread({ thread, model, ...(window != null ? { window } : {}) });
       // No turn could start meanwhile, so nothing was appended behind our back.
@@ -1816,8 +1818,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
    * `defaultModel` is the last choice while it is still in the list and not
    * switched off, else the first model that is. A model id means something to
    * exactly one engine, so the stored one only answers for the engine it was
-   * picked under. A harness that keeps its own default (Claude Code) names
-   * nothing when nothing was ever picked: the server must not invent one.
+   * picked under.
    */
   /**
    * The maker's price for the model behind a row. `modelKey` names it without
@@ -1866,13 +1867,20 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const models = orderBySource([...markHidden([...listing.models, ...copilotModels], current.hiddenModels?.[engine]), ...fromProviders], current.providerOrder)
       .map((entry) => withCost(entry, priceOf));
     const usable = models.filter((entry) => entry.hidden !== true);
-    const defaultModel =
-      remembered != null && usable.some((entry) => entry.id === remembered)
-        ? remembered
-        : capabilitiesOf(engine).knownDefaultModel
-          ? (usable[0]?.id ?? DEFAULT_VGENT_MODEL)
-          : remembered;
+    const defaultModel = remembered != null && usable.some((entry) => entry.id === remembered) ? remembered : usable[0]?.id;
     return { ...listing, models, ...(defaultModel != null ? { defaultModel } : {}) };
+  };
+
+  /**
+   * The model a turn runs on: the task's own, unless the list has withdrawn it
+   * (see `isWithdrawn`), else the engine's default. No list at all leaves the
+   * task as it is, and the engine says what is missing.
+   */
+  const modelFor = async (thread: ThreadRecord): Promise<string | undefined> => {
+    const catalog = await listModels(thread.engine).catch(() => undefined);
+    if (catalog == null) return thread.model;
+    if (thread.model != null && !isWithdrawn(thread.model, catalog)) return thread.model;
+    return catalog.defaultModel ?? thread.model;
   };
 
   app.get("/api/engines/:engine/models", async (c) => {

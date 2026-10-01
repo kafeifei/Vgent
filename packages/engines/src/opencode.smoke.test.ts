@@ -14,8 +14,19 @@ const hasCodexLogin = await access(join(homedir(), ".codex", "auth.json"))
   .then(() => true)
   .catch(() => false);
 
-const smoke = process.env.VGENT_SMOKE === "1" && hasCodexLogin ? it : it.skip;
-const model = `openai/${process.env.VGENT_SMOKE_CODEX_MODEL ?? "gpt-5.5"}`;
+/** Unless one is named, the first model the login's own Codex catalog lists (`listedCodexModels` in `@vgent/providers`). */
+const codexModel =
+  process.env.VGENT_SMOKE_CODEX_MODEL ??
+  (
+    JSON.parse(await readFile(join(homedir(), ".codex", "models_cache.json"), "utf8").catch(() => "{}")) as {
+      models?: Array<{ slug: string; visibility?: string; priority?: number }>;
+    }
+  ).models
+    ?.filter((entry) => entry.visibility === "list")
+    .sort((a, b) => (a.priority ?? Number.MAX_SAFE_INTEGER) - (b.priority ?? Number.MAX_SAFE_INTEGER))[0]?.slug;
+
+const smoke = process.env.VGENT_SMOKE === "1" && hasCodexLogin && codexModel != null ? it : it.skip;
+const model = `openai/${codexModel}`;
 
 async function repo(): Promise<string> {
   const repoPath = await mkdtemp(join(tmpdir(), "vgent-smoke-opencode-"));

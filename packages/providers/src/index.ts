@@ -16,6 +16,8 @@ export type {
   SubscriptionAuthStatus,
   SubscriptionCredentialSource,
 } from "./codex-credentials.js";
+export { codexCatalogEntries, listedCodexModels, readCodexModelCache } from "./codex-catalog.js";
+export type { CodexCatalogEntry } from "./codex-catalog.js";
 export { createCodexFetch } from "./codex-fetch.js";
 export type { CodexFetchOptions } from "./codex-fetch.js";
 export {

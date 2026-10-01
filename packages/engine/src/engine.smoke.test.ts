@@ -1,6 +1,7 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { listedCodexModels, readCodexModelCache } from "@vgent/providers";
 import { describe, expect, it } from "vitest";
 import { createVgentEngine } from "./engine.js";
 
@@ -8,7 +9,11 @@ import { createVgentEngine } from "./engine.js";
  * Drives the real engine against the machine's ChatGPT (Codex CLI) login for
  * one tiny turn. Off by default: it costs a request and needs `~/.codex/auth.json`.
  */
-const smoke = process.env.VGENT_SMOKE === "1" ? it : it.skip;
+// Unless one is named, the first model the login's own catalog lists.
+const codexModel =
+  process.env.VGENT_SMOKE_CODEX_MODEL ??
+  listedCodexModels((await readCodexModelCache(resolve(process.env.CODEX_HOME ?? join(homedir(), ".codex"))))?.models ?? [])[0]?.slug;
+const smoke = process.env.VGENT_SMOKE === "1" && codexModel != null ? it : it.skip;
 
 describe("createVgentEngine (smoke)", () => {
   smoke(
@@ -18,7 +23,7 @@ describe("createVgentEngine (smoke)", () => {
       await writeFile(join(repoPath, "hello-vgent.txt"), "hello from vgent\n");
 
       const { agent, dispose } = createVgentEngine({
-        model: "codex-subscription:gpt-5.5",
+        model: `codex-subscription:${codexModel}`,
         repoPath,
         // `allow-reads` keeps the turn inside the tools that never pause for
         // approval; a shell command would stall on an approval request.
@@ -55,7 +60,7 @@ describe("createVgentEngine (smoke)", () => {
       const repoPath = await mkdtemp(join(tmpdir(), "vgent-engine-smoke-"));
 
       const { agent, dispose } = createVgentEngine({
-        model: "codex-subscription:gpt-5.5",
+        model: `codex-subscription:${codexModel}`,
         repoPath,
         permissionMode: "allow-reads",
         reasoning: { effort: "medium" },
@@ -84,7 +89,7 @@ describe("createVgentEngine (smoke)", () => {
       await writeFile(join(repoPath, "index.ts"), 'export { createVgentEngine } from "./engine.js";\n');
 
       const { agent, dispose } = createVgentEngine({
-        model: "codex-subscription:gpt-5.5",
+        model: `codex-subscription:${codexModel}`,
         repoPath,
         permissionMode: "allow-reads",
       });

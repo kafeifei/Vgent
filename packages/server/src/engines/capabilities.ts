@@ -1,3 +1,4 @@
+import type { EngineOptions } from "../engine-options.js";
 import type { EngineId, PermissionMode, Settings } from "../types.js";
 
 /**
@@ -40,6 +41,11 @@ export interface EngineDescriptor {
   id: EngineId;
   label: string;
   capabilities: EngineCapabilities;
+  /**
+   * 引擎选项: the switches this engine has, at their defaults. Filled in when
+   * served (`engineDescriptors`) from `ENGINE_OPTION_DEFAULTS`, the one source.
+   */
+  options?: EngineOptions;
 }
 
 /**

@@ -14,6 +14,8 @@ import type {
   CheckpointRestore,
   EngineDescriptor,
   EngineId,
+  EngineOptionKey,
+  WebSearchMode,
   FileContent,
   ResolvedFile,
   FileDiff,
@@ -511,6 +513,9 @@ export function createClient(token: string) {
     /** 记住上次选择, for the model with this `modelKey`: only the fields named change. */
     rememberModelPick: (modelKey: string, pick: ModelPickPatch) =>
       api<Settings>("/settings/model-picks", token, { method: "PUT", json: { modelKey, ...pick } }),
+    /** 引擎选项: one switch of one engine, set on the server so quick clicks cannot overwrite each other. */
+    putEngineOption: (engine: EngineId, key: EngineOptionKey, value: boolean | WebSearchMode) =>
+      api<Settings>("/settings/engine-options", token, { method: "PUT", json: { engine, key, value } }),
     /** 提供商排序: the whole「已添加」list's order, by subscription or provider id. */
     putProviderOrder: (order: readonly string[]) => api<Settings>("/settings/provider-order", token, { method: "PUT", json: { order } }).then(notifyModels),
     allowTool: (tool: string) => api<Settings>("/settings/allowlist", token, { method: "POST", json: { tool } }),

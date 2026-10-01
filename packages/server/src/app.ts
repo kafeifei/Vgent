@@ -66,6 +66,7 @@ import { createProjectStore, type ProjectStore } from "./store/projects.js";
 import { createCatalogStore } from "./store/catalog.js";
 import { createProviderStore } from "./store/providers.js";
 import { asMcpServers, createSettingsStore, mergeModelPick, type ModelPickPatch, type SettingsPatch } from "./store/settings.js";
+import { ENGINE_OPTION_DEFAULTS, readEngineOption, type EngineOptionKey } from "./engine-options.js";
 import { createThreadStore, type ThreadPatch } from "./store/threads.js";
 import type {
   ChangeStats,
@@ -1663,6 +1664,28 @@ export function createApp(options: CreateAppOptions): VgentApp {
       throw new BadRequestError("需要 order：提供商 id 的数组", "invalid_provider_order");
     }
     return c.json(await settings.update({ providerOrder: body.order }));
+  });
+
+  // 引擎选项: one switch of one engine, read-modify-write on the server so two
+  // quick clicks cannot start from the same copy. A value equal to the
+  // engine's default is not stored, so a later change of default reaches it.
+  app.put("/api/settings/engine-options", async (c) => {
+    const body = (await c.req.json().catch(() => undefined)) as Record<string, unknown> | undefined;
+    const engine = asEngine(body?.engine);
+    const key = typeof body?.key === "string" ? (body.key as EngineOptionKey) : undefined;
+    const defaults = engine == null ? undefined : ENGINE_OPTION_DEFAULTS[engine];
+    if (engine == null || defaults == null || key == null || !(key in defaults)) {
+      throw new BadRequestError("这个引擎没有这个选项", "invalid_engine_option");
+    }
+    const value = readEngineOption(key, body?.value);
+    if (value === undefined) throw new BadRequestError("选项的值不对", "invalid_engine_option");
+    return c.json(
+      await settings.mutate((current) => {
+        const { [key]: _, ...others } = current.engineOptions?.[engine] ?? {};
+        const options = value === defaults[key] ? others : { ...others, [key]: value };
+        return { engineOptions: { ...current.engineOptions, [engine]: options } };
+      }),
+    );
   });
 
   app.post("/api/settings/allowlist", async (c) => {

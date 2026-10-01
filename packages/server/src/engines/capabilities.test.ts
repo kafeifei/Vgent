@@ -43,7 +43,7 @@ describe("引擎能力表", () => {
       askUser: true,
       planMode: true,
       compact: false,
-      extensions: false,
+      extensions: true,
       steer: true,
       customProviders: true,
     });

@@ -16,6 +16,7 @@ import type { LanguageModel, TextStreamPart, ToolSet } from "ai";
 import { BadRequestError, EngineUnavailableError } from "../errors.js";
 import { createProviderStore } from "../store/providers.js";
 import { createSettingsStore } from "../store/settings.js";
+import { engineOptionsOf } from "../engine-options.js";
 import { isNoProject } from "../no-project.js";
 import { expandSteers } from "../steer.js";
 import type { EngineDescriptor } from "./capabilities.js";
@@ -51,9 +52,22 @@ const GATEWAY_ENV_VARS = ["AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"] as const;
  * reads and writes the same notes — and on `dataDir` rather than the worktree,
  * so reclaiming a task's directory does not take its memory with it.
  */
-function memoryDirOf(ctx: EngineContext): string {
+export function memoryDirOf(ctx: EngineContext): string {
   const key = `${ctx.project.name}-${ctx.project.id.slice(0, 8)}`.replace(/[^A-Za-z0-9._-]/g, "-");
   return join(ctx.dataDir, "memory", key);
+}
+
+/** What the user said in this task, by message: a memory written as「用户原话」 must quote one of them. */
+export function memorySourcesOf(ctx: EngineContext): { id: string; text: string }[] {
+  return expandSteers(ctx.thread.messages)
+    .filter((message) => message.role === "user")
+    .map((message) => ({
+      id: message.id,
+      text: message.parts
+        .filter((part) => part.type === "text")
+        .map((part) => part.text)
+        .join("\n"),
+    }));
 }
 
 export interface VgentEngineFactoryOptions {
@@ -160,6 +174,7 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
       // Both are re-read per turn, so editing settings or adding a skill takes
       // effect on the next message instead of on the next server restart.
       const settings = await createSettingsStore(ctx.dataDir, ctx.log).get();
+      const switches = engineOptionsOf(settings, "vgent");
       const cuaBinary = settings.computerUseProvider === "cua" ? await requireCuaDriver() : undefined;
       const providers = await createProviderStore(ctx.dataDir, ctx.log).list();
       const skills = await loadSkillsIndex([
@@ -196,16 +211,10 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
           projectPath: ctx.projectPath,
           outputDir: join(ctx.dataDir, "outputs", ctx.thread.id),
           ...(ctx.thread.taskState ? { taskState: ctx.thread.taskState } : {}),
+          subagents: switches.subagents !== false,
+          todos: switches.todos !== false,
           ...(ctx.saveTaskState ? { saveTaskState: ctx.saveTaskState } : {}),
-          memorySources: expandSteers(ctx.thread.messages)
-            .filter((message) => message.role === "user")
-            .map((message) => ({
-              id: message.id,
-              text: message.parts
-                .filter((part) => part.type === "text")
-                .map((part) => part.text)
-                .join("\n"),
-            })),
+          memorySources: memorySourcesOf(ctx),
           permissionMode: ctx.permissionMode,
           ...(ctx.alwaysAllow.length > 0 ? { alwaysAllow: ctx.alwaysAllow } : {}),
           // 计划回合只读：the engine drops every writing tool, MCP included.
@@ -215,7 +224,7 @@ export function createVgentEngineFactory(options: VgentEngineFactoryOptions = {}
           pendingUserMessages: ctx.takeSteers,
           ...(standing === "" ? {} : { instructions: standing }),
           skills,
-          memoryDir: memoryDirOf(ctx),
+          ...(switches.memory === false ? {} : { memoryDir: memoryDirOf(ctx) }),
           // The summary is always asked for (that is the engine's default); the
           // effort is the task's, or 高. A model that does not reason ignores it.
           // 「不指定」sends none, for an endpoint that refuses the parameter.

@@ -1,6 +1,7 @@
 import { parseMcpServers, type McpServerConfig } from "@vgent/engine";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { readEngineOptions, type EngineOptions } from "../engine-options.js";
 import type { EngineId, Logger, ModelPick, PermissionMode, Settings, UiDensity, UiTheme } from "../types.js";
 import { silentLogger } from "../types.js";
 import { readJsonOrQuarantine, writeJsonAtomic } from "./atomic-file.js";
@@ -45,6 +46,8 @@ export interface SettingsPatch {
   modelPicks?: Record<string, ModelPick> | undefined;
   /** The whole order; an empty one drops the field. */
   providerOrder?: string[] | undefined;
+  /** 引擎选项, the whole map of overrides; an empty one drops the field. */
+  engineOptions?: Partial<Record<EngineId, EngineOptions>> | undefined;
 }
 
 /** A change to one model's `ModelPick`: a field set to `undefined` goes back to the model's own default. */
@@ -122,14 +125,16 @@ const isSettings = (value: unknown): value is Settings =>
  * engine-per-model map (`modelEngines`) became part of `modelPicks` the same way.
  */
 export function migrateSettings(stored: Settings & { defaultPermissionMode?: PermissionMode; modelEngines?: unknown }): Settings {
-  const { defaultPermissionMode, hiddenModels, providerOrder, modelEngines, modelPicks, computerUseProvider, defaultWorkspace, ...rest } = stored;
+  const { defaultPermissionMode, hiddenModels, providerOrder, modelEngines, modelPicks, computerUseProvider, defaultWorkspace, engineOptions, ...rest } = stored;
   // Read on every model listing, so a hand-edited file must not be able to make it throw.
   const hidden = Object.entries(typeof hiddenModels === "object" && hiddenModels !== null ? hiddenModels : {}).flatMap(([engine, ids]) =>
     Array.isArray(ids) ? [[engine, ids.filter((id) => typeof id === "string")] as const] : [],
   );
   const picks = readModelPicks(modelPicks, modelEngines);
+  const options = readEngineOptions(engineOptions);
   return {
     ...rest,
+    ...(Object.keys(options).length > 0 ? { engineOptions: options } : {}),
     ...(computerUseProvider === "cua" ? { computerUseProvider } : {}),
     ...(defaultWorkspace === "project" || defaultWorkspace === "worktree" ? { defaultWorkspace } : {}),
     ...(hidden.length > 0 ? { hiddenModels: Object.fromEntries(hidden) } : {}),
@@ -213,6 +218,11 @@ export function createSettingsStore(dataDir: string, log: Logger = silentLogger)
     if ("modelPicks" in patch) {
       if (patch.modelPicks == null || Object.keys(patch.modelPicks).length === 0) delete next.modelPicks;
       else next.modelPicks = patch.modelPicks;
+    }
+    if ("engineOptions" in patch) {
+      const options = readEngineOptions(patch.engineOptions);
+      if (Object.keys(options).length === 0) delete next.engineOptions;
+      else next.engineOptions = options;
     }
     if ("providerOrder" in patch) {
       const order = [...new Set(patch.providerOrder ?? [])];

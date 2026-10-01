@@ -1,4 +1,5 @@
 import { collectHarnessAgentToolApprovalContinuations, collectHarnessAgentToolResultContinuations } from "@ai-sdk/harness/agent";
+import { engineOptionsOf, type EngineOptions } from "../engine-options.js";
 import { agentInstructionsSection, connectMcpServers, loadAgentInstructions, planModeInstructions } from "@vgent/engine";
 import { cuaMcpConfig, onlyCuaTools, requireCuaDriver } from "../computer-use/cua.js";
 import { claudeCodeEffort, claudeCodeProviderEnv, claudeCodeThinking, createClaudeCodeEngine } from "@vgent/engines";
@@ -39,6 +40,33 @@ const DESCRIPTOR: EngineDescriptor = {
  * outright. `TodoWrite` stays because it only drives the 计划 tab's todo list.
  */
 const PLAN_ACTIVE_TOOLS = ["read", "grep", "glob", "TodoWrite"] as const;
+
+/** The CLI's to-do tools: the whole-list `TodoWrite`, and the four it replaces it with by default. */
+const TODO_TOOLS = ["TodoWrite", "TaskCreate", "TaskGet", "TaskUpdate", "TaskList"] as const;
+
+/**
+ * 引擎选项 as Claude Code takes them: built-in tools it does not get, and the
+ * environment that turns its own features on and off.
+ *
+ * The to-do list needs both halves. On newer models the CLI leaves its to-do
+ * tools out unless `CLAUDE_CODE_ENABLE_TODO_TOOLS` asks for them, and then
+ * hands out the four Task tools; `CLAUDE_CODE_ENABLE_TASKS=0` gets the
+ * whole-list `TodoWrite` instead, which is what the 计划 tab draws. Memory is
+ * the CLI's auto memory, on unless switched off.
+ */
+export function claudeCodeSwitches(options: EngineOptions): { inactiveTools: string[]; env: Record<string, string> } {
+  return {
+    inactiveTools: [
+      ...(options.subagents === false ? ["Agent"] : []),
+      ...(options.web === false ? ["webSearch", "WebFetch"] : []),
+      ...(options.todos === false ? TODO_TOOLS : []),
+    ],
+    env: {
+      ...(options.todos === false ? {} : { CLAUDE_CODE_ENABLE_TODO_TOOLS: "1", CLAUDE_CODE_ENABLE_TASKS: "0" }),
+      ...(options.memory === false ? { CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" } : {}),
+    },
+  };
+}
 
 /** A 计划 turn leaves AskUserQuestion inactive, so the addendum tells it to ask in prose. */
 const PLAN_INSTRUCTIONS = planModeInstructions({ askTool: false });
@@ -182,7 +210,8 @@ export function createClaudeCodeEngineFactory(accounts?: EngineAccounts): Engine
       // The window is also where the runtime compacts, chosen or not: without
       // this the CLI compacts at its own idea of the model's limit, and a task
       // on 200K would run far past what its ring shows as full.
-      const env = { ...accountEnv, ...route?.env, CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(window) };
+      const switches = claudeCodeSwitches(engineOptionsOf(settings, "claude-code"));
+      const env = { ...accountEnv, ...route?.env, ...switches.env, CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(window) };
       const instructions = await claudeCodeInstructions(ctx.project.repoPath, ctx.planMode);
 
       const engine = await createClaudeCodeEngine({
@@ -197,7 +226,9 @@ export function createClaudeCodeEngineFactory(accounts?: EngineAccounts): Engine
         thinking: claudeCodeThinking(ctx.thread.reasoningEffort),
         effort: claudeCodeEffort(ctx.thread.reasoningEffort),
         // 计划回合只读：enforced at the SDK level, not asked for in prose.
-        ...(ctx.planMode ? { activeTools: PLAN_ACTIVE_TOOLS } : {}),
+        ...(ctx.planMode
+          ? { activeTools: PLAN_ACTIVE_TOOLS.filter((tool) => !switches.inactiveTools.includes(tool)) }
+          : { inactiveTools: switches.inactiveTools }),
         ...(instructions != null ? { instructions } : {}),
         sessionId: ctx.thread.id,
         ...(continueFrom != null ? { continueFrom } : {}),

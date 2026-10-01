@@ -1,4 +1,5 @@
 import type { VgentEngineFactoryOptions } from "./vgent.js";
+import { ENGINE_OPTION_DEFAULTS } from "../engine-options.js";
 import type { AccountId, AccountUsage } from "../accounts/types.js";
 import type { EngineOutcome, TaskState } from "@vgent/engine";
 import type { ModelMessage, TextStreamPart, ToolSet } from "ai";
@@ -163,7 +164,7 @@ export function engineIds(registry: EngineRegistry): EngineId[] {
 
 /** The 引擎能力表 as served by `GET /api/engines`. */
 export function engineDescriptors(registry: EngineRegistry): EngineDescriptor[] {
-  return engineIds(registry).map((id) => registry[id].descriptor);
+  return engineIds(registry).map((id) => ({ ...registry[id].descriptor, options: { ...ENGINE_OPTION_DEFAULTS[id] } }));
 }
 
 /**

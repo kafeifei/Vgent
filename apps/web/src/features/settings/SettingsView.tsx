@@ -12,6 +12,7 @@ import { McpSection } from "./McpSection";
 import { NotificationsSection } from "./NotificationsSection";
 import { ProvidersPage } from "./ProvidersPage";
 import { RemotePage } from "./RemotePage";
+import { EngineOptionsSection } from "./EngineOptionsSection";
 import { RuntimesSection } from "./RuntimesSection";
 import { WorktreesSection } from "./WorktreesSection";
 import { BUTTON_SECONDARY, SettingsGroup, SettingsPage, SettingsRow } from "./layout";
@@ -104,6 +105,12 @@ export function SettingsView({ initialTab = "general", initialAccount, settings,
     ),
     engines: (
       <SettingsPage title="引擎">
+        <EngineOptionsSection engines={engines} settings={current} client={client}
+          onSaved={(result) => setCurrent((previous) => {
+            if (previous == null) return result;
+            const { engineOptions: _, ...rest } = previous;
+            return result.engineOptions == null ? rest : { ...rest, engineOptions: result.engineOptions };
+          })} />
         <RuntimesSection client={client} autoUpgrade={current.autoUpgradeRuntimes !== false} disabled={saving}
           onAutoUpgrade={(value) => { void save({ autoUpgradeRuntimes: value }); }} />
       </SettingsPage>

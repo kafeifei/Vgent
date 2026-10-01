@@ -41,6 +41,12 @@ export interface OpenCodeEngineOptions {
    * restriction. Unset leaves the whole built-in set available.
    */
   activeTools?: readonly string[];
+  /**
+   * Built-in tools this session does not get, by their harness names — the
+   * other way round from `activeTools`, and only used without it. The harness
+   * refuses them the same way.
+   */
+  inactiveTools?: readonly string[];
   /** Extra instructions, sent as the prompt's system text on every turn. */
   instructions?: string;
   /** Instruction bundles surfaced to the runtime. */
@@ -176,7 +182,11 @@ export async function createOpenCodeEngine(options: OpenCodeEngineOptions): Prom
     ...(options.tools != null ? { tools: options.tools } : {}),
     ...(options.skills != null ? { skills: options.skills } : {}),
     ...(options.instructions != null ? { instructions: options.instructions } : {}),
-    ...(options.activeTools != null ? { activeTools: options.activeTools as never } : {}),
+    ...(options.activeTools != null
+      ? { activeTools: options.activeTools as never }
+      : options.inactiveTools != null && options.inactiveTools.length > 0
+        ? { inactiveTools: options.inactiveTools as never }
+        : {}),
   });
 
   let session: HarnessAgentSession;

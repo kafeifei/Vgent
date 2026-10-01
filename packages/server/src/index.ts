@@ -102,6 +102,7 @@ export {
   type EngineRunner,
 } from "./engines/registry.js";
 export { effectivePermission, type EngineCapabilities, type EngineDescriptor } from "./engines/capabilities.js";
+export { ENGINE_OPTION_DEFAULTS, type EngineOptionKey, type EngineOptions, type WebSearchMode } from "./engine-options.js";
 export { createClaudeCodeEngineFactory } from "./engines/claude-code.js";
 export { createCodexEngineFactory } from "./engines/codex.js";
 export { createVgentEngineFactory, type VgentEngineFactoryOptions } from "./engines/vgent.js";

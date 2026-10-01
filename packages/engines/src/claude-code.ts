@@ -51,6 +51,12 @@ export interface ClaudeCodeEngineOptions {
    */
   activeTools?: readonly string[];
   /**
+   * Built-in tools this session does not get, by their harness names — the
+   * other way round from `activeTools`, and only used without it. The harness
+   * refuses them the same way.
+   */
+  inactiveTools?: readonly string[];
+  /**
    * Extra instructions for the runtime, appended to its native system prompt.
    * This is the harness's own mechanism (`HarnessAgentSettings.instructions`).
    */
@@ -326,7 +332,11 @@ export async function createClaudeCodeEngine(options: ClaudeCodeEngineOptions): 
     ...(options.instructions != null ? { instructions: options.instructions } : {}),
     // `activeTools` is typed against the adapter's own tool map; the caller
     // names the tools as plain strings and the harness validates them.
-    ...(options.activeTools != null ? { activeTools: options.activeTools as never } : {}),
+    ...(options.activeTools != null
+      ? { activeTools: options.activeTools as never }
+      : options.inactiveTools != null && options.inactiveTools.length > 0
+        ? { inactiveTools: options.inactiveTools as never }
+        : {}),
   });
 
   let session: HarnessAgentSession;

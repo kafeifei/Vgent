@@ -705,3 +705,15 @@ Codex 原生 `commandExecution.commandActions` 从适配器保留到工具输入
 冒烟测试和 `engine-eval` 不再写模型名：没设 `VGENT_SMOKE_CODEX_MODEL` / `VGENT_EVAL_MODEL` 就取本机 Codex 缓存目录里排第一的模型（`@vgent/providers` 的 `readCodexModelCache` + `listedCodexModels`，服务端排序也用它）。
 
 没动的：拉 Codex 目录时报的 `client_version` 取自本机缓存（现在 0.158.0）或兜底 0.155.0。官方默认的 GPT-6.1 Sol 要 0.159.1 以上才会列出，所以清单第一个暂时是 GPT-6 Astra；Codex 引擎随包的 `@openai/codex` 是 0.156.1。
+
+## 2026-10-01：引擎选项
+
+`packages/server/src/engine-options.ts` 是唯一来源：`ENGINE_OPTION_DEFAULTS` 定每个引擎有哪几个开关和默认值，`GET /api/engines` 的 `EngineDescriptor.options` 原样下发，web 按 key 出行，没有的 key 不出。`settings.json` 的 `engineOptions` 只存和默认值不同的（`PUT /api/settings/engine-options` `{ engine, key, value }`，走 `settings.mutate`，等于默认就删 key）；读时 `readEngineOptions` 丢掉引擎不支持的 key 和类型不对的值。每轮建引擎时 `engineOptionsOf(settings, engine)` 取值，所以改了下一轮生效。
+
+各引擎怎么落：
+- Claude Code：关掉的工具进 HarnessAgent 的 `inactiveTools`（`Agent`、`webSearch` / `WebFetch`、`TodoWrite` 和 `Task*`），Plan 模式从 `PLAN_ACTIVE_TOOLS` 里滤掉。待办开着时设 `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` + `CLAUDE_CODE_ENABLE_TASKS=0`，新模型上默认给的是 Task 系列，计划栏只认 TodoWrite。记忆关掉设 `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`。
+- Codex：`thread/start.config` 带 `agents.enabled` + `features.multi_agent`（只关后者 v2 的协作工具还在）、`features.memories`、`web_search`。托管的 web_search 只给 gpt-5.5，`use_responses_lite` 的模型拿不到。
+- OpenCode：`inactiveTools`（`agent` / `todowrite` / `webfetch`）在适配器里变成 ask 权限再被宿主拒，模型仍看得见；`OPENCODE_ENABLE_EXA=1` 开 websearch；配置里 `lsp`。记忆用自研引擎的 `createMemoryTool`，同一个目录（`memoryDirOf` / `memorySourcesOf`），经 host-tool MCP 给模型（`harness-tools_memory`）。设置页的 MCP 也接上了，`openCodeMcpServers` 转成 OpenCode 自己的格式。
+- 自研：`createVgentAgent` 的 `subagents` / `todos`，记忆关掉就不传 `memoryDir`。
+
+验证：`engine-options.test.ts`（默认值、覆盖、三家的映射、MCP 转换），`app.test.ts`（下发、只存差异、非法值 400），`engine.test.ts`（自研的三个开关）。`engine-options.smoke.test.ts`（`VGENT_SMOKE=1`）对真运行时：Claude Code 用 `VGENT_SMOKE_CLAUDE_ACCOUNT` 指一个 app 管的账号，ToolSearch 查 WebSearch / WebFetch / Agent，关掉后查不到，TodoWrite 能用；Codex 列工具看 spawn_agent，搜索用 `VGENT_SMOKE_CODEX_MODEL=gpt-5.5` 看「Search」步骤；OpenCode 列工具看 websearch 和 memory，调一次 memory 回「记忆为空」，关掉后两个都不在。Claude 的自动记忆、Codex 的记忆、OpenCode 的 LSP 只验到配置传进去。

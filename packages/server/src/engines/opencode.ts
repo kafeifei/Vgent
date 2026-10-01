@@ -1,5 +1,12 @@
 import { collectHarnessAgentToolApprovalContinuations, collectHarnessAgentToolResultContinuations } from "@ai-sdk/harness/agent";
-import { CODEX_SUBSCRIPTION_PREFIX, agentInstructionsSection, loadAgentInstructions, planModeInstructions } from "@vgent/engine";
+import {
+  CODEX_SUBSCRIPTION_PREFIX,
+  agentInstructionsSection,
+  createMemoryTool,
+  loadAgentInstructions,
+  planModeInstructions,
+  type McpServerConfig,
+} from "@vgent/engine";
 import { createOpenCodeEngine, openCodeAuthContent } from "@vgent/engines";
 import {
   describeSubscriptionAuth,
@@ -20,7 +27,9 @@ import { createProviderStore } from "../store/providers.js";
 import type { EngineDescriptor } from "./capabilities.js";
 import { stripDeniedApprovalResults } from "./harness-messages.js";
 import type { EngineAccounts, EngineContext, EngineFactory, EngineRunner } from "./registry.js";
-import { NO_MODEL } from "./vgent.js";
+import { memoryDirOf, memorySourcesOf, NO_MODEL } from "./vgent.js";
+import { engineOptionsOf, type EngineOptions } from "../engine-options.js";
+import { createSettingsStore } from "../store/settings.js";
 
 /**
  * 引擎能力表, the OpenCode row. Manual compaction is left off: the adapter can
@@ -37,12 +46,48 @@ const DESCRIPTOR: EngineDescriptor = {
     planMode: true,
     compact: false,
     // A task that names no model runs on the Codex login's default, like the in-house engine.
-    extensions: false,
+    // The settings page's MCP servers, and Vgent's memory as a host tool.
+    extensions: true,
     // The harness's `experimental_steer`: the bridge prompts the busy OpenCode session, which takes it at its next step.
     steer: true,
     customProviders: true,
   },
 };
+
+/**
+ * 引擎选项 as OpenCode takes them. Its subagents, to-do list and web fetch are
+ * built-in tools the harness refuses when switched off — the bridge can only
+ * make them ask, so the model still sees them. Web search is OpenCode's own,
+ * through Exa's hosted service with no key, and only there when asked for.
+ * LSP is OpenCode's own client, off by its default.
+ */
+export function openCodeSwitches(options: EngineOptions): {
+  inactiveTools: string[];
+  env: Record<string, string>;
+  config: Record<string, unknown>;
+} {
+  return {
+    inactiveTools: [
+      ...(options.subagents === false ? ["agent"] : []),
+      ...(options.todos === false ? ["todowrite"] : []),
+      ...(options.web === false ? ["webfetch"] : []),
+    ],
+    env: options.web === false ? {} : { OPENCODE_ENABLE_EXA: "1" },
+    config: { lsp: options.lsp !== false },
+  };
+}
+
+/** The settings page's MCP servers in OpenCode's own `mcp` format, keyed by name. */
+export function openCodeMcpServers(servers: readonly McpServerConfig[]): Record<string, unknown> {
+  return Object.fromEntries(
+    servers.map((server) => [
+      server.name,
+      "command" in server
+        ? { type: "local", command: [server.command, ...(server.args ?? [])], ...(server.env != null ? { environment: server.env } : {}), enabled: true }
+        : { type: "remote", url: server.url, enabled: true },
+    ]),
+  );
+}
 
 /**
  * The harness turns OpenCode's "a file changed" notices into `fileChange` tool
@@ -184,15 +229,24 @@ export function createOpenCodeEngineFactory(options: OpenCodeEngineFactoryOption
               })
           : undefined;
       const instructions = await openCodeInstructions(ctx.project.repoPath, ctx.planMode);
+      const settings = await createSettingsStore(ctx.dataDir, ctx.log).get();
+      const chosen = engineOptionsOf(settings, "opencode");
+      const switches = openCodeSwitches(chosen);
+      // OpenCode has no memory of its own; this is the in-house engine's, same directory.
+      const memory = chosen.memory === false ? {} : { memory: createMemoryTool(memoryDirOf(ctx), memorySourcesOf(ctx)) };
 
       const engine = await createOpenCodeEngine({
         repoPath: ctx.project.repoPath,
         permissionMode: ctx.permissionMode,
         model: route.model,
         ...(level !== PROVIDER_DEFAULT_LEVEL ? { reasoningVariant: effectiveReasoningLevel(level) } : {}),
-        ...(route.provider != null ? { openCodeConfig: { provider: route.provider } } : {}),
-        env: { OPENCODE_AUTH_CONTENT: openCodeAuthContent(login) },
-        ...(ctx.planMode ? { activeTools: PLAN_ACTIVE_TOOLS } : {}),
+        openCodeConfig: { ...switches.config, ...(route.provider != null ? { provider: route.provider } : {}) },
+        ...((settings.mcpServers?.length ?? 0) > 0 ? { mcpServers: openCodeMcpServers(settings.mcpServers!) } : {}),
+        ...(Object.keys(memory).length > 0 ? { tools: memory as ToolSet } : {}),
+        env: { ...switches.env, OPENCODE_AUTH_CONTENT: openCodeAuthContent(login) },
+        ...(ctx.planMode
+          ? { activeTools: PLAN_ACTIVE_TOOLS.filter((tool) => !switches.inactiveTools.includes(tool)) }
+          : { inactiveTools: switches.inactiveTools }),
         ...(instructions != null ? { instructions } : {}),
         sessionId: ctx.thread.id,
         ...(continueFrom != null ? { continueFrom } : {}),

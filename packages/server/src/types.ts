@@ -1,3 +1,4 @@
+import type { EngineOptions } from "./engine-options.js";
 import type { TaskState } from "@vgent/engine";
 import type { McpServerConfig } from "@vgent/engine";
 import type { HarnessAgentContinueTurnState, HarnessAgentResumeSessionState } from "@vgent/engines";
@@ -468,6 +469,11 @@ export interface Settings {
   providerOrder?: string[];
   /** MCP servers the `vgent` engine connects to per turn. Their tools are deferred; see `connectMcpServers`. */
   mcpServers?: McpServerConfig[];
+  /**
+   * 引擎选项: what the user switched away from an engine's defaults, per engine.
+   * Only the changed keys are stored; see `engineOptionsOf`.
+   */
+  engineOptions?: Partial<Record<EngineId, EngineOptions>>;
   /** The built-in desktop-control backend. Absent means Computer Use is off. */
   computerUseProvider?: "cua" | null;
   /** How many live worktrees to keep before the oldest idle ones are reclaimed. Absent = `DEFAULT_WORKTREE_MAX_COUNT`. */

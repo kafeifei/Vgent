@@ -60,6 +60,14 @@ function readThenAnswer(finalText: string) {
 }
 
 describe("createVgentEngine", () => {
+  it("offers the to-do list, subagents and memory only when they are switched on", () => {
+    const model = readThenAnswer("ok");
+    const all = createVgentEngine({ model, repoPath, memoryDir: join(repoPath, ".memory") }).tools;
+    expect(Object.keys(all)).toEqual(expect.arrayContaining(["updatePlan", "explore", "coder", "memory"]));
+    const none = createVgentEngine({ model, repoPath, todos: false, subagents: false }).tools;
+    for (const name of ["updatePlan", "explore", "coder", "memory"]) expect(none).not.toHaveProperty(name);
+  });
+
   it("runs a tool call through the agent and returns the final text", async () => {
     const model = readThenAnswer("hello from vgent");
     const { agent, dispose } = createVgentEngine({ model, repoPath, permissionMode: "allow-reads" });

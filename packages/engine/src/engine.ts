@@ -93,6 +93,8 @@ export interface VgentEngineOptions {
   onEvent?: (event: VgentEngineEvent) => void;
   /** Whether the `explore` / `coder` subagent tools are offered. Defaults to true. */
   subagents?: boolean;
+  /** Whether the `updatePlan` to-do list is offered. Defaults to true. */
+  todos?: boolean;
   /**
    * Run this turn as a 计划 turn: only {@link PLAN_TOOL_NAMES} are offered, and
    * the system prompt says what the plan document has to look like.
@@ -331,7 +333,7 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
     canExecute: () => toolsMayRun,
     extraTools: {
       askUserQuestions: askUserQuestionsTool,
-      updatePlan: planState.tool,
+      ...(options.todos === false ? {} : { updatePlan: planState.tool }),
       ...(memoryDir == null ? {} : { memory: createMemoryTool(memoryDir, options.memorySources) }),
       ...(subagents
         ? createSubagentTools({

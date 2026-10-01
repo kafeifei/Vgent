@@ -1,4 +1,5 @@
 import { codexProviderEnv, type CodexEngineOptions } from "@vgent/engines";
+import { engineOptionsOf, type EngineOptions } from "../engine-options.js";
 import { describeSubscriptionAuth, splitProviderModelSpec, type ProviderConfig } from "@vgent/providers";
 import { BadRequestError, EngineUnavailableError } from "../errors.js";
 import { CUA_TOOLS, requireCuaDriver } from "../computer-use/cua.js";
@@ -78,6 +79,24 @@ function asCodexEffort(level: string | undefined): CodexEngineOptions["reasoning
  * across processes; an older harness resume payload also contains that id.
  * This path supports turn/steer and reports actual insertion via userMessage.
  */
+/**
+ * 引擎选项 as Codex config overrides. Dotted paths, so each one sets that key
+ * alone instead of replacing a whole table.
+ *
+ * Subagents need `agents.enabled`: newer models run the second multi-agent
+ * version, which `features.multi_agent` does not reach. Web search is a hosted
+ * tool, and Codex offers hosted tools only to models that are not on Responses
+ * Lite — of the current ones, GPT-5.5 — so on the rest it is off whatever this says.
+ */
+export function codexSwitches(options: EngineOptions): Record<string, unknown> {
+  return {
+    "agents.enabled": options.subagents !== false,
+    "features.multi_agent": options.subagents !== false,
+    "features.memories": options.memory !== false,
+    web_search: options.webSearch ?? "cached",
+  };
+}
+
 export function createCodexEngineFactory(accounts?: EngineAccounts): EngineFactory {
   return {
     descriptor: DESCRIPTOR,
@@ -109,21 +128,19 @@ export function createCodexEngineFactory(accounts?: EngineAccounts): EngineFacto
       // 上下文: the task's own choice is Codex's `model_context_window`, over
       // whatever the provider's model row said.
       const window = ctx.thread.contextWindow;
-      const codexConfig =
-        route?.codexConfig != null || tier != null || window != null || cuaBinary != null
-          ? {
-              ...route?.codexConfig,
-              ...(window != null ? { model_context_window: window } : {}),
-              ...(tier != null ? { service_tier: tier } : {}),
-              ...(cuaBinary != null ? { mcp_servers: { "cua-driver": { command: cuaBinary, args: ["mcp"], enabled_tools: [...CUA_TOOLS] } } } : {}),
-            }
-          : undefined;
+      const codexConfig = {
+        ...route?.codexConfig,
+        ...codexSwitches(engineOptionsOf(settings, "codex")),
+        ...(window != null ? { model_context_window: window } : {}),
+        ...(tier != null ? { service_tier: tier } : {}),
+        ...(cuaBinary != null ? { mcp_servers: { "cua-driver": { command: cuaBinary, args: ["mcp"], enabled_tools: [...CUA_TOOLS] } } } : {}),
+      };
       return createNativeCodexRunner(ctx, {
         ...(reportUsage ? { reportUsage } : {}),
         ...(model != null ? { model } : {}),
         ...(route != null ? { auth: route.auth } : {}),
         ...(codexHome != null ? { codexHome } : {}),
-        ...(codexConfig != null ? { codexConfig } : {}),
+        codexConfig,
         ...(reasoningEffort != null ? { effort: reasoningEffort } : {}),
         ...(tier != null ? { serviceTier: tier } : {}),
       });

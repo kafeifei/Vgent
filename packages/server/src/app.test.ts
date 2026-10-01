@@ -520,6 +520,34 @@ describe("createApp", () => {
     }
   });
 
+  it("serves each engine's switches and stores only what differs from its default, one switch at a time", async () => {
+    const dir = await tempDir();
+    const app = makeApp(dir);
+    const engines = ((await (await request(app, "/api/engines")).json()) as { engines: EngineDescriptor[] }).engines;
+    expect(engines.find((engine) => engine.id === "codex")?.options).toEqual({ subagents: true, memory: true, webSearch: "cached" });
+    expect(engines.find((engine) => engine.id === "opencode")?.options).toMatchObject({ lsp: true, web: true });
+
+    const set = async (body: unknown) => {
+      const response = await request(app, "/api/settings/engine-options", { method: "PUT", body: JSON.stringify(body) });
+      return { status: response.status, options: response.ok ? ((await response.json()) as Settings).engineOptions : undefined };
+    };
+    expect((await set({ engine: "opencode", key: "lsp", value: false })).options).toEqual({ opencode: { lsp: false } });
+    expect((await set({ engine: "codex", key: "webSearch", value: "live" })).options).toEqual({ opencode: { lsp: false }, codex: { webSearch: "live" } });
+    // Back to the default is not stored.
+    expect((await set({ engine: "opencode", key: "lsp", value: true })).options).toEqual({ codex: { webSearch: "live" } });
+    expect((await set({ engine: "codex", key: "webSearch", value: "cached" })).options).toBeUndefined();
+
+    for (const bad of [
+      { engine: "codex", key: "lsp", value: true },
+      { engine: "vgent", key: "web", value: true },
+      { engine: "nope", key: "memory", value: true },
+      { engine: "codex", key: "webSearch", value: "sometimes" },
+      { engine: "claude-code", key: "todos", value: "yes" },
+    ]) {
+      expect((await set(bad)).status).toBe(400);
+    }
+  });
+
   it("lets an empty thread change engine but locks one that already has messages", async () => {
     const dir = await tempDir();
     const app = makeApp(dir, createFakeEngine().factory);

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { FileUIPart } from "ai";
 import type { OptionsSet } from "@/components/modelChoices";
 import { isNoProject } from "@/lib/noProject";
-import { createClient, type ModelPickPatch } from "@/lib/api";
+import { createClient, isTurnStartCancelled, type ModelPickPatch } from "@/lib/api";
 import { pruneDrafts } from "@/lib/drafts";
 import { ThreadChats } from "@/lib/threadChats";
 import { useServerState } from "@/lib/useServerState";
@@ -463,7 +463,10 @@ export function useWorkbench(token: string) {
        * `interrupt` it is 「打断并发送」: the live turn is stopped first.
        */
       sendQueued: (threadId: string, itemId: string, options: { interrupt?: boolean } = {}) => {
-        return client.sendQueued(threadId, itemId, options).catch((error: Error) => toast(error.message));
+        // A stop that got there first leaves the message in the queue; nothing to report.
+        return client.sendQueued(threadId, itemId, options).catch((error: Error) => {
+          if (!isTurnStartCancelled(error)) toast(error.message);
+        });
       },
 
       stop: (threadId: string) => {
@@ -515,7 +518,10 @@ export function useWorkbench(token: string) {
           : client
               .patchThread(threadId, { mode: "agent" })
               .then(() => chats.send(threadId, `按下面的计划执行。\n\n${content}`))
-              .catch((error: Error) => toast(error.message)),
+              .catch((error: Error) => {
+                // Stopped before the build turn was a run: the plan is still in its document, nothing to say.
+                if (!isTurnStartCancelled(error)) toast(error.message);
+              }),
 
       /**
        * 「一直允许」: more entries on the *global* allowlist, from an approval
@@ -592,7 +598,11 @@ export function useWorkbench(token: string) {
       compactThread: (threadId: string): Promise<void> =>
         client.compactThread(threadId).then(
           () => undefined,
-          (error: Error) => toast(error.message),
+          // A harness engine compacts by running a turn, and one stopped before
+          // it began has nothing to report.
+          (error: Error) => {
+            if (!isTurnStartCancelled(error)) toast(error.message);
+          },
         ),
 
       getChat: (threadId: string) => chats.get(threadId),

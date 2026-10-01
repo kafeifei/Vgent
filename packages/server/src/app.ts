@@ -1155,9 +1155,13 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   app.post("/api/threads/:id/workspace/reclaim", async (c) => {
     const id = c.req.param("id");
-    if (runs.isRunning(id)) throw new ConflictError(`线程正在运行，无法回收工作目录: ${id}`, "thread_running");
     const body = (await c.req.json().catch(() => undefined)) as { preserveChanges?: unknown } | undefined;
     const thread = await threadOf(id);
+    // The same "busy" 归档 asks (`isLive`): a task parked on an approval or a
+    // question has no run entry, but its engine is alive and standing in this
+    // directory — taking the worktree away would pull the ground out from under
+    // the very step the user is being asked about.
+    assertNotLive(thread);
     assertSettled(thread);
     if (thread.workspace == null) throw new ConflictError("此任务没有独立工作目录", "workspace_not_worktree");
     const workspace = await reclaimFor(thread, readPreserveChanges(body?.preserveChanges));
@@ -1562,10 +1566,10 @@ export function createApp(options: CreateAppOptions): VgentApp {
    * request held open that long, once per click, used up the browser's few
    * connections to this server and every other task stalled behind them. One
    * at a time per task; the record says it is going on, so the log and the
-   * composer can, and a turn waits for it.
+   * composer can, and a turn waits for it. The run manager holds the task
+   * meanwhile (`claimCompaction`), so no turn can begin under the summary.
    */
-  const compacting = new Set<string>();
-  const compactInBackground = async (id: string, startedAt: string): Promise<void> => {
+  const compactInBackground = async (id: string, startedAt: string, release: () => void): Promise<void> => {
     let outcome: ThreadPatch;
     try {
       const thread = await threadOf(id);
@@ -1582,10 +1586,18 @@ export function createApp(options: CreateAppOptions): VgentApp {
       outcome = { compaction: { startedAt, error: reason.slice(0, 500) } };
     }
     // Let go and write in the same tick: the store writes a thread's changes in
-    // the order they were asked for, so a 压缩 started right after lands after this.
-    compacting.delete(id);
-    await threads.update(id, outcome).catch((error: unknown) => log.warn(`保存线程 ${id} 的压缩结果失败`, error));
-    // What was sent while it ran went into the queue.
+    // the order they were asked for, so a 压缩 started right after lands after
+    // this, and a turn that reads the record before it lands still finds the
+    // 压缩 going on and is refused.
+    release();
+    const settled = await threads.update(id, outcome).catch((error: unknown) => {
+      log.warn(`保存线程 ${id} 的压缩结果失败`, error);
+      return undefined;
+    });
+    // A 自动继续 that came while it ran waited for it; what was sent went into the queue.
+    if (settled?.restartRecovery != null) {
+      void runs.resumeInterrupted(id).catch((error: unknown) => log.warn(`线程 ${id} 自动继续失败`, error));
+    }
     void runs.dispatchQueue(id).catch((error: unknown) => log.warn(`线程 ${id} 的排队消息没能发出`, error));
   };
 
@@ -1617,17 +1629,18 @@ export function createApp(options: CreateAppOptions): VgentApp {
       return c.json(await threadOf(id));
     }
 
-    if (compacting.has(id)) throw new ConflictError("正在压缩，稍等", "compact_running");
-    compacting.add(id);
+    // Taken in one step with the checks, after the last await above: a turn that
+    // got under way while those ran is refused for here, not raced.
+    const release = runs.claimCompaction(id);
     const startedAt = new Date().toISOString();
     let record: ThreadRecord;
     try {
       record = await threads.update(id, { compaction: { startedAt } });
     } catch (error) {
-      compacting.delete(id);
+      release();
       throw error;
     }
-    void compactInBackground(id, startedAt);
+    void compactInBackground(id, startedAt, release);
     return c.json(record, 202);
   });
 

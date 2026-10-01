@@ -1,6 +1,6 @@
 import { Chat } from "@ai-sdk/react";
 import { DefaultChatTransport, type ChatRequestOptions, type FileUIPart, type UIMessage, type UIMessageChunk } from "ai";
-import { api, authHeaders, reportUnauthorized } from "./api";
+import { ApiError, TURN_START_CANCELLED, api, authHeaders, reportUnauthorized } from "./api";
 import { shouldSendAutomatically } from "./autoSend";
 import { withResumePrelude } from "./resumeChunks";
 import type { ThreadRecord, ThreadStatus, ThreadSummary } from "./types";
@@ -37,6 +37,29 @@ function describeTransportError(error: Error): Error {
   const text = transportErrorText(error.message);
   return text === error.message ? error : new Error(text);
 }
+
+/**
+ * The 409 the server answers a message with when 停止 got to the turn before it
+ * was a run: as an `ApiError` carrying its code, or `undefined` for any other
+ * response. Read from a clone, so the SDK can still read the original.
+ */
+async function startCancellation(response: Response): Promise<ApiError | undefined> {
+  if (response.status !== 409) return undefined;
+  const body = (await response.clone().json().catch(() => null)) as { error?: { code?: string; message?: string } } | null;
+  if (body?.error?.code !== TURN_START_CANCELLED) return undefined;
+  return new ApiError(body.error.message ?? "回合还没开始就被停止了，这条消息没有发出", 409, TURN_START_CANCELLED);
+}
+
+/**
+ * What the transport throws for a start that 停止 cancelled: an abort, as far as
+ * the SDK is concerned. `Chat.makeRequest` takes any error named `AbortError` as
+ * the request being stopped — back to `ready`, no `onError` — and returns before
+ * it checks `sendAutomaticallyWhen`. A request that failed any other way would
+ * be reported, and one that ended any other quiet way (an empty stream) would be
+ * followed by that check, which an approval answer or a tool result still
+ * satisfies: the SDK would post the continuation again, undoing the stop.
+ */
+const cancelledStart = (): DOMException => new DOMException("The turn was stopped before it started", "AbortError");
 
 /**
  * `DefaultChatTransport` plus the repair a replayed stream needs before the
@@ -173,16 +196,27 @@ export class ThreadChats {
         // message at all. A GET is the resume, which decides nothing.
         fetch: async (input, init) => {
           const isSend = (init?.method ?? "GET").toUpperCase() === "POST";
+          let response: Response;
           try {
-            const response = await fetch(input, init);
-            if (response.status === 401) reportUnauthorized();
-            if (isSend) this.settleAccept(threadId, response.ok ? undefined : new Error(`${response.status}`));
-            else if (response.status === 204) this.noStream.add(threadId);
-            return response;
+            response = await fetch(input, init);
           } catch (error) {
             if (isSend) this.settleAccept(threadId, error instanceof Error ? error : new Error(String(error)));
             throw error;
           }
+          if (response.status === 401) reportUnauthorized();
+          if (isSend) {
+            // 停止 came before the turn was a run: the message did not go out and
+            // nothing was written. The sender is told (so the text stays in the
+            // box), but it is no error — the SDK is handed an abort, which ends
+            // without an error state, an error bar, a toast, or another try.
+            const cancelled = await startCancellation(response);
+            if (cancelled != null) {
+              this.settleAccept(threadId, cancelled);
+              throw cancelledStart();
+            }
+            this.settleAccept(threadId, response.ok ? undefined : new Error(`${response.status}`));
+          } else if (response.status === 204) this.noStream.add(threadId);
+          return response;
         },
       },
       // The message a replayed continuation stream addresses: the one this

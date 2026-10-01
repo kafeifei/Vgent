@@ -121,11 +121,21 @@ export type ThreadPatch = Partial<{
   messages: UIMessage[];
 }>;
 
+/** A precondition on the stored record, checked inside the very write it guards. */
+export interface ThreadUpdateGuard {
+  /**
+   * Refuse with a 409 (`thread_changed`) unless the stored status is still
+   * this one: a cleanup that writes a status after the fact must not overwrite
+   * a turn that started meanwhile.
+   */
+  status?: ThreadStatus;
+}
+
 export interface ThreadStore {
   list(): Promise<ThreadSummary[]>;
   get(id: string): Promise<ThreadRecord | undefined>;
   create(input: CreateThreadInput): Promise<ThreadRecord>;
-  update(id: string, patch: ThreadPatch): Promise<ThreadRecord>;
+  update(id: string, patch: ThreadPatch, guard?: ThreadUpdateGuard): Promise<ThreadRecord>;
   /**
    * Mid-turn message persist: writes only that thread's file, and neither
    * rewrites the index nor notifies subscribers. The run's final `update()`
@@ -136,6 +146,8 @@ export interface ThreadStore {
   saveHarnessState(id: string, state: HarnessState): Promise<void>;
   loadHarnessState(id: string): Promise<HarnessState | undefined>;
   subscribe(listener: () => void): () => void;
+  /** Test seam: how many per-key write chains are still held. Zero once every call has settled. */
+  stats(): { chains: number };
 }
 
 const isRecord = (value: unknown): value is ThreadRecord =>
@@ -200,10 +212,17 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
   const serialize = <T>(key: string, work: () => Promise<T>): Promise<T> => {
     const previous = chains.get(key) ?? Promise.resolve();
     const next = previous.then(work, work);
-    chains.set(
-      key,
-      next.catch(() => {}),
+    const tail = next.then(
+      () => {},
+      () => {},
     );
+    chains.set(key, tail);
+    // Once nothing is queued behind it a chain is dead weight — a key for every
+    // thread ever touched (and its harness file), for as long as the server runs.
+    // A call that came in meanwhile has replaced `tail` and keeps the entry alive.
+    void tail.then(() => {
+      if (chains.get(key) === tail) chains.delete(key);
+    });
     return next;
   };
 
@@ -300,11 +319,14 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
       return record;
     },
 
-    async update(id, patch) {
+    async update(id, patch, guard) {
       await ensureReady();
       const updated = await serialize(id, async () => {
         const current = await readRecord(id);
         if (current == null) throw new NotFoundError(`线程不存在: ${id}`, "thread_not_found");
+        if (guard?.status != null && current.status !== guard.status) {
+          throw new ConflictError("任务状态在这期间有了变化，没有覆盖", "thread_changed");
+        }
         if (patch.consumeRestartRecovery != null && (current.restartRecovery !== patch.consumeRestartRecovery ||
           current.status !== "interrupted" || current.archivedAt != null || current.transition != null ||
           current.workspace?.reclaimed === true || current.workspaceState != null || current.outcome != null)) {
@@ -487,5 +509,7 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
+
+    stats: () => ({ chains: chains.size }),
   };
 }

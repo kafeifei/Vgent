@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, PROBE_TIMEOUT_MS, UNAUTHORIZED_EVENT, UNAUTHORIZED_MESSAGE, api, createClient, probeToken, sseUrl } from "./api";
+import { ApiError, PROBE_TIMEOUT_MS, TURN_START_CANCELLED, UNAUTHORIZED_EVENT, UNAUTHORIZED_MESSAGE, api, createClient, isTurnStartCancelled, probeToken, sseUrl } from "./api";
 
 const json = (body: unknown, init: ResponseInit = {}): Response =>
   new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" }, ...init });
@@ -185,5 +185,22 @@ describe("probeToken", () => {
     stubFetch(() => new Response(null, { status: 200 }));
     await probeToken("tok");
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("isTurnStartCancelled", () => {
+  it("knows the server's answer to a message whose turn 停止 got to first — by its code", async () => {
+    stubFetch(() => json({ error: { code: TURN_START_CANCELLED, message: "回合还没开始就被停止了，这条消息没有发出" } }, { status: 409 }));
+    const failure = await api("/threads/t1/queue/q1/send", "tok", { method: "POST" }).catch((error: unknown) => error);
+    expect(isTurnStartCancelled(failure)).toBe(true);
+    expect(isTurnStartCancelled(new ApiError("x", 409, TURN_START_CANCELLED))).toBe(true);
+  });
+
+  it("is false for every other failure", () => {
+    expect(isTurnStartCancelled(new ApiError("正在压缩上下文，压完再发", 409, "thread_compacting"))).toBe(false);
+    expect(isTurnStartCancelled(new ApiError("服务正在退出", 409, "server_stopping"))).toBe(false);
+    expect(isTurnStartCancelled(new ApiError("x", 409))).toBe(false);
+    expect(isTurnStartCancelled(new Error(TURN_START_CANCELLED))).toBe(false);
+    expect(isTurnStartCancelled(undefined)).toBe(false);
   });
 });

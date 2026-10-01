@@ -99,6 +99,8 @@ export interface QueueStore {
   take(threadId: string, options?: { itemId?: string; held?: boolean; retain?: boolean }): Promise<QueuedMessage | undefined>;
   /** Put a taken item back at the head, for a turn that could not be started. */
   putBack(threadId: string, item: QueuedMessage, options?: { held?: boolean }): Promise<void>;
+  /** Test seam: how many per-thread lock chains are still held. Zero once every call has settled. */
+  stats(): { chains: number };
 }
 
 export function createQueueStore(threads: ThreadStore): QueueStore {
@@ -108,10 +110,17 @@ export function createQueueStore(threads: ThreadStore): QueueStore {
   const locked = <T>(threadId: string, work: () => Promise<T>): Promise<T> => {
     const previous = chains.get(threadId) ?? Promise.resolve();
     const next = previous.then(work, work);
-    chains.set(
-      threadId,
-      next.catch(() => {}),
+    const tail = next.then(
+      () => {},
+      () => {},
     );
+    chains.set(threadId, tail);
+    // Once nothing is queued behind it a chain is dead weight — one entry for
+    // every thread ever touched, for as long as the server runs. A call that
+    // came in meanwhile has replaced `tail` and keeps the entry alive.
+    void tail.then(() => {
+      if (chains.get(threadId) === tail) chains.delete(threadId);
+    });
     return next;
   };
 
@@ -125,6 +134,8 @@ export function createQueueStore(threads: ThreadStore): QueueStore {
 
   return {
     locked,
+
+    stats: () => ({ chains: chains.size }),
 
     append: (threadId, value, mode = "queue", fileValue) =>
       locked(threadId, async () => {

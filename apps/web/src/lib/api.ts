@@ -130,6 +130,16 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * 停止 reached a turn before it was a run — while it still waited behind a
+ * worktree's setup, say. The message was not sent and nothing was written: the
+ * server answers whoever asked for the turn with this 409. It is the user's own
+ * stop coming back, not a failure, so nothing shows it as an error.
+ */
+export const TURN_START_CANCELLED = "turn_start_cancelled";
+
+export const isTurnStartCancelled = (error: unknown): boolean => error instanceof ApiError && error.code === TURN_START_CANCELLED;
+
 /** How long the token probe may take before it counts as「server 没答」. */
 export const PROBE_TIMEOUT_MS = 5_000;
 

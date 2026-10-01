@@ -9,6 +9,7 @@ import {
   safeValidateUIMessages,
   toUIMessageStream,
   type DynamicToolUIPart,
+  type FileUIPart,
   type ModelMessage,
   type TextStreamPart,
   type ToolSet,
@@ -169,8 +170,97 @@ interface LiveRun {
   steerCalls: Set<Promise<void>>;
   completedNormally: boolean;
   retired?: boolean;
+  /**
+   * 停止 aimed at a start that was waiting behind this run's bookkeeping. The
+   * turn had already streamed to its end, so it is recorded as it ended — plan
+   * saved, steers settled; what the stop still does is hold the queue: the task
+   * settles `interrupted` where it would have gone back to `idle`, and nothing
+   * is dispatched after it.
+   */
+  queuePaused?: boolean;
   recordSteer?: (item: QueuedMessage) => Promise<void>;
   flush?: () => Promise<void>;
+}
+
+/**
+ * 停止 arrived before the turn had a run to stop. The message was not sent and
+ * nothing of the turn was written; whoever asked for it (the chat POST, the
+ * queue dispatcher, 「发送」) gets this instead of a hub. The shutdown cancels
+ * such a start too, with its own code (see `stopAll`).
+ */
+export class TurnStartCancelledError extends ConflictError {
+  constructor(message = "回合还没开始就被停止了，这条消息没有发出", code = "turn_start_cancelled") {
+    super(message, code);
+  }
+}
+
+/** Who gave up a start: the user's 停止, or the server going down. */
+type CancelCause = "stop" | "shutdown";
+
+/**
+ * A start that is not a run yet. Between a message arriving and its run being
+ * registered a turn can wait a long time — behind a fresh worktree's setup (up
+ * to ten minutes), the previous turn's bookkeeping, a slow snapshot — and
+ * `stop()` has to be able to reach it there. Otherwise 停止 pressed in that
+ * window waits the whole wait out, and then records the message and starts an
+ * engine only to abort it.
+ */
+interface PendingStart {
+  /** Fired by `stop()` / `stopAll()`; its reason is the error the start rejects with. */
+  readonly abort: AbortController;
+  cancelledBy?: CancelCause;
+  /**
+   * Past the last look — the `running` write is on its way and the run about to
+   * be registered. Too late to give up without leaving a half-started turn
+   * behind, so it is left alone: the stop queued behind it on the start lock
+   * stops the run it registers.
+   */
+  committed: boolean;
+  /** Settles (never rejects) once the start is over, its cancellation cleanup included. */
+  done: Promise<void>;
+}
+
+/**
+ * `work`, unless `signal` fires first — then its reason. `work` itself is left
+ * to finish (or fail) unobserved: a worktree's setup is not the turn's to cancel.
+ */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) {
+      work.catch(() => {});
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      work.catch(() => {});
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+/** Whether `work` settled, either way, within `ms`. Never rejects. */
+async function settledWithin(work: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([work.then(() => true, () => true), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** A runner kept alive between requests because its turn is waiting on the human. */
@@ -183,7 +273,22 @@ interface ParkedEngine {
   stateless: boolean;
 }
 
+/** What the manager holds right now, for tests: all zero once no turn is in flight or parked. */
+export interface RunManagerStats {
+  /** Run entries. A run that is only finishing its bookkeeping still counts. */
+  runs: number;
+  /** Turns parked on the human. */
+  parked: number;
+  /** Starts that are not yet runs. */
+  pendingStarts: number;
+}
+
 export interface RunManager {
+  /**
+   * Start a turn. Rejects with `TurnStartCancelledError` (409) when `stop()`
+   * arrives before the turn has a run — the wait behind a worktree's setup
+   * included — in which case nothing of it was written.
+   */
   start(threadId: string, uiMessages: unknown): Promise<ChunkHub>;
   /** Claim a persisted crash recovery once, serialized with manual starts and stops. */
   resumeInterrupted(threadId: string): Promise<void>;
@@ -203,11 +308,31 @@ export interface RunManager {
    * input boundary or the next turn.
    */
   steer(threadId: string, text: string, itemId: string): Promise<boolean>;
+  /** Also cancels a turn that has not become a run yet; see `start`. */
   stop(threadId: string): Promise<void>;
   subscribe(threadId: string, signal?: AbortSignal): ReadableStream<UIMessageChunk> | undefined;
+  /**
+   * A turn is streaming, or a start is on its way to becoming one — waiting for
+   * a worktree's setup, say. Either way the task's working tree and its settings
+   * are spoken for: whatever a running turn refuses, a starting one refuses too.
+   */
   isRunning(threadId: string): boolean;
-  /** Stop every live run and destroy every parked engine. For shutdown. */
+  /**
+   * Hold a thread still while a background 压缩 summarises its history, in one
+   * synchronous step with the checks: refused (409) while a run, a start on its
+   * way or a parked engine exists, or another 压缩 holds it. Until the returned
+   * release is called any start is refused (`thread_compacting`), the queue is
+   * not dispatched and 自动继续 waits.
+   */
+  claimCompaction(threadId: string): () => void;
+  /**
+   * Stop every live run and destroy every parked engine. For shutdown. A start
+   * not yet committed is cancelled rather than waited for; its message stays
+   * for the next launch (see `stopAll`).
+   */
   stopAll(options?: { recoverRunning?: boolean }): Promise<void>;
+  /** Test seam: how much the manager still holds. */
+  stats(): RunManagerStats;
 }
 
 export function createRunManager(options: {
@@ -275,6 +400,10 @@ export function createRunManager(options: {
   /** Serialize only turn startup, not the turn itself or queue writes. */
   const starting = new Map<string, Promise<void>>();
   const dispatching = new Map<string, Promise<void>>();
+  /** Every start that is not a run yet; `stop()` and `stopAll()` cancel these. */
+  const pendingStarts = new Map<string, Set<PendingStart>>();
+  /** Threads a background 压缩 holds (`claimCompaction`): nothing may start on them meanwhile. */
+  const compacting = new Set<string>();
   const locked = async <T>(locks: Map<string, Promise<void>>, threadId: string, work: () => Promise<T>): Promise<T> => {
     const previous = locks.get(threadId);
     let release!: () => void;
@@ -386,8 +515,18 @@ export function createRunManager(options: {
    * question reply continues the turn whose checkpoint already describes the
    * tree it began from. `undefined` — never a throw — for a continuation, a
    * directory that is not a git repo, or a snapshot that failed.
+   *
+   * It takes the snapshot and nothing more: the task's 基线 is pinned by the
+   * caller (`recordBaseline`) once the start's `running` write has landed. A
+   * start that 停止 cancels, or that fails after its snapshot, leaves a ref
+   * nothing points at; a baseline recorded for it would stay the task's, and
+   * whatever the user then changed by hand before sending again would count as
+   * the task's work.
    */
-  const checkpointForTurn = async (thread: ThreadRecord, incoming: UIMessage[]): Promise<MessageCheckpoint | undefined> => {
+  const checkpointForTurn = async (
+    thread: ThreadRecord,
+    incoming: UIMessage[],
+  ): Promise<{ checkpoint: MessageCheckpoint; repoPath: string } | undefined> => {
     if (incoming.at(-1)?.role !== "user") return undefined;
     const project = await projectOfThread(projects, dataDir, thread).catch(() => undefined);
     if (project == null) return undefined;
@@ -396,8 +535,7 @@ export function createRunManager(options: {
     const taken = await createCheckpoint({ repoPath, threadId: thread.id, log });
     const elapsed = Date.now() - startedAt;
     if (elapsed >= SLOW_CHECKPOINT_MS) log.warn(`线程 ${thread.id} 的回合快照耗时 ${elapsed}ms`);
-    if (taken != null) await recordBaseline(thread, repoPath, taken.commit);
-    return taken == null ? undefined : { ...taken, at: new Date().toISOString() };
+    return taken == null ? undefined : { checkpoint: { ...taken, at: new Date().toISOString() }, repoPath };
   };
 
   /**
@@ -409,13 +547,17 @@ export function createRunManager(options: {
    *
    * On the record rather than on the message: `/compact` replaces the messages,
    * and losing the baseline with them would put the task back on HEAD.
+   *
+   * Returns the record as it now stands — the turn measures its changes against
+   * it — and never throws: a baseline that could not be pinned leaves it as it was.
    */
-  const recordBaseline = async (thread: ThreadRecord, repoPath: string, commit: string): Promise<void> => {
-    if (thread.workspace != null || thread.baselineCommit != null) return;
+  const recordBaseline = async (thread: ThreadRecord, repoPath: string, commit: string): Promise<ThreadRecord> => {
+    if (thread.workspace != null || thread.baselineCommit != null) return thread;
     const pinned = await pinBaseline({ repoPath, threadId: thread.id, commit, log });
-    if (pinned == null) return;
-    await threads.update(thread.id, { baselineCommit: pinned }).catch((error: unknown) => {
+    if (pinned == null) return thread;
+    return threads.update(thread.id, { baselineCommit: pinned }).catch((error: unknown) => {
       log.warn(`线程 ${thread.id} 的任务基线没能记下`, error);
+      return thread;
     });
   };
 
@@ -542,6 +684,10 @@ export function createRunManager(options: {
       })
       .catch((error) => log.warn(`标记线程 ${threadId} 中断失败`, error));
   };
+
+  /** What a call a stopped run left open says once it is closed: a stop, or the restart that stopped it. */
+  const stoppedToolText = (run: LiveRun): string =>
+    run.interruptReason === RESTART_INTERRUPT_TEXT ? RESTART_PENDING_TOOL_TEXT : STOP_INTERRUPT_TEXT;
 
   const runTurn = async (thread: ThreadRecord, incoming: UIMessage[], run: LiveRun, note?: string): Promise<void> => {
     const stored = await projectOfThread(projects, dataDir, thread);
@@ -745,10 +891,12 @@ export function createRunManager(options: {
           // throws), so it is destroyed and a new one starts from the last
           // *finished* turn's resume state. The stored history has to be closed
           // too, or the client keeps rendering an approval button for a turn
-          // that no longer exists. Closing to `output-error` is also what makes
-          // the history convertible: `convertToModelMessages` emits the closed
-          // parts as a `tool` message *before* the new user message, so the
-          // trailing message stays `user` and the harness starts a prompt turn.
+          // that no longer exists (for a new user message `start()` has already
+          // closed it; closing it again costs nothing). Closing to `output-error`
+          // is also what makes the history convertible: `convertToModelMessages`
+          // emits the closed parts as a `tool` message *before* the new user
+          // message, so the trailing message stays `user` and the harness starts
+          // a prompt turn.
           parked.delete(thread.id);
           await parkedRunner.destroy().catch((error) => log.warn(`销毁挂起的引擎失败 (thread ${thread.id})`, error));
           await writeRun(() => clearContinueFrom(thread.id));
@@ -911,41 +1059,69 @@ export function createRunManager(options: {
       // open parts — its step is still running inside the engine.
       const settled = park || run.stopped ? assistant : settleStreamingToolParts(assistant, seed?.dropped);
 
+      // Whether this turn ends normally is decided inside the write lock, at the
+      // instant of writing — never before it. Counting the diff shells out to git,
+      // and a 停止 that lands in there (or while this write waits its turn) has
+      // already written `interrupted`: a normal ending written on top of it would
+      // put the task back to 空闲 and let the queue send its next message behind
+      // the user's back.
+      let ended = false;
       if (!run.stopped && owns()) {
         const stats = await measureChanges(thread);
-        // 计划回合的最终回复就是计划文档。Only a turn that really ended writes it:
-        // one parked on a question is still mid-research, and an interrupted or
-        // failed one has no plan to speak of.
-        if (thread.mode === "plan" && status === "idle") await writeRun(() => savePlanFrom(thread.id, settled));
-        await updateRun({
-            messages: withTurnEnd(
-              withAssistant(settled),
-              streamError != null
-                ? { status: "error", reason: rawStreamError ?? streamError }
-                : incomplete
-                  ? { status: "interrupted", reason: incompleteReason }
-                  : undefined,
-            ),
-            status,
-            error: streamError != null ? (rawStreamError ?? streamError) : incomplete ? incompleteReason : undefined,
-            ...(stats != null ? { changeStats: stats } : {}),
-            // 未读: the turn ended on its own, so whoever sent it has not seen
-            // this yet. The client clears it when the task is really on screen.
-            ...(marksUnread(status) ? { unread: true } : {}),
-          })
-          .catch(async (error) => {
-            // Never let a failed final write leave the thread stuck `running`.
-            log.error(`保存线程 ${thread.id} 的最终状态失败`, error);
-            park = false;
-            await updateRun({ status: "error", error: getHarnessErrorMessage(error), unread: true })
-              .catch((fallback) => log.error(`记录线程 ${thread.id} 的错误状态也失败`, fallback));
-          });
-      } else {
+        ended =
+          (await writeRun(async () => {
+            if (run.stopped) return false;
+            // 计划回合的最终回复就是计划文档。Only a turn that really ended writes it:
+            // one parked on a question is still mid-research, and an interrupted or
+            // failed one has no plan to speak of.
+            if (thread.mode === "plan" && status === "idle") await savePlanFrom(thread.id, settled);
+            // Saving the plan awaits the disk, and 停止 can land in there too.
+            if (run.stopped) return false;
+            // A 停止 that cancelled the start waiting behind this turn left the turn
+            // alone but holds the queue (see `queuePaused`).
+            const recorded = status === "idle" && run.queuePaused === true ? "interrupted" : status;
+            try {
+              await threads.update(thread.id, {
+                messages: withTurnEnd(
+                  withAssistant(settled),
+                  streamError != null
+                    ? { status: "error", reason: rawStreamError ?? streamError }
+                    : incomplete
+                      ? { status: "interrupted", reason: incompleteReason }
+                      : undefined,
+                ),
+                status: recorded,
+                error: streamError != null ? (rawStreamError ?? streamError) : incomplete ? incompleteReason : undefined,
+                ...(stats != null ? { changeStats: stats } : {}),
+                // 未读: the turn ended on its own, so whoever sent it has not seen
+                // this yet. The client clears it when the task is really on screen.
+                ...(marksUnread(recorded) ? { unread: true } : {}),
+              });
+            } catch (error) {
+              // Never let a failed final write leave the thread stuck `running`.
+              log.error(`保存线程 ${thread.id} 的最终状态失败`, error);
+              park = false;
+              await threads
+                .update(thread.id, { status: "error", error: getHarnessErrorMessage(error), unread: true })
+                .catch((fallback) => log.error(`记录线程 ${thread.id} 的错误状态也失败`, fallback));
+            }
+            return true;
+          })) === true;
+      }
+      if (!ended) {
         // 停止: recorded even when the turn had produced nothing yet, or the
         // question would sit in the log as if it had never been answered.
+        // One that lands after the turn was already about to park on the human
+        // leaves nobody to answer: the open calls are closed, as stopping a
+        // parked turn does, and the engine is torn down rather than parked.
+        const wasParking = park;
+        park = false;
         Object.assign(runRecord, { endedAt: new Date().toISOString(), stopReason: run.interruptReason === RESTART_INTERRUPT_TEXT ? "unknown" : "cancelled" });
         await updateRun({
-          messages: withTurnEnd(withAssistant(settled), { status: "interrupted", reason: run.interruptReason ?? STOP_INTERRUPT_TEXT }),
+          messages: withTurnEnd(
+            wasParking ? closePendingToolParts(withAssistant(settled), stoppedToolText(run)) : withAssistant(settled),
+            { status: "interrupted", reason: run.interruptReason ?? STOP_INTERRUPT_TEXT },
+          ),
         });
       }
     } catch (error) {
@@ -973,7 +1149,11 @@ export function createRunManager(options: {
       run.hub.interrupt(run.stopped ? (run.interruptReason ?? STOP_INTERRUPT_TEXT) : message);
       run.hub.close();
       await reader.catch(() => {});
-      await updateRun({
+      // Like the normal ending, built inside the write lock: a 停止 that lands
+      // while this write waits behind another must not be turned into `error`.
+      await writeRun(() => {
+        if (run.stopped) runRecord.stopReason = run.interruptReason === RESTART_INTERRUPT_TEXT ? "unknown" : "cancelled";
+        return threads.update(thread.id, {
           messages: withTurnEnd(
             resumeFailed
               ? closePendingToolParts(withAssistant(assistant), RESUME_FAILED_TEXT)
@@ -986,11 +1166,18 @@ export function createRunManager(options: {
           ),
           status: run.stopped || resumeFailed ? "interrupted" : "error",
           ...(run.stopped ? {} : { error: rawMessage }),
-        })
-        .catch((updateError) => log.error(`记录线程 ${thread.id} 的错误状态失败`, updateError));
+        });
+      }).catch((updateError) => log.error(`记录线程 ${thread.id} 的错误状态失败`, updateError));
     } finally {
       await Promise.allSettled([...run.steerCalls]);
       run.hub.close();
+      // 停止 that landed while the turn was being written down as parked — its
+      // final write was already in flight — leaves nobody to hold it: the engine
+      // is torn down below rather than parked, and the calls it left open are
+      // closed the way stopping a parked turn closes them (see `releaseParked`),
+      // or the client keeps an approval card for a turn that no longer exists.
+      const stoppedWhileParking = park && run.stopped;
+      if (stoppedWhileParking) park = false;
       if (runner != null && !run.retired) {
         if (park && !run.stopped && owns()) {
           // Alive on purpose, and no harness file is written: `<id>.harness.json`
@@ -1009,6 +1196,12 @@ export function createRunManager(options: {
           if (finishing.get(thread.id) === cleanup) finishing.delete(thread.id);
         }
       }
+      if (stoppedWhileParking) {
+        await writeRun(async () => {
+          const record = await threads.get(thread.id);
+          if (record != null) await threads.update(thread.id, { messages: closePendingToolParts(record.messages, stoppedToolText(run)) });
+        }).catch((error) => log.warn(`关闭线程 ${thread.id} 悬着的调用失败`, error));
+      }
       if (!park) await writeRun(async () => {
         await options.queue?.settleSteers(thread.id,
           [...new Set([...run.acceptedSteers, ...durableSteers.keys()])], !run.completedNormally || run.stopped);
@@ -1021,10 +1214,11 @@ export function createRunManager(options: {
       // 排队: the slot is free and the engine is put away, so the thread can
       // take its next queued message. `dispatchQueue` re-reads the record and
       // only acts on a clean `idle`, so a parked, stopped or failed turn here
-      // simply leaves the queue where it is.
+      // simply leaves the queue where it is. A stop aimed at the start waiting
+      // behind this turn holds it too (see `queuePaused`).
       delete run.runner;
       if (runs.get(thread.id) === run) runs.delete(thread.id);
-      if (owns()) scheduleDispatch(thread.id);
+      if (owns() && run.queuePaused !== true) scheduleDispatch(thread.id);
     }
   };
 
@@ -1050,7 +1244,22 @@ export function createRunManager(options: {
    * 「发送」 route. Everything a turn needs to be a real turn — the setup wait,
    * 每回合快照, Plan mode, the title, the cleared 收口 — lives here.
    */
-  const startTurnUnlocked = async (threadId: string, uiMessages: unknown, recovery?: { id: string; note: string }): Promise<ChunkHub> => {
+  const startTurnUnlocked = async (
+    threadId: string,
+    uiMessages: unknown,
+    pending: PendingStart,
+    recovery?: { id: string; note: string },
+  ): Promise<ChunkHub> => {
+    // 停止 can land at any of the awaits below, and this turn has no run yet for
+    // it to find. Every wait that can be long is cut short by it, and every look
+    // between two of them gives up if it already came.
+    const signal = pending.abort.signal;
+    const assertNotCancelled = (): void => {
+      if (signal.aborted) throw signal.reason;
+    };
+    const waitFor = <T>(work: Promise<T>): Promise<T> => untilAborted(work, signal);
+
+    assertNotCancelled();
     if (shuttingDown) throw new ConflictError("服务正在退出", "server_stopping");
     const active = runs.get(threadId);
     if (active != null) {
@@ -1059,27 +1268,32 @@ export function createRunManager(options: {
       // The turn is over — the client saw the stream close — and the run is
       // only finishing its bookkeeping. Answering an approval that fast is
       // normal, so wait for the slot instead of rejecting it.
-      await active.done.catch(() => {});
+      await waitFor(active.done.catch(() => {}));
     }
     // A fresh worktree may still be installing dependencies: the user could
     // submit their first message the moment the task appeared. A *failed*
     // setup does not hold the turn back — the task simply runs without it.
     try {
-      await options.whenWorkspaceReady?.(threadId);
+      await waitFor((async () => options.whenWorkspaceReady?.(threadId))());
     } catch (error) {
-      await keepHeldBackMessage(threadId, uiMessages).catch((failure: unknown) =>
-        log.warn(`保留线程 ${threadId} 的首条消息失败`, failure),
-      );
+      // A start the user stopped while it waited was never a message to keep.
+      if (!(signal.aborted && error === signal.reason)) {
+        await keepHeldBackMessage(threadId, uiMessages).catch((failure: unknown) =>
+          log.warn(`保留线程 ${threadId} 的首条消息失败`, failure),
+        );
+      }
       throw error;
     }
-    await whenSetupSettled(threadId);
+    await waitFor(whenSetupSettled(threadId));
     // The previous turn's engine may still be persisting its resume state.
-    await finishing.get(threadId);
+    const previousCleanup = finishing.get(threadId);
+    if (previousCleanup != null) await waitFor(previousCleanup);
+    assertNotCancelled();
     // Read after both waits: the preceding turn may have written its final
     // assistant message while this follow-up was waiting for its slot.
     const stored = await threads.get(threadId);
     if (stored == null) throw new NotFoundError(`线程不存在: ${threadId}`, "thread_not_found");
-    const model = (await options.modelFor?.(stored)) ?? stored.model;
+    const model = (await waitFor((async () => options.modelFor?.(stored))())) ?? stored.model;
     const thread = model !== stored.model ? await threads.update(threadId, { model }) : stored;
     if (thread.archivedAt != null) throw new ConflictError("任务已归档，请先取消归档", "thread_archived");
     // 归档中 / 恢复中: the worktree is being taken apart or put back.
@@ -1102,7 +1316,7 @@ export function createRunManager(options: {
     // Awaited: the probe can touch the filesystem (a login store, an
     // environment credential), and a rejected precondition has to become the
     // HTTP response instead of an unhandled rejection.
-    await factory.ensureAvailable?.({ thread, dataDir });
+    await waitFor((async () => factory.ensureAvailable?.({ thread, dataDir }))());
 
     const repaired = Array.isArray(uiMessages) ? withToolInputs(uiMessages as UIMessage[]) : uiMessages;
     const result = await safeValidateUIMessages({ messages: repaired });
@@ -1116,12 +1330,14 @@ export function createRunManager(options: {
 
     // Setup has settled and the engine has not started: this is the moment
     // the working directory still looks the way the user saw it.
-    const checkpoint = await checkpointForTurn(thread, validated);
+    assertNotCancelled();
+    const taken = await checkpointForTurn(thread, validated);
+    const checkpoint = taken?.checkpoint;
     // The client posts the history back, but only its tail is merged: the stored
     // copy needs the same repair, or the engine converts the broken parts.
     // A turn picked back up (an approval answered after a stop, say) is no
     // longer ended; a new user message has no ending to clear.
-    const messages = withTurnEnd(
+    const merged = withTurnEnd(
       withAfterFallback(withToolInputs(mergeIncoming(
         withoutPromotedSteers(thread.messages, validated.filter(input => input.role === "user" &&
           thread.queue?.some(item => item.mode === "steer" && item.id === input.id))),
@@ -1129,6 +1345,14 @@ export function createRunManager(options: {
       )), checkpoint),
       undefined,
     );
+    // A new user message abandons a turn parked on the human (see `runTurn`), and
+    // the calls it left open are closed in the very write that starts this turn —
+    // not later, by the run. A 停止 that lands before the run gets that far
+    // releases the parked engine itself and closes them on disk, and every write
+    // the run makes from its own copy of the history would open them again: an
+    // approval card for an engine that no longer exists.
+    const messages =
+      parked.has(threadId) && validated.at(-1)?.role === "user" ? closePendingToolParts(merged, ABANDONED_TURN_TEXT) : merged;
     // 从恢复点继续: the marker goes away with this message — the task is moving
     // forward from here — and the model is told once, in this turn's input, what
     // happened to the files it may remember writing.
@@ -1142,7 +1366,12 @@ export function createRunManager(options: {
     const note = [forked, restored, recovery?.note].filter((part) => part != null).join("\n\n") || undefined;
     // A thread is named by its first user message; an explicit title is kept.
     const title = thread.title === DEFAULT_THREAD_TITLE ? deriveThreadTitle(messages) : undefined;
+    // The last look. Past it the record is written and the run registered, so
+    // `stop()` leaves this start alone and stops the run it makes instead (it
+    // queues behind this start on the start lock).
+    assertNotCancelled();
     if (shuttingDown) throw new ConflictError("服务正在退出", "server_stopping");
+    pending.committed = true;
     const updated = await threads.update(threadId, {
       messages,
       ...(recovery != null ? { consumeRestartRecovery: recovery.id } : { restartRecovery: undefined }),
@@ -1160,6 +1389,9 @@ export function createRunManager(options: {
         : {}),
       ...(title != null ? { title } : {}),
     });
+    // Only now: a baseline is the tree the task's first turn *started from*, and a
+    // start that was cancelled — or whose `running` write failed — never began one.
+    const current = taken != null ? await recordBaseline(updated, taken.repoPath, taken.checkpoint.commit) : updated;
 
     const run: LiveRun = {
       hub: createChunkHub(),
@@ -1174,13 +1406,128 @@ export function createRunManager(options: {
     runs.set(threadId, run);
     owners.set(threadId, run);
     // Detached on purpose: an HTTP client disconnecting must not cancel the turn.
-    run.done = runTurn(updated, messages, run, note);
+    run.done = runTurn(current, messages, run, note);
     run.done.catch((error) => log.error(`线程 ${threadId} 的运行崩溃`, error));
 
     return run.hub;
   };
-  const startTurn = (threadId: string, uiMessages: unknown): Promise<ChunkHub> =>
-    locked(starting, threadId, () => startTurnUnlocked(threadId, uiMessages));
+
+  /**
+   * Run `work` as a start that `stop()` and `stopAll()` can reach before it is a
+   * run (see `PendingStart`), behind the thread's start lock. `onCancelled` is
+   * what the caller has to undo when it is cancelled — a queued message going
+   * back, say. It is part of the start: `stop()` waits for it, so a client
+   * reading the task after the 204 never sees it half undone.
+   */
+  const beginStart = <T>(
+    threadId: string,
+    work: (pending: PendingStart) => Promise<T>,
+    onCancelled?: (cause: CancelCause) => Promise<void>,
+  ): Promise<T> => {
+    // Registered before the lock is even asked for: a start queued behind
+    // another is just as much on its way as the one at the front.
+    const pending: PendingStart = { abort: new AbortController(), committed: false, done: Promise.resolve() };
+    const group = pendingStarts.get(threadId) ?? new Set<PendingStart>();
+    group.add(pending);
+    pendingStarts.set(threadId, group);
+    const started = locked(starting, threadId, () => work(pending));
+    pending.done = started
+      .then(
+        () => {},
+        async (error: unknown) => {
+          if (pending.cancelledBy == null || error !== pending.abort.signal.reason || onCancelled == null) return;
+          await onCancelled(pending.cancelledBy).catch((failure: unknown) =>
+            log.warn(`线程 ${threadId} 被取消的回合没能收拾干净`, failure),
+          );
+        },
+      )
+      .then(() => {
+        group.delete(pending);
+        if (group.size === 0 && pendingStarts.get(threadId) === group) pendingStarts.delete(threadId);
+      });
+    // The caller hears of the outcome only once the cleanup is over, too.
+    return pending.done.then(() => started);
+  };
+
+  /**
+   * Give up every start on this thread that has not committed yet. Returns them
+   * — with any an earlier stop already gave up, whose cleanup may still be going.
+   */
+  const cancelStarts = (threadId: string, cause: CancelCause): PendingStart[] => {
+    const cancelled: PendingStart[] = [];
+    for (const start of pendingStarts.get(threadId) ?? []) {
+      if (start.committed) continue;
+      if (!start.abort.signal.aborted) {
+        start.cancelledBy = cause;
+        start.abort.abort(
+          cause === "stop" ? new TurnStartCancelledError() : new TurnStartCancelledError("服务正在退出", "server_stopping"),
+        );
+      }
+      cancelled.push(start);
+    }
+    return cancelled;
+  };
+
+  /**
+   * The run a start that was just cancelled was waiting behind, if it has
+   * already streamed to its end and is only finishing its bookkeeping: what the
+   * stop was aimed at is that start, not this turn, so the turn is recorded as
+   * it ended. The user's 停止 still holds the queue (`queuePaused`); a shutdown
+   * does not, so whatever it put back into the queue goes out on the next launch.
+   */
+  const spareFinishing = (threadId: string, cancelled: readonly PendingStart[], cause: CancelCause): LiveRun | undefined => {
+    const run = runs.get(threadId);
+    if (cancelled.length === 0 || run == null || !run.hub.closed || run.stopped) return undefined;
+    if (cause === "stop") run.queuePaused = true;
+    return run;
+  };
+
+  /**
+   * 停止 holds the queue: an `idle` task with a queue is one the next nudge
+   * sends from, so it says `interrupted` instead, as after a stopped turn. Only
+   * over `idle`, checked in the write itself: a turn that started meanwhile has
+   * written `running`, and that is not this stop's to undo.
+   */
+  const holdQueue = (threadId: string): Promise<void> =>
+    threads.update(threadId, { status: "interrupted" }, { status: "idle" }).then(
+      () => {},
+      (error: unknown) => {
+        if (!(error instanceof ConflictError)) log.warn(`标记线程 ${threadId} 中断失败`, error);
+      },
+    );
+
+  const startTurn = (threadId: string, uiMessages: unknown, onCancelled?: (cause: CancelCause) => Promise<void>): Promise<ChunkHub> => {
+    // 压缩中: refused before it is even on its way, so a claim never has a start
+    // under it that read the history before the summary was asked for.
+    if (compacting.has(threadId)) return Promise.reject(new ConflictError("正在压缩上下文，压完再发", "thread_compacting"));
+    return beginStart(threadId, (pending) => startTurnUnlocked(threadId, uiMessages, pending), onCancelled);
+  };
+
+  /**
+   * A message whose start the shutdown cancelled is not lost with the process:
+   * it goes back to the head of the task's queue, and the next launch sends it
+   * from there once the task is idle (`dispatchQueuesAtBoot`), like anything
+   * else left queued. A `/compact` request is the client's, not words of the
+   * user's to keep; an approval answer stays with its parked engine.
+   */
+  const keepForNextLaunch = async (threadId: string, uiMessages: unknown): Promise<void> => {
+    const queue = options.queue;
+    if (queue == null || !Array.isArray(uiMessages)) return;
+    const result = await safeValidateUIMessages({ messages: uiMessages.slice(-1) });
+    const message = result.success ? result.data[0] : undefined;
+    if (message?.role !== "user" || (message.metadata as ThreadMessageMetadata | undefined)?.compactRequested != null) return;
+    const text = message.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+    const files = message.parts.filter((part): part is FileUIPart => part.type === "file");
+    if (text.trim() === "" && files.length === 0) return;
+    await queue.locked(threadId, async () => {
+      if ((await threads.get(threadId))?.queue?.some((item) => item.id === message.id)) return;
+      await queue.putBack(
+        threadId,
+        { id: message.id, text, createdAt: new Date().toISOString(), mode: "queue", ...(files.length > 0 ? { files } : {}) },
+        { held: true },
+      );
+    });
+  };
 
   /**
    * 排队 dispatch: pull the head of the queue out and run it as an ordinary
@@ -1197,16 +1544,25 @@ export function createRunManager(options: {
     const queue = options.queue;
     const item = await queue.take(threadId, { ...(itemId ? { itemId } : {}), retain: true });
     if (item == null) return undefined;
+    const putBack = () => queue.putBack(threadId, item).catch((failure: unknown) => log.error(`排队消息放回线程 ${threadId} 失败`, failure));
     try {
       // Built the way the web builds it, because from here on it is the same
       // message: `start` stamps its checkpoint and folds it into the history.
       await startTurn(threadId, [{ id: item.id, role: "user", parts: [
         ...(item.text.trim() ? [{ type: "text" as const, text: item.text }] : []),
         ...(item.files ?? []),
-      ] }]);
+      ] }], async (cause) => {
+        await putBack();
+        // 停止 landed while the item was on its way. Stopping a running turn
+        // leaves the task `interrupted`, and that is what keeps its queue where
+        // it is; a stop is a stop, whether or not the turn had begun. A shutdown
+        // leaves the task as it was, so the next launch sends the item.
+        if (cause === "stop") await holdQueue(threadId);
+      });
       return item;
     } catch (error) {
-      await queue.putBack(threadId, item).catch((failure: unknown) => log.error(`排队消息放回线程 ${threadId} 失败`, failure));
+      // A cancelled start has put its item back already, above.
+      if (!(error instanceof TurnStartCancelledError)) await putBack();
       throw error;
     }
   };
@@ -1218,13 +1574,15 @@ export function createRunManager(options: {
    */
   const dispatchQueue = (threadId: string): Promise<void> =>
     locked(dispatching, threadId, async () => {
-      if (options.queue == null || runs.has(threadId)) return;
+      // 压缩中: whatever queued up meanwhile goes out once the summary is in.
+      if (options.queue == null || runs.has(threadId) || compacting.has(threadId)) return;
       const thread = await threads.get(threadId).catch(() => undefined);
       if (thread == null || thread.archivedAt != null || thread.transition != null || thread.status !== "idle") return;
       if (thread.compaction != null && thread.compaction.error == null) return;
       if ((thread.queue?.length ?? 0) === 0) return;
       const item = await runQueued(threadId).catch((error: unknown) => {
-        log.warn(`线程 ${threadId} 的排队消息没能发出`, error);
+        if (error instanceof TurnStartCancelledError) log.info(`线程 ${threadId} 的排队消息在开始前被停止，留在队列里`);
+        else log.warn(`线程 ${threadId} 的排队消息没能发出`, error);
         return undefined;
       });
       if (item != null) log.info(`线程 ${threadId} 自动发出了一条排队消息`);
@@ -1243,16 +1601,36 @@ export function createRunManager(options: {
     timer.unref?.();
   };
 
-  const stopTurnUnlocked = async (threadId: string, recoverRunning = false): Promise<void> => {
-    const fresh = await threads.get(threadId);
-    if (!recoverRunning && fresh?.restartRecovery != null) await threads.update(threadId, { restartRecovery: undefined });
+  /** 停止 on a turn parked on the human: its engine goes, its open calls are closed, its steers settle. */
+  const stopParked = async (threadId: string): Promise<void> => {
     const hadParked = parked.has(threadId);
     await releaseParked(threadId, STOP_INTERRUPT_TEXT);
     if (hadParked) {
       const items = (await threads.get(threadId))?.queue?.filter(item => item.mode === "steer") ?? [];
       await options.queue?.settleSteers(threadId, items.map(item => item.id), true);
     }
+  };
+
+  /** `spared`: the finishing run the stop let be (see `spareFinishing`). */
+  const stopTurnUnlocked = async (threadId: string, recoverRunning = false, spared?: LiveRun): Promise<void> => {
+    const fresh = await threads.get(threadId);
+    if (!recoverRunning && fresh?.restartRecovery != null) await threads.update(threadId, { restartRecovery: undefined });
+    await stopParked(threadId);
     const run = runs.get(threadId);
+    if (spared != null && (run == null || run === spared)) {
+      // Waited for all the same, so the record says how that turn ended once
+      // this returns.
+      if (run != null && !(await settledWithin(run.done, stopTimeoutMs))) {
+        log.warn(`线程 ${threadId} 上一轮的收尾在 ${stopTimeoutMs}ms 内没有结束`);
+      }
+      if (spared.queuePaused === true) {
+        // A turn that ended parked on the human is not a finished one: the stop
+        // stops it after all.
+        await stopParked(threadId);
+        await holdQueue(threadId);
+      }
+      return;
+    }
     if (run == null) return;
     if (recoverRunning) {
       await locked(writing, threadId, async () => {
@@ -1295,10 +1673,16 @@ export function createRunManager(options: {
   };
 
   return {
-    start: startTurn,
+    start: (threadId, uiMessages) =>
+      startTurn(threadId, uiMessages, async (cause) => {
+        if (cause === "shutdown") await keepForNextLaunch(threadId, uiMessages);
+      }),
 
     resumeInterrupted(threadId) {
-      return locked(starting, threadId, async () => {
+      // 压缩中: the intent stays, and the compaction asks again once it is done.
+      if (compacting.has(threadId)) return Promise.resolve();
+      // A start like any other, so 停止 and the shutdown reach it while it waits.
+      return beginStart(threadId, async (pending) => {
         if (shuttingDown || runs.has(threadId)) return;
         const thread = await threads.get(threadId);
         if (thread?.restartRecovery == null || thread.status !== "interrupted" ||
@@ -1312,10 +1696,13 @@ export function createRunManager(options: {
             id: thread.restartRecovery,
             role: "user",
             parts: [{ type: "text", text: RESTART_RESUME_TEXT }],
-          }], { id: thread.restartRecovery, note: restartNote(thread, registry[thread.engine]?.statelessTurns !== true) });
+          }], pending, { id: thread.restartRecovery, note: restartNote(thread, registry[thread.engine]?.statelessTurns !== true) });
           log.info(`线程 ${threadId} 已自动继续意外退出前的任务`);
         } catch (error) {
-          if (shuttingDown || (error instanceof ConflictError && error.code === "recovery_superseded")) return;
+          // 停止 has let go of the intent already, and the shutdown keeps it for
+          // the next launch; a 压缩 that is writing its summary asks again when done.
+          if (shuttingDown || pending.abort.signal.aborted) return;
+          if (error instanceof ConflictError && (error.code === "recovery_superseded" || error.code === "thread_compacting")) return;
           let fresh = await threads.get(threadId);
           if (fresh == null || runs.has(threadId) || fresh.archivedAt != null || fresh.transition != null ||
             fresh.outcome != null || fresh.workspace?.reclaimed === true || fresh.workspaceState != null) return;
@@ -1343,15 +1730,25 @@ export function createRunManager(options: {
     steer: deliverSteer,
 
     async stop(threadId) {
-      // Cancel before waiting for a startup probe, which may never settle.
+      // A turn still on its way to becoming a run — waiting for a worktree's
+      // setup, say — has nothing below to find. It is cancelled here, before
+      // anything is awaited, so it records nothing and starts no engine. One
+      // already committed is about to be a run, and the stop queued behind it
+      // on the start lock stops that run, as it would any other.
+      const cancelled = cancelStarts(threadId, "stop");
+      const spared = spareFinishing(threadId, cancelled, "stop");
+      // Cancel the restart intent before waiting for the start lock: a 自动继续
+      // past its last look then finds it gone and gives up.
       const pending = await threads.get(threadId);
-      if (pending?.restartRecovery != null) {
-        const fresh = await threads.update(threadId, { restartRecovery: undefined });
-        // If startup claimed first, its run may not be registered yet. Wait for
-        // the starting lock in that case and stop it through the ordinary path.
-        if (fresh.status !== "running" && !runs.has(threadId) && !parked.has(threadId)) return;
+      if (pending?.restartRecovery != null) await threads.update(threadId, { restartRecovery: undefined });
+      // What the cancelled starts undo — a queued message going back — is part
+      // of this stop: a client reading the task after the 204 sees it done.
+      if (cancelled.length > 0 && !(await settledWithin(Promise.all(cancelled.map((start) => start.done)), stopTimeoutMs))) {
+        log.warn(`线程 ${threadId} 的待启动回合在 ${stopTimeoutMs}ms 内没有让出`);
       }
-      return locked(starting, threadId, () => stopTurnUnlocked(threadId));
+      // Every long wait of a start gives way to the cancel above, so the start
+      // lock is only ever briefly held now — by a start that has committed.
+      return locked(starting, threadId, () => stopTurnUnlocked(threadId, false, spared));
     },
 
     subscribe(threadId, signal) {
@@ -1365,15 +1762,43 @@ export function createRunManager(options: {
 
     isRunning(threadId) {
       const run = runs.get(threadId);
-      return run != null && !run.hub.closed;
+      return (run != null && !run.hub.closed) || (pendingStarts.get(threadId)?.size ?? 0) > 0;
+    },
+
+    claimCompaction(threadId) {
+      // One synchronous step, so nothing can begin between the checks and the
+      // claim; a start that comes after it is refused (`startTurn`). A run only
+      // finishing its bookkeeping counts: it still writes the history.
+      if (compacting.has(threadId)) throw new ConflictError("正在压缩，稍等", "compact_running");
+      if (runs.has(threadId) || (pendingStarts.get(threadId)?.size ?? 0) > 0) {
+        throw new ConflictError("任务运行中，等它结束再压缩", "thread_running");
+      }
+      if (parked.has(threadId)) throw new ConflictError("有待处理的审批或提问，先处理完再压缩", "compact_pending");
+      compacting.add(threadId);
+      return () => {
+        compacting.delete(threadId);
+      };
     },
 
     async stopAll(options) {
       shuttingDown = true;
-      // Startups already awaiting credentials/checkpoints must settle before stopping.
-      await Promise.all([...starting.values()]);
+      // A start not yet committed gives up now instead of being waited for: one
+      // waiting on a worktree's setup could hold the quit for ten minutes, long
+      // past the desktop shell's patience (it kills after 20 s, and the engines
+      // are orphaned). Nothing of the user's is lost with it — a message goes
+      // back into the queue for the next launch (`keepForNextLaunch`,
+      // `runQueued`), and a 自动继续 keeps its intent.
+      const spared = new Map<string, LiveRun>();
+      const starts: PendingStart[] = [];
+      for (const [threadId, group] of [...pendingStarts.entries()]) {
+        starts.push(...group);
+        const run = spareFinishing(threadId, cancelStarts(threadId, "shutdown"), "shutdown");
+        if (run != null) spared.set(threadId, run);
+      }
+      // A committed start is about to be a run: it is let register, and stopped below.
+      await Promise.all([...starting.values(), ...starts.map((start) => start.done)]);
       await Promise.all([...runs.keys()].map((threadId) =>
-        locked(starting, threadId, () => stopTurnUnlocked(threadId, options?.recoverRunning === true))));
+        locked(starting, threadId, () => stopTurnUnlocked(threadId, options?.recoverRunning === true, spared.get(threadId)))));
       // A stateless engine holds nothing — the pending approval is just an open
       // tool part in the stored messages, and the next `start` builds a fresh
       // runner from them — so its runner is dropped and the thread is left
@@ -1407,6 +1832,14 @@ export function createRunManager(options: {
           await releaseParked(threadId, RESTART_PENDING_TOOL_TEXT, RESTART_INTERRUPT_TEXT);
         }),
       );
+    },
+
+    stats() {
+      return {
+        runs: runs.size,
+        parked: parked.size,
+        pendingStarts: [...pendingStarts.values()].reduce((sum, group) => sum + group.size, 0),
+      };
     },
   };
 }

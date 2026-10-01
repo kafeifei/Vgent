@@ -191,3 +191,57 @@ describe("删除任务", () => {
     expect(bench.toasts()).toEqual(["任务正在归档，稍等"]);
   });
 });
+
+describe("a send that 停止 got to first (turn_start_cancelled)", () => {
+  const cancelled = refusal(409, "turn_start_cancelled", "回合还没开始就被停止了，这条消息没有发出");
+
+  it("is not reported when it was 「发送」 on the queue, Build, or a compaction that a harness runs as a turn", async () => {
+    const remote = server();
+    remote.answers.set("POST /threads/t1/queue/q1/send", cancelled);
+    remote.answers.set("POST /threads/t1/compact", cancelled);
+    remote.answers.set("PATCH /threads/t1", { body: { id: "t1", messages: [] } });
+    remote.answers.set("POST /chat/t1", cancelled);
+    const bench = await mount({ threads: [thread("t1")] });
+    await bench.tree.act(async () => {
+      await bench.now().actions.sendQueued("t1", "q1");
+      await bench.now().actions.compactThread("t1");
+      await bench.now().actions.buildFromPlan("t1", "# 计划");
+    });
+    await sync();
+    expect(remote.asked).toEqual(expect.arrayContaining(["POST /threads/t1/queue/q1/send", "POST /threads/t1/compact", "POST /chat/t1"]));
+    expect(bench.toasts()).toEqual([]);
+  });
+
+  it("is not reported when it was the first message of a task either — the text goes back to that task's draft", async () => {
+    const remote = server();
+    remote.answers.set("POST /threads", { body: { id: "t9", projectId: "p1", title: "新任务", engine: "claude-code", status: "idle", createdAt: NOON, updatedAt: NOON, messages: [] } });
+    remote.answers.set("POST /chat/t9", cancelled);
+    remote.answers.set("PUT /drafts/t9", { body: { text: "", attachments: [] } });
+    const bench = await mount({ threads: [] });
+    let started: boolean | undefined;
+    await bench.tree.act(async () => {
+      started = await bench.now().actions.startThread("先做这个", "claude-code", "project", null, null, "agent");
+    });
+    await sync();
+    // The task exists and is open; its first message did not go out, and is kept as its draft.
+    expect(started).toBe(true);
+    expect(remote.asked).toContain("PUT /drafts/t9");
+    expect(bench.toasts()).toEqual([]);
+    expect(bench.now().failedFirstSend).toBe("t9");
+  });
+
+  it("still reports any other refusal on those paths, in the server's own words", async () => {
+    const remote = server();
+    remote.answers.set("POST /threads/t1/queue/q1/send", refusal(409, "thread_running", "任务还在进行中（等待审批或回答），先处理或停止"));
+    remote.answers.set("POST /threads/t1/compact", refusal(409, "compact_running", "正在压缩，稍等"));
+    const bench = await mount({ threads: [thread("t1")] });
+    await bench.tree.act(async () => {
+      await bench.now().actions.sendQueued("t1", "q1");
+    });
+    expect(bench.toasts()).toEqual(["任务还在进行中（等待审批或回答），先处理或停止"]);
+    await bench.tree.act(async () => {
+      await bench.now().actions.compactThread("t1");
+    });
+    expect(bench.toasts()).toEqual(["正在压缩，稍等"]);
+  });
+});

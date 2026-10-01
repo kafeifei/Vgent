@@ -76,9 +76,15 @@ function createFakeEngine(options?: { text?: string; deltaDelayMs?: number; writ
   return { factory, created, streamed };
 }
 
+/** The machine's own logins as a test sees them, whatever this machine's are: Claude signed in, Codex not. */
+const signedInClaude = async () => ({ loggedIn: true, email: "dev@example.com" });
+const signedOutCodex = async () => ({ codex: { available: false, source: null } });
+
 function makeApp(dataDir: string, factory?: EngineFactoryOverride, webDist?: string, extra?: Partial<CreateAppOptions>): VgentApp {
   const instance = createApp({
     ...extra,
+    probeClaudeLogin: extra?.probeClaudeLogin ?? signedInClaude,
+    accountOptions: { probeCodex: signedOutCodex, ...extra?.accountOptions },
     dataDir,
     token: TOKEN,
     // Never the real Downloads folder.
@@ -1694,11 +1700,11 @@ describe("createApp", () => {
   });
 
   it("serves a model catalog per engine and rejects an unknown one", async () => {
-    // Without a key the Claude Code catalog is the builtin alias list, so the
-    // route answers without touching the network. Signed in here whatever this
-    // machine's own Claude login says: a signed-out account lists nothing.
+    // Without a key the Claude Code catalog is the builtin aliases, listed once
+    // per signed-in Claude account, so the route answers without touching the
+    // network. `makeApp` signs the machine's own login in.
     vi.stubEnv("ANTHROPIC_API_KEY", "");
-    const app = makeApp(await tempDir(), undefined, undefined, { probeClaudeLogin: async () => ({ loggedIn: true, email: "dev@example.com" }) });
+    const app = makeApp(await tempDir());
 
     const unknown = await request(app, "/api/engines/nope/models");
     expect(unknown.status).toBe(400);
@@ -1706,17 +1712,21 @@ describe("createApp", () => {
 
     const response = await request(app, "/api/engines/claude-code/models");
     expect(response.status).toBe(200);
-    const catalog = (await response.json()) as { engine: string; models: Array<{ id: string }>; source: string };
+    const catalog = (await response.json()) as { engine: string; models: Array<{ id: string; source?: unknown }>; source: string };
     expect(catalog.engine).toBe("claude-code");
-    expect(Array.isArray(catalog.models)).toBe(true);
-    expect(catalog.models.map((entry) => entry.id)).toContain("sonnet");
+    // The machine's login is the default account: its rows go by the bare alias.
+    expect(catalog.models.find((entry) => entry.id === "sonnet")?.source).toMatchObject({ kind: "claude-subscription", account: "claude" });
+
+    // No Claude account signed in, nothing listed.
+    const signedOut = makeApp(await tempDir(), undefined, undefined, { probeClaudeLogin: async () => ({ loggedIn: false }) });
+    const empty = (await (await request(signedOut, "/api/engines/claude-code/models")).json()) as { models: unknown[] };
+    expect(empty.models).toEqual([]);
   });
 
   it("names the model each engine falls back to when a task picks none", async () => {
-    // No Codex login and no gateway key: the in-house engine lists only what a
-    // provider brings, so the route answers without touching the network.
-    vi.stubEnv("ANTHROPIC_API_KEY", "");
-    vi.stubEnv("CODEX_HOME", await tempDir());
+    // No Codex login (`makeApp` signs it out) and no gateway key: the in-house
+    // engine lists only what a provider brings, so the route answers without
+    // touching the network.
     vi.stubEnv("AI_GATEWAY_API_KEY", "");
     vi.stubEnv("VERCEL_OIDC_TOKEN", "");
     const app = makeApp(await tempDir());

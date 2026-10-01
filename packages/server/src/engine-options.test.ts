@@ -44,9 +44,10 @@ describe("engine options", () => {
   it("turns OpenCode's switches into refused tools, its search flag and its LSP config", () => {
     expect(openCodeSwitches(ENGINE_OPTION_DEFAULTS.opencode)).toEqual({ inactiveTools: [], env: { OPENCODE_ENABLE_EXA: "1" }, config: { lsp: true } });
     expect(openCodeSwitches({ subagents: false, memory: false, todos: false, web: false, lsp: false })).toEqual({
-      inactiveTools: ["agent", "todowrite", "webfetch"],
+      inactiveTools: ["agent", "webfetch"],
       env: {},
-      config: { lsp: false },
+      // Out of the model's tool list: the bridge's own refusal never catches `todowrite`.
+      config: { lsp: false, tools: { todowrite: false } },
     });
   });
 

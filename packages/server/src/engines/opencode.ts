@@ -55,11 +55,14 @@ const DESCRIPTOR: EngineDescriptor = {
 };
 
 /**
- * 引擎选项 as OpenCode takes them. Its subagents, to-do list and web fetch are
- * built-in tools the harness refuses when switched off — the bridge can only
- * make them ask, so the model still sees them. Web search is OpenCode's own,
- * through Exa's hosted service with no key, and only there when asked for.
- * LSP is OpenCode's own client, off by its default.
+ * 引擎选项 as OpenCode takes them. Its to-do list is taken out of its own tool
+ * list, so the model never sees it. Its subagents and web fetch cannot be: the
+ * bridge's permission table pins `task` and `webfetch` to "ask", which beats
+ * the `tools` config, so they are left visible and the harness refuses them.
+ * Not `inactiveTools` for the to-do list: the bridge files `todowrite` under
+ * the `write` permission and lets it run. Web search is OpenCode's own, through
+ * Exa's hosted service with no key, and only there when asked for. LSP is
+ * OpenCode's own client, off by its default.
  */
 export function openCodeSwitches(options: EngineOptions): {
   inactiveTools: string[];
@@ -67,13 +70,9 @@ export function openCodeSwitches(options: EngineOptions): {
   config: Record<string, unknown>;
 } {
   return {
-    inactiveTools: [
-      ...(options.subagents === false ? ["agent"] : []),
-      ...(options.todos === false ? ["todowrite"] : []),
-      ...(options.web === false ? ["webfetch"] : []),
-    ],
+    inactiveTools: [...(options.subagents === false ? ["agent"] : []), ...(options.web === false ? ["webfetch"] : [])],
     env: options.web === false ? {} : { OPENCODE_ENABLE_EXA: "1" },
-    config: { lsp: options.lsp !== false },
+    config: { lsp: options.lsp !== false, ...(options.todos === false ? { tools: { todowrite: false } } : {}) },
   };
 }
 

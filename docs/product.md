@@ -129,7 +129,7 @@ SVG 永远只通过 `<img>` 显示，不放进页面；不做清洗，下载下�
 | 联网 | 开（搜索 + 抓取） | 联网搜索：实时 / 缓存（默认）/ 关；只有 GPT-5.5 拿得到，更新的模型走精简接口，Codex 不给它们这个工具 | 开（抓取 + Exa 搜索，不要 key） | 没有 |
 | LSP 诊断 | 没有（要另装插件） | 没有 | 开（它自己默认关） | 没有 |
 
-OpenCode 的子代理、待办、抓取关掉后，工具模型仍看得见、调用时被拒（适配器只能做到这一步）；Claude Code 关掉的工具模型看不见。Codex 的子代理要关 `agents.enabled` 才真没有，只关 `features.multi_agent` 新模型上还在。真跑验过的：三家的子代理和联网开关、Claude Code 的待办、OpenCode 的记忆；Claude Code 的自动记忆、Codex 的记忆、OpenCode 的 LSP 诊断只验到配置传进去了。MCP 和 Skills 不按引擎分：「工具与扩展」里配的 MCP 给自研引擎和 OpenCode；Claude Code 和 Codex 仍读它们自己的配置文件。
+OpenCode 的待办关掉后从它自己的工具列表里拿掉，模型看不见；子代理、抓取关掉后模型仍看得见、调用时被拒（适配器的权限表把这两个写死成「询问」，盖过 OpenCode 自己的工具配置）。debug 210 的待办开关在 OpenCode 上没生效：适配器把 `todowrite` 的权限名认成了 `write`，拦不到它，后来改成从工具列表里拿掉；Claude Code 关掉的工具模型看不见。Codex 的子代理要关 `agents.enabled` 才真没有，只关 `features.multi_agent` 新模型上还在。真跑验过的：三家的子代理和联网开关、Claude Code 的待办、OpenCode 的记忆；Claude Code 的自动记忆、Codex 的记忆、OpenCode 的 LSP 诊断只验到配置传进去了。MCP 和 Skills 不按引擎分：「工具与扩展」里配的 MCP 给自研引擎和 OpenCode；Claude Code 和 Codex 仍读它们自己的配置文件。
 
 OpenCode（2026-09-30 接入，试用中）：用户想拿它替掉自研引擎当默认，先接进来比。模型行和另外两个引擎共用——Codex 账号的 GPT 在选择器里还是一行，引擎子菜单多一个 OpenCode；设置页提供商的表多一列 OpenCode，老的提供商在这一列点开就用自研那列的地址。默认引擎还没换。
 

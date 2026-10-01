@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { UIMessage } from "ai";
+import { listedCodexModels, readCodexModelCache } from "@vgent/providers";
 import { afterEach, expect, it } from "vitest";
 import type { EngineOptions } from "./engine-options.js";
 import { claudeAccountEnv } from "./accounts/claude.js";
@@ -35,6 +36,13 @@ const accounts = {
   ensure: async () => {},
 } as unknown as EngineAccounts;
 const claudeModel = claudeAccount == null ? undefined : `@${claudeAccount}:sonnet`;
+/** No model is written into the tests: the first one this machine's Codex lists, unless named. */
+const codexSlug =
+  process.env.VGENT_SMOKE_CODEX_MODEL ??
+  listedCodexModels((await readCodexModelCache(resolve(process.env.CODEX_HOME ?? join(homedir(), ".codex"))))?.models ?? [])[0]?.slug;
+const openCodeModel = codexSlug == null ? undefined : `codex-subscription:${codexSlug}`;
+/** Codex gives hosted web search only to models off its lite Responses path (gpt-5.5 today). */
+const codexSearchModel = process.env.VGENT_SMOKE_CODEX_SEARCH_MODEL ?? codexSlug;
 
 const LIST_TOOLS = "Without calling any tool, reply with the exact names of every tool you can call, comma-separated, and nothing else.";
 
@@ -43,7 +51,7 @@ async function turn(
   options: Partial<Record<EngineId, EngineOptions>>,
   prompt: string,
   model?: string,
-): Promise<{ text: string; tools: string[] }> {
+): Promise<{ text: string; tools: string[]; refused: string[] }> {
   const temp = async (prefix: string) => {
     const dir = await mkdtemp(join(tmpdir(), prefix));
     dirs.push(dir);
@@ -75,8 +83,9 @@ async function turn(
     const last = record!.messages.at(-1)!;
     const text = last.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
     const tools = last.parts.flatMap((part) => (part.type.startsWith("tool-") ? [part.type.slice(5)] : part.type === "dynamic-tool" ? [(part as { toolName: string }).toolName] : []));
+    const refused = last.parts.flatMap((part) => (part.type.startsWith("tool-") && (part as { state?: string }).state === "output-error" ? [part.type.slice(5)] : []));
     console.log(`[options] ${engine} ${JSON.stringify(options)}\n  tools called: ${tools.join(", ")}\n  text: ${text.slice(0, 600)}`);
-    return { text, tools };
+    return { text, tools, refused };
   } finally {
     await runs.stopAll();
   }
@@ -96,21 +105,30 @@ smoke("Claude Code gets its to-do list on newer models, and loses switched-off t
 smoke("Codex takes the switches as config: subagents and web search come and go", async () => {
   // Its web search is a hosted tool, not a function the model would name: it shows as a 「Search」 step.
   const SEARCH = "Search the web (not the shell) for today's top story on the OpenAI news page, and reply with its title and the source domain in one line.";
-  const on = await turn("codex", { codex: { webSearch: "live" } }, LIST_TOOLS);
+  const on = await turn("codex", { codex: { webSearch: "live" } }, LIST_TOOLS, codexSlug);
   expect(on.text).toMatch(/spawn_agent/);
-  expect((await turn("codex", { codex: { webSearch: "live" } }, SEARCH, process.env.VGENT_SMOKE_CODEX_MODEL)).tools).toContain("Search");
-  const off = await turn("codex", { codex: { subagents: false, webSearch: "disabled" } }, LIST_TOOLS);
+  expect((await turn("codex", { codex: { webSearch: "live" } }, SEARCH, codexSearchModel)).tools).toContain("Search");
+  const off = await turn("codex", { codex: { subagents: false, webSearch: "disabled" } }, LIST_TOOLS, codexSlug);
   expect(off.text).not.toMatch(/spawn_agent/);
-  expect((await turn("codex", { codex: { webSearch: "disabled" } }, SEARCH)).tools).not.toContain("Search");
+  expect((await turn("codex", { codex: { webSearch: "disabled" } }, SEARCH, codexSearchModel)).tools).not.toContain("Search");
 }, 10 * 60_000);
 
 smoke("OpenCode gets web search and Vgent's memory by default", async () => {
-  const listed = await turn("opencode", {}, LIST_TOOLS);
+  const listed = await turn("opencode", {}, LIST_TOOLS, openCodeModel);
   expect(listed.text).toMatch(/websearch/i);
   expect(listed.text).toMatch(/memory/i);
-  const remembered = await turn("opencode", {}, "Call the memory tool with action list, then reply with exactly what it returned.");
+  const remembered = await turn("opencode", {}, "Call the memory tool with action list, then reply with exactly what it returned.", openCodeModel);
   expect(remembered.tools.some((tool) => /memory/i.test(tool))).toBe(true);
   expect(remembered.text).toContain("记忆为空");
-  const without = await turn("opencode", { opencode: { memory: false, web: false } }, LIST_TOOLS);
-  expect(without.text).not.toMatch(/websearch|memory/i);
+  const without = await turn("opencode", { opencode: { memory: false, web: false, todos: false } }, LIST_TOOLS, openCodeModel);
+  expect(without.text).not.toMatch(/websearch|memory|todowrite/i);
+  // Subagents and web fetch stay in its list when switched off, but every call is refused.
+  const called = await turn(
+    "opencode",
+    { opencode: { subagents: false, web: false } },
+    "Call webfetch on https://example.com, then call the task tool to have a subagent list files. Report what each returned.",
+    openCodeModel,
+  );
+  expect(called.tools.length).toBeGreaterThan(0);
+  expect(called.refused).toEqual(called.tools);
 }, 10 * 60_000);

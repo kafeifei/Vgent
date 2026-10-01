@@ -662,7 +662,7 @@ Codex 原生 `commandExecution.commandActions` 从适配器保留到工具输入
 
 - **服务端**：`reclaimWorktree({ preserveChanges })` 抓完四棵树，有改动又没有 `preserveChanges` 就 409 `archive_needs_confirmation`，不建 ref、不动目录。`PATCH /api/threads/:id` 的 `{ archived: true, preserveChanges: true }` 把确认记成 `ThreadRecord.archivePreserveChanges`，跟 `transition: "archiving"` 一起落盘、做完或退回时清掉，所以重启后 `resumeTransitions` 照原样接着做；没这个标记的（包括这之前的版本留下的）遇到有改动就退回活动列表、目录原样——和 Fumie 对旧记录的处理一样。`POST .../workspace/reclaim` 收同样的 `preserveChanges`。新增 `GET .../workspace/uncommitted` → `{ files }`，数的是 `git status --porcelain -uall`（改名算一个），被忽略的不算。
 - **上限回收只收干净的**（Fumie 的磁盘预算也只收 `!dirty`）：有改动的跳过记一条 info；刚新建 / 刚恢复触发整理的那个任务也不收（`enforceWorktreeLimit({ keep })`，对应 Fumie 把当前会话标成 running），否则跳过脏的之后会轮到它。
-- **前端**：`features/workspace/UncommittedConfirm.tsx` 的 `useUncommittedGate` + `UncommittedConfirm`，侧栏行菜单的「归档」（A）和标题栏工作目录菜单的「回收工作目录」共用：先问文件数，0 就直接做，否则菜单原地换成第二步「带着没提交的改动归档？ / N 个文件没提交。改动随任务保存，取消归档时放回；被 git 忽略的文件不保留。」+「确认归档」（↵）/「取消」，和删除的两步同一个样子；数不出来按有改动处理（Fumie：破坏性的界面失败时要保守）。确认之后才挪行、才发请求。主目录任务和已回收的不问。
+- **前端**：`features/workspace/UncommittedConfirm.tsx` 的 `useUncommittedGate` + `UncommittedConfirm`，侧栏行菜单的「归档」（A）和标题栏工作目录菜单的「回收工作目录」共用：先问文件数，0 就直接做，否则关闭菜单、打开独立的居中确认弹窗（2026-09-30，复用 Radix Dialog），显示「带着没提交的改动归档？ / N 个文件没提交。改动随任务保存，取消归档时放回；被 git 忽略的文件不保留。」和底部「取消 / 确认归档」按钮。默认聚焦确认按钮，支持回车确认、Escape 取消，关闭后焦点回到入口；数不出来按有改动处理（Fumie：破坏性的界面失败时要保守）。确认之后才挪行、才发请求。主目录任务和已回收的不问。
 - 验证：`workspace.test.ts`（没确认就拒、目录和 ref 都不动、改名只算一个），`app.test.ts`（没确认 409 且任务不动、确认后归档并清掉标记、重启后没确认的退回而确认过的做完、`preserveChanges` 非布尔 400），`worktree-setup.test.ts`（上限不收脏的也不收刚建的）。临时数据目录起 server，无头 Chrome 右键脏任务 → 归档 → 出确认 → 取消后没动 → A 再 ↵ 归档完成；干净任务直接归档不出确认；页面无报错。
 
 ## 2026-09-29：附件排队

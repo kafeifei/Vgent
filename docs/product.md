@@ -33,6 +33,8 @@ Cursor 3 的 Agents Window 把人从「写代码」抬到「派活和验收」�
 | 6 收口 | 提交 / 开 PR / 带回主目录 / 丢弃 | diffs 视图底部的动作条 |
 | 7 归档 | 任务收起来，worktree 回收，可恢复 | 侧栏「已归档」，默认折叠 |
 
+归档或回收 worktree 时若有未提交改动，关闭操作菜单并弹出居中确认窗口，说明文件数、改动如何保存及被 Git 忽略文件的处理；底部提供「取消 / 确认归档（回收）」。确认后才执行，干净的 worktree 直接处理（2026-09-30）。
+
 ### 两个维度的状态
 
 **运行态**（已有，`ThreadStatus`）：`idle` / `running` / `awaiting-approval` / `awaiting-input` / `interrupted` / `error`。

@@ -41,8 +41,8 @@ type RowMenuActions = {
  * What the row's menu holds: 重命名, 标为未读 / 已读, 归档 / 取消归档 and a two-step
  * 删除任务. Each answers to a letter while the menu is open (R / U / A / D), and the
  * second step of deleting to ↵ — two different keys, so a double tap deletes
- * nothing. 归档 of a worktree with uncommitted changes gets the same second
- * step. Mounted per opening, so the menu never reopens on that second step.
+ * nothing. 归档 of a worktree with uncommitted changes opens a separate dialog.
+ * Mounted per opening, so the menu never reopens on the delete confirmation.
  */
 function RowMenuItems({
   archived,
@@ -56,27 +56,16 @@ function RowMenuItems({
   onUnread,
   onDelete,
   onStartRename,
-}: RowMenuActions & { close: () => void }) {
+  onConfirmArchive,
+}: RowMenuActions & { close: () => void; onConfirmArchive: (files: number | undefined) => void }) {
   const [confirming, setConfirming] = useState(false);
-  const archive = useUncommittedGate(onCheckUncommitted, (preserveChanges) => {
+  const archive = useUncommittedGate(onCheckUncommitted, () => {
     close();
-    onArchive(true, preserveChanges);
+    onArchive(true, false);
+  }, (files) => {
+    close();
+    onConfirmArchive(files);
   });
-
-  if (typeof archive.phase === "object") {
-    return (
-      <UncommittedConfirm
-        files={archive.phase.files}
-        verb="归档"
-        comeBack="取消归档"
-        onConfirm={() => {
-          close();
-          onArchive(true, true);
-        }}
-        onCancel={archive.cancel}
-      />
-    );
-  }
 
   if (confirming) {
     return (
@@ -143,23 +132,41 @@ function RowMenuItems({
 
 /** The row's own menu, behind ⋯ and behind a right-click on the row. */
 function RowMenu({ openRef, ...actions }: RowMenuActions & { openRef: RefObject<(() => void) | null> }) {
+  const [confirmation, setConfirmation] = useState<{ files: number | undefined } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
   return (
-    <Popover
-      align="end"
-      openRef={openRef}
-      trigger={(props) => (
-        <button
-          type="button"
-          aria-label="任务操作"
-          {...props}
-          className="absolute top-1/2 right-2xs grid size-xl -translate-y-1/2 place-items-center rounded-md text-fg-muted opacity-0 hover:bg-bg-active hover:text-fg focus-visible:opacity-100 aria-expanded:opacity-100 group-hover:opacity-100"
-        >
-          <MoreHorizontal className="size-md" />
-        </button>
+    <>
+      <Popover
+        align="end"
+        openRef={openRef}
+        trigger={(props) => (
+          <button
+            type="button"
+            aria-label="任务操作"
+            {...props}
+            ref={(node) => { props.ref.current = node; triggerRef.current = node; }}
+            className="absolute top-1/2 right-2xs grid size-xl -translate-y-1/2 place-items-center rounded-md text-fg-muted opacity-0 hover:bg-bg-active hover:text-fg focus-visible:opacity-100 aria-expanded:opacity-100 group-hover:opacity-100"
+          >
+            <MoreHorizontal className="size-md" />
+          </button>
+        )}
+      >
+        {(close) => <RowMenuItems {...actions} close={close} onConfirmArchive={(files) => setConfirmation({ files })} />}
+      </Popover>
+      {confirmation != null && (
+        <UncommittedConfirm
+          files={confirmation.files}
+          verb="归档"
+          comeBack="取消归档"
+          returnFocusRef={triggerRef}
+          onConfirm={() => {
+            setConfirmation(null);
+            actions.onArchive(true, true);
+          }}
+          onCancel={() => setConfirmation(null)}
+        />
       )}
-    >
-      {(close) => <RowMenuItems {...actions} close={close} />}
-    </Popover>
+    </>
   );
 }
 

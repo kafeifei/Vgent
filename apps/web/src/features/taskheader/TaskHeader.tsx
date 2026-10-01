@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { GitFork, PanelRight } from "lucide-react";
 import { STRIP_ICON_BUTTON, TopStrip } from "@/components/TopStrip";
 import { OutcomeBadge } from "@/components/OutcomeBadge";
@@ -9,7 +9,7 @@ import { UncommittedConfirm, useUncommittedGate } from "@/features/workspace/Unc
 
 /**
  * The worktree glyph's popover: where the task's files are, and reclaim /
- * restore. Reclaiming a worktree with uncommitted changes asks first, in place.
+ * restore. Reclaiming a worktree with uncommitted changes opens a dialog first.
  */
 function WorkspaceMenu({
   workspace,
@@ -19,6 +19,7 @@ function WorkspaceMenu({
   onRestore,
   onCheckUncommitted,
   close,
+  onConfirmReclaim,
 }: {
   workspace: ThreadWorkspace;
   running: boolean;
@@ -28,6 +29,7 @@ function WorkspaceMenu({
   onRestore: () => Promise<void>;
   onCheckUncommitted: () => Promise<number>;
   close: () => void;
+  onConfirmReclaim: (files: number | undefined) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const act = (work: () => Promise<void>): void => {
@@ -37,23 +39,14 @@ function WorkspaceMenu({
       close();
     });
   };
-  const reclaim = useUncommittedGate(onCheckUncommitted, (preserveChanges) => act(() => onReclaim(preserveChanges)));
+  const reclaim = useUncommittedGate(onCheckUncommitted, () => act(() => onReclaim(false)), (files) => {
+    close();
+    onConfirmReclaim(files);
+  });
   const reclaimed = workspace.reclaimed === true;
   // Only a live run holds the directory open, which is the very condition the
   // server refuses a reclaim on (`runs.isRunning`).
   const blocked = busy || transition != null || (!reclaimed && running) || reclaim.phase === "checking";
-
-  if (typeof reclaim.phase === "object") {
-    return (
-      <UncommittedConfirm
-        files={reclaim.phase.files}
-        verb="回收"
-        comeBack="恢复工作目录"
-        onConfirm={() => act(() => onReclaim(true))}
-        onCancel={reclaim.cancel}
-      />
-    );
-  }
 
   return (
     <>
@@ -139,49 +132,68 @@ export function TaskHeader({
   onToggleLeft: () => void;
 }) {
   const workspace = thread.workspace;
+  const [confirmation, setConfirmation] = useState<{ files: number | undefined } | null>(null);
+  const workspaceTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   return (
-    <TopStrip
-      leftOpen={leftOpen}
-      onToggleLeft={onToggleLeft}
-      end={rightOpen ? undefined : <span aria-hidden className="size-xl" />}
-    >
-      {/* Plain text, not a control: this strip is the window's title bar, so the
-          title drags the window and a double-click zooms it. 重命名 is in the
-          task's row menu, where Cursor keeps it. */}
-      <span title={thread.title} className="min-w-0 max-w-[48ch] shrink truncate px-2xs text-body text-fg">
-        {thread.title}
-      </span>
+    <>
+      <TopStrip
+        leftOpen={leftOpen}
+        onToggleLeft={onToggleLeft}
+        end={rightOpen ? undefined : <span aria-hidden className="size-xl" />}
+      >
+        {/* Plain text, not a control: this strip is the window's title bar, so the
+            title drags the window and a double-click zooms it. 重命名 is in the
+            task's row menu, where Cursor keeps it. */}
+        <span title={thread.title} className="min-w-0 max-w-[48ch] shrink truncate px-2xs text-body text-fg">
+          {thread.title}
+        </span>
 
-      {workspace != null && (
-        <Popover
-          trigger={(props) => (
-            <button
-              type="button"
-              {...props}
-              aria-label="工作目录"
-              title={workspace.reclaimed === true ? `${workspace.branch} · 已回收` : workspace.branch}
-              className={cn(STRIP_ICON_BUTTON, workspace.reclaimed === true && "opacity-50")}
-            >
-              <GitFork className="size-md" />
-            </button>
-          )}
-        >
-          {(close) => (
-            <WorkspaceMenu
-              workspace={workspace}
-              running={thread.status === "running"}
-              transition={thread.transition}
-              onReclaim={onReclaimWorkspace}
-              onRestore={onRestoreWorkspace}
-              onCheckUncommitted={onCheckUncommitted}
-              close={close}
-            />
-          )}
-        </Popover>
+        {workspace != null && (
+          <Popover
+            trigger={(props) => (
+              <button
+                type="button"
+                {...props}
+                ref={(node) => { props.ref.current = node; workspaceTriggerRef.current = node; }}
+                aria-label="工作目录"
+                title={workspace.reclaimed === true ? `${workspace.branch} · 已回收` : workspace.branch}
+                className={cn(STRIP_ICON_BUTTON, workspace.reclaimed === true && "opacity-50")}
+              >
+                <GitFork className="size-md" />
+              </button>
+            )}
+          >
+            {(close) => (
+              <WorkspaceMenu
+                workspace={workspace}
+                running={thread.status === "running"}
+                transition={thread.transition}
+                onReclaim={onReclaimWorkspace}
+                onRestore={onRestoreWorkspace}
+                onCheckUncommitted={onCheckUncommitted}
+                close={close}
+                onConfirmReclaim={(files) => setConfirmation({ files })}
+              />
+            )}
+          </Popover>
+        )}
+
+        <OutcomeBadge outcome={thread.outcome} pr={thread.pr} className="max-w-[24ch]" />
+      </TopStrip>
+      {confirmation != null && workspace != null && (
+        <UncommittedConfirm
+          files={confirmation.files}
+          verb="回收"
+          comeBack="恢复工作目录"
+          returnFocusRef={workspaceTriggerRef}
+          onConfirm={() => {
+            setConfirmation(null);
+            void onReclaimWorkspace(true);
+          }}
+          onCancel={() => setConfirmation(null)}
+        />
       )}
-
-      <OutcomeBadge outcome={thread.outcome} pr={thread.pr} className="max-w-[24ch]" />
-    </TopStrip>
+    </>
   );
 }

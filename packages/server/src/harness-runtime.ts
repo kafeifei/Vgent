@@ -6,6 +6,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { DEFAULT_CLAUDE_CODE_DATA_DIR, DEFAULT_CODEX_DATA_DIR } from "@vgent/engines";
 import { ConflictError, VgentServerError } from "./errors.js";
+import { writeJsonAtomic } from "./store/atomic-file.js";
 import type { Logger } from "./types.js";
 import { silentLogger } from "./types.js";
 
@@ -31,7 +32,8 @@ import { silentLogger } from "./types.js";
  *      remains usable; only then copy the project files aside;
  *   3. swap the verified `node_modules` into place with filesystem renames;
  *      keep the old tree as a rollback point until a turn succeeds;
- *   4. the new version stays 未验证 until a turn of that engine ends well. A
+ *   4. until a turn ends well, further upgrades keep that same rollback point;
+ *      a separate, temporary backup undoes a failed installation. A
  *      turn that dies before producing anything rolls it back and remembers the
  *      version as bad, so an automatic upgrade does not walk into it again.
  *
@@ -193,7 +195,7 @@ export interface HarnessRuntimeStatus {
 
 interface RuntimeState {
   /** Written before an install touches anything, removed when it is over either way. */
-  upgrading?: { from: VersionSet; to: VersionSet; pid: number; startedAt: string; stage?: string };
+  upgrading?: { from: VersionSet; to: VersionSet; pid: number; startedAt: string; stage?: string; preservePrevious?: boolean };
   /** How often an install of a version was cut off. Twice, and only a click installs it. */
   interrupted?: Record<string, number>;
   previous?: VersionSet;
@@ -301,7 +303,7 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
 
   const writeState = async (spec: RuntimeSpec, state: RuntimeState): Promise<void> => {
     await mkdir(dataDirOf(spec), { recursive: true });
-    await writeFile(statePath(spec), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+    await writeJsonAtomic(statePath(spec), state, { mode: 0o600 });
   };
 
   /**
@@ -430,8 +432,8 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
     }
   };
 
-  const restoreBackup = async (spec: RuntimeSpec): Promise<void> => {
-    const previousModules = join(backupDir(spec), "node_modules");
+  const restoreBackup = async (spec: RuntimeSpec, source = backupDir(spec)): Promise<void> => {
+    const previousModules = join(source, "node_modules");
     if (await stat(previousModules).catch(() => undefined)) {
       const discard = await mkdtemp(join(dataDirOf(spec), ".vgent-discard-"));
       const currentModules = join(dirOf(spec), "node_modules");
@@ -443,7 +445,7 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
           movedCurrent = true;
         }
         renameSync(previousModules, currentModules);
-        await copyProjectFiles(backupDir(spec), dirOf(spec));
+        await copyProjectFiles(source, dirOf(spec));
       } catch (error) {
         if (movedCurrent && !(await stat(currentModules).catch(() => undefined))) renameSync(displaced, currentModules);
         throw error;
@@ -454,7 +456,7 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
     }
     // Older installations only backed up project files. Repair those using
     // their store; new upgrades always keep the entire working tree above.
-    await copyProjectFiles(backupDir(spec), dirOf(spec));
+    await copyProjectFiles(source, dirOf(spec));
     await pnpm(spec, ["install", "--frozen-lockfile"]);
   };
 
@@ -524,9 +526,6 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
       const wanted = target?.[spec.primary];
       if (target == null || wanted == null) throw new VgentServerError({ message: state.lastError ?? "查不到最新版本", status: 502, code: "runtime_no_latest" });
       if (compareVersions(installed[spec.primary] as string, wanted) >= 0) return;
-      if (state.unverified === true) {
-        throw new ConflictError(`${spec.label} 的 ${installed[spec.primary]} 还没通过第一轮验证，暂不覆盖可回退的版本`, "runtime_unverified");
-      }
 
       // A slow or failing registry must never unlink the CLI a new task needs.
       // Staging beside the bootstrap also guarantees same-volume renames.
@@ -575,22 +574,29 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
           throw new ConflictError(`${spec.label} 已有任务开始运行，等它结束再升级`, "runtime_busy");
         }
 
-        await rm(join(backupDir(spec), "node_modules"), { recursive: true, force: true });
-        await copyProjectFiles(dirOf(spec), backupDir(spec));
+        // A -> B -> C need not run a turn on B. Keep A for a runtime rollback,
+        // and save B separately so a failed/interrupted C install restores B.
+        const preservePrevious = state.unverified === true && state.previous != null;
+        const undoDir = preservePrevious ? join(stage, ".vgent-replaced") : backupDir(spec);
+        await rm(join(undoDir, "node_modules"), { recursive: true, force: true });
+        await copyProjectFiles(dirOf(spec), undoDir);
+        const intent = { from: installed, to: target, pid: process.pid, startedAt: now().toISOString(), stage, preservePrevious };
         // Only this short swap can change the live tree. A note lets
         // the next app start repair an interruption in that window.
         await updateState(spec, (current) => ({
           ...current,
-          upgrading: { from: installed, to: target, pid: process.pid, startedAt: now().toISOString(), stage },
+          upgrading: intent,
         }));
+        retainStage = true;
         log.info(`升级 ${spec.label}：${installed[spec.primary]} → ${wanted}`);
         await record(spec, `upgrade ${spec.label} ${installed[spec.primary]} -> ${wanted}: committing`);
         if (await options.isBusy(spec.engine)) {
           await updateState(spec, ({ upgrading: _over, ...current }) => current);
+          retainStage = false;
           throw new ConflictError(`${spec.label} 已有任务开始运行，等它结束再升级`, "runtime_busy");
         }
         try {
-          renameSync(join(dirOf(spec), "node_modules"), join(backupDir(spec), "node_modules"));
+          renameSync(join(dirOf(spec), "node_modules"), join(undoDir, "node_modules"));
           renameSync(join(stage, "node_modules"), join(dirOf(spec), "node_modules"));
           await copyProjectFiles(stage, dirOf(spec));
           await verify(spec, wanted);
@@ -599,13 +605,13 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
           log.error(`升级 ${spec.label} 到 ${wanted} 失败，退回 ${installed[spec.primary]}`, error);
           await record(spec, `upgrade ${spec.label} -> ${wanted}: commit FAILED, restoring ${installed[spec.primary]}`, errorDetail(error));
           let restored = false;
-          await restoreBackup(spec).then(() => { restored = true; }, async (restoreError) => {
+          await restoreBackup(spec, undoDir).then(() => { restored = true; }, async (restoreError) => {
             log.error(`退回 ${spec.label} 失败`, restoreError);
             await record(spec, `restore ${spec.label}: FAILED`, errorDetail(restoreError));
           });
           await updateState(spec, ({ upgrading: _over, ...current }) => ({
             ...current,
-            ...(!restored ? { upgrading: { from: installed, to: target, pid: process.pid, startedAt: now().toISOString(), stage } } : {}),
+            ...(!restored ? { upgrading: intent } : {}),
             ...(restored ? { bad: [...new Set([...(current.bad ?? []), wanted])] } : {}),
             lastError: restored
               ? `升级到 ${wanted} 失败，已退回 ${installed[spec.primary]}：${message.slice(0, 300)}`
@@ -616,9 +622,10 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
         }
         await updateState(spec, ({ upgrading: _over, lastError: _cleared, ...current }) => ({
           ...current,
-          previous: installed,
+          previous: preservePrevious ? (state.previous ?? installed) : installed,
           unverified: true,
         }));
+        retainStage = false;
         await record(spec, `upgrade ${spec.label} -> ${wanted}: installed, awaiting a good turn`);
       } finally {
         if (!retainStage) await rm(stage, { recursive: true, force: true }).catch((error) => log.warn(`清理 ${spec.label} 候选运行时失败`, error));
@@ -660,12 +667,14 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
     const from = note.from[spec.primary] ?? "上一版";
     working.add(spec.engine);
     try {
+      if (note.preservePrevious && stage == null) throw new Error("缺少本次安装的恢复目录");
+      const undoDir = note.preservePrevious ? join(stage as string, ".vgent-replaced") : backupDir(spec);
       log.warn(`${spec.label} 上次升级被打断，恢复到 ${from}`);
       await record(spec, `recover ${spec.label}: upgrade to ${note.to[spec.primary]} was interrupted, restoring ${from}`);
       if (stage != null && (await installedSet(spec))?.[spec.primary] === from) {
-        await copyProjectFiles(backupDir(spec), dirOf(spec));
+        await copyProjectFiles(undoDir, dirOf(spec));
       } else {
-        await restoreBackup(spec);
+        await restoreBackup(spec, undoDir);
       }
       const target = note.to[spec.primary] ?? "";
       await updateState(spec, ({ upgrading: _done, ...current }) => ({
@@ -777,16 +786,23 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
 
     async reportTurn(engine, outcome) {
       const spec = specOf(engine);
-      if (spec == null) return;
-      const state = await readState(spec);
-      if (state.unverified !== true) return;
+      // A late result from the old installation must not validate the new one
+      // or remove its fallback while an upgrade is preparing/swapping files.
+      if (spec == null || working.has(spec.engine)) return;
       if (outcome.ok) {
-        await updateState(spec, ({ unverified: _flag, previous: _previous, ...current }) => current);
-        // The old version is no longer needed for a rollback that will not come.
-        await rm(backupDir(spec), { recursive: true, force: true }).catch((error) => log.warn(`清理 ${spec.label} 旧版失败`, error));
-        await pnpm(spec, ["store", "prune"]).catch((error) => log.warn(`清理 ${spec.label} 的旧版本缓存失败`, error));
+        working.add(spec.engine);
+        try {
+          if ((await readState(spec)).unverified !== true) return;
+          await updateState(spec, ({ unverified: _flag, previous: _previous, ...current }) => current);
+          await rm(backupDir(spec), { recursive: true, force: true }).catch((error) => log.warn(`清理 ${spec.label} 旧版失败`, error));
+          await pnpm(spec, ["store", "prune"]).catch((error) => log.warn(`清理 ${spec.label} 的旧版本缓存失败`, error));
+        } finally {
+          working.delete(spec.engine);
+        }
         return;
       }
+      const state = await readState(spec);
+      if (state.unverified !== true) return;
       // A turn that got as far as producing output failed for its own reasons
       // (a tool, the network, the model). One that died with nothing to show,
       // right after an upgrade, is the upgrade's doing until proven otherwise.
@@ -803,7 +819,7 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
         try {
           await checkOne(spec);
           const status = await describe(spec);
-          if (!status.updateAvailable || status.busy || status.working || status.unverified || status.broken) continue;
+          if (!status.updateAvailable || status.busy || status.working || status.broken) continue;
           if (status.latest != null && status.bad.includes(status.latest)) continue;
           // Once is a quit at the wrong moment. Twice is something about this
           // machine, and retrying at every start would only break it again.

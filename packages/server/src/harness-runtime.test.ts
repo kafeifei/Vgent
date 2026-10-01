@@ -32,7 +32,7 @@ const recipeOf = (dependencies: Record<string, string>, bridge: string): Bootstr
   commands: [{ command: "pnpm install --frozen-lockfile --store-dir .pnpm-store" }, { command: "./node_modules/.bin/claude --version" }],
 });
 
-async function fixture(options: { busy?: boolean; brokenVersion?: string; failStagedAdd?: boolean; onStageAdd?: () => Promise<void>; recipe?: () => BootstrapRecipe | undefined } = {}) {
+async function fixture(options: { busy?: boolean; brokenVersion?: string; brokenAfterSwapVersion?: string; failStagedAdd?: boolean; onStageAdd?: () => Promise<void>; recipe?: () => BootstrapRecipe | undefined } = {}) {
   const root = await mkdtemp(join(tmpdir(), "vgent-rt-"));
   roots.push(root);
   const dir = join(root, ".harness-bootstrap", "claude-code");
@@ -53,13 +53,14 @@ async function fixture(options: { busy?: boolean; brokenVersion?: string; failSt
 
   const calls: string[] = [];
   let busy = options.busy === true;
+  let latest = "278";
   const runtime: HarnessRuntime = createHarnessRuntime({
     isBusy: async () => busy,
     dataDirs: { "claude-code": root, codex: join(root, "no-codex") },
     now: () => new Date("2026-09-20T00:00:00.000Z"),
     ...(options.recipe != null ? { bootstrapRecipe: async (engine) => (engine === "claude-code" ? options.recipe?.() : undefined) } : {}),
     fetchJson: async (url) => {
-      if (url.includes("claude-agent-sdk")) return { version: "0.3.278", claudeCodeVersion: "2.1.278" };
+      if (url.includes("claude-agent-sdk")) return { version: `0.3.${latest}`, claudeCodeVersion: `2.1.${latest}` };
       return { version: "0.155.1" };
     },
     run: async (command, args, cwd) => {
@@ -90,12 +91,13 @@ async function fixture(options: { busy?: boolean; brokenVersion?: string; failSt
       // The CLI's `--version`.
       const installed = JSON.parse(await readFile(join(cwd, "node_modules", CLI, "package.json"), "utf8")) as { version: string };
       if (installed.version === options.brokenVersion) throw new Error("claude: cannot execute binary file");
+      if (cwd === dir && installed.version === options.brokenAfterSwapVersion) throw new Error("claude: relocated binary failed");
       return `${installed.version} (Claude Code)\n`;
     },
   });
 
   const claude = async () => (await runtime.status()).find((entry) => entry.engine === "claude-code")!;
-  return { runtime, dir, root, calls, claude, setBusy: (next: boolean) => (busy = next) };
+  return { runtime, dir, root, calls, claude, setBusy: (next: boolean) => (busy = next), setLatest: (next: string) => (latest = next) };
 }
 
 describe("compareVersions", () => {
@@ -156,6 +158,57 @@ describe("createHarnessRuntime", () => {
     const { runtime, calls } = await fixture({ busy: true });
     await expect(runtime.upgrade("claude-code")).rejects.toMatchObject({ code: "runtime_busy" });
     expect(calls).toEqual([]);
+  });
+
+  it.each(["manual", "automatic"])("allows %s upgrades to skip an unused release and preserves the original fallback", async (mode) => {
+    const { runtime, dir, calls, claude, setLatest } = await fixture();
+    await runtime.upgrade("claude-code");
+    for (const next of ["279", "280"]) {
+      setLatest(next);
+      if (mode === "manual") await runtime.upgrade("claude-code");
+      else await runtime.autoUpgrade();
+      expect(await claude()).toMatchObject({ installed: `2.1.${next}`, previous: "2.1.245", unverified: true });
+      expect(await readFile(join(dir, ".vgent-previous", "node_modules", CLI, "package.json"), "utf8")).toContain("2.1.245");
+    }
+    await runtime.rollback("claude-code");
+    expect(await claude()).toMatchObject({ installed: "2.1.245", unverified: false, bad: ["2.1.280"] });
+    expect(await readFile(join(dir, "pnpm-lock.yaml"), "utf8")).toBe("lock: 2.1.245\n");
+    expect(calls.filter((call) => call.startsWith("pnpm install "))).toHaveLength(0);
+  });
+
+  it("uses the successful release as the next fallback after consecutive upgrades", async () => {
+    const { runtime, claude, setLatest } = await fixture();
+    await runtime.upgrade("claude-code");
+    setLatest("279");
+    await runtime.upgrade("claude-code");
+    await runtime.reportTurn("claude-code", { ok: true, produced: true });
+    setLatest("280");
+    expect(await runtime.upgrade("claude-code")).toMatchObject({ installed: "2.1.280", previous: "2.1.279" });
+    await runtime.reportTurn("claude-code", { ok: false, produced: false });
+    expect(await claude()).toMatchObject({ installed: "2.1.279", unverified: false });
+  });
+
+  it.each(["staged", "swapped"])("keeps the current release and original fallback when a consecutive upgrade fails while %s", async (phase) => {
+    const { runtime, dir, claude, setLatest } = await fixture(phase === "staged" ? { brokenVersion: "2.1.279" } : { brokenAfterSwapVersion: "2.1.279" });
+    await runtime.upgrade("claude-code");
+    setLatest("279");
+    await expect(runtime.upgrade("claude-code")).rejects.toMatchObject({ code: "runtime_upgrade_failed" });
+    expect(await claude()).toMatchObject({ installed: "2.1.278", previous: "2.1.245", unverified: true, bad: ["2.1.279"] });
+    expect(await readFile(join(dir, "pnpm-lock.yaml"), "utf8")).toBe("lock: 2.1.278\n");
+    await runtime.rollback("claude-code");
+    expect(await claude()).toMatchObject({ installed: "2.1.245", unverified: false });
+  });
+
+  it("does not let a late turn result remove the fallback during an upgrade", async () => {
+    let report = async () => {};
+    const { runtime, claude, setLatest } = await fixture({ onStageAdd: () => report() });
+    await runtime.upgrade("claude-code");
+    report = () => runtime.reportTurn("claude-code", { ok: true, produced: true });
+    setLatest("279");
+    await runtime.upgrade("claude-code");
+    expect(await claude()).toMatchObject({ installed: "2.1.279", previous: "2.1.245", unverified: true });
+    await runtime.reportTurn("claude-code", { ok: false, produced: false });
+    expect(await claude()).toMatchObject({ installed: "2.1.245", unverified: false });
   });
 
   it("puts the old tree back when the new CLI does not start, and remembers the version", async () => {
@@ -289,6 +342,37 @@ describe("createHarnessRuntime", () => {
     expect(await claude()).toMatchObject({ installed: "2.1.245", updateAvailable: true });
     // By hand it still goes through.
     expect(await runtime.upgrade("claude-code")).toMatchObject({ installed: "2.1.278" });
+  });
+
+  it.each(["before swap", "between renames", "after swap"])("recovers an interrupted consecutive upgrade %s without consuming the original fallback", async (phase) => {
+    const { runtime, root, dir, claude, calls } = await fixture();
+    await runtime.upgrade("claude-code");
+    const stage = await mkdtemp(join(root, ".vgent-candidate-"));
+    const undo = join(stage, ".vgent-replaced");
+    await mkdir(undo);
+    for (const name of ["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"]) {
+      await writeFile(join(undo, name), await readFile(join(dir, name)));
+    }
+    if (phase !== "before swap") await rename(join(dir, "node_modules"), join(undo, "node_modules"));
+    if (phase === "after swap") {
+      for (const [name, version] of [[CLI, "2.1.279"], [SDK, "0.3.279"]]) {
+        await mkdir(join(dir, "node_modules", name!), { recursive: true });
+        await writeFile(join(dir, "node_modules", name!, "package.json"), JSON.stringify({ name, version }));
+      }
+      await writeFile(join(dir, "pnpm-lock.yaml"), "lock: 2.1.279\n");
+    }
+    const state = JSON.parse(await readFile(join(root, ".vgent-runtime.json"), "utf8"));
+    await writeFile(join(root, ".vgent-runtime.json"), JSON.stringify({ ...state, upgrading: {
+      from: { [CLI]: "2.1.278", [SDK]: "0.3.278" }, to: { [CLI]: "2.1.279", [SDK]: "0.3.279" },
+      pid: 2 ** 22 + 12345, startedAt: "x", stage, preservePrevious: true,
+    } }));
+
+    expect(await claude()).toMatchObject({ installed: "2.1.278", previous: "2.1.245", unverified: true, bad: [] });
+    expect(await readFile(join(dir, "pnpm-lock.yaml"), "utf8")).toBe("lock: 2.1.278\n");
+    expect(await stat(stage).catch(() => undefined)).toBeUndefined();
+    await runtime.rollback("claude-code");
+    expect(await claude()).toMatchObject({ installed: "2.1.245", unverified: false });
+    expect(calls.filter((call) => call.startsWith("pnpm install "))).toHaveLength(0);
   });
 
   it("leaves an install alone while the process that started it is still alive", async () => {

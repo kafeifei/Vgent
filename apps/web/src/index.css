@@ -163,6 +163,10 @@
   --duration-pulse: var(--duration-pulse);
 }
 
+@utility max-w-* {
+  max-width: --value(--container-*);
+}
+
 /* ============================================================================
  * 唯一允许的全局规则：reset / body / 滚动条 / 两个 keyframes。
  * 其余一切走 Tailwind 工具类。

@@ -1,11 +1,11 @@
 # Vgent
 
-终端 coding agent 的壳，引擎可插拔：Claude Code、Codex、OpenCode（AI SDK 官方 harness 适配器）和自研引擎（`ToolLoopAgent` 实现的 `HarnessV1` 适配器）。**先读 `docs/product.md`（做什么、每个功能落在任务生命周期哪一步；落不上的不做），再读 `docs/architecture.md`（怎么实现）。**
+终端 coding agent 的壳，引擎可插拔：Claude Code、OpenCode（AI SDK 官方 harness 适配器）、Codex（server 里走原生 `codex app-server`，`packages/engines` 里另留一份 harness 版给 CLI）和自研引擎（裸 `ToolLoopAgent`，不是 `HarnessV1` 适配器）。**先读 `docs/product.md`（做什么、每个功能落在任务生命周期哪一步；落不上的不做），再读 `docs/architecture.md`（怎么实现）。**
 
 ## 用词
 
 - **引擎**：Claude Code、Codex、OpenCode、Vgent 这一层运行时。界面、文档和自有代码都叫引擎（Engine）。
-- **harness**：只指 AI SDK 的 harness 适配器（`@ai-sdk/harness*`、`HarnessAgent`、`HarnessV1`），Claude Code 和 Codex 经它接入。
+- **harness**：只指 AI SDK 的 harness 适配器（`@ai-sdk/harness*`、`HarnessAgent`、`HarnessV1`），Claude Code 和 OpenCode 经它接入；Codex 只有 CLI 那份走它。
 - **模型**、**提供商**（模型的接入渠道）、**agent / 子代理**（执行任务的实例）各说各的，不拿来指引擎。
 
 ## AI SDK

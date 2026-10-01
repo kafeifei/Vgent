@@ -32,7 +32,7 @@ pnpm desktop:install        # 装到 /Applications/Vgent.app
 - url 必须是 `http://127.0.0.1:<port>/`（无 userinfo / query / fragment），token 必须是 32–128 位 `[A-Za-z0-9_-]`，否则拒绝启动。
 - 窗口直接导航到 `<url>/#token=<token>`，`apps/web` 自己从 hash 里取 token 存进 sessionStorage 再抹掉 hash，所以**不需要注入任何脚本**。API 调用是同源相对路径。
 - 数据目录跟命令行版完全一致：`VGENT_DATA_DIR` 优先，否则 `~/.vgent`。
-- 关窗口（⌘W、红色关闭按钮）不退出：`CloseRequested` → `prevent_close` → `hide()`。进程和内置服务都留着，任务继续跑；点 Dock 图标走 `RunEvent::Reopen` 再把窗口显示出来。真正退出是 ⌘Q、菜单「退出」和 AppleScript `quit`：`ExitRequested` 先 `GET /api/threads`，有任务还在跑、等审批或等回答就弹原生确认（默认按钮是「取消」，只有点「退出」才继续；问不到列表就照旧退出，不把人困住）。确认之后后台线程给子进程**进程组**发 SIGTERM（服务端据此停掉所有 run，让引擎落盘 resume state），最多等 20 秒，还不退就 SIGKILL 整组。`applicationWillTerminate` 里 `prevent_exit` 和后台线程都拦不住（回调一返回进程就没了），所以 `RunEvent::Exit` 里**同步**再停一次；`shutdown` 全程持锁，两条路撞上也只会排队。子进程意外退出时看门狗线程弹原生对话框并退出应用。
+- 关窗口（⌘W、红色关闭按钮）不退出：`CloseRequested` → `prevent_close` → `hide()`。进程和内置服务都留着，任务继续跑；点 Dock 图标走 `RunEvent::Reopen` 再把窗口显示出来。真正退出是 ⌘Q、菜单「退出」和 AppleScript `quit`：`ExitRequested` 先 `GET /api/threads`，有任务还在跑、等审批或等回答就弹原生确认（默认按钮是「取消」，只有点「退出」才继续；问不到列表就照旧退出，不把人困住）。确认之后后台线程给子进程**进程组**发 SIGTERM（服务端据此停掉所有 run，让引擎落盘 resume state；还在等 worktree setup、没开跑的消息不再拖住退出，挪回排队、下次启动再发），最多等 20 秒，还不退就 SIGKILL 整组。`applicationWillTerminate` 里 `prevent_exit` 和后台线程都拦不住（回调一返回进程就没了），所以 `RunEvent::Exit` 里**同步**再停一次；`shutdown` 全程持锁，两条路撞上也只会排队。子进程意外退出时看门狗线程弹原生对话框并退出应用。
 - 「添加仓库」的原生文件夹选择器也在服务端（`POST /api/projects/pick` → `osascript ... choose folder`），桌面和浏览器共用一份实现，webview 是远端 origin，不碰 Tauri IPC / capability。
 - 导航策略：只有服务自己的 origin 放行，其它 http(s) 用系统默认浏览器打开，`window.open` 一律拒绝。菜单里有「调试 → 开发者工具」。
 
@@ -56,6 +56,15 @@ pnpm desktop:dev
 ```
 
 `tauri dev` 同样会先跑 prepare 脚本，Rust 侧在 `tauri::is_dev()` 时直接从源码树（`src-tauri/binaries`、`src-tauri/resources`）取 Node 和资源。注意这条路**不带前端热更**：窗口加载的是打包好的 `resources/web`。改前端还是用 `pnpm server` + `pnpm --filter @vgent/web dev` 那条 Web 路子，桌面壳只在验证壳本身的行为时用。
+
+## 测试
+
+```bash
+pnpm --filter @vgent/desktop prepare:resources   # Tauri 的构建脚本要求 binaries/ 和 resources/ 存在
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml -- --include-ignored
+```
+
+`backend.rs` 里四个要真起内置 Node 的测试（拉起并关停、启动失败留 stderr 尾巴、意外退出记信号、数据目录被占时立刻报「已在运行」）标了 `#[ignore]`：默认的 `cargo test` 只把它们报成 ignored，不算通过；没放好内置 Node 时加 `--include-ignored` 它们会失败，不会假装通过。只跑它们用 `-- --ignored`。CI 的 `desktop` job（`.github/workflows/ci.yml`）不跑 prepare 脚本（太重），而是把 `setup-node` 装的 Node 22 拷成 `binaries/vgent-node-<triple>`、建好空的 `resources/server` 和 `resources/web`，再 `cargo test -- --include-ignored`。
 
 ## 已知限制
 

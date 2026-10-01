@@ -102,6 +102,42 @@ export function asMcpServers(value: unknown): McpServerConfig[] | undefined {
   return parseMcpServers(value);
 }
 
+/** The `type` other clients spell the transport with, where an entry gives no `transport` of its own. */
+function withTransport(entry: unknown): unknown {
+  if (typeof entry !== "object" || entry === null) return entry;
+  const { type, transport } = entry as Record<string, unknown>;
+  return transport === undefined && (type === "http" || type === "sse") ? { ...entry, transport: type } : entry;
+}
+
+/**
+ * `mcpServers` as stored. Unlike a request body, a file cannot be sent back:
+ * every settings read goes through here — the engine's turn, the state stream,
+ * the remote view — so whatever a hand-edited file holds is read without
+ * throwing. The object-map shape other MCP clients write
+ * (`{ "github": { "command": … } }`) is the same list keyed by name, and is
+ * read as one. An entry that still is not a server is dropped and counted; one
+ * that is keeps only the fields a server is started with, since
+ * `parseMcpServers` builds it anew. So whoever reads the list — the in-house
+ * engine's `connectMcpServers`, OpenCode's `openCodeMcpServers` — only ever
+ * sees well-formed servers.
+ */
+export function readStoredMcpServers(value: unknown): { servers: McpServerConfig[]; dropped: number } {
+  if (value == null) return { servers: [], dropped: 0 };
+  const entries: unknown[] = Array.isArray(value)
+    ? value
+    : typeof value === "object"
+      ? Object.entries(value).map(([name, entry]) => (typeof entry === "object" && entry !== null ? { ...entry, name } : entry))
+      : [value];
+  const servers = entries.flatMap((entry) => {
+    try {
+      return parseMcpServers([withTransport(entry)]);
+    } catch {
+      return [];
+    }
+  });
+  return { servers, dropped: entries.length - servers.length };
+}
+
 export interface SettingsStore {
   get(): Promise<Settings>;
   update(patch: SettingsPatch): Promise<Settings>;
@@ -124,16 +160,22 @@ const isSettings = (value: unknown): value is Settings =>
  * the global one; the old field is then dropped rather than kept in sync. The
  * engine-per-model map (`modelEngines`) became part of `modelPicks` the same way.
  */
-export function migrateSettings(stored: Settings & { defaultPermissionMode?: PermissionMode; modelEngines?: unknown }): Settings {
-  const { defaultPermissionMode, hiddenModels, providerOrder, modelEngines, modelPicks, computerUseProvider, defaultWorkspace, engineOptions, ...rest } = stored;
+export function migrateSettings(
+  stored: Settings & { defaultPermissionMode?: PermissionMode; modelEngines?: unknown },
+  log: Logger = silentLogger,
+): Settings {
+  const { defaultPermissionMode, hiddenModels, providerOrder, modelEngines, modelPicks, computerUseProvider, defaultWorkspace, engineOptions, mcpServers, ...rest } = stored;
   // Read on every model listing, so a hand-edited file must not be able to make it throw.
   const hidden = Object.entries(typeof hiddenModels === "object" && hiddenModels !== null ? hiddenModels : {}).flatMap(([engine, ids]) =>
     Array.isArray(ids) ? [[engine, ids.filter((id) => typeof id === "string")] as const] : [],
   );
   const picks = readModelPicks(modelPicks, modelEngines);
   const options = readEngineOptions(engineOptions);
+  const { servers, dropped } = readStoredMcpServers(mcpServers);
+  if (dropped > 0) log.warn(`settings.json 里有 ${dropped} 个 MCP 服务器的格式不对，已忽略`);
   return {
     ...rest,
+    ...(servers.length > 0 ? { mcpServers: servers } : {}),
     ...(Object.keys(options).length > 0 ? { engineOptions: options } : {}),
     ...(computerUseProvider === "cua" ? { computerUseProvider } : {}),
     ...(defaultWorkspace === "project" || defaultWorkspace === "worktree" ? { defaultWorkspace } : {}),
@@ -156,7 +198,7 @@ export function createSettingsStore(dataDir: string, log: Logger = silentLogger)
     ready ??= (async () => {
       await mkdir(dataDir, { recursive: true, mode: 0o700 });
       const stored = await readJsonOrQuarantine<Settings>(path, { validate: isSettings, log });
-      settings = stored == null ? { ...DEFAULT_SETTINGS } : migrateSettings(stored);
+      settings = stored == null ? { ...DEFAULT_SETTINGS } : migrateSettings(stored, log);
     })();
     return ready;
   };

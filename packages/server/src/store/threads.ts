@@ -28,6 +28,22 @@ import { readJsonOrQuarantine, writeJsonAtomic } from "./atomic-file.js";
 /** The placeholder a thread carries until its first user message names it. */
 export const DEFAULT_THREAD_TITLE = "新任务";
 
+/**
+ * What a thread id may look like. It names files — `threads/<id>.json`,
+ * `plans/<id>.md`, `attachments/<id>` — so nothing that can climb out of a
+ * directory is one. That is not academic: Hono decodes `%2F` in a route
+ * parameter, so a request for `x%2F..%2F..` hands a handler the id `x/../..`.
+ */
+const THREAD_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
+export const isThreadId = (value: unknown): value is string => typeof value === "string" && THREAD_ID_PATTERN.test(value);
+
+/** The id itself, or the same 404 a thread that does not exist gets: what is not an id names no thread. */
+export function assertThreadId(value: string): string {
+  if (!isThreadId(value)) throw new NotFoundError("线程不存在", "thread_not_found");
+  return value;
+}
+
 interface ThreadIndexFile {
   version: 1;
   threads: ThreadSummary[];
@@ -172,8 +188,8 @@ export function summarize(record: ThreadRecord): ThreadSummary {
 export function createThreadStore(dataDir: string, log: Logger = silentLogger): ThreadStore {
   const dir = join(dataDir, "threads");
   const indexPath = join(dir, "index.json");
-  const recordPath = (id: string) => join(dir, `${id}.json`);
-  const harnessPath = (id: string) => join(dir, `${id}.harness.json`);
+  const recordPath = (id: string) => join(dir, `${assertThreadId(id)}.json`);
+  const harnessPath = (id: string) => join(dir, `${assertThreadId(id)}.harness.json`);
 
   const listeners = new Set<() => void>();
   const chains = new Map<string, Promise<unknown>>();

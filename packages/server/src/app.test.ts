@@ -490,6 +490,16 @@ describe("createApp", () => {
     // Removing what is not there is a no-op, not a 404.
     const again = await request(app, "/api/settings/allowlist/bash", { method: "DELETE" });
     expect(((await again.json()) as Settings).allowlist).toEqual(["write"]);
+
+    // The name arrives encoded once, as the web client sends it: a `%` in it is
+    // the tool's own, not an escape to undo a second time.
+    for (const tool of ["bash(date +%Y)", "bash(echo %41)", "mcp/x"]) await add(tool);
+    for (const tool of ["bash(date +%Y)", "bash(echo %41)", "mcp/x"]) {
+      const response = await request(app, `/api/settings/allowlist/${encodeURIComponent(tool)}`, { method: "DELETE" });
+      expect(response.status).toBe(200);
+      expect(((await response.json()) as Settings).allowlist).not.toContain(tool);
+    }
+    expect(((await (await request(app, "/api/settings")).json()) as Settings).allowlist).toEqual(["write"]);
   });
 
   it("remembers per model what it was last picked with, one field at a time", async () => {
@@ -843,6 +853,25 @@ describe("createApp", () => {
     expect(await readFile(drawn.savedTo, "utf8")).toBe("<svg/>");
     expect((await postJson(app, `/api/threads/${thread.id}/files/download`, { path: join(outside, "secret.png") })).status).toBe(400);
     expect((await postJson(app, `/api/threads/${thread.id}/files/download`, {})).status).toBe(400);
+  });
+
+  it("deletes what a task kept in the data dir with it — attachments, command output, scratch — and nobody else's", async () => {
+    const dataDir = await tempDir();
+    const app = makeApp(dataDir);
+    const thread = (await (await postJson(app, "/api/threads", { projectId: "no-project" })).json()) as ThreadRecord;
+    const other = (await (await postJson(app, "/api/threads", { projectId: "no-project" })).json()) as ThreadRecord;
+    for (const id of [thread.id, other.id]) {
+      for (const area of ["attachments", "outputs", "scratch"]) {
+        await mkdir(join(dataDir, area, id), { recursive: true });
+        await writeFile(join(dataDir, area, id, "kept.txt"), "x");
+      }
+    }
+
+    expect((await request(app, `/api/threads/${thread.id}`, { method: "DELETE" })).status).toBe(204);
+    for (const area of ["attachments", "outputs", "scratch"]) {
+      await expect(stat(join(dataDir, area, thread.id)), area).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(join(dataDir, area, other.id, "kept.txt"), "utf8"), area).toBe("x");
+    }
   });
 
   it("lists a 无项目 task's directory without git", async () => {

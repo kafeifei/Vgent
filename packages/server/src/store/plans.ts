@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { Logger } from "../types.js";
 import { silentLogger } from "../types.js";
 import { writeFileAtomic } from "./atomic-file.js";
+import { assertThreadId } from "./threads.js";
 
 /**
  * 计划文档: one markdown file per task, in `<dataDir>/plans/<threadId>.md`.
@@ -33,7 +34,7 @@ export interface PlanStore {
 
 export function createPlanStore(dataDir: string, log: Logger = silentLogger): PlanStore {
   const dir = join(dataDir, "plans");
-  const path = (threadId: string) => join(dir, `${threadId}.md`);
+  const path = (threadId: string) => join(dir, `${assertThreadId(threadId)}.md`);
   let ready: Promise<void> | undefined;
   const ensureReady = (): Promise<void> => {
     ready ??= mkdir(dir, { recursive: true, mode: 0o700 }).then(() => {});

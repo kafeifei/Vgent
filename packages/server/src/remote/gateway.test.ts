@@ -89,6 +89,68 @@ test("refuses wrong hosts, cross-origin controls, encoded control routes and rem
   expect((await send("/api/projects")).status).toBe(421);
 });
 
+test("keeps how the machine may behave with the machine, while the remote page keeps its own controls", async () => {
+  const { send, local } = await fixture();
+  const write = (method: string, path: string, body: unknown) =>
+    send(path, { method, headers: { "content-type": "application/json", "x-vgent-token": REMOTE_SESSION }, body: JSON.stringify(body) });
+  const localSettings = async () =>
+    (await (await fetch(local + "/api/settings", { headers: { "x-vgent-token": TOKEN } })).json()) as {
+      runMode: string; allowlist: string[]; mcpServers?: unknown[]; theme?: string; computerUseProvider?: string; engineOptions?: unknown;
+    };
+
+  // Policy about this machine: refused, and nothing is written — even next to a field that is allowed.
+  for (const body of [
+    { runMode: "allow-all" },
+    { allowlist: ["bash"] },
+    { mcpServers: [{ name: "x", command: "sh", args: ["-c", "id"] }] },
+    { computerUseProvider: "cua" },
+    { autoUpgradeRuntimes: false },
+    { theme: "dark", runMode: "allow-all" },
+  ]) {
+    const response = await write("PUT", "/api/settings", body);
+    expect(response.status, JSON.stringify(body)).toBe(403);
+    expect(((await response.json()) as { error: { code: string } }).error.code).toBe("remote_forbidden");
+  }
+  const after = await localSettings();
+  expect(after.runMode).toBe("allow-reads");
+  expect(after.allowlist).toEqual([]);
+  expect(after.mcpServers).toBeUndefined();
+  expect(after.computerUseProvider).toBeUndefined();
+  expect(after.theme).toBeUndefined();
+
+  // Credentials, accounts, standing approvals, what the agents may reach, the desktop and installed software.
+  for (const [method, path, body] of [
+    ["POST", "/api/providers/discover", {}],
+    ["POST", "/api/providers", {}],
+    ["PUT", "/api/accounts/claude/uses", { use: "claude-code", enabled: false }],
+    ["POST", "/api/settings/allowlist", { tool: "bash" }],
+    ["PUT", "/api/settings/engine-options", { engine: "opencode", key: "web", value: false }],
+    ["POST", "/api/computer-use/cua/start", {}],
+    ["POST", "/api/runtimes/claude-code/upgrade", {}],
+  ] as const) {
+    expect((await write(method, path, body)).status, `${method} ${path}`).toBe(403);
+  }
+  expect((await localSettings()).engineOptions).toBeUndefined();
+
+  // What the remote page is for keeps working.
+  expect((await write("PUT", "/api/settings", { theme: "dark", density: "compact" })).status).toBe(200);
+  expect((await localSettings()).theme).toBe("dark");
+  expect((await send("/api/settings", { headers: { "x-vgent-token": REMOTE_SESSION } })).status).toBe(200);
+  expect((await send("/api/providers", { headers: { "x-vgent-token": REMOTE_SESSION } })).status).toBe(200);
+});
+
+test("a remote client cannot take the remote mark off its own requests", async () => {
+  const { send, local } = await fixture();
+  const response = await send("/api/settings", {
+    method: "PUT",
+    headers: { "content-type": "application/json", "x-vgent-token": REMOTE_SESSION, "x-vgent-remote": "0" },
+    body: JSON.stringify({ runMode: "allow-all" }),
+  });
+  expect(response.status).toBe(403);
+  const settings = (await (await fetch(local + "/api/settings", { headers: { "x-vgent-token": TOKEN } })).json()) as { runMode: string };
+  expect(settings.runMode).toBe("allow-reads");
+});
+
 test("creates a task and persists a streamed reply through real gateway and Hono sockets", async () => {
   const { send, post } = await fixture();
   const created = await post("/api/threads", { projectId: "no-project", engine: "claude-code", title: "remote test" });

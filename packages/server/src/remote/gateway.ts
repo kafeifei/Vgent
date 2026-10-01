@@ -1,5 +1,6 @@
 import { createServer, request, type ClientRequest, type IncomingHttpHeaders } from "node:http";
 import type { Socket } from "node:net";
+import { REMOTE_REQUEST_HEADER } from "./policy.js";
 
 // This marker carries no authority. Dev Tunnels authenticates the owner before
 // forwarding, and only this private gateway adds the local server's token.
@@ -83,6 +84,9 @@ export function createWebEntry(options: {
       const headers = cleanHeaders(incoming.headers);
       headers.host = target.host;
       headers["x-vgent-token"] = backend.token;
+      // Whatever the remote side sent, this is what the local API sees: the mark
+      // that puts the request under the remote policy (see `policy.ts`).
+      headers[REMOTE_REQUEST_HEADER] = "1";
       if (headers.origin) headers.origin = target.origin;
       const upstream = request({
         hostname: target.hostname, port: target.port, method: incoming.method,

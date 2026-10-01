@@ -388,4 +388,35 @@ describe("createProjectStore / createSettingsStore", () => {
     expect(() => asMcpServers([{ name: "x" }])).toThrow(/command/);
     expect(() => asMcpServers("nope")).toThrow(/数组/);
   });
+
+  it("reads a hand-edited MCP list without throwing: the object-map shape as the list it means, the rest dropped and said so", async () => {
+    const dir = await tempDir();
+    await writeJsonAtomic(join(dir, "settings.json"), {
+      defaultEngine: "vgent",
+      mcpServers: {
+        github: { command: "npx", args: ["-y", "server-github"], env: { GITHUB_TOKEN: "t" }, cwd: "/somewhere" },
+        docs: { type: "sse", url: "https://docs.example.com/mcp", headers: { Authorization: "Bearer x" } },
+        broken: { args: ["no command"] },
+        odd: "not a server",
+      },
+    });
+    const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const store = createSettingsStore(dir, log);
+
+    expect((await store.get()).mcpServers).toEqual([
+      { name: "github", command: "npx", args: ["-y", "server-github"], env: { GITHUB_TOKEN: "t" } },
+      { name: "docs", url: "https://docs.example.com/mcp", transport: "sse" },
+    ]);
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("2 个 MCP 服务器"));
+    // The next save writes it back in the shape the settings page keeps.
+    await store.update({ theme: "dark" });
+    expect((await createSettingsStore(dir).get()).mcpServers).toHaveLength(2);
+
+    // A list with holes in it: what every reader of the list — the engines' `"command" in server` among them — would trip on.
+    for (const stored of [[{ name: "ok", command: "node" }, { name: "" }, 42, null], "nope", 42, []]) {
+      await writeJsonAtomic(join(dir, "settings.json"), { defaultEngine: "vgent", mcpServers: stored });
+      const read = await createSettingsStore(dir).get();
+      expect(read.mcpServers ?? [], JSON.stringify(stored)).toEqual(Array.isArray(stored) && stored.length > 0 ? [{ name: "ok", command: "node" }] : []);
+    }
+  });
 });

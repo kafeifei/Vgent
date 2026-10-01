@@ -1,10 +1,12 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProviderConfig } from "@vgent/providers";
 import { describe, expect, it } from "vitest";
 import type { TextStreamPart, ToolSet } from "ai";
-import { openCodeInstructions, openCodeRoute, withoutFileChangeNotices } from "./opencode.js";
+import { writeJsonAtomic } from "../store/atomic-file.js";
+import { createSettingsStore } from "../store/settings.js";
+import { openCodeInstructions, openCodeMcpServers, openCodeRoute, withoutFileChangeNotices } from "./opencode.js";
 
 const gateway: ProviderConfig = {
   id: "xd",
@@ -81,6 +83,25 @@ describe("openCodeInstructions", () => {
     const planning = await openCodeInstructions(repo, true, home);
     expect(planning?.startsWith(plain!)).toBe(true);
     expect(planning!.length).toBeGreaterThan(plain!.length);
+  });
+});
+
+describe("openCodeMcpServers", () => {
+  it("takes the servers as the settings store reads them, a hand-edited file with entries that are no servers included", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "vgent-opencode-mcp-"));
+    await writeJsonAtomic(join(dir, "settings.json"), {
+      defaultEngine: "opencode",
+      mcpServers: [null, { name: "gh", command: "npx", args: ["-y", "server-github"], env: { GITHUB_TOKEN: "t" } }, { name: "docs", type: "http", url: "https://docs.example.com/mcp" }, { name: "x" }],
+    });
+    try {
+      const { mcpServers } = await createSettingsStore(dir).get();
+      expect(openCodeMcpServers(mcpServers ?? [])).toEqual({
+        gh: { type: "local", command: ["npx", "-y", "server-github"], environment: { GITHUB_TOKEN: "t" }, enabled: true },
+        docs: { type: "remote", url: "https://docs.example.com/mcp", enabled: true },
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

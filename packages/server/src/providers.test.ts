@@ -238,6 +238,53 @@ describe("provider routes", () => {
     ]);
   });
 
+  it("sends the stored key only where it was stored for", async () => {
+    const seen: string[] = [];
+    const providerFetch: typeof globalThis.fetch = async (input, init) => {
+      seen.push(`${String(input)} ${new Headers(init?.headers).get("authorization")}`);
+      return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    };
+    const app = makeApp(await tempDir(), providerFetch);
+    await request(app, "/api/providers", { method: "POST", body: deepseekInput });
+
+    // The caller names the host: unguarded, this is a way to read the key out of "only in, never out".
+    const elsewhere = await request(app, "/api/providers/discover", {
+      method: "POST",
+      body: { providerId: "deepseek", baseURL: "https://attacker.example", protocol: "openai-compatible" },
+    });
+    expect(elsewhere.status).toBe(400);
+    expect(await elsewhere.json()).toMatchObject({ error: { code: "provider_key_needs_reentry" } });
+    // Nor a look-alike that merely starts with the same host.
+    const lookalike = await request(app, "/api/providers/discover", {
+      method: "POST",
+      body: { providerId: "deepseek", baseURL: "https://api.deepseek.com.attacker.example", protocol: "openai-compatible" },
+    });
+    expect(lookalike.status).toBe(400);
+    expect(seen).toEqual([]);
+
+    // Either address the provider was saved with, spelled with a trailing slash or not, is where the key belongs.
+    const own = await request(app, "/api/providers/discover", {
+      method: "POST",
+      body: { providerId: "deepseek", baseURL: "https://api.deepseek.com/", protocol: "openai-compatible" },
+    });
+    expect(own.status).toBe(200);
+    const anthropic = await request(app, "/api/providers/discover", {
+      method: "POST",
+      body: { providerId: "deepseek", baseURL: "https://api.deepseek.com/anthropic", protocol: "anthropic" },
+    });
+    expect(anthropic.status).toBe(200);
+    expect(seen.length).toBe(2);
+    expect(seen.every((entry) => entry.endsWith(`Bearer ${SECRET}`))).toBe(true);
+
+    // A key typed into the form is the caller's own to send anywhere.
+    const typed = await request(app, "/api/providers/discover", {
+      method: "POST",
+      body: { providerId: "deepseek", baseURL: "https://elsewhere.example", protocol: "openai-compatible", apiKey: "sk-typed" },
+    });
+    expect(typed.status).toBe(200);
+    expect(seen[2]).toBe("https://elsewhere.example/models Bearer sk-typed");
+  });
+
   it("turns a provider's refusal into a 502 that says why, without the key", async () => {
     const app = makeApp(await tempDir(), async () => new Response("{}", { status: 401 }));
     const response = await request(app, "/api/providers/discover", { method: "POST", body: { baseURL: "https://x.test", apiKey: SECRET } });

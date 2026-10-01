@@ -3,6 +3,7 @@ import { createAccountRegistry, type AccountRegistry } from "./accounts/registry
 import type { GitHubAccounts } from "./accounts/github.js";
 import { isAccountId, kindOfAccount } from "./accounts/spec.js";
 import type { AccountKind, AccountUse } from "./accounts/types.js";
+import { carriesSettings, createHostStores, isHostOnly, isSettingsWrite, redactSettingsForRemote, remoteForbidden, REMOTE_REQUEST_HEADER } from "./remote/policy.js";
 import { registerRemoteRoutes } from "./remote/routes.js";
 import type { RemoteService } from "./remote/service.js";
 import { getCuaStatus, requestCuaPermissions, startCuaDriver, testCuaDriver } from "./computer-use/cua.js";
@@ -24,7 +25,7 @@ import {
   type ProviderProtocol,
 } from "@vgent/providers";
 import { UI_MESSAGE_STREAM_HEADERS, createUIMessageStreamResponse, type LanguageModel, type UIMessage } from "ai";
-import { Hono } from "hono";
+import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { streamSSE } from "hono/streaming";
 import { createCheckpoint, deleteCheckpoints, listCheckpointCommits, pinBaseline, restoreCheckpoint } from "./checkpoints.js";
 import { compactThread } from "./compact.js";
@@ -67,7 +68,7 @@ import { createCatalogStore } from "./store/catalog.js";
 import { createProviderStore } from "./store/providers.js";
 import { asMcpServers, createSettingsStore, mergeModelPick, type ModelPickPatch, type SettingsPatch } from "./store/settings.js";
 import { ENGINE_OPTION_DEFAULTS, readEngineOption, type EngineOptionKey } from "./engine-options.js";
-import { createThreadStore, type ThreadPatch } from "./store/threads.js";
+import { createThreadStore, isThreadId, type ThreadPatch } from "./store/threads.js";
 import type {
   ChangeStats,
   CheckpointPreview,
@@ -309,6 +310,16 @@ function readToolName(value: unknown): string {
   return name;
 }
 
+/** An endpoint's identity for comparison: scheme, host and path, without a trailing slash. */
+function endpointIdentity(value: string): string {
+  try {
+    const url = new URL(value.trim());
+    return `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return value.trim().replace(/\/+$/, "");
+  }
+}
+
 /** The whole global allowlist from a settings body: non-empty names, deduped. */
 function readAllowlist(value: unknown): string[] {
   if (!Array.isArray(value) || value.some((name) => typeof name !== "string" || name.trim() === "")) {
@@ -386,6 +397,8 @@ export function createApp(options: CreateAppOptions): VgentApp {
   const git = options.git ?? createGit();
   const files = options.files ?? createFiles();
   const integrator = options.integrator ?? createIntegrator({ log });
+  /** What the remote page may not open through a task or add as a project (`remote/policy.ts`). */
+  const hostStores = createHostStores({ dataDir });
 
   // The registry is the one list of engines: what exists, what it is called,
   // and what it can do. Nothing below spells an engine id out.
@@ -568,6 +581,45 @@ export function createApp(options: CreateAppOptions): VgentApp {
     return next();
   });
 
+  // A request the remote gateway forwarded is a session on the far side of the
+  // relay: it drives tasks, but how this machine is allowed to behave — run mode,
+  // standing approvals, MCP servers, engine options, credentials, accounts,
+  // installed software — stays with whoever sits at it.
+  app.use("/api/*", async (c, next) => {
+    if (c.req.header(REMOTE_REQUEST_HEADER) == null) return next();
+    // `c.req.json()` is cached: the handler reads the same body again.
+    const body = isSettingsWrite(c.req.method, c.req.path) ? await c.req.json().catch(() => undefined) : undefined;
+    if (isHostOnly(c.req.method, c.req.path, body)) throw remoteForbidden();
+    await next();
+    // The settings can be read from far away; the secrets an MCP server is
+    // started with are not part of what the remote page is shown. Every
+    // settings answer goes out as the remote view, whatever its shape — one
+    // that cannot be read as settings goes out empty, never as it was.
+    if (carriesSettings(c.req.path) && c.res.ok && c.res.headers.get("content-type")?.includes("application/json") === true) {
+      const document: unknown = await c.res.clone().json().catch(() => undefined);
+      const { status } = c.res;
+      const headers = new Headers(c.res.headers);
+      headers.delete("content-length");
+      // Cleared first: Hono carries the old response's headers over onto a new one, its length included.
+      c.res = undefined;
+      c.res = new Response(JSON.stringify(redactSettingsForRemote(document)), { status, headers });
+    }
+  });
+
+  // A thread id names files on disk (`threads/<id>.json`, `attachments/<id>`).
+  // Hono decodes `%2F` in a route parameter, so `x%2F..%2F..` would reach a
+  // handler as `x/../..` and climb out of the data directory: whatever is not a
+  // plain id is a thread that does not exist, before any route or store looks.
+  const requireThreadId: MiddlewareHandler = async (c, next) => {
+    const id = c.req.param("id") ?? c.req.param("threadId");
+    if (id != null && !isThreadId(id)) throw new NotFoundError("线程不存在", "thread_not_found");
+    return next();
+  };
+  for (const pattern of ["/api/threads/:id", "/api/threads/:id/*", "/api/chat/:threadId", "/api/chat/:threadId/*"]) {
+    app.use(pattern, requireThreadId);
+  }
+
+  // Hono matches in registration order, so the guards above stay ahead of every route.
   app.get("/api/health", (c) => c.json({ ok: true, version: VGENT_SERVER_VERSION }));
 
   registerRemoteRoutes(app, options.remote, accounts.invalidate);
@@ -620,6 +672,8 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const body = await c.req.json().catch(() => undefined);
     const repoPath = (body as { repoPath?: unknown } | undefined)?.repoPath;
     if (typeof repoPath !== "string" || repoPath.length === 0) throw new BadRequestError("缺少 repoPath", "invalid_repo_path");
+    // From far away a project is added by typing its path; one there would open this machine's own files to the files routes.
+    if (c.req.header(REMOTE_REQUEST_HEADER) != null) await hostStores.assertRegistrable(repoPath);
     const name = (body as { name?: unknown }).name;
     return c.json(await projects.create({ repoPath, ...(typeof name === "string" ? { name } : {}) }));
   });
@@ -679,6 +733,16 @@ export function createApp(options: CreateAppOptions): VgentApp {
   };
 
   const targetOf = async (threadId: string): Promise<TaskTarget> => targetFor(await threadOf(threadId));
+
+  /**
+   * Every route that hands the remote page a file's bytes — or its diff, which
+   * shows its text — asks this first. A task can sit in a directory that holds
+   * the data dir (the home directory as a project), so the root alone does not
+   * keep this machine's own stores out of reach.
+   */
+  const guardRemoteFile = async (c: Context, root: string, path: string): Promise<void> => {
+    if (c.req.header(REMOTE_REQUEST_HEADER) != null) await hostStores.assertReadable(root, path);
+  };
 
   /**
    * A turn that is parked on an approval or a question has no run entry, but its
@@ -777,6 +841,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const target = await targetFor(thread);
     const path = c.req.query("path");
     if (path == null || path.length === 0) throw new BadRequestError("缺少 path", "invalid_path");
+    await guardRemoteFile(c, target.repoPath, path);
     return c.json(await git.fileDiff(target.repoPath, path, scopedBase(thread, target, c.req.query("scope"))));
   });
 
@@ -942,6 +1007,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const { repoPath: root } = await targetOf(c.req.param("id"));
     const path = c.req.query("path");
     if (path == null || path.length === 0) throw new BadRequestError("缺少 path", "invalid_path");
+    await guardRemoteFile(c, root, path);
     return c.json(await files.content(root, path));
   });
 
@@ -954,6 +1020,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const { repoPath: root } = await targetOf(c.req.param("id"));
     const path = c.req.query("path");
     if (path == null || path.length === 0) throw new BadRequestError("缺少 path", "invalid_path");
+    await guardRemoteFile(c, root, path);
     const file = await files.bytes(root, path);
     return c.body(new Uint8Array(file.bytes), 200, { "content-type": file.mediaType, ...PICTURE_HEADERS });
   });
@@ -977,6 +1044,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const body = (await c.req.json().catch(() => null)) as { path?: unknown; svg?: unknown } | null;
     const dir = options.downloadsDir ?? defaultDownloadsDir();
     if (typeof body?.path === "string" && body.path.length > 0) {
+      await guardRemoteFile(c, root, body.path);
       const file = await files.bytes(root, body.path);
       return c.json({ savedTo: await saveDownload(dir, file.path, file.bytes) });
     }
@@ -1579,6 +1647,11 @@ export function createApp(options: CreateAppOptions): VgentApp {
     await rm(join(dataDir, "attachments", id), { recursive: true, force: true }).catch((error: unknown) =>
       log.warn(`删除线程 ${id} 的附件失败`, error),
     );
+    // The full output of long shell commands, kept by the built-in bash tool so the
+    // model can read what the truncated result left out.
+    await rm(join(dataDir, "outputs", id), { recursive: true, force: true }).catch((error: unknown) =>
+      log.warn(`删除线程 ${id} 的命令输出失败`, error),
+    );
     await drafts.remove(id).catch((error: unknown) => log.warn(`删除线程 ${id} 的草稿失败`, error));
     // Checkpoint refs live in the project's own ref store, which every worktree
     // shares — removing the directory above does not take them with it.
@@ -1704,7 +1777,9 @@ export function createApp(options: CreateAppOptions): VgentApp {
   });
 
   app.delete("/api/settings/allowlist/:tool", async (c) => {
-    const tool = readToolName(decodeURIComponent(c.req.param("tool")));
+    // Hono has already decoded the segment; decoding again would turn `%41` into
+    // `A` and throw on a lone `%` (`bash(date +%Y)`).
+    const tool = readToolName(c.req.param("tool"));
     const current = (await settings.get()).allowlist;
     return c.json(await settings.update({ allowlist: current.filter((name) => name !== tool) }));
   });
@@ -1769,7 +1844,18 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const protocol = body?.protocol ?? "openai-compatible";
     if (!(PROVIDER_PROTOCOLS as readonly unknown[]).includes(protocol)) throw new BadRequestError("protocol 不合法", "invalid_provider");
     const stored = typeof body?.providerId === "string" ? await providers.get(body.providerId) : undefined;
-    const apiKey = typeof body?.apiKey === "string" && body.apiKey.trim() !== "" ? body.apiKey.trim() : stored?.apiKey;
+    const typedKey = typeof body?.apiKey === "string" && body.apiKey.trim() !== "" ? body.apiKey.trim() : undefined;
+    // The stored key goes only where it was stored for. Otherwise the caller names
+    // the host that receives it, and this route reads the key out — which every
+    // other route promises never to do. A key typed into the form is the caller's
+    // own, and may go anywhere; changing a saved provider's address means typing it again.
+    if (typedKey == null && stored?.apiKey != null) {
+      const known = Object.values(stored.agents).map((agent) => endpointIdentity(agent?.baseURL ?? ""));
+      if (!known.includes(endpointIdentity(baseURL))) {
+        throw new BadRequestError("已保存的 key 只发往它保存时的地址；要换地址，请重新输入 key", "provider_key_needs_reentry");
+      }
+    }
+    const apiKey = typedKey ?? stored?.apiKey;
     try {
       const models = await discoverProviderModels({
         baseURL,
@@ -1976,27 +2062,48 @@ export function createApp(options: CreateAppOptions): VgentApp {
 
   // --- state SSE --------------------------------------------------------
 
-  type StateClient = { send(payload: string): void };
+  type StateClient = { send(payload: string): void; remote: boolean };
   const clients = new Set<StateClient>();
   let debounce: NodeJS.Timeout | undefined;
 
-  const buildState = async () =>
-    JSON.stringify({
+  const buildState = async (remote = false) => {
+    const current = await settings.get();
+    return JSON.stringify({
       projects: await projects.list(),
       threads: await threads.list(),
-      settings: await settings.get(),
+      settings: remote ? redactSettingsForRemote(current) : current,
     });
+  };
 
   const broadcast = () => {
     if (debounce != null || clients.size === 0) return;
     debounce = setTimeout(() => {
       debounce = undefined;
-      // One serialization shared by every client; no per-client cloning.
-      void buildState()
-        .then((payload) => {
-          for (const client of [...clients]) client.send(payload);
-        })
-        .catch((error) => log.warn("广播状态失败", error));
+      // One serialization shared by every client of a kind; no per-client cloning.
+      // A remote session gets the one without the secrets (built only when there
+      // is one), and never the other in its place. Each kind, and each client,
+      // fails on its own: one that cannot be served does not silence the rest.
+      const built = (remote: boolean): Promise<string | undefined> =>
+        buildState(remote).catch((error: unknown) => {
+          log.warn(remote ? "广播远程状态失败" : "广播状态失败", error);
+          return undefined;
+        });
+      void (async () => {
+        const targets = [...clients];
+        const [local, remote] = await Promise.all([
+          targets.some((client) => !client.remote) ? built(false) : undefined,
+          targets.some((client) => client.remote) ? built(true) : undefined,
+        ]);
+        for (const client of targets) {
+          const payload = client.remote ? remote : local;
+          if (payload == null) continue;
+          try {
+            client.send(payload);
+          } catch (error) {
+            log.warn("推送状态失败", error);
+          }
+        }
+      })();
     }, STATE_DEBOUNCE_MS);
     debounce.unref?.();
   };
@@ -2007,7 +2114,9 @@ export function createApp(options: CreateAppOptions): VgentApp {
     streamSSE(c, async (stream) => {
       await recovered;
       let closed = false;
+      const remote = c.req.header(REMOTE_REQUEST_HEADER) != null;
       const client: StateClient = {
+        remote,
         send: (payload) => {
           if (closed) return;
           void stream.writeSSE({ event: "state", data: payload }).catch(() => {});
@@ -2019,14 +2128,17 @@ export function createApp(options: CreateAppOptions): VgentApp {
       }, KEEPALIVE_MS);
       keepalive.unref?.();
 
-      await stream.writeSSE({ event: "state", data: await buildState() });
-
-      await new Promise<void>((resolve) => {
-        stream.onAbort(resolve);
-      });
-      closed = true;
-      clearInterval(keepalive);
-      clients.delete(client);
+      // A first state that cannot be built ends this stream, and takes it off the list with it.
+      try {
+        await stream.writeSSE({ event: "state", data: await buildState(remote) });
+        await new Promise<void>((resolve) => {
+          stream.onAbort(resolve);
+        });
+      } finally {
+        closed = true;
+        clearInterval(keepalive);
+        clients.delete(client);
+      }
     }),
   );
 

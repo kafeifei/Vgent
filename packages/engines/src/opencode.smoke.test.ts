@@ -57,6 +57,14 @@ describe("createOpenCodeEngine (smoke)", () => {
           prompt: "Read the file hello-vgent.txt in this repository and reply with only its exact contents.",
         });
         expect(result.text).toContain("hello from vgent");
+        const usage = result.totalUsage;
+        expect(usage.inputTokens).toBeGreaterThan(0);
+        expect(usage.inputTokens).toBe(
+          (usage.inputTokenDetails.noCacheTokens ?? 0) +
+          (usage.inputTokenDetails.cacheReadTokens ?? 0) +
+          (usage.inputTokenDetails.cacheWriteTokens ?? 0),
+        );
+        expect(usage.raw?.vgentInputTokensIncludeCache).toBe(true);
       } finally {
         await engine.dispose();
       }

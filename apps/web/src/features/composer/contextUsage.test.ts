@@ -2,6 +2,7 @@ import type { UIMessage } from "ai";
 import { describe, expect, it } from "vitest";
 import type { ChangedFile, ThreadMessageMetadata } from "@/lib/types";
 import { contextUsage, formatTokens, sumChanges, taskUsage, usageCost } from "./contextUsage";
+import { repairMessageUsage } from "../../../../../packages/server/src/message-usage";
 
 const user = (id: string, text: string): UIMessage => ({ id, role: "user", parts: [{ type: "text", text }] });
 
@@ -163,6 +164,24 @@ describe("usageCost", () => {
 
   it("charges cache traffic as fresh input when the vendor gives it no price", () => {
     expect(usageCost(usage, { input: 4, output: 20 }).input).toBeCloseTo(4);
+  });
+
+  it("shows the observed OpenCode task as 42%, with its full cumulative input and fresh-input price", () => {
+    const messages = repairMessageUsage([assistant("a", "done", {
+      usage: { inputTokens: 354, cachedInputTokens: 114_944, outputTokens: 124, totalTokens: 478 },
+      totalUsage: { inputTokens: 120_406, cachedInputTokens: 2_422_144, cacheWriteTokens: 0, outputTokens: 14_156, reasoningTokens: 1_946, totalTokens: 134_562 },
+    })], "opencode");
+    const context = contextUsage(messages);
+    expect(context).toEqual({ tokens: 115_298, source: "usage" });
+    expect(Math.round(context.tokens! / 272_000 * 100)).toBe(42);
+    const total = taskUsage(messages)!;
+    expect(total.inputTokens).toBe(2_542_550);
+    expect(total.inputTokenDetails.noCacheTokens).toBe(120_406);
+    expect(Math.round(total.inputTokenDetails.cacheReadTokens! / total.inputTokens! * 100)).toBe(95);
+    const cost = usageCost(total, { input: 4, output: 20, cacheRead: 0.2 });
+    expect(cost.input).toBeCloseTo((120_406 * 4 + 2_422_144 * 0.2) / 1e6);
+    expect(cost.output).toBeCloseTo(14_156 * 20 / 1e6);
+    expect(cost.total).toBeCloseTo(1.2491728);
   });
 });
 

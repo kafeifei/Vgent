@@ -1,8 +1,29 @@
 diff --git a/dist/bridge/index.mjs b/dist/bridge/index.mjs
-index 8b422b9055b4affd292c28ddfc17ad6fcbde83ec..4ad6b488aca2e48f4d61284c1f9c753cfbd41f8a 100644
+index 8b422b9055b4affd292c28ddfc17ad6fcbde83ec..75fa5db11fb894a4c3199cd9b37f3c0a5a99afb4 100644
 --- a/dist/bridge/index.mjs
 +++ b/dist/bridge/index.mjs
-@@ -1816,7 +1816,9 @@ var OPENCODE_TO_WIRE = {
+@@ -885,9 +885,10 @@ function mapUsage(tokens) {
+   const value = extractOpenCodeTokens(tokens) ?? zeroOpenCodeTokens();
+   const cacheRead = value.cache.read;
+   return {
++    raw: { vgentInputTokensIncludeCache: true },
+     inputTokens: {
+-      total: value.input,
+-      noCache: Math.max(0, value.input - cacheRead),
++      total: value.input + cacheRead + value.cache.write,
++      noCache: value.input,
+       cacheRead,
+       cacheWrite: value.cache.write
+     },
+@@ -931,6 +932,7 @@ function addUsage({
+   const leftOutput = asTokenGroup(left.outputTokens);
+   const rightOutput = asTokenGroup(right.outputTokens);
+   return {
++    raw: { vgentInputTokensIncludeCache: true },
+     inputTokens: {
+       total: add({ left: leftInput.total, right: rightInput.total }),
+       noCache: add({ left: leftInput.noCache, right: rightInput.noCache }),
+@@ -1816,7 +1818,9 @@ var OPENCODE_TO_WIRE = {
    task: "agent",
    agent: "agent",
    askUserQuestions: "question",
@@ -13,7 +34,7 @@ index 8b422b9055b4affd292c28ddfc17ad6fcbde83ec..4ad6b488aca2e48f4d61284c1f9c753c
  };
  var PUBLIC_TO_NATIVE = {
    read: "view",
-@@ -2611,6 +2613,34 @@ async function consumeEvents({
+@@ -2611,6 +2615,34 @@ async function consumeEvents({
      }
      processEvent(event);
    };
@@ -48,7 +69,7 @@ index 8b422b9055b4affd292c28ddfc17ad6fcbde83ec..4ad6b488aca2e48f4d61284c1f9c753c
    for await (const rawEvent of stream) {
      if (signal.aborted || turn.abortSignal.aborted) break;
      const event = unwrapOpenCodeEvent(rawEvent);
-@@ -2626,34 +2656,34 @@ async function consumeEvents({
+@@ -2626,34 +2658,34 @@ async function consumeEvents({
          emit,
          event
        });
@@ -103,7 +124,7 @@ index 8b422b9055b4affd292c28ddfc17ad6fcbde83ec..4ad6b488aca2e48f4d61284c1f9c753c
  }
  function getSubagentStepId(event) {
    if (event?.type === "message.part.updated") {
-@@ -3113,4 +3143,3 @@ function emitFatal(message) {
+@@ -3113,4 +3145,3 @@ function emitFatal(message) {
  `);
    process.exit(1);
  }
@@ -239,3 +260,30 @@ index ceb7c43623e0dce2dd6eb3ea824a24f9045778bd..1fde460b1d434a55db426be6c136492a
  }
  
  function getSubagentStepId(event: OpenCodeEvent | undefined) {
+diff --git a/src/bridge/opencode-usage.ts b/src/bridge/opencode-usage.ts
+index 5c3d1c682500fe85fb6becef9ca782ee77c66b4c..7b7a27ef4936ead8a5757e6b30260a96cbff0a19 100644
+--- a/src/bridge/opencode-usage.ts
++++ b/src/bridge/opencode-usage.ts
+@@ -19,9 +19,12 @@ export function mapUsage(tokens: unknown): HarnessUsage {
+   const value = extractOpenCodeTokens(tokens) ?? zeroOpenCodeTokens();
+   const cacheRead = value.cache.read;
+   return {
++    // Vgent: distinguish this mapping from an older, still-attached bridge.
++    raw: { vgentInputTokensIncludeCache: true },
+     inputTokens: {
+-      total: value.input,
+-      noCache: Math.max(0, value.input - cacheRead),
++      // OpenCode has already subtracted both cache buckets from `input`.
++      total: value.input + cacheRead + value.cache.write,
++      noCache: value.input,
+       cacheRead,
+       cacheWrite: value.cache.write,
+     },
+@@ -81,6 +84,7 @@ export function addUsage({
+   const leftOutput = asTokenGroup(left.outputTokens);
+   const rightOutput = asTokenGroup(right.outputTokens);
+   return {
++    raw: { vgentInputTokensIncludeCache: true },
+     inputTokens: {
+       total: add({ left: leftInput.total, right: rightInput.total }),
+       noCache: add({ left: leftInput.noCache, right: rightInput.noCache }),

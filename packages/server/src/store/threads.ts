@@ -3,6 +3,7 @@ import { mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { isToolUIPart, type UIMessage } from "ai";
 import { ConflictError, NotFoundError } from "../errors.js";
+import { repairMessageUsage } from "../message-usage.js";
 import type {
   ApplyUndoRecord,
   ChangeStats,
@@ -236,7 +237,13 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
     index = current;
   };
 
-  const readRecord = (id: string) => readJsonOrQuarantine<ThreadRecord>(recordPath(id), { validate: isRecord, log });
+  const readRecord = async (id: string) => {
+    const record = await readJsonOrQuarantine<ThreadRecord>(recordPath(id), { validate: isRecord, log });
+    // Immediately correct API reads; persist on the next normal write without
+    // making a read race a live run or changing the task's activity timestamp.
+    if (record != null) record.messages = repairMessageUsage(record.messages, record.engine);
+    return record;
+  };
 
   return {
     async list() {
@@ -267,7 +274,7 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
         ...(input.workspaceState != null ? { workspaceState: input.workspaceState } : {}),
         createdAt: now,
         updatedAt: now,
-        messages: input.messages ?? [],
+        messages: repairMessageUsage(input.messages ?? [], input.engine),
         ...(input.forkedFrom != null ? { forkedFrom: input.forkedFrom } : {}),
       };
       await serialize(record.id, () => writeJsonAtomic(recordPath(record.id), record));
@@ -414,6 +421,7 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
           if (patch.archivePreserveChanges == null) delete next.archivePreserveChanges;
           else next.archivePreserveChanges = patch.archivePreserveChanges;
         }
+        next.messages = repairMessageUsage(next.messages, next.engine);
         await writeJsonAtomic(recordPath(id), next);
         return next;
       });
@@ -428,7 +436,7 @@ export function createThreadStore(dataDir: string, log: Logger = silentLogger): 
       await serialize(id, async () => {
         const current = await readRecord(id);
         if (current == null) return;
-        await writeJsonAtomic(recordPath(id), { ...current, messages, updatedAt: new Date().toISOString() } satisfies ThreadRecord);
+        await writeJsonAtomic(recordPath(id), { ...current, messages: repairMessageUsage(messages, current.engine), updatedAt: new Date().toISOString() } satisfies ThreadRecord);
       });
     },
 

@@ -9,7 +9,6 @@ import {
   safeValidateUIMessages,
   toUIMessageStream,
   type DynamicToolUIPart,
-  type LanguageModelUsage,
   type ModelMessage,
   type TextStreamPart,
   type ToolSet,
@@ -33,6 +32,7 @@ import { pendingHumanStatus, restartNote, RESTART_RESUME_TEXT } from "./restart.
 import { compactionChunk, isCompactionPart } from "./compaction.js";
 import { expandSteers, steerChunk, withoutPromotedSteers } from "./steer.js";
 import { sinceCompaction } from "./compact.js";
+import { addUsageInfo, toUsageInfo } from "./message-usage.js";
 import type { ProjectStore } from "./store/projects.js";
 import type { SettingsStore } from "./store/settings.js";
 import { DEFAULT_THREAD_TITLE, type ThreadStore, type ThreadPatch } from "./store/threads.js";
@@ -89,38 +89,6 @@ export function rawErrorText(error: unknown): string {
   const why = root !== error && root instanceof Error ? root.message.trim() : "";
   const full = why !== "" && !text.includes(why) ? `${text.trim()}（${why}）` : text.trim();
   return full.slice(0, RAW_ERROR_TEXT_MAX_LEN);
-}
-
-/**
- * v7 `LanguageModelUsage` → the flat `UsageInfo` a thread message carries.
- *
- * `inputTokens` is taken as reported: in v7 it is the full prompt of that call,
- * with `inputTokenDetails.cacheReadTokens` being the cached *part* of it, not an
- * extra amount on top. Every field is dropped when the provider left it
- * undefined, so `exactOptionalPropertyTypes` holds and nothing lands in the
- * thread file as an explicit null.
- */
-function toUsageInfo(usage: LanguageModelUsage): UsageInfo {
-  const cached = usage.inputTokenDetails?.cacheReadTokens;
-  const cacheWrite = usage.inputTokenDetails?.cacheWriteTokens;
-  const reasoning = usage.outputTokenDetails?.reasoningTokens;
-  return {
-    ...(usage.inputTokens != null ? { inputTokens: usage.inputTokens } : {}),
-    ...(usage.outputTokens != null ? { outputTokens: usage.outputTokens } : {}),
-    ...(usage.totalTokens != null ? { totalTokens: usage.totalTokens } : {}),
-    ...(cached != null ? { cachedInputTokens: cached } : {}),
-    ...(cacheWrite != null ? { cacheWriteTokens: cacheWrite } : {}),
-    ...(reasoning != null ? { reasoningTokens: reasoning } : {}),
-  };
-}
-
-/** Two `UsageInfo`s added field by field; a field neither side has stays absent. */
-function addUsageInfo(a: UsageInfo, b: UsageInfo): UsageInfo {
-  const sum: UsageInfo = {};
-  for (const key of ["inputTokens", "outputTokens", "totalTokens", "cachedInputTokens", "cacheWriteTokens", "reasoningTokens"] as const) {
-    if (a[key] != null || b[key] != null) sum[key] = (a[key] ?? 0) + (b[key] ?? 0);
-  }
-  return sum;
 }
 
 /** Whether an engine counted anything at all — a Codex bridge's `finish` can carry all zeros. */
@@ -605,6 +573,9 @@ export function createRunManager(options: {
     let steps = 0;
     /** This turn's steps added up so far, so the context card's 累计 moves while the turn runs. */
     let turnUsage: UsageInfo | undefined;
+    // At a host-input pause the SDK synthesizes a total and drops usage.raw.
+    // Its preceding steps still identify whether this is a patched bridge.
+    let openCodeInputTokensIncludeCache = false;
 
     /**
      * The history with this turn's assistant message folded in — or unchanged
@@ -883,13 +854,14 @@ export function createRunManager(options: {
         // counts nothing, which would wipe out a sum that did.
         messageMetadata: ({ part }): ThreadMessageMetadata | undefined => {
           if (part.type === "finish-step") {
-            const step = toUsageInfo(part.usage);
+            openCodeInputTokensIncludeCache ||= part.usage.raw?.vgentInputTokensIncludeCache === true;
+            const step = toUsageInfo(part.usage, thread.engine);
             if (!counted(step)) return { usage: step };
             turnUsage = turnUsage == null ? step : addUsageInfo(turnUsage, step);
             return { usage: step, totalUsage: turnUsage };
           }
           if (part.type === "finish") {
-            const total = toUsageInfo(part.totalUsage);
+            const total = toUsageInfo(part.totalUsage, thread.engine, openCodeInputTokensIncludeCache || part.totalUsage.raw?.vgentInputTokensIncludeCache === true);
             return counted(total) || turnUsage == null ? { totalUsage: total } : { totalUsage: turnUsage };
           }
           return undefined;

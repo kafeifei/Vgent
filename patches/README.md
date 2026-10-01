@@ -32,3 +32,13 @@ Upstream-worthy: the missing hook timeout, the ignored hook `signal`, and the un
 Validation: `engines/opencode.test.ts` checks that the bootstrap's bridge carries the hold. `VGENT_SMOKE=1 pnpm --filter @vgent/engines test opencode.smoke` runs real OpenCode on the machine's Codex login: one read turn, and one edit under `allow-reads` that must emit the call before its approval request and write the file once approved.
 
 Upstream-worthy: both. Drop them when the bridge emits pending tool calls (or waits for them) and maps `apply_patch`.
+
+# OpenCode input usage
+
+The same pinned `harness-opencode 1.0.123` patch fixes `src/bridge/opencode-usage.ts` and its bundled `dist/bridge/index.mjs`. OpenCode 1.18.31's `Session.getUsage` has already removed cache reads and writes from `tokens.input`; the bridge incorrectly used that fresh-only number as the total and subtracted cache reads a second time. The mapping now sets `inputTokens.total = input + cache.read + cache.write` and `noCache = input`. Output still includes reasoning exactly once. Step sums and the session-difference fallback use the same mapping.
+
+Both steps and totals carry `raw.vgentInputTokensIncludeCache` so the server can distinguish a corrected bridge from an older bridge still attached to a suspended turn. `message-usage.ts` converts those legacy streams and read-repairs saved OpenCode counts, with a per-usage `inputTokensIncludeCache` marker to make subsequent reads/writes idempotent. The originating run's engine takes precedence over the current thread's engine for forked history. The SDK can synthesize a total without `raw` when pausing for host input; the server inherits the preceding steps' marker for that total. Reads do not write task files or move sidebar activity; normal saves persist the repair.
+
+Validation: `engines/opencode-usage.test.ts` executes the actual bootstrap bundle's usage modules, then the SDK and server conversions (high/low/zero cache hits, cache writes, reasoning, sums and session differences). `server/message-usage.test.ts`, `store/store.test.ts`, and `web/features/composer/contextUsage.test.ts` cover legacy continuations, mixed/forked history, repeated persistence, context percentage and pricing using the observed 354 fresh / 114944 cached task. The read smoke also asserts the real runtime's input buckets sum to its total.
+
+Upstream-worthy: the input mapping. On an adapter upgrade, recheck its mapping and the compatibility marker together; do not remove the legacy reader while affected task files can still exist.

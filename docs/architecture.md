@@ -42,6 +42,7 @@ Vgent 是一个 **Web 优先**的本地 coding agent 工作台，底下可换引
 - **指令**：OpenCode 自己读仓库的 AGENTS.md；我们只补 `~/.agents/AGENTS.md` 和计划模式的附加说明。计划回合只开 `read / grep / glob / ls / todowrite`，其余内建工具由 harness 宿主一律拒绝。
 - **没做的**：手动压缩（适配器只能在两轮之间压，结果要到下一轮的流里才出现）；MCP / skills / 记忆、Computer Use；插话只报「已接收」（OpenCode 没有「某一步取走了这条消息」的事件）；OpenCode 版本不进「引擎运行时」的升级管理（它的安装脚本放行名单钉了版本号）。
 - **补丁**：见 `patches/README.md` 的「OpenCode permission order」。
+- **用量**：OpenCode 的 `tokens.input` 只含未缓存输入，bridge 补丁把读取缓存、写入缓存补回 AI SDK 的输入总数，并保留分项；步骤、累计、会话差分共用这个映射。`message-usage.ts` 兼容旧 bridge 的续接流和历史记录，以当轮 `run.engine` 识别来源，每个 usage 写 `inputTokensIncludeCache` 防止二次相加。旧记录读出即修正，下一次正常保存时落盘，不因读取改变任务活动时间；其它引擎按 SDK 原有口径。详见 `patches/README.md` 的「OpenCode input usage」。
 
 ### 自研引擎 `@vgent/engine`
 

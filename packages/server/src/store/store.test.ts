@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { HarnessState, ThreadRecord } from "../types.js";
+import type { HarnessState, ThreadMessageMetadata, ThreadRecord } from "../types.js";
 import { readJsonOrQuarantine, writeJsonAtomic } from "./atomic-file.js";
 import { createProjectStore } from "./projects.js";
 import { asMcpServers, createSettingsStore } from "./settings.js";
@@ -114,6 +114,34 @@ describe("createThreadStore", () => {
     // The chain preserves call order, so the last update is the one on disk.
     expect(record.title).toBe("标题-7");
     expect((await readdir(join(dir, "threads"))).filter((entry) => entry.includes(".tmp-"))).toEqual([]);
+  });
+
+  it("read-repairs old OpenCode usage and persists it on a normal write without moving activity", async () => {
+    const dir = await tempDir();
+    const store = seed(dir);
+    const thread = await store.create({ projectId: "p1", engine: "opencode" });
+    const path = join(dir, "threads", `${thread.id}.json`);
+    const metadata: ThreadMessageMetadata = {
+      usage: { inputTokens: 354, cachedInputTokens: 114_944, outputTokens: 124, totalTokens: 478 },
+      totalUsage: { inputTokens: 120_406, cachedInputTokens: 2_422_144, outputTokens: 14_156, totalTokens: 134_562 },
+    };
+    await writeJsonAtomic(path, { ...thread, messages: [{ id: "a", role: "assistant", parts: [], metadata }] });
+    const repaired = await store.get(thread.id);
+    expect(repaired?.messages[0]?.metadata).toMatchObject({
+      usage: { inputTokens: 115_298, totalTokens: 115_422, inputTokensIncludeCache: true },
+      totalUsage: { inputTokens: 2_542_550, totalTokens: 2_556_706, inputTokensIncludeCache: true },
+    });
+    expect((await store.get(thread.id))?.messages).toEqual(repaired?.messages);
+    expect(repaired?.updatedAt).toBe(thread.updatedAt);
+    await store.update(thread.id, { unread: false });
+    const saved = await readJsonOrQuarantine<ThreadRecord>(path);
+    expect(saved?.messages).toEqual(repaired?.messages);
+    expect(saved?.updatedAt).toBe(thread.updatedAt);
+    const reopened = seed(dir);
+    await reopened.saveMessages(thread.id, repaired!.messages);
+    expect((await reopened.get(thread.id))?.messages).toEqual(repaired?.messages);
+    const fork = await reopened.create({ projectId: "p1", engine: "opencode", messages: repaired!.messages });
+    expect(fork.messages).toEqual(repaired?.messages);
   });
 
   it("keeps the last activity time for Git stats and read state, but advances it for a new message", async () => {

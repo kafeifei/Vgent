@@ -68,6 +68,8 @@ export interface ThreadWorkspace {
  * cache reads included, which is exactly how much context the thread occupies.
  */
 export interface UsageInfo {
+  /** Normalized input includes both cache buckets; absent on pre-fix OpenCode records. */
+  inputTokensIncludeCache?: true;
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;

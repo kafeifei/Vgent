@@ -9,9 +9,10 @@ import { createProviderStore } from "../store/providers.js";
 import { createSettingsStore } from "../store/settings.js";
 import type { EngineDescriptor } from "./capabilities.js";
 import { trackClaudeSteers } from "./claude-steer.js";
+import { trackClaudeUsage } from "./account-usage.js";
 import { stripDeniedApprovalResults } from "./harness-messages.js";
 import type { EngineAccounts, EngineContext, EngineFactory, EngineRunner } from "./registry.js";
-import { splitAccountSpec } from "../accounts/spec.js";
+import { DEFAULT_ACCOUNT, splitAccountSpec } from "../accounts/spec.js";
 
 /** 引擎能力表, the Claude Code row: it can ask, and it can plan; the rest is not wired. */
 const DESCRIPTOR: EngineDescriptor = {
@@ -166,6 +167,7 @@ export function createClaudeCodeEngineFactory(accounts?: EngineAccounts): Engine
       const { accountId, spec: model } = ctx.thread.model == null ? { spec: undefined } : splitAccountSpec(ctx.thread.model);
       const accountEnv = accountId != null && accounts != null ? await accounts.claudeEnv(accountId) : {};
       const routed = providerRoute(model, await createProviderStore(ctx.dataDir, ctx.log).list());
+      const reportUsage = routed == null ? await accounts?.bindUsage?.(accountId ?? DEFAULT_ACCOUNT.claude).catch(() => undefined) : undefined;
       const cua = settings.computerUseProvider === "cua" && !ctx.planMode
         ? await connectMcpServers([cuaMcpConfig(await requireCuaDriver())], { log: ctx.log })
         : undefined;
@@ -234,7 +236,7 @@ export function createClaudeCodeEngineFactory(accounts?: EngineAccounts): Engine
               toolResultContinuations: collectHarnessAgentToolResultContinuations({ messages: harnessMessages }),
               abortSignal,
             });
-            return { stream: trackClaudeSteers(result.stream as ReadableStream<TextStreamPart<ToolSet>>, ctx.steerApplied) };
+            return { stream: trackClaudeUsage(trackClaudeSteers(result.stream as ReadableStream<TextStreamPart<ToolSet>>, ctx.steerApplied), reportUsage) };
           }
           // The whole converted history goes in on purpose. The harness session
           // owns its own native history and collapses the array to its last
@@ -248,7 +250,7 @@ export function createClaudeCodeEngineFactory(accounts?: EngineAccounts): Engine
             abortSignal,
             options: undefined,
           });
-          return { stream: trackClaudeSteers(result.stream as ReadableStream<TextStreamPart<ToolSet>>, ctx.steerApplied) };
+          return { stream: trackClaudeUsage(trackClaudeSteers(result.stream as ReadableStream<TextStreamPart<ToolSet>>, ctx.steerApplied), reportUsage) };
         },
 
         // 插话: the harness's own API. It throws when the turn is already over,

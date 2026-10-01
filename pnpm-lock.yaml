@@ -10,7 +10,7 @@ overrides:
 
 patchedDependencies:
   '@ai-sdk/harness-claude-code@1.0.125':
-    hash: 9150c4722d2eed04a8d3f487245f599cfc8c155352058c916ef99c2e42d409da
+    hash: 42c9dc2045ca88b06c710a961a77d4afeaf36c9b72b8f5cdeb0bba757b88e62a
     path: patches/@ai-sdk__harness-claude-code@1.0.125.patch
   '@ai-sdk/harness-opencode@1.0.123':
     hash: ca9fd92b3db9ec8831eea7bec3da04089a73915a5b4246d7b9c03bdb25bc83d8
@@ -173,7 +173,7 @@ importers:
         version: 1.0.121(patch_hash=96d130032ac245fd8567b508db626740bb194f8c9f12a8979e74e4ba4d332619)(ws@8.21.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@4.6.5)
       '@ai-sdk/harness-claude-code':
         specifier: 1.0.125
-        version: 1.0.125(patch_hash=9150c4722d2eed04a8d3f487245f599cfc8c155352058c916ef99c2e42d409da)(bufferutil@4.1.0)(utf-8-validate@5.0.10)(zod@4.6.5)
+        version: 1.0.125(patch_hash=42c9dc2045ca88b06c710a961a77d4afeaf36c9b72b8f5cdeb0bba757b88e62a)(bufferutil@4.1.0)(utf-8-validate@5.0.10)(zod@4.6.5)
       '@ai-sdk/harness-codex':
         specifier: 1.0.123
         version: 1.0.123(bufferutil@4.1.0)(utf-8-validate@5.0.10)(zod@4.6.5)
@@ -3906,7 +3906,7 @@ snapshots:
       '@ai-sdk/provider-utils': 5.0.45(zod@4.6.5)
       zod: 4.6.5
 
-  '@ai-sdk/harness-claude-code@1.0.125(patch_hash=9150c4722d2eed04a8d3f487245f599cfc8c155352058c916ef99c2e42d409da)(bufferutil@4.1.0)(utf-8-validate@5.0.10)(zod@4.6.5)':
+  '@ai-sdk/harness-claude-code@1.0.125(patch_hash=42c9dc2045ca88b06c710a961a77d4afeaf36c9b72b8f5cdeb0bba757b88e62a)(bufferutil@4.1.0)(utf-8-validate@5.0.10)(zod@4.6.5)':
     dependencies:
       '@ai-sdk/harness': 1.0.121(patch_hash=96d130032ac245fd8567b508db626740bb194f8c9f12a8979e74e4ba4d332619)(ws@8.21.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@4.6.5)
       '@ai-sdk/provider-utils': 5.0.45(zod@4.6.5)

@@ -18,6 +18,7 @@ export interface UsageWindow {
   unit?: string;
   unlimited?: boolean;
   resetsAt?: string;
+  observedAt?: string;
 }
 export interface AccountUsage {
   status: "ready" | "unavailable" | "reauth";
@@ -25,6 +26,8 @@ export interface AccountUsage {
   windows: UsageWindow[];
   message?: string;
   balance?: string;
+  source?: "conversation" | "query";
+  retryAt?: string;
 }
 /** Public projection only: no credential, token, or grant is serializable here. */
 export interface AccountSummary {

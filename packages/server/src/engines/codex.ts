@@ -103,6 +103,7 @@ export function createCodexEngineFactory(accounts?: EngineAccounts): EngineFacto
       const route = codexProviderRoute(spec, await createProviderStore(ctx.dataDir, ctx.log).list());
       const model = route?.model ?? spec;
       const codexHome = route == null ? accounts?.codexHome(accountId ?? DEFAULT_ACCOUNT.codex) : undefined;
+      const reportUsage = route == null ? await accounts?.bindUsage?.(accountId ?? DEFAULT_ACCOUNT.codex).catch(() => undefined) : undefined;
       // The native runner loads the full catalog before process startup, so
       // the selected speed is recognized by the runtime as well as the picker.
       const tier = ctx.thread.serviceTier;
@@ -119,6 +120,7 @@ export function createCodexEngineFactory(accounts?: EngineAccounts): EngineFacto
             }
           : undefined;
       return createNativeCodexRunner(ctx, {
+        ...(reportUsage ? { reportUsage } : {}),
         ...(model != null ? { model } : {}),
         ...(route != null ? { auth: route.auth } : {}),
         ...(codexHome != null ? { codexHome } : {}),

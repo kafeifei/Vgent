@@ -72,3 +72,18 @@ describe("native Codex command classification", () => {
     }
   });
 });
+
+it("accepts account-scoped quota notifications without a thread id and makes no quota RPC", async () => {
+  const ctx = { project: { repoPath: "/fixture" }, thread: { id: "fixture" }, saveHarnessState: vi.fn() } as unknown as EngineContext;
+  const reportUsage = vi.fn(async () => {});
+  const runner = await createNativeCodexRunner(ctx, { reportUsage });
+  try {
+    const { stream } = await runner.stream({ messages: [{ role: "user", content: "hello" }], abortSignal: new AbortController().signal });
+    protocol.notify!({ method: "account/rateLimits/updated", params: { rateLimits: { primary: { usedPercent: 25, windowDurationMins: 300 }, secondary: null } } });
+    expect(reportUsage).toHaveBeenCalledWith(expect.objectContaining({ windows: [{ id: "codex-primary_window", label: "5 小时", usedPercent: 25 }] }));
+    expect(protocol.request.mock.calls.map(call => call[0])).toEqual(["thread/start", "turn/start"]);
+    protocol.notify!({ method: "turn/completed", params: { threadId: "thread", turn: { id: "turn", status: "completed" } } });
+    const reader = stream.getReader();
+    while (!(await reader.read()).done) { /* drain the ordinary conversation */ }
+  } finally { await runner.finish(); }
+});

@@ -1,5 +1,5 @@
 import type { VgentEngineFactoryOptions } from "./vgent.js";
-import type { AccountId } from "../accounts/types.js";
+import type { AccountId, AccountUsage } from "../accounts/types.js";
 import type { EngineOutcome, TaskState } from "@vgent/engine";
 import type { ModelMessage, TextStreamPart, ToolSet } from "ai";
 import type { EngineId, HarnessState, Logger, PermissionMode, Project, ThreadRecord } from "../types.js";
@@ -144,6 +144,7 @@ export interface EngineAccounts {
   codexHome(id: AccountId): string;
   /** Throws when the account is not there (signed out, removed). */
   ensure(id: AccountId): Promise<void>;
+  bindUsage?(id: AccountId): Promise<(usage: AccountUsage) => Promise<void>>;
 }
 
 /** Engine ids whose turns hold no live state; see `EngineFactory.statelessTurns`. */

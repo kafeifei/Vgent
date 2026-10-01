@@ -13,6 +13,7 @@ import { createAccountRegistry, useEnabled, type AccountRecord, type AccountRegi
 import { accountModelKey, accountSpec, DEFAULT_ACCOUNT, isAccountId, isDefaultAccount, kindOfAccount, newAccountId } from "./spec.js";
 import { ACCOUNT_USES, type AccountId, type AccountKind, type AccountLoginAttempt, type AccountSnapshot, type AccountSummary, type AccountUsage, type AccountUse } from "./types.js";
 import { accountJson, object, parseClaudeUsage, parseCodexUsage, parseCopilotUsage, unavailable } from "./usage.js";
+import { createUsageCache } from "./usage-cache.js";
 
 const KIND_NAME: Record<AccountKind, string> = { codex: "Codex", claude: "Claude", github: "GitHub" };
 /** The order accounts are listed in: the engines' own order, then GitHub. */
@@ -49,6 +50,7 @@ export function createAccountService(options: {
   const probeClaude = options.probeClaude ?? probeClaudeLogin;
   const probeCodex = options.probeCodex ?? describeSubscriptionAuth;
   const claudeToken = options.claudeToken ?? readClaudeUsageToken;
+  const usageCache = createUsageCache(dataDir);
   const login = options.cli?.login ?? ((kind, home, changed) => (kind === "claude" ? startClaudeLogin(home, changed) : startCodexLogin(home!, changed)));
   const logoutCli = options.cli?.logout ?? ((kind, home) => (kind === "claude" ? logoutClaude(home) : logoutCodex(home!)));
 
@@ -106,35 +108,42 @@ export function createAccountService(options: {
 
   async function usage(account: AccountSummary, home: string | undefined): Promise<AccountUsage | undefined> {
     if (!account.loggedIn || account.method) return undefined;
-    try {
-      if (account.kind === "github") {
-        const auth = await github.access(account.id);
-        const raw = await accountJson("https://api.github.com/copilot_internal/user", { Authorization: `Bearer ${auth.accessToken}`, "User-Agent": "Vgent", Accept: "application/json" }, fetcher);
-        if (github.revision(account.id) !== auth.revision) throw new Error("GitHub account changed");
-        const plan = object(raw).copilot_plan; if (typeof plan === "string") account.plan = plan;
-        return parseCopilotUsage(raw);
-      }
-      if (account.kind === "codex") {
-        const tokens = codexTokens(home!);
-        const auth = await tokens.getAccessToken();
-        if (account.email && auth.email !== account.email) return { ...unavailable(undefined), message: "Codex 账号已变化，请刷新账号状态" };
-        const raw = await accountJson("https://chatgpt.com/backend-api/wham/usage", { Authorization: `Bearer ${auth.accessToken}`, ...(auth.accountId ? { "ChatGPT-Account-Id": auth.accountId } : {}), "User-Agent": "codex-cli" }, fetcher);
-        if ((await tokens.getAccessToken()).accountId !== auth.accountId) return { ...unavailable(undefined), message: "Codex 账号已变化，请刷新账号状态" };
-        return parseCodexUsage(raw);
-      }
-      const token = await claudeToken(home);
-      if (!token) return { ...unavailable(undefined), message: "Claude Code 登录可用于模型；未能读取同一登录的额度凭据" };
-      const headers = { Authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20" };
-      // Do not merge a stale file/keychain belonging to a different CLI account.
-      const profile = object(await accountJson("https://api.anthropic.com/api/oauth/profile", headers, fetcher));
-      if (!account.email || object(profile.account).email !== account.email) return { ...unavailable(undefined), message: "额度凭据与 Claude Code 当前账号无法核对，请刷新登录状态" };
-      return parseClaudeUsage(await accountJson("https://api.anthropic.com/api/oauth/usage", headers, fetcher));
-    } catch (error) { return unavailable(error); }
+    if (account.kind === "github") {
+      const auth = await github.access(account.id);
+      const raw = await accountJson("https://api.github.com/copilot_internal/user", { Authorization: `Bearer ${auth.accessToken}`, "User-Agent": "Vgent", Accept: "application/json" }, fetcher);
+      if (github.revision(account.id) !== auth.revision) throw new Error("GitHub account changed");
+      const plan = object(raw).copilot_plan; if (typeof plan === "string") account.plan = plan;
+      return parseCopilotUsage(raw);
+    }
+    if (account.kind === "codex") {
+      const tokens = codexTokens(home!);
+      const auth = await tokens.getAccessToken();
+      if (account.email && auth.email !== account.email) return { ...unavailable(undefined), message: "Codex 账号已变化，请刷新账号状态" };
+      const raw = await accountJson("https://chatgpt.com/backend-api/wham/usage", { Authorization: `Bearer ${auth.accessToken}`, ...(auth.accountId ? { "ChatGPT-Account-Id": auth.accountId } : {}), "User-Agent": "codex-cli" }, fetcher);
+      if ((await tokens.getAccessToken()).accountId !== auth.accountId) return { ...unavailable(undefined), message: "Codex 账号已变化，请刷新账号状态" };
+      return parseCodexUsage(raw);
+    }
+    const token = await claudeToken(home);
+    if (!token) return { ...unavailable(undefined), message: "Claude Code 登录可用于模型；未能读取同一登录的额度凭据" };
+    const headers = { Authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20" };
+    // Do not merge a stale file/keychain belonging to a different CLI account.
+    const profile = object(await accountJson("https://api.anthropic.com/api/oauth/profile", headers, fetcher));
+    if (!account.email || object(profile.account).email !== account.email) return { ...unavailable(undefined), message: "额度凭据与 Claude Code 当前账号无法核对，请刷新登录状态" };
+    return parseClaudeUsage(await accountJson("https://api.anthropic.com/api/oauth/usage", headers, fetcher));
+  }
+
+  async function withUsage(snapshot: AccountSnapshot): Promise<AccountSnapshot> {
+    return { ...snapshot, accounts: await Promise.all(snapshot.accounts.map(async account => {
+      const { usage: _old, ...identity } = account;
+      if (!account.loggedIn || account.method) return identity;
+      const cached = await usageCache.peek(account).catch(() => ({ ...unavailable(undefined), message: "额度缓存读取失败，已暂停补查" }));
+      return cached ? { ...identity, usage: cached } : identity;
+    })) };
   }
 
   async function list(input: { usage?: boolean; refresh?: boolean } = {}): Promise<AccountSnapshot> {
     const includeUsage = input.usage === true;
-    if (!input.refresh && cache && Date.now() - (includeUsage ? cache.usageAt : cache.at) < 60_000) return cache.data;
+    if (!input.refresh && cache && Date.now() - (includeUsage ? cache.usageAt : cache.at) < 60_000) return withUsage(cache.data);
     if (pending) {
       if (!includeUsage || pending.usage) return pending.promise;
       await pending.promise;
@@ -156,11 +165,14 @@ export function createAccountService(options: {
         if (previous?.usage) account.usage = previous.usage;
         if (!account.plan && previous?.plan) account.plan = previous.plan;
       }
-      if (includeUsage) await Promise.all(entries.map(async ({ summary, home }) => { const u = await usage(summary, home); if (u) summary.usage = u; }));
+      if (includeUsage) await Promise.all(entries.map(async ({ summary, home }) => {
+        if (!summary.loggedIn || summary.method) return;
+        await usageCache.query(summary, () => usage(summary, home)).catch(() => {});
+      }));
       if (generation !== revision) return list(input);
       const data = { accounts, revision };
       cache = { at: Date.now(), data, usageAt: includeUsage ? Date.now() : sameIdentity ? cache?.usageAt ?? 0 : 0 };
-      return data;
+      return withUsage(data);
     })();
     pending = { usage: includeUsage, promise };
     try { return await promise; } finally { if (pending?.promise === promise) pending = undefined; }
@@ -363,6 +375,18 @@ export function createAccountService(options: {
 
   return {
     list,
+    /** Capture the account at turn start. A late event must never populate a newly signed-in account. */
+    async bindUsage(id: AccountId): Promise<(usage: AccountUsage) => Promise<void>> {
+      // A quota endpoint must not delay an engine starting while fallback is in flight.
+      const account = cache && Date.now() - cache.at < 60_000
+        ? cache.data.accounts.find(account => account.id === id)
+        : (await enumerate()).find(entry => entry.summary.id === id)?.summary;
+      const generation = revision;
+      return async usage => {
+        if (!account?.loggedIn || account.method || generation !== revision) return;
+        await usageCache.observe(account, usage);
+      };
+    },
     invalidate,
     registry,
     github,

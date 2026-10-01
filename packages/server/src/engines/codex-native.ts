@@ -4,6 +4,8 @@ import type { LanguageModelUsage, ModelMessage, TextStreamPart, ToolSet } from "
 import { CodexAppServer, type CodexNotification } from "./codex-app-server.js";
 import type { EngineContext, EngineRunner } from "./registry.js";
 import { prepareCodexSpeedCatalog } from "../codex-catalog.js";
+import type { AccountUsage } from "../accounts/types.js";
+import { parseCodexRateLimit } from "../accounts/usage.js";
 
 type Part = TextStreamPart<ToolSet>;
 type Obj = Record<string, unknown>;
@@ -101,7 +103,7 @@ function toolName(type: string): string {
 /** Native Codex app-server runner. Unlike `codex exec`, it owns `turn/steer`. */
 export async function createNativeCodexRunner(
   ctx: EngineContext,
-  options: { model?: string; effort?: string; serviceTier?: string; codexConfig?: Obj; auth?: CodexAuthEnvironment; codexHome?: string },
+  options: { model?: string; effort?: string; serviceTier?: string; codexConfig?: Obj; auth?: CodexAuthEnvironment; codexHome?: string; reportUsage?: (usage: AccountUsage) => Promise<void> },
 ): Promise<EngineRunner> {
   const home = await prepareCodexHome(DEFAULT_CODEX_DATA_DIR);
   // The login the turn runs on: the account's home when it names one, else the machine's.
@@ -171,6 +173,12 @@ export async function createNativeCodexRunner(
 
   const handle = (event: CodexNotification): void => {
     const params = event.params;
+    // This is account-scoped and has no threadId. Handle it before the thread filter.
+    if (event.method === "account/rateLimits/updated") {
+      const usage = parseCodexRateLimit(params.rateLimits);
+      if (options.auth == null && usage) void options.reportUsage?.(usage).catch(() => {});
+      return;
+    }
     if (event.method === "process/exited") {
       failStream?.(new Error(asString(params.message) ?? "Codex app-server exited"));
       return;

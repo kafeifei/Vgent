@@ -61,14 +61,65 @@ export function parseCopilotUsage(raw: unknown): AccountUsage {
   return result(windows);
 }
 export class UsageError extends Error {
-  constructor(readonly status: number) { super("Account usage request failed"); }
+  constructor(readonly status: number, readonly retryAt?: number) { super("Account usage request failed"); }
+}
+export function retryAfter(value: string | null, now = Date.now()): number | undefined {
+  if (!value?.trim()) return undefined;
+  const seconds = Number(value);
+  const at = Number.isFinite(seconds) && seconds >= 0 ? now + seconds * 1000 : Date.parse(value);
+  return Number.isFinite(at) && at > now ? at : undefined;
 }
 export async function accountJson(url: string, headers: Record<string, string>, fetcher = fetch): Promise<unknown> {
   const response = await fetcher(url, { headers, redirect: "error", signal: AbortSignal.timeout(12_000) });
-  if (!response.ok) throw new UsageError(response.status);
-  return response.json();
+  const retryAt = retryAfter(response.headers.get("retry-after"));
+  const rateLimited = response.status === 429 || (response.status === 403 && (retryAt != null || response.headers.get("x-ratelimit-remaining") === "0"));
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {});
+    const reset = Number(response.headers.get("x-ratelimit-reset")) * 1000;
+    throw new UsageError(rateLimited ? 429 : response.status, retryAt ?? (Number.isFinite(reset) && reset > Date.now() ? reset : undefined));
+  }
+  const data: unknown = await response.json();
+  if (object(object(data).error).type === "rate_limit_error") throw new UsageError(429, retryAt);
+  return data;
 }
 export function unavailable(error: unknown): AccountUsage {
   const reauth = error instanceof UsageError && [401, 403].includes(error.status);
-  return { status: reauth ? "reauth" : "unavailable", fetchedAt: new Date().toISOString(), windows: [], message: reauth ? "当前登录无法读取额度，请检查账号权限或重新登录" : error instanceof UsageError && error.status === 429 ? "平台暂时限制了额度查询，请稍后刷新" : "暂时无法读取额度，请稍后刷新" };
+  return { status: reauth ? "reauth" : "unavailable", fetchedAt: new Date().toISOString(), windows: [], message: reauth ? "当前登录无法读取额度，请检查账号权限或重新登录" : error instanceof UsageError && error.status === 429 ? "平台已限制额度查询，已暂停补查；对话中的额度仍可更新" : "暂时无法读取额度，已暂停补查" };
+}
+
+/** Subscription limits reported by the existing Claude Code conversation, not token counts. */
+export function parseClaudeRateLimit(raw: unknown): AccountUsage | undefined {
+  const info = object(raw), windows = object(info.unifiedWindows);
+  const data: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(windows)) {
+    const w = object(value), used = number(w.utilization);
+    if (used != null && used >= 0) data[key] = { utilization: used * 100, resets_at: w.resetsAt };
+  }
+  const kind = typeof info.rateLimitType === "string" ? info.rateLimitType : undefined;
+  const used = number(info.utilization);
+  if (kind && data[kind] == null && used != null && used >= 0) data[kind] = { utilization: used * 100, resets_at: info.resetsAt };
+  const usage = parseClaudeUsage(data);
+  return usage.status === "ready" ? usage : undefined;
+}
+
+/** Sparse native app-server notification; missing windows must not become zero or erase old data. */
+export function parseCodexRateLimit(raw: unknown): AccountUsage | undefined {
+  const data = object(raw), windows: UsageWindow[] = [];
+  const id = typeof data.limitId === "string" ? data.limitId : "codex";
+  for (const [key, fallback] of [["primary", "当前窗口"], ["secondary", "每周"]] as const) {
+    const w = object(data[key]), used = percent(w.usedPercent);
+    if (used == null) continue;
+    const minutes = number(w.windowDurationMins);
+    windows.push({ id: `${id}-${key}_window`, label: `${id === "codex" ? "" : `${typeof data.limitName === "string" ? data.limitName : id} · `}${duration(minutes == null ? undefined : minutes * 60, fallback)}`, usedPercent: used, ...(time(w.resetsAt) ? { resetsAt: time(w.resetsAt)! } : {}) });
+  }
+  const credits = object(data.credits);
+  const usage = result(windows, credits.unlimited === true ? "点数不限量" : typeof credits.balance === "string" ? `可用点数 ${credits.balance}` : undefined);
+  return usage.status === "ready" ? usage : undefined;
+}
+
+export function parseCodexRateLimitHeaders(headers: Headers): AccountUsage | undefined {
+  const numeric = (name: string) => { const value = headers.get(name); return value?.trim() ? number(Number(value)) : undefined; };
+  return parseCodexRateLimit(Object.fromEntries(["primary", "secondary"].map(key => [key, {
+    usedPercent: numeric(`x-codex-${key}-used-percent`), windowDurationMins: numeric(`x-codex-${key}-window-minutes`), resetsAt: numeric(`x-codex-${key}-reset-at`),
+  }])));
 }

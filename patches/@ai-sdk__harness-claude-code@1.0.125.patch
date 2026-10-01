@@ -1,5 +1,5 @@
 diff --git a/dist/bridge/index.mjs b/dist/bridge/index.mjs
-index 166eb4a48acfabf9c1f31b1ca5465be3258f1158..8081415af22c895ac21f84b3cdbd8550cd3ae178 100644
+index 166eb4a48acfabf9c1f31b1ca5465be3258f1158..af6543e05502d49632651da3638dbf97b1f74d7c 100644
 --- a/dist/bridge/index.mjs
 +++ b/dist/bridge/index.mjs
 @@ -215,6 +215,7 @@ async function runBridge(options) {
@@ -139,15 +139,25 @@ index 166eb4a48acfabf9c1f31b1ca5465be3258f1158..8081415af22c895ac21f84b3cdbd8550
            }
          ],
          PostCompact: [
-@@ -1676,6 +1737,7 @@ async function runTurn(start, turn) {
+@@ -1674,8 +1735,17 @@ async function runTurn(start, turn) {
+     for await (const msg of q) {
+       if (abortCtl.signal.aborted) break;
        const type = msg.type;
++      if (type === "rate_limit_event") {
++        const info = msg.rate_limit_info;
++        if (info && typeof info === "object") {
++          const { status, utilization, resetsAt, rateLimitType, unifiedWindows } = info;
++          emit({ type: "raw", rawValue: { type: "vgent-account-usage", info: { status, utilization, resetsAt, rateLimitType, unifiedWindows } } });
++        }
++        continue;
++      }
        if (type === "command_lifecycle") {
          queryInput.handleLifecycle(msg);
 +        emit({ type: "raw", rawValue: { type: "vgent-steer-lifecycle", messageId: msg.command_uuid, state: msg.state } });
        }
        const sessionId = msg.session_id;
        if (typeof sessionId === "string" && sessionId.length > 0) {
-@@ -1908,4 +1970,3 @@ function emitFatal(message) {
+@@ -1908,4 +1978,3 @@ function emitFatal(message) {
    stdout2.write(JSON.stringify({ type: "bridge-fatal", message }) + "\n");
    process.exit(1);
  }
@@ -660,7 +670,7 @@ index 3f065ce398459410d4fcd2a0b61f5ec99f8669cc..72e874724401ea9ae137349198d61f8e
 -//# sourceMappingURL=index.js.map
 \ No newline at end of file
 diff --git a/src/bridge/index.ts b/src/bridge/index.ts
-index cbaab3f65a3a072779fbedbe8a4aa9be47640a08..dde9cf596e03359415350a887a19bf0c72a62797 100644
+index cbaab3f65a3a072779fbedbe8a4aa9be47640a08..ed4d34c751990a8a96d9c3d61ebe71f40e187de1 100644
 --- a/src/bridge/index.ts
 +++ b/src/bridge/index.ts
 @@ -122,6 +122,39 @@ function toCommonName(nativeName: string): CommonBuiltinToolName | string {
@@ -779,8 +789,18 @@ index cbaab3f65a3a072779fbedbe8a4aa9be47640a08..dde9cf596e03359415350a887a19bf0c
            },
          ],
          PostCompact: [
-@@ -605,6 +663,7 @@ async function runTurn(start: StartMessage, turn: BridgeTurn): Promise<void> {
+@@ -604,7 +662,17 @@ async function runTurn(start: StartMessage, turn: BridgeTurn): Promise<void> {
+       const type = msg.type;
  
++      if (type === 'rate_limit_event') {
++        const info = (msg as unknown as { rate_limit_info?: Record<string, unknown> }).rate_limit_info;
++        if (info && typeof info === 'object') {
++          const { status, utilization, resetsAt, rateLimitType, unifiedWindows } = info;
++          emit({ type: 'raw', rawValue: { type: 'vgent-account-usage', info: { status, utilization, resetsAt, rateLimitType, unifiedWindows } } });
++        }
++        continue;
++      }
++
        if (type === 'command_lifecycle') {
          queryInput.handleLifecycle(msg);
 +        emit({ type: 'raw', rawValue: { type: 'vgent-steer-lifecycle', messageId: msg.command_uuid, state: msg.state } });

@@ -8,6 +8,8 @@ Both published runtime files and their source/types are patched. pnpm installs a
 
 Validation: `engines/claude-steer.test.ts`, `queue-delivery.test.ts`, and `queue-durability.test.ts` cover receipt identity, reconnect, queued versus started, and late delivery/stop races without operating a user's live task.
 
+The Claude bridge also forwards subscription `rate_limit_event` observations as `raw` `vgent-account-usage`, carrying only status, utilization, reset, window type and unified windows. These originate in normal model response headers; this patch makes no quota request. Vgent consumes the event into the account cache, not the transcript. Missing fields and older CLIs are handled by the bounded fallback. Remove this hunk when the adapter exposes equivalent quota events.
+
 # Claude question expiry
 
 Claude Code's AskUserQuestion reaches the host through a PreToolUse hook in the bridge. Upstream registers that hook without a timeout, so the CLI gives up after its default ten minutes: Claude gets an error, finishes the turn, and the answer the user gives later goes to a bridge turn that no longer exists. The continuation then waits forever (thread stuck running, steers rejected), and the stale request left behind swallows the answer or keeps it buffered to auto-answer a later identical question.

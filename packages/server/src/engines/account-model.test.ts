@@ -10,10 +10,14 @@ describe("accountModel", () => {
     expect(await accountModel("@github-0a1b2c3d:github-copilot:gpt-4.1", { copilot, accounts })).toEqual({ account: "github-0a1b2c3d", id: "gpt-4.1" });
   });
 
-  it("builds another Codex account's model, and leaves the machine's own login to the registry", async () => {
-    const model = await accountModel("@codex-0a1b2c3d:codex-subscription:gpt-5.5", { copilot, accounts });
+  it("binds both the machine's and added Codex models to their own quota observer", async () => {
+    const bindUsage = vi.fn(async () => async () => {});
+    const observed = { ...accounts, bindUsage };
+    const model = await accountModel("@codex-0a1b2c3d:codex-subscription:gpt-5.5", { copilot, accounts: observed });
     expect(typeof model === "object" && model != null && "modelId" in model ? model.modelId : undefined).toBe("gpt-5.5");
-    expect(await accountModel("codex-subscription:gpt-5.5", { copilot, accounts })).toBeUndefined();
+    expect(bindUsage).toHaveBeenLastCalledWith("codex-0a1b2c3d");
+    expect(await accountModel("codex-subscription:gpt-5.5", { copilot, accounts: observed })).toMatchObject({ modelId: "gpt-5.5" });
+    expect(bindUsage).toHaveBeenLastCalledWith("codex");
     expect(await accountModel("deepseek:deepseek-v4", { copilot, accounts })).toBeUndefined();
   });
 });

@@ -74,6 +74,8 @@ export function QuotaMeter({ account, switches = [] }: { account: AccountSummary
           {account.plan != null && <span className="flex-none rounded-sm bg-bg-inset px-2xs text-2xs text-fg-muted">{account.plan}</span>}
         </div>
         <div className="space-y-md p-3">
+          <p className="text-2xs text-fg-faint">{new Date(account.usage.fetchedAt).toLocaleString()} 更新</p>
+          {account.usage.message && <p className="text-xs text-warning">{account.usage.message}</p>}
           {windows.map((window) => (
             <Quota key={window.id} window={window} />
           ))}

@@ -366,6 +366,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
   const engineAccounts = {
     claudeEnv: accounts.claudeEnv,
     codexHome: accounts.codexHome,
+    bindUsage: accounts.bindUsage,
     async ensure(id: string) {
       const account = isAccountId(id) ? (await accounts.list()).accounts.find((entry) => entry.id === id) : undefined;
       const name = isAccountId(id) ? { claude: "Claude", codex: "Codex", github: "GitHub" }[kindOfAccount(id)] : "这个";

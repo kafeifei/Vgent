@@ -20,7 +20,8 @@ import { isNoProject } from "../no-project.js";
 import { expandSteers } from "../steer.js";
 import type { EngineDescriptor } from "./capabilities.js";
 import { PROVIDER_DEFAULT_LEVEL, effectiveReasoningLevel } from "../reasoning.js";
-import type { EngineContext, EngineFactory, EngineRunner } from "./registry.js";
+import type { EngineAccounts, EngineContext, EngineFactory, EngineRunner } from "./registry.js";
+import { parseCodexRateLimitHeaders } from "../accounts/usage.js";
 
 /** 引擎能力表, the 自研 row: everything, because everything in it is ours. */
 const DESCRIPTOR: EngineDescriptor = {
@@ -66,7 +67,7 @@ export interface VgentEngineFactoryOptions {
   /** One GitHub account's Copilot. */
   copilot?: (account: AccountId) => { available(): Promise<void>; model(id: string): Promise<LanguageModel> };
   /** Where a Codex account keeps its login, and whether an account is still there. */
-  accounts?: { codexHome(id: AccountId): string; ensure(id: AccountId): Promise<void> };
+  accounts?: Pick<EngineAccounts, "codexHome" | "ensure" | "bindUsage">;
   /**
    * The window the model list gives a model — the one the composer's ring is
    * drawn against — for a task that chose none. Unset or unknown, the engine
@@ -77,15 +78,25 @@ export interface VgentEngineFactoryOptions {
 
 /**
  * The model a spec names for the in-house engine, when it is one only an
- * account can run: a Copilot model, or a Codex model on another account than
- * the machine's (the machine's own Codex login resolves by name, as before).
+ * account can run: a Copilot model, or a Codex model whose existing responses
+ * also feed that account's quota observer (including the machine's login).
  * Anything else is left to the engine's model registry.
  */
 export async function accountModel(model: string, options: Pick<VgentEngineFactoryOptions, "copilot" | "accounts">): Promise<LanguageModel | undefined> {
   const { accountId, spec } = splitAccountSpec(model);
   if (spec.startsWith("github-copilot:") && options.copilot != null) return options.copilot(accountId ?? DEFAULT_ACCOUNT.github).model(spec.slice("github-copilot:".length));
-  if (accountId != null && spec.startsWith(CODEX_SUBSCRIPTION_PREFIX) && options.accounts != null) {
-    return createCodexSubscriptionModel(spec.slice(CODEX_SUBSCRIPTION_PREFIX.length), { env: { ...process.env, CODEX_HOME: options.accounts.codexHome(accountId) } });
+  if (spec.startsWith(CODEX_SUBSCRIPTION_PREFIX) && options.accounts != null) {
+    const id = accountId ?? DEFAULT_ACCOUNT.codex;
+    const report = await options.accounts.bindUsage?.(id).catch(() => undefined);
+    return createCodexSubscriptionModel(spec.slice(CODEX_SUBSCRIPTION_PREFIX.length), {
+      env: { ...process.env, CODEX_HOME: options.accounts.codexHome(id) },
+      ...(report ? { fetch: async (...args: Parameters<typeof fetch>) => {
+        const response = await fetch(...args);
+        const usage = parseCodexRateLimitHeaders(response.headers);
+        if (usage) void report(usage).catch(() => {});
+        return response;
+      } } : {}),
+    });
   }
   return undefined;
 }

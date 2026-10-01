@@ -44,7 +44,7 @@ export function AccountsPage({ client, focus, onFocus }: {
   focus: string | undefined;
   onFocus: (id: string | undefined) => void;
 }) {
-  const { snapshot, error } = useAccounts(client);
+  const { snapshot, error } = useAccounts(client, true);
   const login = useAccountLogin();
   const readOnly = client.remoteSession;
   const account = focus == null ? undefined : snapshot?.accounts.find((entry) => entry.id === focus);
@@ -158,6 +158,8 @@ function AccountDetail({ client, account, readOnly, onBack }: { client: ApiClien
             <div className="flex flex-col gap-md px-md py-sm">
               {account.usage.windows.map((window) => <Quota key={window.id} window={window} />)}
               {account.usage.balance != null && <p className="text-fg-muted text-xs">{account.usage.balance}</p>}
+              {account.usage.message && <p className="text-warning text-xs">{account.usage.message}</p>}
+              <p className="text-fg-faint text-2xs">{new Date(account.usage.fetchedAt).toLocaleString()} 更新{account.usage.retryAt ? ` · 最早 ${new Date(account.usage.retryAt).toLocaleString()} 可补查` : ""}</p>
             </div>
           ) : (
             <SettingsEmpty>{account.usage?.message ?? "尚未读取额度"}</SettingsEmpty>

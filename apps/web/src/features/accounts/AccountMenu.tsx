@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { ChevronRight, RefreshCw } from "lucide-react";
 import { Popover } from "@/components/Popover";
 import type { ApiClient } from "@/lib/api";
@@ -20,7 +20,7 @@ export function Quota({ window: w, compact = false }: { window: UsageWindow; com
     <div className="flex items-center justify-between gap-sm text-xs"><span className="text-fg-secondary">{w.label}</span><span className="tabular-nums text-fg">{w.usedPercent != null && !w.unlimited ? "已用 " : ""}{quotaValue(w)}</span></div>
     {w.usedPercent != null && !w.unlimited && <div role="meter" aria-label={w.label} aria-valuenow={w.usedPercent} aria-valuemin={0} aria-valuemax={100} className="h-2xs overflow-hidden rounded-full bg-bg-strong"><div className={cn("h-full rounded-full", w.usedPercent >= 90 ? "bg-danger" : "bg-brand")} style={{ width: `${w.usedPercent}%` }} /></div>}
     <div className="flex flex-wrap justify-between gap-2xs text-2xs text-fg-faint">
-      {w.resetsAt ? <span title={new Date(w.resetsAt).toLocaleString()}>{resetText(w.resetsAt)}{!compact && <> · {new Date(w.resetsAt).toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</>}</span> : !w.unlimited && !compact && <span>平台未提供重置时间</span>}
+      {w.resetsAt ? <span title={`${new Date(w.resetsAt).toLocaleString()}${w.observedAt ? ` · 此项 ${new Date(w.observedAt).toLocaleString()} 更新` : ""}`}>{resetText(w.resetsAt)}{!compact && <> · {new Date(w.resetsAt).toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</>}</span> : !w.unlimited && !compact && <span>平台未提供重置时间</span>}
       {w.usedPercent != null && w.used != null && <span>{w.used.toLocaleString()} / {w.limit?.toLocaleString() ?? "—"} {w.unit}</span>}
     </div>
   </div>;
@@ -41,6 +41,8 @@ function AccountDetails({ account, manage }: { account: AccountSummary; manage: 
         {account.usage.balance && <p className="text-xs text-fg-muted">{account.usage.balance}</p>}
         {!account.usage.windows.length && !account.usage.balance && <p className="text-xs text-fg-muted">用量暂不可用</p>}
       </div> : <p className="text-xs text-fg-muted">{account.usage?.message ?? "尚未读取额度"}</p>}
+      {account.usage?.status === "ready" && account.usage.message && <p className="text-xs text-warning">{account.usage.message}</p>}
+      {account.usage?.retryAt && <p className="text-2xs text-fg-faint">最早 {new Date(account.usage.retryAt).toLocaleString()} 可补查</p>}
       {account.usage?.fetchedAt && <p className="text-2xs text-fg-faint" title={new Date(account.usage.fetchedAt).toLocaleString()}>{new Date(account.usage.fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} 更新</p>}
     </>}
   </div>;
@@ -75,12 +77,14 @@ export function AccountRow({ account, expanded, toggle, manage }: {
   </section>;
 }
 
-type AccountPanelProps = ReturnType<typeof useAccounts> & {
+type AccountPanelProps = Omit<ReturnType<typeof useAccounts>, "watchUsage"> & {
+  watchUsage?: () => () => void;
   manage: (id: AccountSummary["id"]) => void;
   remote: boolean;
 };
 
-export function AccountPanel({ snapshot, refreshing, error, refresh, manage, remote }: AccountPanelProps) {
+export function AccountPanel({ snapshot, refreshing, error, refresh, watchUsage, manage, remote }: AccountPanelProps) {
+  useEffect(() => watchUsage?.(), [watchUsage]);
   const [expanded, setExpanded] = useState<AccountSummary["id"] | null>(null);
   const login = useAccountLogin();
   return <div className="flex max-h-[min(38rem,calc(100dvh-var(--spacing-3xl)))] flex-col" aria-label="账号用量">
@@ -89,6 +93,7 @@ export function AccountPanel({ snapshot, refreshing, error, refresh, manage, rem
       <span className="text-2xs text-fg-faint" title="百分比均表示已使用的额度">已用</span>
       <button type="button" aria-label="刷新账号与用量" title="刷新账号与用量" aria-busy={refreshing} disabled={refreshing} onClick={() => void refresh()} className="grid size-xl place-items-center rounded-md text-fg-muted hover:bg-bg-hover disabled:opacity-50"><RefreshCw className={cn("size-md", refreshing && "animate-spin")} /></button>
     </div>
+    <p className="px-md pb-xs text-2xs text-fg-faint">随对话更新；缺失或超过 15 分钟时补查，刷新也受此间隔限制</p>
     <div className="min-h-0 overflow-y-auto px-2xs pb-2xs">
       {error && <p role="status" className="px-sm py-xs text-xs text-warning">{error}{snapshot && !error.includes("上次结果") ? "，仍显示上次结果" : ""}</p>}
       {!snapshot && refreshing && <p className="px-sm py-sm text-xs text-fg-muted">正在读取账号与用量…</p>}
@@ -103,7 +108,7 @@ export function AccountPanel({ snapshot, refreshing, error, refresh, manage, rem
 }
 
 export function AccountMenu({ client, connected, onManage }: { client: ApiClient; connected: boolean; onManage: (id: AccountSummary["id"]) => void }) {
-  // Keep polling even with the popover closed or no task selected.
+  // Closed panels poll only Vgent's cached snapshot, never upstream quota endpoints.
   const accounts = useAccounts(client);
   return <Popover side="top" popupRole="dialog" ariaLabel="账号用量" className="w-figure max-w-[calc(100vw-var(--spacing-lg))] p-0" trigger={props => <button {...props} type="button" aria-label="账号用量" className="group/account-menu flex min-w-0 flex-1 items-center gap-sm rounded-md py-2xs text-left hover:bg-bg-hover">
     <span aria-hidden className="isolate flex flex-none -space-x-sm items-center text-fg-muted">

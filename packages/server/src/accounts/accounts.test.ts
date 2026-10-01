@@ -8,6 +8,7 @@ import { createAccountRegistry, type AccountRegistry } from "./registry.js";
 import { createAccountService } from "./service.js";
 import { createCopilotAccess } from "./copilot.js";
 import { parseClaudeUsage, parseCodexUsage, parseCopilotUsage } from "./usage.js";
+import { USAGE_FALLBACK_INTERVAL } from "./usage-cache.js";
 
 const signedOutCodex = async () => ({ codex: { available: false, source: null } });
 function remoteFixture() {
@@ -100,6 +101,22 @@ const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
 
 describe("account service", () => {
+  it("uses passive data on identity reads and forced refreshes without upstream requests; old reporters expire on account changes", async () => {
+    const fetcher = vi.fn(async () => Response.json({ quota_snapshots: { chat: { unlimited: true } } })) as unknown as typeof fetch;
+    const { service, registry, items } = await serviceFixture({ fetch: fetcher });
+    await registry.add({ id: "github", kind: "github" });
+    items.set("github", Buffer.from(JSON.stringify({ accessToken: "token-0" })).toString("base64"));
+    const report = await service.bindUsage("github");
+    await report(parseCopilotUsage({ quota_snapshots: { premium_interactions: { percent_remaining: 70 } } }));
+    expect((await service.list()).accounts[0]?.usage?.windows[0]?.usedPercent).toBe(30);
+    await service.list({ usage: true, refresh: true });
+    await service.list({ usage: true, refresh: true });
+    expect(fetcher).not.toHaveBeenCalled();
+    service.invalidate();
+    await report(parseCopilotUsage({ quota_snapshots: { premium_interactions: { percent_remaining: 5 } } }));
+    expect((await service.list()).accounts[0]?.usage?.windows[0]?.usedPercent).toBe(30);
+  });
+
   it("lists the machine's login and every added account, and projects no secrets", async () => {
     const { registry, dataDir } = await serviceFixture();
     const home = join(dataDir, "accounts", "claude-0a1b2c3d");
@@ -216,8 +233,11 @@ describe("account service", () => {
       const full = await service.list({ usage: true });
       now += 61_000;
       const identity = await service.list();
-      expect(identity.accounts[0]?.usage).toBe(full.accounts[0]?.usage);
+      expect(identity.accounts[0]?.usage).toEqual(full.accounts[0]?.usage);
       expect(identity.accounts[0]?.plan).toBe("individual");
+      await service.list({ usage: true });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      now += USAGE_FALLBACK_INTERVAL;
       await service.list({ usage: true });
       expect(fetcher).toHaveBeenCalledTimes(2);
     } finally { clock.mockRestore(); }

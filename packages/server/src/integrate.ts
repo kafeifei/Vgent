@@ -15,9 +15,9 @@
  * all-or-nothing by default and 「带冲突标记合并」 on request, with the project
  * snapshotted first so it can be undone.
  */
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   partitionUndo,
   planThreeWayApply,
@@ -27,10 +27,10 @@ import {
   type ApplyReport,
   type UndoApplyResult,
 } from "./apply.js";
-import { applyUndoScope, createCheckpoint, restoreCheckpoint, snapshotTree } from "./checkpoints.js";
+import { applyUndoScope, createCheckpoint, discardScope, restoreCheckpoint, snapshotTree } from "./checkpoints.js";
 import { BadRequestError, ConflictError, ExternalToolError, GitError, VgentServerError } from "./errors.js";
 import { runCommand, type ToolExec } from "./exec.js";
-import { EMPTY_TREE, type ChangesSnapshot, type DiffBase } from "./git.js";
+import { EMPTY_TREE, literalPathspec, type ChangesSnapshot, type DiffBase } from "./git.js";
 import {
   silentLogger,
   type ApplyUndoRecord,
@@ -44,6 +44,9 @@ import {
 
 /** Pushes and `gh` calls go over the network; give them room. */
 const TOOL_TIMEOUT_MS = 60_000;
+
+/** How many paths one git call is asked about; keeps the argv well short of its limit. */
+const PATH_BATCH = 500;
 /** The availability probe must never make the panel wait. */
 const GH_PROBE_TIMEOUT_MS = 5_000;
 /** How long one `gh auth status` answer is reused for. */
@@ -242,6 +245,27 @@ const prNumberOf = (url: string): number | undefined => {
   return Number.isFinite(parsed) ? parsed : undefined;
 };
 
+const checkoutQueues = new Map<string, Promise<unknown>>();
+
+/**
+ * One at a time per checkout, for everything that reads a checkout's files and
+ * then writes them on the user's behalf: 带回 and 撤销带回, 提交, 还原 and 恢复到此处.
+ * Interleaved, each would act on a state the other is halfway through
+ * replacing — a 带回 planning against a half-written one, a 恢复到此处 snapshotting
+ * a 带回 mid-write. Process-wide, like `locked` in `workspace.ts`, and not
+ * re-entrant: work queued here must never queue on the same checkout again.
+ */
+export function oneAtATime<T>(checkout: string, work: () => Promise<T>): Promise<T> {
+  const key = resolve(checkout);
+  const next = (checkoutQueues.get(key) ?? Promise.resolve()).then(work, work);
+  const settled = next.catch(() => {});
+  checkoutQueues.set(key, settled);
+  void settled.then(() => {
+    if (checkoutQueues.get(key) === settled) checkoutQueues.delete(key);
+  });
+  return next;
+}
+
 /** The 409's body: the whole list, so the bar can offer 「带冲突标记合并」 by name. */
 function conflictMessage(conflicts: readonly ApplyConflict[]): string {
   const listed = conflicts.map((entry) => `· ${entry.path}（${entry.reason}）`).join("\n");
@@ -262,7 +286,10 @@ export function createIntegrator(options: CreateIntegratorOptions = {}): Integra
     return result.stdout;
   };
 
-  const isDirty = async (cwd: string): Promise<boolean> => (await gitOk(cwd, ["status", "--porcelain"])).trim().length > 0;
+  // `--untracked-files=normal` on the command line beats a `status.showUntrackedFiles=no` in the
+  // user's config: a task that only created files is dirty, whatever git is told to hide.
+  const isDirty = async (cwd: string): Promise<boolean> =>
+    (await gitOk(cwd, ["status", "--porcelain", "--untracked-files=normal"])).trim().length > 0;
 
   const commitsAheadOf = async (target: TaskTarget): Promise<number> => {
     if (target.baseCommit == null) return 0;
@@ -370,6 +397,53 @@ export function createIntegrator(options: CreateIntegratorOptions = {}): Integra
   };
 
   /**
+   * Of the task's paths, the ones `git add` and `git commit` can be given: known
+   * to git (in the index or in HEAD, which is where a deletion of a tracked file
+   * is), or on disk and not ignored. A file that was only ever untracked —
+   * already lying there when the task started, then deleted by it — is in
+   * neither, and naming it makes git refuse the whole command ("pathspec did not
+   * match any files"). One the task's own `.gitignore` now covers makes `add`
+   * fail halfway, after staging the rest; a tracked file is never ignored.
+   */
+  const committable = async (repoPath: string, paths: readonly string[]): Promise<string[]> => {
+    const known = new Set<string>();
+    const ignored = new Set<string>();
+    for (let i = 0; i < paths.length; i += PATH_BATCH) {
+      const chunk = paths.slice(i, i + PATH_BATCH).map(literalPathspec);
+      const listed = [
+        await gitOk(repoPath, ["ls-files", "-z", "--cached", "--", ...chunk]),
+        // An unborn HEAD has nothing to list; that is fine.
+        (await git(repoPath, ["ls-tree", "-r", "--name-only", "-z", "HEAD", "--", ...chunk])).stdout,
+      ];
+      for (const output of listed) for (const path of output.split("\0")) if (path !== "") known.add(path);
+      const untrackedIgnored = await gitOk(repoPath, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", ...chunk]);
+      for (const path of untrackedIgnored.split("\0")) if (path !== "") ignored.add(path);
+    }
+    const keep: string[] = [];
+    for (const path of paths) {
+      if (known.has(path) || (!ignored.has(path) && (await lstat(join(repoPath, path)).catch(() => null)) != null)) keep.push(path);
+    }
+    return keep;
+  };
+
+  /**
+   * A copy of `repoPath`'s own index, and what puts it back — bytes and mtime
+   * both, so git's stat cache reads it exactly as it did (see `snapshotTree`). A
+   * repo with no index yet gets none back.
+   */
+  const keepIndex = async (repoPath: string, scratch: string): Promise<() => Promise<void>> => {
+    const real = resolve(repoPath, (await gitOk(repoPath, ["rev-parse", "--git-path", "index"])).trim());
+    const info = await stat(real).catch(() => null);
+    if (info == null) return () => rm(real, { force: true });
+    const copy = join(scratch, "index");
+    await copyFile(real, copy);
+    return async () => {
+      await copyFile(copy, real);
+      await utimes(real, info.atime, info.mtime);
+    };
+  };
+
+  /**
    * `git commit`, in whichever directory the task owns.
    *
    * `paths` — the task's own, for a main-checkout task — scopes both the staging
@@ -378,9 +452,10 @@ export function createIntegrator(options: CreateIntegratorOptions = {}): Integra
    * rather than the command line: a big turn can touch more paths than an argv
    * holds.
    */
-  const commit = async (target: TaskTarget, message: string | undefined, paths?: string[]): Promise<string> => {
+  const commit = async (target: TaskTarget, message: string | undefined, taskOwn?: string[]): Promise<string> => {
     const text = message?.trim() ?? "";
     if (text === "") throw new BadRequestError("提交信息不能为空", "invalid_message");
+    const paths = taskOwn == null ? undefined : await committable(target.repoPath, taskOwn);
     if (paths == null ? !(await isDirty(target.repoPath)) : paths.length === 0) {
       throw new BadRequestError("没有可提交的改动", "nothing_to_commit");
     }
@@ -388,15 +463,27 @@ export function createIntegrator(options: CreateIntegratorOptions = {}): Integra
     const scratch = paths == null ? undefined : await mkdtemp(join(tmpdir(), "vgent-commit-"));
     try {
       let scope: string[] = [];
+      let putIndexBack = async (): Promise<void> => {};
       if (paths != null && scratch != null) {
         const listFile = join(scratch, "paths");
-        await writeFile(listFile, `${paths.join("\0")}\0`);
+        await writeFile(listFile, `${paths.map(literalPathspec).join("\0")}\0`);
         scope = [`--pathspec-from-file=${listFile}`, "--pathspec-file-nul"];
+        // The index is the user's here. `add` stages path by path and can fail
+        // halfway, a hook can still refuse the commit after it: either way it
+        // goes back to exactly what it was, not half the task's paths staged.
+        putIndexBack = await keepIndex(target.repoPath, scratch);
       }
-      await gitOk(target.repoPath, ["add", "-A", ...scope]);
+      const added = await git(target.repoPath, ["add", "-A", ...scope]);
+      if (added.code !== 0) {
+        await putIndexBack();
+        throw new GitError(`git add -A 失败: ${tail(added.stderr)}`);
+      }
       const result = await git(target.repoPath, ["commit", "-m", text, ...scope]);
       // Git's own words: a missing `user.email` explains itself better than we could.
-      if (result.code !== 0) throw new BadRequestError(`提交失败：${tail(result.stderr || result.stdout)}`, "commit_failed");
+      if (result.code !== 0) {
+        await putIndexBack();
+        throw new BadRequestError(`提交失败：${tail(result.stderr || result.stdout)}`, "commit_failed");
+      }
       return (await gitOk(target.repoPath, ["rev-parse", "HEAD"])).trim();
     } finally {
       if (scratch != null) await rm(scratch, { recursive: true, force: true });
@@ -448,20 +535,42 @@ export function createIntegrator(options: CreateIntegratorOptions = {}): Integra
    * wrote. Anything the user has touched since is theirs now, and is listed
    * rather than reverted.
    */
-  const undoApply = async (target: TaskTarget, record: ApplyUndoRecord): Promise<UndoApplyResult> => {
+  const undoApply = async (target: TaskTarget, record: ApplyUndoRecord, threadId: string): Promise<UndoApplyResult> => {
     if ((await git(target.projectPath, ["cat-file", "-e", `${record.snapshot}^{commit}`])).code !== 0) {
       throw new ConflictError("带回之前的快照已经不在了，撤销不了", "undo_unavailable");
     }
     const split = await partitionUndo(target.projectPath, record);
     if (split.restored.length > 0) {
+      // What is about to be overwritten is the user's checkout: keep it first,
+      // or give up — the same rule 全部丢弃 and 恢复到此处 follow.
+      const snapshot = await createCheckpoint({ repoPath: target.projectPath, threadId: applyUndoScope(threadId), undo: true, log });
+      if (snapshot == null) {
+        throw new VgentServerError({ message: "没能给主检出打快照，已放弃撤销带回", status: 500, code: "checkpoint_failed" });
+      }
       await restoreCheckpoint({ repoPath: target.projectPath, commit: record.snapshot, paths: split.restored, exec, log });
     }
     return split;
   };
 
-  const discard = async (target: TaskTarget): Promise<void> => {
+  const discard = async (target: TaskTarget, threadId: string): Promise<void> => {
     const base = target.baseCommit;
     if (base == null) throw new BadRequestError("主目录任务不提供「全部丢弃」", "action_unsupported");
+    // `reset --hard` moves whichever branch is checked out. When the worktree is
+    // no longer on the task's own branch (the agent switched, HEAD is detached)
+    // that branch is somebody else's work, and it is not ours to reset.
+    if (target.branch != null) {
+      const current = await git(target.repoPath, ["symbolic-ref", "--short", "-q", "HEAD"]);
+      if (current.code !== 0 || current.stdout.trim() !== target.branch) {
+        throw new ConflictError("这个工作目录已经不在任务的分支上，为免误伤别的分支，没有丢弃", "discard_wrong_branch");
+      }
+    }
+    // Everything the task did is about to go, its commits included. Keep it
+    // reachable first, or give up: a discard that cannot be recovered from by
+    // hand is not one we run.
+    const snapshot = await createCheckpoint({ repoPath: target.repoPath, threadId: discardScope(threadId), log });
+    if (snapshot == null) {
+      throw new VgentServerError({ message: "没能给任务现场留底，已放弃丢弃", status: 500, code: "checkpoint_failed" });
+    }
     await gitOk(target.repoPath, ["reset", "--hard", base]);
     await gitOk(target.repoPath, ["clean", "-fd"]);
   };
@@ -562,7 +671,9 @@ export function createIntegrator(options: CreateIntegratorOptions = {}): Integra
       }
       const at = new Date().toISOString();
       if (action === "commit") {
-        return { outcome: { kind: "committed", at, ref: await commit(target, message, await taskPaths(target)) } };
+        // A main-checkout task commits in the very checkout 带回 writes into.
+        const ref = await oneAtATime(target.repoPath, async () => commit(target, message, await taskPaths(target)));
+        return { outcome: { kind: "committed", at, ref } };
       }
       if (action === "pr") {
         const result = await pullRequest(target, message);
@@ -573,15 +684,15 @@ export function createIntegrator(options: CreateIntegratorOptions = {}): Integra
         };
       }
       if (action === "apply") {
-        const { report, undo } = await apply(target, { threadId, conflicts: conflicts ?? "abort" });
+        const { report, undo } = await oneAtATime(target.projectPath, () => apply(target, { threadId, conflicts: conflicts ?? "abort" }));
         return { outcome: { kind: "applied", at }, apply: report, applyUndo: undo };
       }
       if (action === "undo-apply") {
         if (applyUndo == null) throw new BadRequestError("这个任务没有可撤销的带回", "nothing_to_undo");
         // The 带回 is gone, so the task owns its diff again.
-        return { outcome: null, applyUndo: null, undo: await undoApply(target, applyUndo) };
+        return { outcome: null, applyUndo: null, undo: await oneAtATime(target.projectPath, () => undoApply(target, applyUndo, threadId)) };
       }
-      await discard(target);
+      await discard(target, threadId);
       return { outcome: { kind: "discarded", at } };
     },
   };

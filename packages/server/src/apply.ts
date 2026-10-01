@@ -25,6 +25,7 @@ import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { pruneEmptyDirs } from "./checkpoints.js";
 import { GitError } from "./errors.js";
 import { runCommand, type ToolExec } from "./exec.js";
 import type { ApplyUndoRecord } from "./types.js";
@@ -100,6 +101,73 @@ async function readContent(root: string, path: string): Promise<Content | undefi
   return { bytes: await readFile(full), link: false };
 }
 
+/**
+ * Why `path` cannot be touched in the user's checkout, or `undefined` when it
+ * can. Every directory on the way has to be a real one: a link in the middle of
+ * the path leads somewhere else — out of the repo, and always out of the undo
+ * snapshot, which never follows links — so nothing is written or deleted
+ * through it.
+ *
+ * `writes` (the default): the task puts a file at `path`. `readContent` answers
+ * `undefined` for a directory as well as for nothing, so without this a task's
+ * new file `notes` looks like "not there yet" while the user has an untracked
+ * `notes/` — and the checkout that follows is forced, replacing the whole
+ * directory. A path is only ever written where there is nothing, or a file (or
+ * link) to be replaced; a directory, or a parent that is not a directory, is the
+ * user's and is left alone.
+ */
+async function typeClash(root: string, path: string, writes = true): Promise<string | undefined> {
+  const parts = path.split("/");
+  let current = root;
+  for (const [index, part] of parts.entries()) {
+    current = join(current, part);
+    const info = await lstat(current).catch(() => null);
+    if (info == null) return undefined; // nothing here, so nothing below either: free to create
+    const prefix = parts.slice(0, index + 1).join("/");
+    const last = index === parts.length - 1;
+    if (last) return !writes || info.isFile() || info.isSymbolicLink() ? undefined : "主目录里这个路径是个目录，任务在这里放了个文件";
+    if (info.isSymbolicLink()) return `主目录里 ${prefix} 是个符号链接，不顺着它改`;
+    // A delete below a file finds nothing there, which the planner already reads as「已经没了」.
+    if (!info.isDirectory()) return writes ? `主目录里 ${prefix} 是个文件，任务把它换成了目录` : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * The paths the task added that are, on the user's disk, the very file one it
+ * deleted: `README.md` and `Readme.md` on a disk that ignores case, `café`
+ * spelled NFC and NFD on one that ignores Unicode normalization — both macOS
+ * defaults. Mapped both ways. The disk is asked rather than assumed: on a
+ * case-sensitive one the two names are two files, or the new one is not there.
+ */
+async function sameFilePairs(
+  root: string,
+  changed: readonly string[],
+  baseTree: Map<string, TreeEntry>,
+  theirsTree: Map<string, TreeEntry>,
+): Promise<Map<string, string>> {
+  const fold = (path: string) => path.normalize("NFC").toLowerCase();
+  const plain = (entry: TreeEntry | undefined) => entry != null && entry.mode !== GITLINK;
+  const deleted = new Map<string, string[]>();
+  for (const path of changed) {
+    if (!plain(baseTree.get(path)) || theirsTree.has(path)) continue;
+    deleted.set(fold(path), [...(deleted.get(fold(path)) ?? []), path]);
+  }
+  const pairs = new Map<string, string>();
+  for (const path of changed) {
+    if (!plain(theirsTree.get(path)) || baseTree.has(path)) continue;
+    for (const old of deleted.get(fold(path)) ?? []) {
+      if (pairs.has(old)) continue;
+      const [added, gone] = await Promise.all([lstat(join(root, path)).catch(() => null), lstat(join(root, old)).catch(() => null)]);
+      if (added != null && gone != null && added.dev === gone.dev && added.ino === gone.ino) {
+        pairs.set(path, old).set(old, path);
+        break;
+      }
+    }
+  }
+  return pairs;
+}
+
 /** The one thing every step here does: run git and insist it worked. */
 function gitIn(repoPath: string, exec: ToolExec) {
   const run = (args: readonly string[], env?: NodeJS.ProcessEnv) =>
@@ -162,12 +230,16 @@ async function checkoutTree(options: {
   }
 }
 
-/** What the planner decided for one path. */
+/**
+ * What the planner decided for one path. `expect` is the fingerprint of the
+ * user's file the decision was made against (`null`: it was not there): the run
+ * writes nothing over a file that is no longer that.
+ */
 type Step =
-  | { kind: "tree"; path: string }
+  | { kind: "tree"; path: string; expect: string | null }
   /** A merged text file, written by us — `mode` only when the task changed it. */
-  | { kind: "content"; path: string; content: Buffer; mode?: number }
-  | { kind: "delete"; path: string };
+  | { kind: "content"; path: string; content: Buffer; mode?: number; expect: string | null }
+  | { kind: "delete"; path: string; expect: string | null };
 
 export interface ApplyPlan {
   steps: Step[];
@@ -204,6 +276,13 @@ export async function planThreeWayApply(options: ThreeWayApplyOptions): Promise<
   const changed = splitNul(await git.ok(["diff", "--name-only", "-z", "--no-renames", base, theirs]));
   const [baseTree, theirsTree] = await Promise.all([listTree(worktreePath, base, exec), listTree(worktreePath, theirs, exec)]);
   const readable = (tree: Map<string, TreeEntry>) => changed.filter((path) => tree.has(path) && tree.get(path)?.mode !== GITLINK);
+  // Every directory the task's tree has a file under, built once: a deleted file is asked about
+  // against it, and a scan of the whole tree per deleted path is quadratic in a large removal.
+  const theirsDirs = new Set<string>();
+  for (const file of theirsTree.keys()) {
+    for (let slash = file.lastIndexOf("/"); slash > 0; slash = file.lastIndexOf("/", slash - 1)) theirsDirs.add(file.slice(0, slash));
+  }
+  const renamedInPlace = await sameFilePairs(projectPath, changed, baseTree, theirsTree);
 
   const scratch = await mkdtemp(join(tmpdir(), "vgent-3way-"));
   try {
@@ -217,7 +296,9 @@ export async function planThreeWayApply(options: ThreeWayApplyOptions): Promise<
       plan.conflicts.push({ path, resolution, reason });
     };
 
+    const decided = new Set<string>();
     for (const path of changed) {
+      if (decided.has(path)) continue;
       const baseEntry = baseTree.get(path);
       const theirsEntry = theirsTree.get(path);
       if (baseEntry?.mode === GITLINK || theirsEntry?.mode === GITLINK) {
@@ -225,15 +306,54 @@ export async function planThreeWayApply(options: ThreeWayApplyOptions): Promise<
         continue;
       }
 
+      // Only the case (or the Unicode spelling) of the path changed, and the user's disk does not
+      // tell the two apart. Both halves are decided here, together: deleting the old name alone
+      // would delete the file, and writing the new name alone would write into the old one.
+      const partner = renamedInPlace.get(path);
+      if (partner != null) {
+        decided.add(partner);
+        const [renamed, old] = theirsEntry != null ? [path, partner] : [partner, path];
+        const ours = await readContent(projectPath, old);
+        const reason =
+          (await typeClash(projectPath, renamed)) ??
+          (await typeClash(projectPath, old, false)) ??
+          (same(ours, await readContent(baseDir, old)) ? undefined : "任务改了路径的大小写，你在主目录改过它");
+        if (reason != null) {
+          conflict(old, reason);
+          conflict(renamed, reason);
+          continue;
+        }
+        // `runApplyPlan` runs every delete before any write, so the file comes back under the task's spelling.
+        const expect = contentHash(ours);
+        plan.steps.push({ kind: "delete", path: old, expect }, { kind: "tree", path: renamed, expect });
+        plan.applied.push(old, renamed);
+        continue;
+      }
+
+      // A path the task writes has to land on nothing, or on a file: never on a directory of the user's.
+      // And neither a write nor a delete goes through a link.
+      const clash = await typeClash(projectPath, path, theirsEntry != null);
+      if (clash != null) {
+        conflict(path, clash);
+        continue;
+      }
+
       const ours = await readContent(projectPath, path);
       const baseContent = baseEntry == null ? undefined : await readContent(baseDir, path);
       const theirsContent = theirsEntry == null ? undefined : await readContent(theirsDir, path);
+      const expect = contentHash(ours);
 
       // 任务删了它.
       if (theirsEntry == null) {
         if (ours == null) continue; // already gone from the user's checkout
+        // The task turned this file into a directory: the files under it are handled (or refused) on
+        // their own, and deleting this one alone would leave neither the file nor the directory.
+        if (theirsDirs.has(path)) {
+          conflict(path, "任务把这个文件换成了目录");
+          continue;
+        }
         if (same(ours, baseContent)) {
-          plan.steps.push({ kind: "delete", path });
+          plan.steps.push({ kind: "delete", path, expect });
           plan.applied.push(path);
         } else {
           conflict(path, "任务删了这个文件，你在主目录改过它");
@@ -249,7 +369,7 @@ export async function planThreeWayApply(options: ThreeWayApplyOptions): Promise<
       // 任务新建的，主目录还没有: nothing of the user's to lose.
       // 主目录还没动过它: take the task's version whole, mode and all.
       if (ours == null || same(ours, baseContent)) {
-        plan.steps.push({ kind: "tree", path });
+        plan.steps.push({ kind: "tree", path, expect });
         plan.applied.push(path);
         continue;
       }
@@ -266,14 +386,23 @@ export async function planThreeWayApply(options: ThreeWayApplyOptions): Promise<
       // user's own `chmod` on a file they were editing is theirs to keep.
       const modeChange = baseEntry != null && baseEntry.mode !== theirsEntry.mode ? { mode: theirsEntry.mode === EXECUTABLE ? 0o755 : 0o644 } : {};
       if (merged.clean) {
-        plan.steps.push({ kind: "content", path, content: merged.content, ...modeChange });
+        plan.steps.push({ kind: "content", path, content: merged.content, expect, ...modeChange });
         plan.applied.push(path);
       } else if (mode === "markers") {
-        plan.steps.push({ kind: "content", path, content: merged.content, ...modeChange });
+        plan.steps.push({ kind: "content", path, content: merged.content, expect, ...modeChange });
         conflict(path, "两边改了同一段，已写入冲突标记", "markers");
       } else {
         conflict(path, "两边改了同一段", "markers");
       }
+    }
+
+    // What the task's snapshot could not take in — a repository the agent `git init`ed and never
+    // committed to, a file that cannot be read — is untracked in the worktree and missing from
+    // `theirs`. Named here, rather than left behind without a word.
+    for (const entry of splitNul(await git.ok(["ls-files", "-z", "--others", "--exclude-standard"]))) {
+      const nested = entry.endsWith("/");
+      const path = nested ? entry.slice(0, -1) : entry;
+      if (!theirsTree.has(path)) conflict(path, nested ? "这是个还没有提交过的 git 仓库，带不回来" : "任务目录里的这个文件读不出来，带不回来");
     }
     return plan;
   } finally {
@@ -330,8 +459,45 @@ export async function runApplyPlan(options: {
   plan: ApplyPlan;
   exec?: ToolExec;
 }): Promise<ApplyOutcome> {
-  const { projectPath, theirs, plan } = options;
+  const { projectPath, theirs } = options;
   const exec = options.exec ?? runCommand;
+
+  // The plan was made from the checkout as it was then. Between planning and
+  // writing the user may have saved the file, or another 带回 may have run: a
+  // step whose file is no longer what it was planned against is dropped and
+  // reported, never written over.
+  const moved = new Set<string>();
+  for (const step of options.plan.steps) {
+    const current = contentHash(await readContent(projectPath, step.path));
+    if (current !== step.expect || (await typeClash(projectPath, step.path, step.kind !== "delete")) != null) moved.add(step.path);
+  }
+  const plan: ApplyPlan =
+    moved.size === 0
+      ? options.plan
+      : {
+          steps: options.plan.steps.filter((step) => !moved.has(step.path)),
+          applied: options.plan.applied.filter((path) => !moved.has(path)),
+          conflicts: [
+            // 「已写入冲突标记」 is the report of a step that was going to write them; one that is dropped wrote none.
+            ...options.plan.conflicts.filter((entry) => !(entry.resolution === "markers" && moved.has(entry.path))),
+            ...[...moved].map((path): ApplyConflict => ({ path, resolution: "skipped", reason: "写入前这个文件又变了，没有动它" })),
+          ],
+        };
+
+  // Every delete before any write: where the disk ignores case, a task's
+  // `Readme.md` → `README.md` is one file under two names, and it only survives
+  // — under the new one — when it is written after it was deleted. A directory
+  // a delete empties goes with it, the way git leaves it, so one whose case
+  // changed is created afresh in the task's spelling.
+  for (const step of plan.steps) {
+    if (step.kind !== "delete") continue;
+    const full = resolve(projectPath, step.path);
+    // Only a file or a link: `rm` on a directory would throw here, halfway through the run.
+    const info = await lstat(full).catch(() => null);
+    if (info == null || !(info.isFile() || info.isSymbolicLink())) continue;
+    await rm(full, { force: true });
+    await pruneEmptyDirs(projectPath, step.path);
+  }
 
   const treePaths = plan.steps.filter((step) => step.kind === "tree").map((step) => step.path);
   const scratch = await mkdtemp(join(tmpdir(), "vgent-apply-"));
@@ -345,14 +511,11 @@ export async function runApplyPlan(options: {
   }
 
   for (const step of plan.steps) {
+    if (step.kind !== "content") continue;
     const full = resolve(projectPath, step.path);
-    if (step.kind === "content") {
-      await mkdir(dirname(full), { recursive: true });
-      await writeFile(full, step.content);
-      if (step.mode != null) await chmod(full, step.mode);
-    } else if (step.kind === "delete") {
-      await rm(full, { force: true });
-    }
+    await mkdir(dirname(full), { recursive: true });
+    await writeFile(full, step.content);
+    if (step.mode != null) await chmod(full, step.mode);
   }
 
   // Fingerprints are read back off disk rather than taken from what we meant to
@@ -375,13 +538,18 @@ export interface UndoApplyResult {
 /**
  * Which of an apply's paths are still byte-for-byte what it wrote. Everything
  * else the user has been working on since, and 撤销 does not touch it.
+ *
+ * The restore writes through `checkout-index -f`, which clears whatever stands
+ * in its way, so "the same" has to be more than the fingerprint: `readContent`
+ * reads a directory the user has since put where apply deleted a file as the
+ * nothing apply left, and cannot see a parent turned into a file or a link.
  */
 export async function partitionUndo(projectPath: string, record: ApplyUndoRecord): Promise<UndoApplyResult> {
   const restored: string[] = [];
   const kept: string[] = [];
   for (const file of record.files) {
     const current = contentHash(await readContent(projectPath, file.path));
-    if (current === file.hash) restored.push(file.path);
+    if (current === file.hash && (await typeClash(projectPath, file.path)) == null) restored.push(file.path);
     else kept.push(file.path);
   }
   return { restored, kept };

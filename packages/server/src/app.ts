@@ -43,7 +43,7 @@ import { createGit } from "./git.js";
 import { pickFile, pickFolder } from "./folder-picker.js";
 import { isNoProject, projectOfThread, scratchDirOf } from "./no-project.js";
 import { planFork } from "./fork.js";
-import { asIntegrateAction, changeStatsOf, createIntegrator, taskTarget, type Integrator, type TaskTarget } from "./integrate.js";
+import { asIntegrateAction, changeStatsOf, createIntegrator, oneAtATime, taskTarget, type Integrator, type TaskTarget } from "./integrate.js";
 import { contextOptionsFor, createModelCatalog, isWithdrawn, orderBySource, type ModelCatalog, type ModelEntry } from "./models.js";
 import { reasoningFor } from "./reasoning.js";
 import { createSubscriptionService, markHidden, withHiddenModels, type ClaudeLoginStatus } from "./subscriptions.js";
@@ -785,7 +785,9 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const target = await targetOf(id);
     const body = (await c.req.json().catch(() => undefined)) as { path?: unknown } | undefined;
     if (typeof body?.path !== "string" || body.path.length === 0) throw new BadRequestError("缺少 path", "invalid_path");
-    const result = await git.revert(target.repoPath, body.path, target.baseline);
+    const path = body.path;
+    // In line with 带回 and 恢复到此处 on the same checkout, never in between them.
+    const result = await oneAtATime(target.repoPath, () => git.revert(target.repoPath, path, target.baseline, { threadId: id, log }));
     await restat(id);
     return c.json(result);
   });
@@ -881,18 +883,23 @@ export function createApp(options: CreateAppOptions): VgentApp {
     const thread = await threadOf(id);
     assertNotLive(thread);
     const target = await targetFor(thread);
-    const plan = await planFor(thread, target.repoPath, asRestoreTarget(await c.req.json().catch(() => undefined)));
+    const restoreTarget = asRestoreTarget(await c.req.json().catch(() => undefined));
 
-    // Taken first, and required: a restore nobody can undo is not one we offer.
-    const undo = await createCheckpoint({ repoPath: target.repoPath, threadId: id, undo: true, log });
-    if (undo == null) {
-      throw new VgentServerError({ message: "没能保存当前状态，已放弃恢复", status: 500, code: "checkpoint_failed" });
-    }
-    const moved = await restoreCheckpoint({
-      repoPath: target.repoPath,
-      commit: plan.commit,
-      ...(plan.paths != null ? { paths: plan.paths } : {}),
-      log,
+    // Planned, snapshotted and written in one go, in line with 带回 and 还原 on the same checkout.
+    const { plan, undo, moved } = await oneAtATime(target.repoPath, async () => {
+      const plan = await planFor(thread, target.repoPath, restoreTarget);
+      // Taken first, and required: a restore nobody can undo is not one we offer.
+      const undo = await createCheckpoint({ repoPath: target.repoPath, threadId: id, undo: true, log });
+      if (undo == null) {
+        throw new VgentServerError({ message: "没能保存当前状态，已放弃恢复", status: 500, code: "checkpoint_failed" });
+      }
+      const moved = await restoreCheckpoint({
+        repoPath: target.repoPath,
+        commit: plan.commit,
+        ...(plan.paths != null ? { paths: plan.paths } : {}),
+        log,
+      });
+      return { plan, undo, moved };
     });
     log.info(
       `线程 ${id} 恢复到 ${plan.commit.slice(0, 7)}${plan.whole ? "（整目录）" : `（${plan.files} 个文件）`}：写回 ${moved.written} 个，删除 ${moved.deleted} 个`,

@@ -28,6 +28,7 @@ import { cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, s
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { BadRequestError, ConflictError, GitError, GitUnavailableError, NotFoundError } from "./errors.js";
+import { literalPathspec } from "./git.js";
 import { writeJsonAtomic } from "./store/atomic-file.js";
 import type { Project, ThreadRecord, ThreadWorkspace } from "./types.js";
 
@@ -395,8 +396,8 @@ async function captureTrees(cwd: string): Promise<ArchiveTrees> {
       await git(cwd, ["read-tree", ...start], env);
       if (paths.length > 0) {
         const list = join(scratch, `${name}.paths`);
-        await writeFile(list, `${paths.join("\0")}\0`);
-        await git(cwd, ["add", "-f", "-A", `--pathspec-from-file=${list}`, "--pathspec-file-nul"], { ...env, GIT_LITERAL_PATHSPECS: "1" });
+        await writeFile(list, `${paths.map(literalPathspec).join("\0")}\0`);
+        await git(cwd, ["add", "-f", "-A", `--pathspec-from-file=${list}`, "--pathspec-file-nul"], env);
       }
       return (await git(cwd, ["write-tree"], env)).trim();
     };

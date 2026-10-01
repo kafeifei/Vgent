@@ -1033,7 +1033,8 @@ describe("createApp", () => {
     expect(undone.undo.restored.sort()).toEqual(["tracked.txt", "只有任务动的.txt"].sort());
     expect(await readFile(join(repo, "tracked.txt"), "utf8")).toBe("用户写的\nline2\n");
     expect(await stat(join(repo, "只有任务动的.txt")).catch(() => null)).toBeNull();
-  });
+    // Two 带回 plus 撤销带回's own safety snapshot of the checkout: real git all the way, past vitest's 5s when loaded.
+  }, 30_000);
 
   it("PR 链接不随新一轮消失，归档会丢掉带回的撤销点", async () => {
     const repo = await gitRepo();

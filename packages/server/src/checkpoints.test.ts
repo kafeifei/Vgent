@@ -1,5 +1,5 @@
 import { execFile, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -89,6 +89,54 @@ describe.skipIf(!hasGit)("checkpoints", () => {
     expect((await git(repo, "diff", "--cached", "--name-only")).stdout).toBe(stagedBefore);
   });
 
+  it("读不了的文件、没有提交的嵌套仓库不会让整个快照失败，只是不在快照里", async () => {
+    const repo = await repoWithHistory();
+    await writeFile(join(repo, "新文件.txt"), "新的\n");
+    // A repository somebody just cloned into the tree and has not committed in: git has no commit to point at.
+    await mkdir(join(repo, "nested"));
+    await git(join(repo, "nested"), "init", "-q");
+    await writeFile(join(repo, "nested", "f.txt"), "x\n");
+    // Root reads anything, so this half of the case only means something for everyone else.
+    const locked = join(repo, "locked.txt");
+    await writeFile(locked, "secret\n");
+    await chmod(locked, 0o000);
+    try {
+      const tree = await snapshotTree(repo);
+      const listing = (await git(repo, "-c", "core.quotePath=false", "ls-tree", "-r", "--name-only", tree)).stdout
+        .split("\n")
+        .filter(Boolean);
+      expect(listing).toContain("tracked.txt");
+      expect(listing).toContain("新文件.txt");
+      expect(listing).not.toContain("nested/f.txt");
+      if (process.getuid?.() !== 0) expect(listing).not.toContain("locked.txt");
+    } finally {
+      await chmod(locked, 0o644);
+    }
+  });
+
+  it("有提交的嵌套仓库和读不了的文件同时在：git 的警告和提示不算失败", async () => {
+    const repo = await repoWithHistory();
+    // Committed inside, so git adds it as a link and prints a page of advice about it.
+    await mkdir(join(repo, "nested"));
+    await git(join(repo, "nested"), "init", "-q");
+    await git(join(repo, "nested"), "config", "user.email", "test@vgent.local");
+    await git(join(repo, "nested"), "config", "user.name", "Vgent Test");
+    await writeFile(join(repo, "nested", "f.txt"), "x\n");
+    await git(join(repo, "nested"), "add", "-A");
+    await git(join(repo, "nested"), "commit", "-q", "-m", "内层的提交");
+    const locked = join(repo, "locked.txt");
+    await writeFile(locked, "secret\n");
+    await chmod(locked, 0o000);
+    try {
+      const tree = await snapshotTree(repo);
+      const listing = (await git(repo, "ls-tree", "-r", "--name-only", tree)).stdout.split("\n").filter(Boolean);
+      expect(listing).toContain("tracked.txt");
+      if (process.getuid?.() !== 0) expect(listing).not.toContain("locked.txt");
+    } finally {
+      await chmod(locked, 0o644);
+    }
+  });
+
   it("同一秒内改的、大小又一样的文件也算进快照", async () => {
     const repo = await repoWithHistory();
     // Same second as the commit that wrote the index, and the same 4 bytes:
@@ -152,6 +200,38 @@ describe.skipIf(!hasGit)("checkpoints", () => {
     await restoreCheckpoint({ repoPath: repo, commit: undo!.commit });
     expect(await read(repo, "tracked.txt")).toBe("two\n");
     expect(await read(repo, "b.txt")).toBe("第二轮\n");
+  });
+
+  it("恢复：之后只改了大小写的未跟踪文件，回到原来的名字，内容不丢", async () => {
+    const repo = await repoWithHistory();
+    await writeFile(join(repo, "Notes.md"), "回合前的\n");
+    const taken = await createCheckpoint({ repoPath: repo, threadId: "t1" });
+
+    // Where the disk ignores case this is one file under a new name — which the
+    // restore writes back under the old one, then must not delete as the new one.
+    await rename(join(repo, "Notes.md"), join(repo, "NOTES.md"));
+    await writeFile(join(repo, "NOTES.md"), "回合里改的\n");
+    await restoreCheckpoint({ repoPath: repo, commit: taken!.commit });
+
+    expect((await readdir(repo)).filter((name) => name.toLowerCase() === "notes.md")).toEqual(["Notes.md"]);
+    expect(await read(repo, "Notes.md")).toBe("回合前的\n");
+  });
+
+  it("恢复：之后多出来一个有提交的嵌套仓库，恢复不会半路失败，也不删它", async () => {
+    const repo = await repoWithHistory();
+    const taken = await createCheckpoint({ repoPath: repo, threadId: "t1" });
+    await writeFile(join(repo, "tracked.txt"), "two\n");
+    await mkdir(join(repo, "nested"));
+    await git(join(repo, "nested"), "init", "-q");
+    await git(join(repo, "nested"), "config", "user.email", "test@vgent.local");
+    await git(join(repo, "nested"), "config", "user.name", "Vgent Test");
+    await writeFile(join(repo, "nested", "f.txt"), "x\n");
+    await git(join(repo, "nested"), "add", "-A");
+    await git(join(repo, "nested"), "commit", "-q", "-m", "内层的提交");
+
+    await restoreCheckpoint({ repoPath: repo, commit: taken!.commit });
+    expect(await read(repo, "tracked.txt")).toBe("one\n");
+    expect(await read(repo, "nested/f.txt")).toBe("x\n");
   });
 
   it("还没有提交的仓库也能打快照", async () => {

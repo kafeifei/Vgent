@@ -16,8 +16,9 @@
 import { execFile } from "node:child_process";
 import { readFile, rm, stat } from "node:fs/promises";
 import { isAbsolute, resolve, sep } from "node:path";
-import { snapshotTree } from "./checkpoints.js";
-import { BadRequestError, GitError, GitUnavailableError, NotAGitRepoError, NotFoundError } from "./errors.js";
+import { createCheckpoint, revertScope, snapshotTree } from "./checkpoints.js";
+import { BadRequestError, GitError, GitUnavailableError, NotAGitRepoError, NotFoundError, VgentServerError } from "./errors.js";
+import type { Logger } from "./types.js";
 
 export type ChangeStatus = "modified" | "added" | "deleted" | "renamed" | "untracked";
 
@@ -70,7 +71,12 @@ export interface Git {
   /** `base` defaults to HEAD, or the empty tree in a repo with no commit yet. */
   changes(repoPath: string, base?: DiffBase): Promise<ChangesSnapshot>;
   fileDiff(repoPath: string, path: string, base?: DiffBase): Promise<FileDiff>;
-  revert(repoPath: string, path: string, base?: DiffBase): Promise<{ path: string }>;
+  /**
+   * With `threadId`, the directory is snapshotted first (see `revertScope`), so
+   * what a mistaken click throws away can be found again — and nothing is
+   * reverted when that snapshot cannot be taken.
+   */
+  revert(repoPath: string, path: string, base?: DiffBase, options?: { threadId?: string; log?: Logger }): Promise<{ path: string }>;
 }
 
 export interface CreateGitOptions {
@@ -82,6 +88,15 @@ export interface CreateGitOptions {
 
 /** `git hash-object -t tree /dev/null` — the diff base when HEAD is unborn. */
 export const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/**
+ * A file name as a pathspec that matches that file and nothing else. Every path
+ * Vgent hands git after `--` is a name, not a pattern: `[id].tsx` would
+ * otherwise also match `i.tsx`. Per path rather than `GIT_LITERAL_PATHSPECS`,
+ * which every hook git runs would inherit — a pre-commit hook's own
+ * `-- '*.ts'` would then match nothing, and its lint gate pass in silence.
+ */
+export const literalPathspec = (path: string): string => `:(literal)${path}`;
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_DIFF_BYTES = 1024 * 1024;
@@ -195,7 +210,7 @@ export function createGit(options: CreateGitOptions = {}): Git {
   }
 
   async function isInIndex(repoPath: string, path: string): Promise<boolean> {
-    const result = await run(repoPath, ["ls-files", "--error-unmatch", "-z", "--", path], [1]);
+    const result = await run(repoPath, ["ls-files", "--error-unmatch", "-z", "--", literalPathspec(path)], [1]);
     return result.code === 0;
   }
 
@@ -341,15 +356,28 @@ export function createGit(options: CreateGitOptions = {}): Git {
       text = result.stdout;
     } else {
       const paths = entry.oldPath != null ? [entry.oldPath, entry.path] : [entry.path];
-      const result = await run(repoPath, ["diff", ...revs(pair), "--no-color", "--no-ext-diff", "-M", "--", ...paths]);
+      const result = await run(repoPath, ["diff", ...revs(pair), "--no-color", "--no-ext-diff", "-M", "--", ...paths.map(literalPathspec)]);
       text = result.stdout;
     }
     return { ...head, binary: false, ...truncate(text) };
   }
 
   /** Puts one file back the way the baseline had it — deleting it when it was not there at all. */
-  async function revert(repoPath: string, rawPath: string, base?: DiffBase): Promise<{ path: string }> {
+  async function revert(
+    repoPath: string,
+    rawPath: string,
+    base?: DiffBase,
+    options: { threadId?: string; log?: Logger } = {},
+  ): Promise<{ path: string }> {
     const { entry, pair } = await resolveEntry(repoPath, rawPath, base);
+    // Taken first, and required: a 还原 whose overwritten text could not be found
+    // again is not one we run.
+    if (options.threadId != null) {
+      const snapshot = await createCheckpoint({ repoPath, threadId: revertScope(options.threadId), ...(options.log != null ? { log: options.log } : {}) });
+      if (snapshot == null) {
+        throw new VgentServerError({ message: "没能给工作目录留底，已放弃还原", status: 500, code: "checkpoint_failed" });
+      }
+    }
     // A snapshot baseline belongs to a task running in the user's own checkout,
     // where the index is the user's: the file is written straight to the working
     // tree and nothing is ever staged or unstaged on the way. `git checkout
@@ -357,11 +385,11 @@ export function createGit(options: CreateGitOptions = {}): Git {
     const ownIndex = pair.tree != null;
     const restore = (path: string) =>
       ownIndex
-        ? run(repoPath, ["restore", "--source", pair.base, "--worktree", "--", path])
-        : run(repoPath, ["checkout", pair.base, "--", path]);
+        ? run(repoPath, ["restore", "--source", pair.base, "--worktree", "--", literalPathspec(path)])
+        : run(repoPath, ["checkout", pair.base, "--", literalPathspec(path)]);
     const unstage = async (path: string) => {
       if (ownIndex) return;
-      if (await isInIndex(repoPath, path)) await run(repoPath, ["rm", "-q", "--cached", "--force", "--", path]);
+      if (await isInIndex(repoPath, path)) await run(repoPath, ["rm", "-q", "--cached", "--force", "--", literalPathspec(path)]);
     };
 
     if (entry.status === "renamed" && entry.oldPath != null) {

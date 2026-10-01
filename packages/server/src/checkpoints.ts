@@ -15,7 +15,7 @@
  * Projects that are not git repositories are allowed in Vgent, so every entry
  * point here answers `undefined` for one instead of failing the turn.
  */
-import { copyFile, mkdtemp, rm, rmdir, stat, utimes } from "node:fs/promises";
+import { copyFile, lstat, mkdtemp, rm, rmdir, stat, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { runCommand, type ToolExec } from "./exec.js";
@@ -52,9 +52,28 @@ export const baselineRef = (threadId: string): string => `${checkpointRefPrefix(
  * 「恢复到此处」 would happily offer the user the wrong directory's state. A
  * sub-scope keeps them apart: `listRefs` only counts `<prefix>/<n>`, so nothing
  * here is ever restorable as a turn checkpoint, while `deleteCheckpoints` on the
- * thread still sweeps it up.
+ * thread still sweeps it up. 撤销带回 keeps its own safety copy (`undo-<n>`) of
+ * the checkout it is about to overwrite here too.
  */
 export const applyUndoScope = (threadId: string): string => `${threadId}/apply`;
+
+/**
+ * The scope 全部丢弃 keeps what it is about to throw away under: the task's
+ * commits (the checkpoint's parent is HEAD) and its working tree. A discard
+ * cannot be undone from the UI, but it must not be the end of the work either —
+ * `git branch recovered <ref>` gets it back — and `deleteCheckpoints` on the
+ * thread sweeps it up with the rest.
+ */
+export const discardScope = (threadId: string): string => `${threadId}/discard`;
+
+/**
+ * The scope a per-file 还原 keeps the directory under, as it was just before. The
+ * file goes back to the baseline, and whatever the user typed into it after the
+ * task started goes with it; one snapshot keeps that text findable
+ * (`git restore --source <ref> -- <path>`). Bounded like every scope: the oldest
+ * are dropped after fifty.
+ */
+export const revertScope = (threadId: string): string => `${threadId}/revert`;
 
 /**
  * A fixed identity, forced through the environment: a repo without a
@@ -111,8 +130,34 @@ async function isRepo(repoPath: string, exec: ToolExec): Promise<boolean> {
 }
 
 /**
+ * What `git add --ignore-errors` reports for a file it could not index — one we
+ * may not read, an embedded repository that has no commit to point at. It still
+ * exits 1 for them, so the exit code alone cannot tell them from a real failure;
+ * the messages can.
+ */
+const UNINDEXABLE = /^error: (?:open\(".*"\): .*|unable to index file '.*'|'.*' does not have a commit checked out)$/;
+
+/**
+ * `warning:` and `hint:` lines are git talking, not failing: an embedded
+ * repository *with* a commit is added as a link with a page of advice, and when
+ * an unreadable file is in the same run the exit code is 1 with both in stderr.
+ */
+const ADVICE = /^(?:warning|hint):/;
+
+const onlyUnindexable = (stderr: string): boolean =>
+  stderr
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !ADVICE.test(line))
+    .every((line) => UNINDEXABLE.test(line));
+
+/**
  * The whole working directory as a tree object, without touching the real
  * index: tracked files, untracked files, no ignored ones.
+ *
+ * A file that cannot be indexed is left out of the tree rather than failing the
+ * snapshot: one unreadable file or one just-cloned nested repository would
+ * otherwise take out every panel, commit and 带回 that starts from a snapshot.
  *
  * The scratch index is *seeded from the real one* — with git's stat cache in
  * place `add -A` re-hashes only what actually changed, which is what keeps this
@@ -138,7 +183,10 @@ export async function snapshotTree(repoPath: string, exec: ToolExec = runCommand
       if (info != null) await utimes(indexFile, info.atime, info.mtime).catch(() => {});
     }
     const env = { GIT_INDEX_FILE: indexFile };
-    await git.ok(["add", "-A"], env);
+    const add = await git.run(["add", "-A", "--ignore-errors"], env);
+    if (add.code !== 0 && !onlyUnindexable(add.stderr)) {
+      throw new CheckpointGitError(`git add -A --ignore-errors 失败: ${add.stderr.trim().slice(-500)}`);
+    }
     return (await git.ok(["write-tree"], env)).trim();
   } finally {
     await rm(scratch, { recursive: true, force: true });
@@ -362,7 +410,7 @@ export interface RestoreResult {
 }
 
 /** `rmdir` upwards from a removed file, stopping at the repo root or the first non-empty parent. */
-async function pruneEmptyDirs(repoPath: string, path: string): Promise<void> {
+export async function pruneEmptyDirs(repoPath: string, path: string): Promise<void> {
   const root = resolve(repoPath);
   let dir = dirname(resolve(root, path));
   while (dir !== root && dir.startsWith(root)) {
@@ -409,6 +457,19 @@ export async function restoreCheckpoint(options: GitOptions & { commit: string; 
     else writes.push(path);
   }
 
+  // Deletions first. Where the disk ignores case, `README.md` in the tree as it
+  // is now and `Readme.md` in the checkpoint are one file: removed after the
+  // write, it would take the restored file with it. A path that changed between
+  // file and directory, too, wants the old shape gone before the new one is written.
+  for (const path of deletions) {
+    // Only a file or a link: a nested repository is in the tree as a link to its
+    // commit but on disk a directory, and `rm` on one would throw halfway through.
+    const info = await lstat(resolve(repoPath, path)).catch(() => null);
+    if (info != null && !info.isFile() && !info.isSymbolicLink()) continue;
+    await rm(resolve(repoPath, path), { force: true, recursive: false });
+    await pruneEmptyDirs(repoPath, path);
+  }
+
   if (writes.length > 0) {
     const scratch = await mkdtemp(join(tmpdir(), "vgent-restore-"));
     try {
@@ -423,11 +484,6 @@ export async function restoreCheckpoint(options: GitOptions & { commit: string; 
     } finally {
       await rm(scratch, { recursive: true, force: true });
     }
-  }
-
-  for (const path of deletions) {
-    await rm(resolve(repoPath, path), { force: true, recursive: false });
-    await pruneEmptyDirs(repoPath, path);
   }
 
   return { written: writes.length, deleted: deletions.length };

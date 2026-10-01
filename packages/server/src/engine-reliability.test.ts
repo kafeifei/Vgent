@@ -124,7 +124,7 @@ it("manual compaction preserves recent original turns and their user constraints
   expect(JSON.stringify(model.doGenerateCalls[0]!.prompt)).not.toContain("history 7");
 });
 
-it("the production factory describes a scratch session and refreshes approval facts on the next turn", async () => {
+it("the production factory describes a scratch session, and a run-mode change leaves its instructions alone", async () => {
   const { NO_PROJECT_ID } = await import("./no-project.js");
   const { simulateReadableStream } = await import("ai");
   const dataDir = await temp();
@@ -153,9 +153,10 @@ it("the production factory describes a scratch session and refreshes approval fa
     const second = JSON.stringify(model.doStreamCalls[1]!.prompt);
     expect(first).toContain("scratch workspace with no attached project");
     expect(first).not.toContain("This is the project's main working tree");
-    expect(first).toContain("Calls to write, edit, bash, coder require tool approval");
-    expect(second).toContain("Run without tool approval: read, write, grep, glob");
-    expect(second).toContain("Applicable standing approvals");
+    expect(first).toContain("let the approval system handle it");
+    // The mode and the standing approvals changed between the turns; the cached prefix did not.
+    expect(model.doStreamCalls[1]!.prompt[0]).toEqual(model.doStreamCalls[0]!.prompt[0]);
+    expect(second).not.toContain("Applicable standing approvals");
   } finally { await runs.stopAll(); }
 });
 
@@ -214,12 +215,14 @@ it("restores the complete request prefix across UI history turns and isolates th
       expect(call.headers?.["session-id"]).toBe(id);
     }
     const [initial, planned, resumed] = model.doStreamCalls.map((call) => call.prompt);
-    expect(planned!.at(-1)).toMatchObject({ role: "system", content: expect.stringContaining("CACHE_PLAN_SENTINEL") });
+    // The plan is its own tool call; nothing is injected after it.
+    expect(planned!.at(-1)).toMatchObject({ role: "tool" });
+    expect(planned!.filter((message) => message.role === "system")).toHaveLength(1);
     expect(resumed!.slice(0, planned!.length)).toEqual(planned);
     expect(resumed![0]).toEqual(initial![0]);
     expect(resumed![0]!.role).toBe("system");
     expect(JSON.stringify(resumed![0])).not.toContain("CACHE_NEW_PROVENANCE");
-    expect(resumed!.at(-1)).toMatchObject({ role: "system", content: expect.stringContaining("cache-user-two: Continue with CACHE_NEW_PROVENANCE.") });
+    expect(resumed!.at(-1)).toMatchObject({ role: "user" });
     expect((await threads.get(thread.id))!.taskState?.items).toEqual(plan.items);
   } finally { await runs.stopAll(); }
 });

@@ -365,7 +365,7 @@ it("passes the same project and skill capabilities into the child's actual model
   }
 });
 
-it("keeps each child's cache session and saved runtime prefix across steps and resume", async () => {
+it("keeps each child's cache session and request prefix across steps and resume", async () => {
   const steps = [
     toolCallStep("child-read-one", "read", { file_path: "hello-vgent.txt" }),
     toolCallStep("child-read-two", "read", { file_path: "hello-vgent.txt" }),
@@ -393,8 +393,6 @@ it("keeps each child's cache session and saved runtime prefix across steps and r
   const first = await run({ prompt: "Inspect twice." }, "first");
   expect(first.status).toBe("completed");
   expect(first.taskId).toEqual(expect.any(String));
-  const saved = JSON.parse(await readFile(join(outputDir, `child-${first.taskId}`, "context-state.json"), "utf8"));
-  expect(saved.messages.some((message: { role: string; content: unknown }) => message.role === "system" && String(message.content).includes("PARENT_STATE_ORIGINAL"))).toBe(true);
   taskContext = "PARENT_STATE_CHANGED";
   const resumed = await run({ prompt: "Continue.", resume_task_id: first.taskId }, "resume");
   const separate = await run({ prompt: "Another child." }, "separate");
@@ -406,14 +404,14 @@ it("keeps each child's cache session and saved runtime prefix across steps and r
     expect(call.providerOptions?.openai).toMatchObject({ promptCacheKey: taskId, reasoningSummary: "auto", reasoningEffort: "high" });
     expect(call.headers?.["session-id"]).toBe(taskId);
   }
-  const initial = child.doStreamCalls[0]!.prompt;
-  const lastStep = child.doStreamCalls[2]!.prompt;
-  const restored = child.doStreamCalls[3]!.prompt;
-  expect(initial[0]!.role).toBe("system");
-  expect(JSON.stringify(initial[0])).not.toContain("PARENT_STATE_ORIGINAL");
-  expect(restored[0]).toEqual(initial[0]);
-  expect(restored.slice(0, lastStep.length)).toEqual(lastStep);
-  // The saved effective context is the actual provider prefix (after instructions).
-  expect(restored.slice(1, 1 + saved.messages.length)).toEqual(saved.messages);
-  expect(restored.at(-1)).toMatchObject({ role: "system", content: expect.stringContaining("PARENT_STATE_CHANGED") });
+  const [initial, second, lastStep, restored] = child.doStreamCalls.map((call) => call.prompt);
+  // The plan rides on the task message, never on the instructions.
+  expect(JSON.stringify(initial![0])).not.toContain("PARENT_STATE");
+  expect(JSON.stringify(initial![1])).toContain("PARENT_STATE_ORIGINAL");
+  // Each request begins with the one before it, the resumed one included.
+  expect(second!.slice(0, initial!.length)).toEqual(initial);
+  expect(lastStep!.slice(0, second!.length)).toEqual(second);
+  expect(restored!.slice(0, lastStep!.length)).toEqual(lastStep);
+  expect(restored!.at(-1)).toMatchObject({ role: "user" });
+  expect(JSON.stringify(restored!.at(-1))).toContain("PARENT_STATE_CHANGED");
 });

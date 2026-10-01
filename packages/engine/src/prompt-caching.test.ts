@@ -6,7 +6,8 @@ import { jsonSchema, type ModelMessage } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { createVgentEngine } from "./engine.js";
 import { promptCaching } from "./prompt-caching.js";
-import { appendRuntimeContext, isRuntimeContext } from "./runtime-context.js";
+import { isRuntimeContext } from "./runtime-context.js";
+import { saveContext } from "./context-cache.js";
 import type { TaskState } from "./update-plan.js";
 
 const dirs: string[] = [];
@@ -68,53 +69,59 @@ it("uses a stable non-path cache key for a CLI session and isolates ephemeral en
   for (const request of model.doGenerateCalls) expect(request.headers?.["session-id"]).toBe(request.providerOptions?.openai?.promptCacheKey);
 });
 
-it("appends plan changes once, preserves the prefix across turns, and drops stale state after history edits", async () => {
+it("a plan change leaves the request alone: every step and the next turn only extend the one before", async () => {
   const repoPath = await temp(); const outputDir = join(repoPath, "out");
   let taskState = plan;
-  const model = new MockLanguageModelV3({ provider: "codex-subscription.responses", doGenerate: [call("updatePlan", { items: [{ text: "verify", status: "done" }] }), answer, answer, answer] });
+  const model = new MockLanguageModelV3({ provider: "codex-subscription.responses", doGenerate: [call("updatePlan", { items: [{ text: "verify", status: "done" }] }), answer, answer] });
   const options = { model, repoPath, outputDir, sessionId: "task", subagents: false };
   const result = await createVgentEngine({ ...options, taskState, saveTaskState: async (state) => { taskState = state; } }).agent.generate({ messages: initial });
   const [first, second] = model.doGenerateCalls;
   expect(second!.prompt.slice(0, first!.prompt.length)).toEqual(first!.prompt);
-  expect(second!.prompt.filter((message) => message.role === "system")).toHaveLength(3);
+  // Nothing but the instructions is a system message; the plan lives in its own tool call.
+  expect(second!.prompt.filter((message) => message.role === "system")).toHaveLength(1);
+  expect(JSON.stringify(second!.prompt)).not.toContain("Deliver");
+  expect(taskState.items).toEqual([{ text: "verify", status: "done" }]);
   const history: ModelMessage[] = [...initial, ...result.responseMessages, { role: "user", content: "Continue" }];
   await createVgentEngine({ ...options, taskState }).agent.generate({ messages: history });
   expect(model.doGenerateCalls[2]!.prompt.slice(0, second!.prompt.length)).toEqual(second!.prompt);
-  expect(model.doGenerateCalls[2]!.prompt.filter((message) => message.role === "system")).toHaveLength(3);
-  await createVgentEngine({ ...options }).agent.generate({ messages: [{ role: "user", content: "New goal instead" }] });
-  expect(JSON.stringify(model.doGenerateCalls[3]!.prompt)).not.toContain('"goal":"Deliver"');
-  expect(JSON.stringify(model.doGenerateCalls[3]!.prompt)).toContain("No saved task continuation state");
 });
 
-it("does not replay internal system snapshots when the task switches to an unsupported protocol", async () => {
+const LEGACY_SNAPSHOT: ModelMessage = {
+  role: "system",
+  content: "Vgent runtime state snapshot (replaces earlier runtime state snapshots; not a new user request; verify evidence and follow the latest user corrections):\n{}",
+};
+
+it("reuses an older build's saved snapshots on Responses, and never replays them to a protocol that rejects them", async () => {
+  expect(isRuntimeContext(LEGACY_SNAPSHOT)).toBe(true);
   const repoPath = await temp(); const outputDir = join(repoPath, "out");
+  await saveContext(outputDir, initial, [...initial, LEGACY_SNAPSHOT]);
+  const history: ModelMessage[] = [...initial, { role: "user", content: "Continue" }];
   const codex = new MockLanguageModelV3({ provider: "codex-subscription.responses", doGenerate: answer });
-  const first = await createVgentEngine({ model: codex, repoPath, outputDir, taskState: plan, subagents: false }).agent.generate({ messages: initial });
+  await createVgentEngine({ model: codex, repoPath, outputDir, subagents: false }).agent.generate({ messages: history });
+  // The same prefix the provider saw last time.
+  expect(codex.doGenerateCalls[0]!.prompt.filter((message) => message.role === "system")).toHaveLength(2);
   const other = new MockLanguageModelV3({ provider: "google.generative-ai", doGenerate: answer });
-  await createVgentEngine({ model: other, repoPath, outputDir, taskState: plan, subagents: false }).agent.generate({ messages: [...initial, ...first.responseMessages, { role: "user", content: "Continue" }] });
+  await createVgentEngine({ model: other, repoPath, outputDir, subagents: false }).agent.generate({ messages: history });
   expect(other.doGenerateCalls[0]!.prompt.filter((message) => message.role === "system")).toHaveLength(1);
-  expect(other.doGenerateCalls[0]!.prompt[0]!.content).toContain("Task continuation state");
   expect(JSON.stringify(other.doGenerateCalls[0]!.prompt)).not.toContain("Vgent runtime state snapshot");
 });
 
-it("keeps budget closing instructions out of persisted history", async () => {
+it("keeps budget closing instructions to the closing step", async () => {
   const repoPath = await temp(); const outputDir = join(repoPath, "out");
   const model = new MockLanguageModelV3({ provider: "codex-subscription.responses", doGenerate: [call("glob", { pattern: "*" }), answer, answer] });
   const options = { model, repoPath, outputDir, maxSteps: 2, subagents: false };
   const result = await createVgentEngine(options).agent.generate({ messages: initial });
   expect(model.doGenerateCalls[1]!.prompt[0]!.content).toContain("Execution budget is nearly exhausted");
-  expect(await readFile(join(outputDir, "context-state.json"), "utf8")).not.toContain("Execution budget is nearly exhausted");
   await createVgentEngine(options).agent.generate({ messages: [...initial, ...result.responseMessages, { role: "user", content: "Continue" }] });
   expect(model.doGenerateCalls[2]!.prompt[0]!.content).not.toContain("Execution budget is nearly exhausted");
 });
 
-it("retains the pre-steer checkpoint so restoring the canonical history does not duplicate steering", async () => {
+it("reads a 插话 once on the next turn, and saves no mapping when nothing was compacted", async () => {
   const repoPath = await temp(); const outputDir = join(repoPath, "out");
   const model = new MockLanguageModelV3({ provider: "codex-subscription.responses", doGenerate: [call("glob", { pattern: "*" }), answer, answer] });
   const options = { model, repoPath, outputDir, subagents: false };
   const result = await createVgentEngine({ ...options, pendingUserMessages: async () => ["STEER: verify only"] }).agent.generate({ messages: initial });
-  const saved = JSON.parse(await readFile(join(outputDir, "context-state.json"), "utf8"));
-  expect(saved.count).toBe(initial.length);
+  await expect(readFile(join(outputDir, "context-state.json"), "utf8")).rejects.toThrow();
   const history: ModelMessage[] = [...initial, ...result.responseMessages.slice(0, -1), { role: "user", content: "STEER: verify only" }, result.responseMessages.at(-1)!, { role: "user", content: "Continue" }];
   await createVgentEngine(options).agent.generate({ messages: history });
   expect(JSON.stringify(model.doGenerateCalls[2]!.prompt).match(/STEER: verify only/g)).toHaveLength(1);
@@ -132,8 +139,8 @@ it.each([false, true])("resumes approved tools exactly once even when the contex
   expect(approval).toBeDefined();
   expect(writes).toBe(0);
   if (blocked) {
-    await rm(join(outputDir, "context-state.json"));
-    await mkdir(join(outputDir, "context-state.json"));
+    await rm(join(outputDir, "context-state.json"), { recursive: true, force: true });
+    await mkdir(join(outputDir, "context-state.json"), { recursive: true });
   }
   const history: ModelMessage[] = [...initial, ...first.responseMessages, { role: "tool", content: [{ type: "tool-approval-response", approvalId: approval.approvalId, approved: true }] }];
   const resumed = await createVgentEngine(options).agent.generate({ messages: history });
@@ -145,12 +152,12 @@ it.each([false, true])("resumes approved tools exactly once even when the contex
   expect(model.doGenerateCalls).toHaveLength(3);
 });
 
-it("reserves and reintroduces the current snapshot when context compaction removes earlier ones", async () => {
+it("reuses a saved compaction on the next turn and keeps the latest constraint", async () => {
   const repoPath = await temp();
-  const { saveContext } = await import("./context-cache.js");
   const outputDir = join(repoPath, "out");
   const history: ModelMessage[] = [
-    ...appendRuntimeContext(initial, "OLD STATE"),
+    ...initial,
+    LEGACY_SNAPSHOT,
     ...Array.from({ length: 10 }, (_, i): ModelMessage => ({ role: i % 2 ? "assistant" : "user", content: `old ${i} ${"x".repeat(3000)}` })),
     { role: "user", content: "LATEST CONSTRAINT: do not restart" },
     { role: "assistant", content: "checking" },
@@ -163,21 +170,17 @@ it("reserves and reintroduces the current snapshot when context compaction remov
   await createVgentEngine({ model, repoPath, outputDir, taskState: plan, contextTokenBudget: 10000, subagents: false }).agent.generate({ messages: initial });
   const request = model.doGenerateCalls.at(-1)!;
   expect(JSON.stringify(request.prompt)).toContain("LATEST CONSTRAINT: do not restart");
-  expect(JSON.stringify(request.prompt)).toContain('\\"goal\\":\\"Deliver\\"');
+  // The plan is not injected; the model reads it from its own tool calls.
+  expect(JSON.stringify(request.prompt)).not.toContain('\\"goal\\":\\"Deliver\\"');
   expect(model.doGenerateCalls.length).toBeGreaterThan(1);
   const saved = JSON.parse(await readFile(join(outputDir, "context-state.json"), "utf8"));
-  expect(saved.messages.some(isRuntimeContext)).toBe(true);
+  expect(saved.count).toBe(initial.length);
 });
 
-it("treats corrupt context state as a cache miss and snapshots changes or removal without mutating history", async () => {
+it("treats corrupt context state as a cache miss", async () => {
   const repoPath = await temp();
   await writeFile(join(repoPath, "context-state.json"), "{invalid");
   const { restoreContext } = await import("./context-cache.js");
   expect(await restoreContext(repoPath, initial)).toEqual(initial);
-  const first = appendRuntimeContext(initial, "one");
-  expect(appendRuntimeContext(first, "one")).toBe(first);
-  const removed = appendRuntimeContext(first, "");
-  expect(removed.slice(0, first.length)).toEqual(first);
-  expect(removed.at(-1)!.content).toContain("No saved task");
   expect(initial).toHaveLength(1);
 });

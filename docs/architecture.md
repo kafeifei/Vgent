@@ -58,7 +58,7 @@ Vgent 是一个 **Web 优先**的本地 coding agent 工作台，底下可换引
 | 指令 | `buildInstructions()` 只组合通用行为、工作区事实、选中的工具、审批说明、项目规则与 Skills。工具用法放在工具定义中，删除工具即不再向模型发送它的能力说明 |
 | 子代理 | Explore / Coder 使用同一组装函数；Explore 仅开放读取工具，Coder 继承项目路径及权限。返回状态、摘要和可用的完整报告引用 |
 | MCP | `@ai-sdk/mcp`，延迟加载工具通过 `toolSearch()` 发现；计划模式过滤后不保留这些工具及其说明 |
-| Skills / 记忆 | Skills 按需读取；记忆工具拥有存储位置、条目索引和使用说明。计划模式不开放记忆写入 |
+| Skills / 记忆 | Skills 按需读取；记忆工具拥有存储位置和使用说明，条目由模型 `list` 查看。计划模式不开放记忆写入 |
 | 压缩与恢复 | 保留原有 `prepareStep` 预算核算、历史压缩、缓存及服务端恢复实现；本次组装重构不引入第二套会话状态或执行循环。`fitContext` 先在用户消息处切；一轮自己就放不下（第一轮连读几份大文件）时在这一轮的步骤之间切：切在 assistant 消息前，工具调用和结果不拆开，这一轮的原始请求原样放在摘要前面。图片按约 2K token 估，不按 base64 字节（一张截图按字节算是 15 万） |
 
 文件协调、输入持久化、结束原因、任务续接与恢复契约见 [engine-reliability.md](./engine-reliability.md)。
@@ -66,8 +66,14 @@ Vgent 是一个 **Web 优先**的本地 coding agent 工作台，底下可换引
 #### 自研引擎请求缓存
 
 - `prompt-caching.ts` 直接使用 AI SDK 的 `providerOptions.openai.promptCacheKey`：服务端取稳定 `thread.id`，子代理取持久 `taskId`（恢复沿用，不和主代理共用）；CLI 有 session 文件时取绝对路径的 SHA-256，无会话标识时使用本引擎实例的 UUID。仅 Codex 订阅额外传 `session-id`；不改 `store:false`、推理强度、摘要或服务档位。
-- 对已识别的 OpenAI Responses（含 Codex 订阅和配置为 `openai` 的提供商），计划、续接状态、记忆来源改为消息尾部的 system 快照：变化才追加，不重写历史前的 instructions。最新快照替代旧状态，但不替代最新用户纠正。项目规则、权限和收尾指令仍走原路径；其它协议保持原来 instructions 注入，避免 Gemini / Bedrock 等拒绝中途 system 消息。
-- 复用 `context-cache.ts` 的原始历史前缀校验和现有保存文件，不另建缓存服务或压缩机制。用 SDK 的 `initialMessages + responseMessages` 对应有效请求上下文；引导插入后停止覆盖 canonical checkpoint，编辑历史时校验失败即回退。切到不支持的协议时去掉内部快照。缓存写入失败不阻断执行；含 URL / 二进制等不能无损 JSON 保存的前缀不复用、不保存，附件本身仍原样发送。
+- 一条规矩（2026-09-30，取 Pi 的做法）：请求开头只放整个任务都不变的东西，新信息只追加在末尾。工具定义、instructions 每步每轮都一样，历史只往后长，所有协议同一条路径。具体落点：
+  - 计划只在 `updatePlan` 自己的调用和结果里，不再每步把续接状态塞进 instructions 或尾部 system 快照；子代理拿到的父任务计划跟在交给它的任务消息里，续跑时附上当时的计划。
+  - 记忆工具描述不列现有条目（写一条就会改工具定义），模型先 `list`；用户约定按原话在本任务用户消息里查找，消息 ID 由工具记下，不再把最近 20 条用户消息塞给模型。
+  - 交互式代理的权限说明是一段固定文字，不列运行模式和长期允许清单；需要审批的调用照常停下等审批，拒绝作为结果返回。子代理一次跑完，仍列具体清单。
+  - 子目录的 `AGENTS.md` 跟着第一次读到该目录的 `read` 结果一起返回（`instructions` 字段），不改 instructions。
+  - 收尾预算提示仍只在最后一步改 instructions，一个任务至多一次。
+- `context-cache.ts` 只为压缩服务：历史被压缩（或从上次的压缩恢复）后，把 SDK 的 `initialMessages + responseMessages` 对应到压缩后的历史存下，下一轮从存储的记录转换出来时按原始前缀校验换回，读到同一份摘要、命中同一段缓存。没压缩就不写。插话不在 SDK 的原始消息里，插过话的轮次不覆盖上一次的对应；编辑历史时校验失败即回退。旧版本存下的尾部 system 快照照原样恢复（Responses 上它就是上次的前缀），不支持中途 system 消息的协议去掉。缓存写入失败不阻断执行；含 URL / 二进制等不能无损 JSON 保存的前缀不复用、不保存，附件本身仍原样发送。
+- 回归测试：`packages/server/src/cache-prefix.test.ts` 用假模型走完整服务端链路（计划、记忆、子目录规则、子代理、插话、切运行模式、审批续跑、压缩），每个请求和同一会话的上一个比，工具定义、instructions、已有消息任何一处变了就失败；压缩只允许压缩那一步变一次。`cache-prefix.smoke.test.ts`（`VGENT_SMOKE=1`）用真实 Codex 请求比对线上请求体并打印命中率。
 - 参考 [Codex 的会话缓存亲和性](https://github.com/openai/codex/blob/8ffd91e42aa001b7e897bea812b02f89264f9fa0/codex-rs/core/src/client.rs#L575-L596) 和 [OpenCode 的会话 cache key](https://github.com/anomalyco/opencode/blob/f66b86ceec1a497417f750b88a06cf6923c5c75f/packages/opencode/src/provider/transform.ts#L1323-L1335)。官方 harness 的原生会话、压缩和登录链路不动。
 - 工具发现复用 SDK 的 `openai.tools.toolSearch()` 和 `providerOptions.openai.deferLoading`：已核实的 GPT-5.4 / GPT-5.5 / GPT-6-astra，在内置 Codex 订阅或配置地址确为 `https://api.openai.com/v1` 的 Responses 接入上启用。未知型号、第三方端点和其它协议仍走 SDK 通用搜索。候选工具表保持不变，搜索加载的 schema 随消息追加；MCP 工具按名称排序，不随并发连接完成顺序变化。候选目录不预占模型上下文，实际加载的 schema 在历史中参与预算核算。
 - 原生搜索名为 `tool_search`，通用搜索仍叫 `toolSearch`；不复用同名，避免 SDK 将旧会话的普通函数记录误编码成原生搜索协议。搜索不执行 MCP 工具，实际调用仍受原有审批、取消与预算守卫控制；计划模式过滤后没有搜索工具。`tool-search-stream.test.ts` 通过真实 SSE parser 验证 Codex `store:false`、官方 API 默认 `store:true`、旧历史续聊、JSON 保存后重建和审批允许/拒绝。

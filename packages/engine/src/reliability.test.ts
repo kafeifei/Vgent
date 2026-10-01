@@ -73,19 +73,20 @@ it("stores a verified user quotation without expanding a no-restart constraint",
       name: "delivery",
       kind: "user-instruction",
       content: "不能替换应用",
-      source: { messageId: "u1", quote: "写完发 debug，但别自动重启" },
+      source: { quote: "别自动重启" },
     },
     opts,
   );
   const stored = await readFile(join(memoryDir, "delivery.md"), "utf8");
+  // The tool finds the message the words came from.
   expect(stored).toContain('"messageId":"u1"');
   expect(stored).toContain("别自动重启");
   expect(stored).not.toContain("不能替换");
   const denied = await memory.execute!(
-    { action: "write", name: "delivery", kind: "user-instruction", content: "no", source: { messageId: "u1", quote: "不要安装" } },
+    { action: "write", name: "delivery", kind: "user-instruction", content: "no", source: { quote: "不要安装" } },
     opts,
   );
-  expect(denied).toContain("必须引用");
+  expect(denied).toContain("逐字引用");
   expect(await readFile(join(memoryDir, "delivery.md"), "utf8")).toBe(stored);
 });
 it("compacts long text while retaining recent original requests and archive references", async () => {

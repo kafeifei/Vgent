@@ -120,15 +120,27 @@ describe("alwaysAllow", () => {
 });
 
 describe("policy description and execution", () => {
-  it.each(["allow-reads", "allow-edits", "allow-all"] as const)("describes the actual non-shell decisions in %s", (mode) => {
+  it.each(["allow-reads", "allow-edits", "allow-all"] as const)("describes a subagent's actual non-shell decisions in %s", (mode) => {
     const policy = createApprovalPolicy(mode, ["write"]);
     const names = ["read", "edit", "write", "unknown"];
-    const lines = policy.describe(names, true).split("\n");
+    const lines = policy.describe(names, false).split("\n");
     for (const name of names) {
       const decision = policy.toolApproval({ toolCall: { toolName: name, input: {} } });
       const line = lines.find((line) => line.startsWith(decision === "not-applicable" ? "Run without tool approval:" : "Calls to "));
       expect(line).toContain(name);
     }
+  });
+
+  it("tells the interactive agent the same thing in every mode, so a mode change keeps the prompt cache", () => {
+    const names = ["read", "edit", "write", "bash"];
+    const descriptions = new Set(
+      (["allow-reads", "allow-edits", "allow-all"] as const).flatMap((mode) => [
+        createApprovalPolicy(mode).describe(names, true),
+        createApprovalPolicy(mode, ["write", "bash(git)"]).describe(names, true),
+      ]),
+    );
+    expect(descriptions.size).toBe(1);
+    expect([...descriptions][0]).toContain("let the approval system handle it");
   });
 
   it("snapshots standing approvals and describes command checks without advertising obsolete entries", () => {

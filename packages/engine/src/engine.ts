@@ -2,10 +2,9 @@ import { restoreContext, saveContext } from "./context-cache.js";
 import { observeProvider, type FailureClass } from "./failures.js";
 import { createHash, randomUUID } from "node:crypto";
 import { promptCaching } from "./prompt-caching.js";
-import { appendRuntimeContext, isRuntimeContext } from "./runtime-context.js";
+import { isRuntimeContext } from "./runtime-context.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { fitContext, estimateTokens } from "./context.js";
-import { agentInstructionsSection, loadScopedInstructions } from "./agent-instructions.js";
 import { resolve, join } from "node:path";
 import { createModelRegistry, splitProviderModelSpec, type ProviderConfig } from "@vgent/providers";
 import {
@@ -278,7 +277,6 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
     ? createHash("sha256").update(resolve(sessionFile)).digest("hex")
     : randomUUID());
   const caching = promptCaching(resolvedModel, sessionId, options.providers);
-  const appendState = caching.allowSystemInMessages === true;
   const outcome: EngineOutcome = {
     model: resolvedModel.modelId,
     provider: resolvedModel.provider,
@@ -289,7 +287,6 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
   let turnSignal: AbortSignal | undefined;
   let usageRatio = 1;
   let lastEstimate = 0;
-  const accessed = new Set<string>();
   let toolsMayRun = true;
   const planState = createTaskPlan(options.taskState, options.saveTaskState);
   const model = wrapLanguageModel({
@@ -331,9 +328,6 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
     providers: options.providers,
     plan,
     ...(plan ? { allowedTools: PLAN_TOOL_NAMES } : {}),
-    onRead: async (path) => {
-      accessed.add(path);
-    },
     canExecute: () => toolsMayRun,
     extraTools: {
       askUserQuestions: askUserQuestionsTool,
@@ -363,6 +357,9 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
   // since each call re-sends the whole history.
   let persisted = 0;
   let steered = false;
+  // This turn's history differs from the stored transcript: restored from, or
+  // newly cut by, a compaction.
+  let rewritten = false;
 
   // Keyed on the string the caller named when there is one, so a spec that was
   // just resolved is still recognised for what it is.
@@ -400,32 +397,22 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
       const said = stepNumber > 0 ? ((await options.pendingUserMessages?.()) ?? []) : [];
       if (said.length > 0) steered = true;
       const current = said.length === 0 ? messages : [...messages, ...said.map((text): ModelMessage => ({ role: "user", content: text }))];
-      const scoped = agentInstructionsSection(await loadScopedInstructions(repoPath, [...accessed]));
-      const state = planState.get();
-      const runtimeState = [
-        state ? `Task continuation state (verify evidence; latest user corrections govern):\n${JSON.stringify(state)}` : "",
-        options.memorySources?.length
-          ? `User message IDs for memory provenance:\n${options.memorySources
-              .slice(-20)
-              .map((source) => `${source.id}: ${source.text.slice(0, 240)}`)
-              .join("\n")}`
-          : "",
-      ]
-        .filter(Boolean)
-        .join("\n\n");
-      const instructions = [initialInstructions, scoped, appendState ? "" : runtimeState].filter(Boolean).join("\n\n");
+      // Everything the model is told up front is fixed for the whole turn, and
+      // the history only grows at its end. Anything else rewrites the start of
+      // the request and throws the provider's prompt cache away from there on.
       const closing = stepNumber >= maxSteps - 1 && maxSteps > 1;
       toolsMayRun = !closing;
-      const finalInstructions =
-        instructions +
+      const instructions =
+        initialInstructions +
         (closing
           ? "\nExecution budget is nearly exhausted. Make no further tool calls; report verified progress, remaining work and the next action. Do not claim the task is complete without evidence."
           : "");
       let restored = stepNumber === 0 && options.outputDir ? await restoreContext(options.outputDir, current) : current;
-      // A task can change provider between turns; never replay internal system snapshots to unsupported protocols.
-      if (!appendState) restored = restored.filter((message) => !isRuntimeContext(message));
+      // Older builds put state snapshots into the history; protocols without mid-conversation system messages reject them.
+      if (caching.allowSystemInMessages !== true && restored.some(isRuntimeContext)) restored = restored.filter((message) => !isRuntimeContext(message));
+      if (restored !== current) rewritten = true;
       const overhead =
-        estimateTokens(finalInstructions) +
+        estimateTokens(instructions) +
         estimateTokens(
           await Promise.all(
             Object.entries(tools)
@@ -443,8 +430,7 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
         messages: restored,
         model,
         budget: contextTokenBudget,
-        // Reserve the current snapshot even if compaction removes all previous snapshots.
-        overhead: overhead + 1024 + (appendState ? estimateTokens(appendRuntimeContext([], runtimeState)) * usageRatio : 0),
+        overhead: overhead + 1024,
         ratio: usageRatio,
         ...(turnSignal ? { abortSignal: turnSignal } : {}),
         ...(options.outputDir
@@ -458,25 +444,28 @@ export function createVgentEngine(options: VgentEngineOptions): VgentEngine {
             }
           : {}),
       });
-      const effective = appendState ? appendRuntimeContext(fitted.messages, runtimeState) : fitted.messages;
-      if (options.outputDir && appendState && !steered) {
-        // SDK originals exclude injected messages. Exact-prefix validation safely rejects edited
-        // history, steering/approval shape changes and incompatible UI transcript conversions.
-        await saveContext(options.outputDir, [...initialMessages, ...responseMessages], effective);
-      } else if (stepNumber === 0 && options.outputDir && fitted.compacted) {
-        await saveContext(options.outputDir, current, effective);
+      if (fitted.compacted) rewritten = true;
+      // The next turn starts from the stored transcript again; this maps it onto
+      // the compacted history, so that turn reads the same summary on the same
+      // cached prefix. A 插话 is not in the SDK's originals, so a steered turn
+      // keeps the last mapping that still matches. Exact-prefix validation
+      // rejects edited history and any transcript that converts differently.
+      if (options.outputDir && rewritten && !steered) {
+        await saveContext(options.outputDir, [...initialMessages, ...responseMessages], fitted.messages);
       }
+      const effective = fitted.messages;
       lastEstimate = estimateTokens(effective) + overhead;
       if (closing) outcome.stopReason = "budget";
       return {
         messages: effective,
-        instructions: finalInstructions,
+        instructions,
         ...(closing ? { activeTools: [], toolChoice: "none" as const } : {}),
       };
     },
     onStart: async ({ messages }) => {
       toolsMayRun = true;
       steered = false;
+      rewritten = false;
       outcome.steps = 0;
       outcome.providerAttempts = 0;
       outcome.stopReason = "unknown";

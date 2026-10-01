@@ -1,12 +1,11 @@
 import { promptCaching } from "./prompt-caching.js";
-import { appendRuntimeContext, isRuntimeContext } from "./runtime-context.js";
+import { isRuntimeContext } from "./runtime-context.js";
 import { restoreContext, saveContext } from "./context-cache.js";
 import type { ProviderConfig } from "@vgent/providers";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fitContext, estimateTokens, SUMMARY_INSTRUCTIONS } from "./context.js";
-import { agentInstructionsSection, loadScopedInstructions } from "./agent-instructions.js";
 /**
  * Subagents packaged as tools: `explore` (read-only research) and `coder`
  * (delegated mechanical edits).
@@ -104,10 +103,15 @@ async function* streamChild(
 ): AsyncGenerator<UIMessage> {
   const taskId = resumeTaskId ?? randomUUID();
   const caching = promptCaching(options.model, taskId, options.providers);
-  const appendState = caching.allowSystemInMessages === true;
+  // The parent's plan as it stands now. It rides on the message that hands the
+  // child its task, never on the instructions: a resumed child gets the newer
+  // plan appended, and its earlier requests stay a cached prefix.
   const taskContext = options.taskContext?.() ?? "";
+  const planNote =
+    taskContext === "" || taskContext === "{}"
+      ? ""
+      : `The parent task's saved plan (verify its evidence; the delegated task below governs):\n${taskContext}\n\n`;
   const contextDir = options.outputDir ? join(options.outputDir, `child-${taskId}`) : undefined;
-  const accessed = new Set<string>();
   let closing = false;
   const setup = createAgentSetup({
     ...options,
@@ -117,12 +121,8 @@ async function* streamChild(
     ...(kind === "explore" ? { allowedTools: ["read", "grep", "glob"] } : {}),
     role: [
       kind === "coder" ? CODER_INSTRUCTIONS : EXPLORE_INSTRUCTIONS,
-      appendState ? "" : taskContext,
       "Keep the final report under 3000 characters: findings/changes, evidence, risks, unfinished work. State limitations explicitly.",
     ].filter(Boolean).join("\n\n"),
-    onRead: async (path) => {
-      accessed.add(path);
-    },
     canExecute: () => !closing,
   });
   const { tools } = setup;
@@ -142,20 +142,19 @@ async function* streamChild(
       closing = stepNumber >= maxSteps - 1 && maxSteps > 1;
       const instructions = [
         initialInstructions,
-        agentInstructionsSection(await loadScopedInstructions(options.repoPath, [...accessed])),
         closing ? "Budget exhausted: make no more tool calls. Summarize verified progress and remaining work." : "",
       ]
         .filter(Boolean)
         .join("\n\n");
       let restored = stepNumber === 0 && contextDir ? await restoreContext(contextDir, messages) : messages;
-      if (!appendState) restored = restored.filter((message) => !isRuntimeContext(message));
+      // Older builds put state snapshots into the history; protocols without mid-conversation system messages reject them.
+      if (caching.allowSystemInMessages !== true && restored.some(isRuntimeContext)) restored = restored.filter((message) => !isRuntimeContext(message));
       const fitted = await fitContext({
         model: options.model,
         messages: restored,
         budget: options.contextTokenBudget ?? 150000,
         overhead:
           estimateTokens(instructions) +
-          (appendState ? estimateTokens(appendRuntimeContext([], taskContext)) : 0) +
           1024 +
           estimateTokens(
             await Promise.all(
@@ -168,9 +167,9 @@ async function* streamChild(
           ),
         ...(abortSignal ? { abortSignal } : {}),
       });
-      const effective = appendState ? appendRuntimeContext(fitted.messages, taskContext) : fitted.messages;
-      if (contextDir && appendState) await saveContext(contextDir, [...initialMessages, ...responseMessages], effective);
-      return { messages: effective, instructions, ...(closing ? { activeTools: [], toolChoice: "none" as const } : {}) };
+      // Only a compaction makes the history differ from the transcript; a resumed child reuses it.
+      if (contextDir && (fitted.compacted || restored !== messages)) await saveContext(contextDir, [...initialMessages, ...responseMessages], fitted.messages);
+      return { messages: fitted.messages, instructions, ...(closing ? { activeTools: [], toolChoice: "none" as const } : {}) };
     },
   });
   let history: UIMessage[] = [];
@@ -194,7 +193,7 @@ async function* streamChild(
       parts: [
         {
           type: "text",
-          text: `${resumeTaskId ? "Resume carefully: verify uncertain prior side effects before retrying.\n" : ""}${prompt}`,
+          text: `${resumeTaskId ? "Resume carefully: verify uncertain prior side effects before retrying.\n" : ""}${planNote}${prompt}`,
         },
       ],
     },

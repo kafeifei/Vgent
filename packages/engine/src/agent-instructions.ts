@@ -54,11 +54,13 @@ they conflict within the same path scope, the more specific file wins (sibling d
 ${body}`;
 }
 
-/** Rules are loaded only for an accessed path, root to leaf, on every following step. */
+/** Rules are loaded only for an accessed path, root to leaf. */
 export async function loadScopedInstructions(repoPath: string, files: readonly string[]): Promise<AgentInstructionsFile[]> {
   repoPath = await realpath(repoPath);
   const directories = new Set<string>();
-  for (const file of files) {
+  for (const accessed of files) {
+    // Both sides resolved, or a symlinked prefix (macOS `/var` → `/private/var`) puts every file outside.
+    const file = await realpath(accessed).catch(() => accessed);
     const rel = relative(repoPath, file);
     if (isAbsolute(rel) || rel === ".." || rel.startsWith(`..${sep}`)) continue;
     let dir = dirname(file);

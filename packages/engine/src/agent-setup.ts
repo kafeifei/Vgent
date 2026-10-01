@@ -2,6 +2,7 @@ import { dirname, resolve } from "node:path";
 import { createCodingTools } from "@vgent/tools";
 import { createOpenAIToolSearch, type ProviderConfig } from "@vgent/providers";
 import { toolSearch, type LanguageModel, type ToolSet } from "ai";
+import { agentInstructionsSection, loadScopedInstructions } from "./agent-instructions.js";
 import { buildInstructions, type VgentContext } from "./instructions.js";
 import { hasDeferredTools } from "./mcp.js";
 import { createApprovalPolicy, type PermissionMode } from "./permissions.js";
@@ -29,7 +30,6 @@ export function createAgentSetup(options: AgentSetupOptions & {
   role?: string;
   plan?: boolean;
   interactive?: boolean;
-  onRead?: (path: string) => Promise<void>;
   canExecute?: () => boolean;
 }) {
   const repoPath = resolve(options.repoPath);
@@ -41,7 +41,6 @@ export function createAgentSetup(options: AgentSetupOptions & {
     readRoots: [...new Set([...(options.readRoots ?? []), ...(options.skills ?? []).map((skill) => dirname(skill.path))])],
     ...(projectPath ? { writeRoots: [projectPath] } : {}),
     ...(options.outputDir ? { outputDir: options.outputDir } : {}),
-    ...(options.onRead ? { onRead: options.onRead } : {}),
   });
   for (const name of Object.keys(options.extraTools ?? {})) {
     if (name in coding) throw new Error(`Extra tool collides with built-in tool: ${name}`);
@@ -60,6 +59,24 @@ export function createAgentSetup(options: AgentSetupOptions & {
     tools.toolSearch = {
       ...search,
       description: `${search.description ?? "Search available tools."} Find additional tools by name and description; matching tools become callable on the next step.`,
+    };
+  }
+  // A subdirectory's AGENTS.md arrives with the first read that reaches it, as
+  // part of that tool result. A request may only grow at its end: rewriting the
+  // system prompt halfway through a task throws away the provider's prompt cache.
+  const read = tools.read;
+  if (read?.execute != null) {
+    const execute = read.execute;
+    const delivered = new Set<string>();
+    tools.read = {
+      ...read,
+      execute: async (input, execution) => {
+        const result = (await execute(input, execution)) as { path?: unknown };
+        if (typeof result?.path !== "string") return result;
+        const rules = (await loadScopedInstructions(repoPath, [result.path])).filter((file) => !delivered.has(file.path));
+        for (const file of rules) delivered.add(file.path);
+        return rules.length === 0 ? result : { ...result, instructions: agentInstructionsSection(rules) };
+      },
     };
   }
   for (const [name, definition] of Object.entries(tools)) {

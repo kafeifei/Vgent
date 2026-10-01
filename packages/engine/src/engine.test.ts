@@ -110,7 +110,7 @@ describe("createVgentEngine", () => {
     expect(Object.keys(agent.tools ?? {})).toContain("memory");
   });
 
-  it("puts the working directory and permission mode into the instructions it sends", async () => {
+  it("puts the working directory and the approval rule into the instructions it sends", async () => {
     const model = readThenAnswer("ok");
     const { agent } = createVgentEngine({
       model,
@@ -125,7 +125,9 @@ describe("createVgentEngine", () => {
     );
     const text = JSON.stringify(instructions);
     expect(text).toContain(repoPath);
-    expect(text).toContain("allow-reads");
+    expect(text).toContain("let the approval system handle it");
+    // The mode itself changes mid-task; naming it would rewrite the cached prefix.
+    expect(text).not.toContain("allow-reads");
     expect(text).toContain("speak like a pirate");
   });
 

@@ -15,6 +15,8 @@ export type PermissionMode = "allow-reads" | "allow-edits" | "allow-all";
 /** Subset of `ToolApprovalStatus` this module produces. */
 export type ApprovalDecision = "not-applicable" | "user-approval";
 
+const INTERACTIVE_APPROVAL = `Some tool calls wait for the user's approval before they run, depending on the run mode the user picked. Submit the call and let the approval system handle it; do not ask a separate conversational permission question. A denied call comes back as its result: respect it, and do not route the same operation through another tool. Approval does not widen the task's scope or a tool's actual capabilities.`;
+
 /**
  * Tools that only observe the workspace. Never need approval in any mode.
  * `explore` is a read-only subagent (its child's tools are read-only too) and
@@ -91,6 +93,11 @@ export function createApprovalPolicy(mode: PermissionMode, alwaysAllow: readonly
   return {
     toolApproval: ({ toolCall }: { toolCall: { toolName: string; input: unknown } }) => decideApproval({ ...options, ...toolCall }),
     describe(toolNames: readonly string[], interactive: boolean): string {
+      // The same words in every mode. The mode and the standing approvals change
+      // while a task runs; spelled out here, each change would rewrite the system
+      // prompt and throw the provider's prompt cache away. A call that needs
+      // approval simply waits for it, and a denial comes back as its result.
+      if (interactive) return INTERACTIVE_APPROVAL;
       const groups = {
         immediate: toolNames.filter((name) => requirement(options, name) === "immediate"),
         command: toolNames.filter((name) => requirement(options, name) === "command"),
@@ -99,7 +106,8 @@ export function createApprovalPolicy(mode: PermissionMode, alwaysAllow: readonly
       const standing = options.alwaysAllow!.filter((entry) =>
         !isVoidedBashEntry(entry) && (toolNames.includes(entry) || (toolNames.includes(BASH_TOOL) && bashEntryCommand(entry) != null)),
       );
-      const pending = interactive ? "require tool approval" : "are denied in this subagent; report the blocked operation to the parent";
+      // A subagent runs once, start to finish, so its list cannot go stale.
+      const pending = "are denied in this subagent; report the blocked operation to the parent";
       return [
         `Permission mode: ${mode}.`,
         groups.immediate.length ? `Run without tool approval: ${groups.immediate.join(", ")}.` : "",
@@ -107,9 +115,7 @@ export function createApprovalPolicy(mode: PermissionMode, alwaysAllow: readonly
         groups.approval.length ? `Calls to ${groups.approval.join(", ")} ${pending}.` : "",
         standing.length ? `Applicable standing approvals: ${JSON.stringify(standing)}. Shell entries are command-scoped and every segment must pass the engine's checks.` : "",
         toolNames.some((name) => name === "toolSearch" || name === "tool_search") ? `Tools discovered later use the same policy; unrecognized tools ${mode === "allow-all" ? "run without tool approval" : pending}.` : "",
-        interactive
-          ? "Submit an authorized tool call to let the approval system handle it. Do not ask a separate conversational permission question. Respect a denial; do not route the same operation through another tool to bypass it."
-          : "This subagent cannot ask the user for approval. A denied call is a limitation to report, not permission to bypass the policy.",
+        "This subagent cannot ask the user for approval. A denied call is a limitation to report, not permission to bypass the policy.",
         "Tool approval does not expand the user's task scope or the tool's actual capabilities.",
       ].filter(Boolean).join("\n");
     },

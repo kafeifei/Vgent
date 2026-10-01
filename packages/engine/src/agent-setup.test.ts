@@ -94,7 +94,7 @@ describe("hosted tool search setup", () => {
     const setup = createAgentSetup({ repoPath, permissionMode: "allow-reads", model, extraTools });
     expect(setup.tools.tool_search).toMatchObject({ type: "provider", id: "openai.tool_search", args: {} });
     expect(setup.tools.toolSearch).toBeUndefined();
-    expect(setup.instructions).toContain("Tools discovered later use the same policy");
+    expect(setup.instructions).toContain("let the approval system handle it");
     const converted = setup.tools.srv__private_candidate!;
     expect(converted).not.toHaveProperty("deferLoading");
     expect(converted.providerOptions).toEqual({ openai: { strict: true, deferLoading: true }, other: { retained: true } });

@@ -6,6 +6,7 @@ import { useToast } from "@/lib/toast";
 import type { EngineDescriptor, Settings } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { AccountsPage } from "./AccountsPage";
+import { AllowlistSection } from "./AllowlistSection";
 import { AppearanceSection } from "./AppearanceSection";
 import { ComputerUseSection } from "./ComputerUseSection";
 import { McpSection } from "./McpSection";
@@ -59,16 +60,17 @@ export function SettingsView({ initialTab = "general", initialAccount, settings,
 
   // Never send the page snapshot: it could undo theme, model or provider edits.
   // Keep each control at its saved value on failure, and prevent duplicate writes.
-  const save = async (patch: Parameters<ApiClient["putSettings"]>[0]): Promise<boolean> => {
+  // `keys` are the fields the write touches; only those are taken from its answer.
+  const write = async (keys: ReadonlyArray<keyof Settings>, request: () => Promise<Settings>): Promise<boolean> => {
     if (pending.current) return false;
     pending.current = true;
     setSaving(true);
     try {
-      const result = await client.putSettings(patch);
+      const result = await request();
       setCurrent((previous) => {
         if (previous == null) return result;
         const next = { ...previous };
-        for (const key of Object.keys(patch) as Array<keyof Settings>) {
+        for (const key of keys) {
           delete next[key];
           Object.assign(next, key in result ? { [key]: result[key] } : {});
         }
@@ -83,6 +85,8 @@ export function SettingsView({ initialTab = "general", initialAccount, settings,
       setSaving(false);
     }
   };
+  const save = (patch: Parameters<ApiClient["putSettings"]>[0]): Promise<boolean> =>
+    write(Object.keys(patch) as Array<keyof Settings>, () => client.putSettings(patch));
 
   if (current == null) return <div className="p-md text-fg-faint text-md">加载中…</div>;
 
@@ -93,6 +97,8 @@ export function SettingsView({ initialTab = "general", initialAccount, settings,
         <NotificationsSection enabled={current.systemNotifications !== false} disabled={saving}
           onChange={(value) => { void save({ systemNotifications: value }); }} />
         <WorktreesSection value={current.worktreeMaxCount} saving={saving} onSave={(value) => save({ worktreeMaxCount: value })} />
+        <AllowlistSection entries={current.allowlist} saving={saving}
+          onRemove={(entry) => { void write(["allowlist"], () => client.disallowTool(entry)); }} />
         {onOpenStyleLab && <details className="group flex flex-col">
           <summary className="cursor-pointer text-fg-muted text-sm">开发者选项</summary>
           <div className="pt-sm"><SettingsGroup>

@@ -59,3 +59,26 @@ export async function readAttachments(files: readonly File[]): Promise<{ attachm
 /** The attachments as the `file` parts `chat.sendMessage({ files })` takes. */
 export const toFileParts = (attachments: readonly Attachment[]): FileUIPart[] =>
   attachments.map((entry) => ({ type: "file", mediaType: entry.mediaType, filename: entry.name, url: entry.url }));
+
+/**
+ * Picked, pasted or dropped: all three land here. The files are read, and then
+ * *added to the list as it is when the read finishes* — `update` takes a function
+ * for that reason. Two drops in a row are two reads in flight, and a list captured
+ * when each started would let the second overwrite the first (and bring back a
+ * tile removed in between).
+ */
+export async function ingestFiles(
+  files: readonly File[],
+  update: (change: (current: Attachment[]) => Attachment[]) => void,
+  report: (message: string) => void,
+  read: typeof readAttachments = readAttachments,
+): Promise<void> {
+  if (files.length === 0) return;
+  try {
+    const { attachments: added, rejected } = await read(files);
+    if (added.length > 0) update((current) => [...current, ...added]);
+    if (rejected.length > 0) report(`${rejected.join("、")} 超过 ${formatBytes(MAX_ATTACHMENT_BYTES)}，没有添加`);
+  } catch (error) {
+    report(error instanceof Error ? error.message : "读取文件失败");
+  }
+}

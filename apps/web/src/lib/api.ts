@@ -130,13 +130,25 @@ export class ApiError extends Error {
   }
 }
 
+/** How long the token probe may take before it counts as「server 没答」. */
+export const PROBE_TIMEOUT_MS = 5_000;
+
 /**
  * Whether a token still works. `EventSource` hides the status code of a failed
  * connection, so the SSE hook asks this before it schedules another reconnect.
+ * A server that accepts the connection and never answers would leave the hook
+ * waiting on this forever — no reconnect, no 「已断开」 either — so it gives up
+ * after `PROBE_TIMEOUT_MS` and rejects, which the hook treats like any other drop.
  */
 export async function probeToken(token: string): Promise<boolean> {
-  const response = await fetch("/api/projects", { headers: authHeaders(token) });
-  return response.status !== 401;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+  try {
+    const response = await fetch("/api/projects", { headers: authHeaders(token), signal: controller.signal });
+    return response.status !== 401;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export function authHeaders(token: string): Record<string, string> {
@@ -505,11 +517,6 @@ export function createClient(token: string) {
     requestCuaPermissions: () => api<CuaStatus>("/computer-use/cua/permissions", token, { method: "POST" }),
     testCuaDriver: () => api<CuaTestResult>("/computer-use/cua/test", token, { method: "POST" }),
 
-    /**
-     * 「一直允许」 on an approval card: one tool onto the global allowlist, right
-     * now — it is clicked mid-turn, so it cannot go through the settings draft.
-     * Taking one back off is an ordinary settings edit (`putSettings`).
-     */
     /** 记住上次选择, for the model with this `modelKey`: only the fields named change. */
     rememberModelPick: (modelKey: string, pick: ModelPickPatch) =>
       api<Settings>("/settings/model-picks", token, { method: "PUT", json: { modelKey, ...pick } }),
@@ -518,7 +525,17 @@ export function createClient(token: string) {
       api<Settings>("/settings/engine-options", token, { method: "PUT", json: { engine, key, value } }),
     /** 提供商排序: the whole「已添加」list's order, by subscription or provider id. */
     putProviderOrder: (order: readonly string[]) => api<Settings>("/settings/provider-order", token, { method: "PUT", json: { order } }).then(notifyModels),
+    /**
+     * 「一直允许」 on an approval card: one tool onto the global allowlist, right
+     * now — it is clicked mid-turn, so it cannot go through the settings draft.
+     */
     allowTool: (tool: string) => api<Settings>("/settings/allowlist", token, { method: "POST", json: { tool } }),
+    /**
+     * 设置 → 一直允许's ×: one tool back off. The server edits the list it holds,
+     * so an entry another window or a card added meanwhile is not dropped along
+     * with it, as a `putSettings` of this page's copy of the list would.
+     */
+    disallowTool: (tool: string) => api<Settings>(`/settings/allowlist/${encodeURIComponent(tool)}`, token, { method: "DELETE" }),
 
     stopChat: (threadId: string) => api<void>(`/chat/${threadId}/stop`, token, { method: "POST" }),
   };

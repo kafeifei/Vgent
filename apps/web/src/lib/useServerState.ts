@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { probeToken, reportUnauthorized, sseUrl } from "./api";
+import { shareUnchanged } from "./shareUnchanged";
 import type { Project, Settings, StateEvent, ThreadSummary } from "./types";
 
 const RETRY_MIN_MS = 500;
@@ -41,7 +42,16 @@ export function useServerState(token: string): ServerState {
       instance.addEventListener("state", (event) => {
         delay = RETRY_MIN_MS;
         const payload = JSON.parse((event as MessageEvent<string>).data) as StateEvent;
-        setState({ ...payload, connected: true });
+        // Every push is a fresh parse of everything. What did not change keeps its
+        // identity, so a change to one task re-renders that task and not the list.
+        setState((previous) => {
+          const projects = shareUnchanged(previous.projects, payload.projects);
+          const threads = shareUnchanged(previous.threads, payload.threads);
+          const settings = shareUnchanged(previous.settings, payload.settings);
+          return previous.connected && projects === previous.projects && threads === previous.threads && settings === previous.settings
+            ? previous
+            : { projects, threads, settings, connected: true };
+        });
       });
       instance.onerror = () => {
         instance.close();

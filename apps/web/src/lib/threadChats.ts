@@ -96,6 +96,15 @@ export class ThreadChats {
    * so they must not auto-send off that partial state, nor be read as current.
    */
   private readonly detached = new Set<string>();
+  /**
+   * `updatedAt` at which `GET /stream` last found nothing to join (a 204 — a
+   * task waiting on the human has no stream). Asking again at the same
+   * `updatedAt` gets the same answer, so a snapshot that changed nothing about
+   * the task does not send the chat back to the server.
+   */
+  private readonly idleAt = new Map<string, string>();
+  /** Threads whose resume request just answered 204; read once the resume returns. */
+  private readonly noStream = new Set<string>();
   /** Bumped by `dispose()`; every in-flight promise checks it before writing. */
   private generation = 0;
 
@@ -168,6 +177,7 @@ export class ThreadChats {
             const response = await fetch(input, init);
             if (response.status === 401) reportUnauthorized();
             if (isSend) this.settleAccept(threadId, response.ok ? undefined : new Error(`${response.status}`));
+            else if (response.status === 204) this.noStream.add(threadId);
             return response;
           } catch (error) {
             if (isSend) this.settleAccept(threadId, error instanceof Error ? error : new Error(String(error)));
@@ -257,11 +267,13 @@ export class ThreadChats {
       // A settled chat on a live thread means this client is not following the
       // turn: another window or the server's own 排队 dispatcher started it, or
       // this chat let go of it off screen. The record holds what this chat does
-      // not, so the history has to come first — see `attach`.
-      if (chat.status === "ready") void this.attach(summary, chat);
+      // not, so the history has to come first — see `attach`. Not again for an
+      // `updatedAt` the stream endpoint already answered 204 for.
+      if (chat.status === "ready" && this.idleAt.get(summary.id) !== summary.updatedAt) void this.attach(summary, chat);
       return;
     }
 
+    this.idleAt.delete(summary.id);
     if (chat.status === "error") chat.clearError();
     this.refreshIfStale(summary, chat);
   }
@@ -275,6 +287,8 @@ export class ThreadChats {
    * go once it knows; an automatic send is let go of by the next snapshot.
    */
   private detach(threadId: string, accepted = false): void {
+    // Back on screen, it asks again once: the 204 was about the task as it was then.
+    this.idleAt.delete(threadId);
     const chat = this.chats.get(threadId);
     if (chat == null || this.accepting.has(threadId)) return;
     const holding = this.resuming.has(threadId) || chat.status === "streaming" || (accepted && chat.status === "submitted");
@@ -345,13 +359,21 @@ export class ThreadChats {
     const chat = this.chats.get(threadId);
     if (chat == null || this.resuming.has(threadId) || threadId !== this.focused) return;
     const generation = this.generation;
+    // The answer is about the task as the snapshot showed it when the request left.
+    const asked = this.latest.get(threadId)?.updatedAt;
     this.resuming.add(threadId);
+    this.noStream.delete(threadId);
     try {
       await chat.resumeStream();
     } catch (error) {
       if (generation === this.generation && error instanceof Error) this.onError(error);
     } finally {
-      if (generation === this.generation) this.resuming.delete(threadId);
+      if (generation === this.generation) {
+        this.resuming.delete(threadId);
+        // 204: nothing to join. A stream that ran and ended, or dropped, is not
+        // recorded — the next snapshot may attach again, as before.
+        if (this.noStream.delete(threadId) && asked != null && this.chats.get(threadId) === chat) this.idleAt.set(threadId, asked);
+      }
     }
   }
 
@@ -416,6 +438,8 @@ export class ThreadChats {
     this.latest.delete(threadId);
     this.hydratedAt.delete(threadId);
     this.detached.delete(threadId);
+    this.idleAt.delete(threadId);
+    this.noStream.delete(threadId);
   }
 
   dispose(): void {
@@ -428,6 +452,8 @@ export class ThreadChats {
     this.latest.clear();
     this.hydratedAt.clear();
     this.detached.clear();
+    this.idleAt.clear();
+    this.noStream.clear();
     this.focused = null;
   }
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import type { Chat } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
@@ -30,8 +30,10 @@ export type ThreadViewActions = Pick<WorkbenchActions,
   "whenReady" | "getChat" | "focusChat" | "toast" | "allowTools" | "openPreview" | "openChanges" | "focusTerminal" | "inspectTool" | "openSummary" | "forkThread" | "setRightTab" | "openRight" | "toggleLeft" | "compactThread" | "newTask" | "queueMessage" | "send" | "stop" | "rememberModelPick" | "setModel" | "setReasoningEffort" | "setContextWindow" | "setServiceTier" | "setMode" | "sendQueued" | "editQueued" | "deleteQueued" | "reorderQueue" | "steerQueued" | "reclaimWorkspace" | "restoreWorkspace" | "archiveThread" | "countUncommitted"
 >;
 
-/** Waits for the thread's history to land before mounting the chat view. */
-export function ThreadView(props: {
+/** One empty list for every render: a fresh `[]` each time would look like a change to everything memoised on it. */
+const NO_ALLOWLIST: readonly string[] = [];
+
+export interface ThreadViewProps {
   thread: ThreadSummary;
   failedFirstSend: boolean;
   actions: ThreadViewActions;
@@ -47,16 +49,26 @@ export function ThreadView(props: {
   modelPicks: Readonly<Record<string, ModelPick>> | undefined;
   /** The global 「一直允许」 list, which auto-answers matching approvals. */
   allowlist: readonly string[] | undefined;
+  /** Where the log's queue and messages are published for the shell's other readers (see `ThreadFeed`). */
   onQueue: (queue: QueueItem[]) => void;
   onMessages: (messages: UIMessage[]) => void;
   onOpenPicture: (path: string) => void;
-}) {
+}
+
+/**
+ * Waits for the thread's history to land before mounting the chat view. Memoised:
+ * the shell renders for reasons that have nothing to do with the open task (a
+ * pane dragged, the palette opened), and everything it hands down is stable.
+ */
+export const ThreadView = memo(function ThreadView(props: ThreadViewProps) {
   const { thread, actions } = props;
   const [chat, setChat] = useState<Chat<UIMessage> | null>(null);
-  // `actions` is rebuilt whenever any task changes at all — a toggle on this
-  // one, a token streaming into another. Loading the chat must hang on the
-  // task alone: with `actions` as a dependency every such change tore the
-  // whole view down to 「加载中…」 and scrolled it in again from the top.
+  // Loading the chat must hang on the task alone. `actions` used to be rebuilt
+  // whenever any task changed at all — a toggle on this one, a token streaming
+  // into another — and with it as a dependency every such change tore the whole
+  // view down to 「加载中…」 and scrolled it in again from the top. It is one
+  // object now, but the load still reads the latest through a ref, so it can
+  // never come back to that.
   const latest = useRef(actions);
   latest.current = actions;
 
@@ -81,7 +93,7 @@ export function ThreadView(props: {
   // at the end.
   if (chat == null || chat.id !== thread.id) return <div className="grid place-items-center text-fg-faint text-sm">加载中…</div>;
   return <ThreadChatView key={thread.id} {...props} chat={chat} />;
-}
+});
 
 function ThreadChatView({
   thread,
@@ -123,7 +135,7 @@ function ThreadChatView({
    * cache that paints it before the server answers. It is cleared only once the
    * message really went out: sent and accepted, or accepted onto the queue.
    */
-  const draft = useDraft(thread.id, client);
+  const draft = useDraft(thread.id, client, actions.toast);
   useEffect(() => {
     if (failedFirstSend) draft.refresh();
   }, [draft.refresh, failedFirstSend]);
@@ -140,12 +152,22 @@ function ThreadChatView({
 
   useEffect(() => onQueue(queue), [onQueue, queue]);
   useEffect(() => onMessages(messages), [onMessages, messages]);
+  // This log is going away (another task, or none): what it published goes with it,
+  // rather than standing in for the next task's until that one has loaded.
+  useEffect(
+    () => () => {
+      onMessages([]);
+      onQueue([]);
+    },
+    [onMessages, onQueue],
+  );
 
   /**
    * 回到最新, for a task an older build left standing at an earlier checkpoint.
    * Nothing in the log offers 恢复到此处 any more (分叉 took its place), so this
    * is the only direction left.
    */
+  const refreshChanges = changes.refresh;
   const restoreCheckpoint = useCallback(
     (target: { latest: true }) => {
       void (async () => {
@@ -156,10 +178,10 @@ function ThreadChatView({
           actions.toast(failure instanceof Error ? failure.message : String(failure));
         }
         // The tree moved under the 变更 panel and the composer's 审查 pill.
-        changes.refresh();
+        refreshChanges();
       })();
     },
-    [actions, changes, client, thread.id],
+    [actions, client, refreshChanges, thread.id],
   );
 
   // A running turn rewrites its files many times; what the log shows is refetched once it ends.
@@ -225,20 +247,19 @@ function ThreadChatView({
   const login = useAccountLogin();
   const commands = useMemo<SlashCommand[]>(
     () => [
-      ...(canCompact
+      // A row that cannot be run right now is not listed, rather than listed dead with a reason.
+      ...(canCompact && !live && !compacting
         ? [
             {
               id: "compact",
               aliases: ["summarize"],
               label: "压缩上下文",
-              hint: "把这段对话压成摘要，腾出上下文",
               section: "操作",
-              disabledReason: live ? "运行中不能压缩" : compacting ? "正在压缩" : undefined,
               run: () => void actions.compactThread(thread.id),
             },
           ]
         : []),
-      { id: "new", label: "新任务", hint: "回到空白页开一个新任务", section: "操作", run: actions.newTask },
+      { id: "new", label: "新任务", section: "操作", run: actions.newTask },
     ],
     [actions, canCompact, compacting, live, thread.id],
   );
@@ -335,7 +356,7 @@ function ThreadChatView({
           error={shownError}
           {...(errorAction != null ? { errorAction } : {})}
           actions={turnActions}
-          allowlist={allowlist ?? []}
+          allowlist={allowlist ?? NO_ALLOWLIST}
           client={client}
         />
       </FileAccessProvider>

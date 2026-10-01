@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { FileUIPart } from "ai";
 import type { OptionsSet } from "@/components/modelChoices";
 import { isNoProject } from "@/lib/noProject";
@@ -17,6 +17,7 @@ import { useNotifications } from "@/features/notify/useNotifications";
 import type { Grouping } from "@/features/sidebar/grouping";
 import { settledPendingArchive, withPendingArchive, type PendingArchive } from "@/features/sidebar/pendingArchive";
 import type { RightTab } from "@/features/rightpane/RightPane";
+import { deleteTask } from "./deleteTask";
 
 export type LeftMode = "on" | "off";
 export type View = "thread" | "empty";
@@ -141,6 +142,17 @@ export function useWorkbench(token: string) {
     (justCreated?.id === selectedThreadId ? justCreated : undefined);
   // A selected thread always wins over the manual project pick.
   const activeProjectId = thread?.projectId ?? projectId ?? state.projects[0]?.id ?? null;
+  /**
+   * What the callbacks in `actions` need to know at the moment they run. That
+   * object is one for the life of the workbench — the sidebar, the composer and
+   * the log are memoised on it — so it reads these through a ref rather than
+   * closing over the render it was built in: a click sees the task list as it is
+   * now, and an answer that arrives later sees the task that is on screen then.
+   */
+  const latest = useRef({ thread, threads: state.threads, projects: state.projects, activeProjectId, selectedThreadId });
+  useLayoutEffect(() => {
+    latest.current = { thread, threads: state.threads, projects: state.projects, activeProjectId, selectedThreadId };
+  });
   // Opening a task is also picking its project: 新任务 from there starts in the
   // same one, not wherever the picker was left.
   const threadProjectId = thread?.projectId;
@@ -305,8 +317,8 @@ export function useWorkbench(token: string) {
       openChanges: (file?: string) => {
         // A worktree task's engine writes inside its own checkout, so that is
         // the root the chip's absolute path is relative to.
-        const repoPath =
-          thread?.workspace?.path ?? state.projects.find((project) => project.id === activeProjectId)?.repoPath ?? null;
+        const { thread, projects, activeProjectId } = latest.current;
+        const repoPath = thread?.workspace?.path ?? projects.find((project) => project.id === activeProjectId)?.repoPath ?? null;
         const relative = file == null || repoPath == null ? null : repoRelative(file, repoPath);
         setRight((state) => ({ ...state, open: true, tab: "changes", file: relative }));
         if (file != null && relative == null) toast("文件不在任务工作目录内");
@@ -356,6 +368,7 @@ export function useWorkbench(token: string) {
         serviceTier: string | null = null,
         contextWindow: number | null = null,
       ): Promise<boolean> => {
+        const { activeProjectId } = latest.current;
         if (activeProjectId == null) {
           toast("先添加一个项目");
           return false;
@@ -497,7 +510,7 @@ export function useWorkbench(token: string) {
       buildFromPlan: (threadId: string, content: string): Promise<void> =>
         // The server refuses the turn on an archived task, but only after the
         // mode switch went through — so it is turned away here, before either.
-        state.threads.find((entry) => entry.id === threadId)?.archivedAt != null
+        latest.current.threads.find((entry) => entry.id === threadId)?.archivedAt != null
           ? Promise.resolve(toast("任务已归档，取消归档后才能继续"))
           : client
               .patchThread(threadId, { mode: "agent" })
@@ -521,7 +534,7 @@ export function useWorkbench(token: string) {
       // user's confirmation, asked for by the menu when the worktree is dirty.
       archiveThread: (threadId: string, archived: boolean, preserveChanges = false) => {
         setPendingArchive((pending) => new Map(pending).set(threadId, archived));
-        const workspace = state.threads.find((entry) => entry.id === threadId)?.workspace;
+        const workspace = latest.current.threads.find((entry) => entry.id === threadId)?.workspace;
         const reclaims = workspace != null && workspace.reclaimed !== true;
         void client.patchThread(threadId, { archived, ...(archived && preserveChanges ? { preserveChanges: true } : {}) }).then(
           () => toast(archived ? (reclaims ? "已归档，worktree 已回收" : "已归档") : "已取消归档"),
@@ -546,15 +559,14 @@ export function useWorkbench(token: string) {
       },
 
       deleteThread: (threadId: string) => {
-        void client.deleteThread(threadId).then(
-          () => {
-            chats.forget(threadId);
-            setJustCreated((current) => current?.id === threadId ? null : current);
-            if (threadId === selectedThreadId) selectThread(null);
-            toast("已删除任务");
-          },
-          (error: Error) => toast(error.message),
-        );
+        void deleteTask(threadId, () => client.deleteThread(threadId), {
+          forgetChat: (id) => chats.forget(id),
+          forgetCreated: (id) => setJustCreated((current) => (current?.id === id ? null : current)),
+          // Read when the server has answered: by then the reader may be on another task.
+          selected: () => latest.current.selectedThreadId,
+          deselect: () => selectThread(null),
+          toast,
+        });
       },
 
       // Reclaim keeps the worktree's changes in git before removing it, so
@@ -589,7 +601,7 @@ export function useWorkbench(token: string) {
       focusChat: (threadId: string | null) => chats.focus(threadId),
       toast,
     }),
-    [activeProjectId, addProject, openProject, chats, client, selectChange, selectThread, selectedThreadId, state.projects, state.threads, thread, toast],
+    [addProject, openProject, chats, client, selectChange, selectThread, toast],
   );
 
   // ⌘K / ⌘N / ⌘J / ⌘B / ⌘,
@@ -619,14 +631,18 @@ export function useWorkbench(token: string) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [actions]);
 
+  /** The snapshot, plus a task created a moment ago that it does not list yet. */
+  const visibleThreads = useMemo(
+    () => (justCreated != null && !state.threads.some((entry) => entry.id === justCreated.id) ? [justCreated, ...state.threads] : state.threads),
+    [justCreated, state.threads],
+  );
+
   return {
     state,
     client,
     engines,
     thread,
-    visibleThreads: justCreated != null && !state.threads.some((entry) => entry.id === justCreated.id)
-      ? [justCreated, ...state.threads]
-      : state.threads,
+    visibleThreads,
     changes,
     selectedThreadId,
     activeProjectId,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, type ApiClient } from "@/lib/api";
 import type {
   ApplyConflict,
@@ -56,6 +56,35 @@ function conflictsOf(error: unknown): ApplyConflict[] | null {
 }
 
 /**
+ * State that belongs to one visit to a task. Read under another task's id it is
+ * the empty value at once: an effect that cleared it would leave one render — and
+ * one paint — showing the last task's 审查 numbers, branch and buttons under the
+ * new task's name. The slot is emptied on the way, too, so coming back to a task
+ * starts it clean (全部改动, no old error or conflict list) like the first visit
+ * did. A late write from the old task is never seen, and takes nothing from the
+ * task that is on screen.
+ */
+export function useTaskState<T>(threadId: string | null, empty: T): [T, (value: T) => void] {
+  const [held, setHeld] = useState<{ threadId: string | null; value: T }>({ threadId, value: empty });
+  // Adjusted during render rather than in an effect: React renders again at once,
+  // before anything is committed, so no frame ever holds the old task's value.
+  if (held.threadId !== threadId) setHeld({ threadId, value: empty });
+  // The task on screen *now*, for a write that was started under another one.
+  const current = useRef(threadId);
+  current.current = threadId;
+  const set = useCallback(
+    (value: T) => {
+      // There is one slot. A write that comes in late from the task that was left would take it
+      // from the task that is on screen, and that task would read as empty.
+      if (current.current !== threadId) return;
+      setHeld({ threadId, value });
+    },
+    [threadId],
+  );
+  return [held.threadId === threadId ? held.value : empty, set];
+}
+
+/**
  * The 变更 tab's data: one working-tree snapshot for the selected task plus
  * the selected file's diff. The server resolves which directory that is — the
  * task's own worktree, or the project — so there is nothing to pick here.
@@ -80,25 +109,22 @@ export function useChanges(options: {
 }): ChangesView {
   const { client, threadId, refreshKey, selected, onSelect, toast } = options;
 
-  const [snapshot, setSnapshot] = useState<ChangesResponse | null>(null);
+  // Everything below that describes a task is that task's: another task starts
+  // empty, on 全部改动 like every task does — not one effect later.
+  const [snapshot, setSnapshot] = useTaskState<ChangesResponse | null>(threadId, null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useTaskState<string | null>(threadId, null);
   /** Bumped per snapshot load; a stale response never writes state. */
   const generation = useRef(0);
-  const [scope, setScope] = useState<ChangesScope>("all");
+  const [scope, setScope] = useTaskState<ChangesScope>(threadId, "all");
   /**
    * Kept out of `snapshot`: 「上一轮」 is still available while its own fetch is
    * in flight, and dropping the toggle mid-switch would take the way back with it.
    */
-  const [lastTurn, setLastTurn] = useState(false);
-  // Another task answers for itself, and starts on 全部改动 like every task does.
-  useEffect(() => {
-    setScope("all");
-    setLastTurn(false);
-  }, [threadId]);
+  const [lastTurn, setLastTurn] = useTaskState(threadId, false);
 
   /** Fetched alongside the snapshot: the action bar is part of the same view. */
-  const [integration, setIntegration] = useState<IntegrationStatus | null>(null);
+  const [integration, setIntegration] = useTaskState<IntegrationStatus | null>(threadId, null);
 
   const load = useCallback(async (): Promise<ChangesResponse | null> => {
     const mine = ++generation.current;
@@ -135,15 +161,15 @@ export function useChanges(options: {
     } finally {
       if (mine === generation.current) setLoading(false);
     }
-  }, [client, scope, threadId]);
+  }, [client, scope, setError, setIntegration, setLastTurn, setSnapshot, threadId]);
 
   useEffect(() => {
     void load();
   }, [load, refreshKey]);
 
-  const [fileDiff, setFileDiff] = useState<FileDiff | null>(null);
+  const [fileDiff, setFileDiff] = useTaskState<FileDiff | null>(threadId, null);
   const [diffLoading, setDiffLoading] = useState(false);
-  const [diffError, setDiffError] = useState<string | null>(null);
+  const [diffError, setDiffError] = useTaskState<string | null>(threadId, null);
   const diffGeneration = useRef(0);
 
   // Only a file the snapshot still lists has a diff to fetch; the panel says so
@@ -176,7 +202,7 @@ export function useChanges(options: {
       });
     // `snapshot`: a refreshed snapshot means the engine wrote again, so the
     // open diff is stale too.
-  }, [changed, client, scope, threadId, selected, snapshot]);
+  }, [changed, client, scope, setDiffError, setFileDiff, threadId, selected, snapshot]);
 
   const refresh = useCallback(() => void load(), [load]);
 
@@ -198,13 +224,9 @@ export function useChanges(options: {
   );
 
   const [integrating, setIntegrating] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [applyConflicts, setApplyConflicts] = useState<ApplyConflict[] | null>(null);
   // They describe the last action on *this* task; another task starts clean.
-  useEffect(() => {
-    setActionError(null);
-    setApplyConflicts(null);
-  }, [threadId]);
+  const [actionError, setActionError] = useTaskState<string | null>(threadId, null);
+  const [applyConflicts, setApplyConflicts] = useTaskState<ApplyConflict[] | null>(threadId, null);
 
   const integrate = useCallback(
     (action: IntegrateAction, input?: { message?: string; conflicts?: "markers" }) => {
@@ -230,30 +252,40 @@ export function useChanges(options: {
         await load();
       })();
     },
-    [client, load, threadId, toast],
+    [client, load, setActionError, setApplyConflicts, threadId, toast],
   );
 
-  return {
-    snapshot,
-    loading,
-    error,
-    refresh,
-    scope,
-    setScope,
-    lastTurn,
-    selected,
-    select: onSelect,
-    fileDiff,
-    diffLoading,
-    diffError,
-    revert,
-    integration,
-    integrating,
-    actionError,
-    applyConflicts,
-    dismissApplyConflicts: useCallback(() => setApplyConflicts(null), []),
-    integrate,
-  };
+  const dismissApplyConflicts = useCallback(() => setApplyConflicts(null), [setApplyConflicts]);
+
+  // One object for as long as nothing in it changed: it goes to the composer,
+  // the right pane and the log, and they are memoised on it.
+  return useMemo(
+    () => ({
+      snapshot,
+      loading,
+      error,
+      refresh,
+      scope,
+      setScope,
+      lastTurn,
+      selected,
+      select: onSelect,
+      fileDiff,
+      diffLoading,
+      diffError,
+      revert,
+      integration,
+      integrating,
+      actionError,
+      applyConflicts,
+      dismissApplyConflicts,
+      integrate,
+    }),
+    [
+      snapshot, loading, error, refresh, scope, setScope, lastTurn, selected, onSelect, fileDiff, diffLoading, diffError,
+      revert, integration, integrating, actionError, applyConflicts, dismissApplyConflicts, integrate,
+    ],
+  );
 }
 
 /** The one line the toast says. Everything in it comes from what the server did, not from what we asked for. */

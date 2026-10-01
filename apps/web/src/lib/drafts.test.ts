@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { acquireDraft, DraftSync, NEW_TASK_DRAFT, pruneDrafts, type DraftAttachment, type DraftPayload, type DraftValue } from "./drafts";
+import { acquireDraft, DraftSync, draftRefusedNotice, NEW_TASK_DRAFT, pruneDrafts, useDraft, type DraftAttachment, type DraftPayload, type DraftValue } from "./drafts";
+import { renderHook } from "./testing/renderHook";
 
 const KEY = "t1";
 
@@ -469,4 +470,202 @@ it("starts the pagehide save immediately while another save is still pending", a
   expect(writes[1]).toMatchObject({ draft: { text: "关闭前刚写的新草稿" }, keepalive: true });
   pending.resolve();
   await sync.settled();
+});
+
+/** What `api()` throws for the server's 413 `draft_too_large`. */
+class TooLarge extends Error {
+  readonly status = 413;
+  constructor(message = "草稿超过 64 KB") {
+    super(message);
+  }
+}
+
+/** A server that refuses (413) until told to accept, and remembers every text it was offered. */
+function limitedTransport(stored = "") {
+  const offered: string[] = [];
+  let accepting = false;
+  return {
+    offered,
+    accept: (yes = true) => {
+      accepting = yes;
+    },
+    getDraft: () => Promise.resolve(value(stored)),
+    putDraft: (_key: string, draft: DraftPayload) => {
+      offered.push(draft.text);
+      return accepting ? Promise.resolve() : Promise.reject(new TooLarge());
+    },
+  };
+}
+
+describe("a draft the server refuses for its size (413)", () => {
+  it("does not retry the refused write, keeps the text, and tells the user once", async () => {
+    const transport = limitedTransport();
+    const told: unknown[] = [];
+    const sync = new DraftSync(KEY, transport, () => {}, (error) => told.push(error));
+
+    sync.edit("粘贴进来的一大段日志");
+    vi.advanceTimersByTime(300);
+    await sync.settled();
+    expect(transport.offered).toEqual(["粘贴进来的一大段日志"]);
+    expect(told).toHaveLength(1);
+
+    // No timer, flush or reopen retries that write: it would be refused again.
+    vi.advanceTimersByTime(60_000);
+    sync.flush();
+    sync.flush({ keepalive: true });
+    await sync.settled();
+    expect(transport.offered).toHaveLength(1);
+    // The text is exactly where the user left it.
+    expect(sync.current.text).toBe("粘贴进来的一大段日志");
+    expect(cache.get("vgent.draft.t1")).toBe("粘贴进来的一大段日志");
+  });
+
+  it("tries the next edit as a write of its own without repeating the notice, and tells again after one gets through", async () => {
+    const transport = limitedTransport();
+    const told: unknown[] = [];
+    const sync = new DraftSync(KEY, transport, () => {}, (error) => told.push(error));
+
+    sync.edit("很长");
+    vi.advanceTimersByTime(300);
+    await sync.settled();
+    sync.edit("很长很长");
+    vi.advanceTimersByTime(300);
+    await sync.settled();
+    expect(transport.offered).toEqual(["很长", "很长很长"]);
+    expect(told).toHaveLength(1);
+
+    // Cut down to what fits: the write is accepted and the draft is in sync again.
+    transport.accept();
+    sync.edit("短了");
+    vi.advanceTimersByTime(300);
+    await sync.settled();
+    expect(sync.unsaved).toBe(false);
+
+    transport.accept(false);
+    sync.edit("又超了");
+    vi.advanceTimersByTime(300);
+    await sync.settled();
+    expect(told).toHaveLength(2);
+  });
+
+  it("is not fooled by an older write's refusal arriving after a newer one was accepted", async () => {
+    const slow = deferred<void>();
+    const told: unknown[] = [];
+    let call = 0;
+    const transport = {
+      getDraft: () => Promise.resolve(value("")),
+      putDraft: () => (++call === 1 ? slow.promise.then(() => Promise.reject(new TooLarge())) : Promise.resolve()),
+    };
+    const sync = new DraftSync(KEY, transport, () => {}, (error) => told.push(error));
+
+    sync.edit("先写的");
+    sync.flush();
+    sync.edit("后写的");
+    sync.flush();
+    await Promise.resolve();
+    slow.resolve();
+    await sync.settled();
+    expect(told).toEqual([]);
+    expect(sync.unsaved).toBe(false);
+  });
+
+  it("keeps the text when its view goes away and comes back — the server's older copy must not replace it", async () => {
+    const transport = limitedTransport("服务端存的旧草稿");
+    const first = acquireDraft(KEY, transport, () => {});
+    await first.sync.start();
+    first.sync.edit("粘贴进来的一大段日志");
+    first.sync.flush();
+    await first.sync.settled();
+    first.release();
+    // Let the release run its course: a draft with nothing unsaved would be disposed of here.
+    await vi.advanceTimersByTimeAsync(0);
+
+    const paints: DraftValue[] = [];
+    const second = acquireDraft(KEY, transport, (draft) => paints.push(draft));
+    // Still the same draft, not a fresh one that would reconcile against the server.
+    expect(second.sync).toBe(first.sync);
+    expect(paints.at(-1)?.text).toBe("粘贴进来的一大段日志");
+    await second.sync.start();
+    expect(second.sync.current.text).toBe("粘贴进来的一大段日志");
+    second.release();
+  });
+
+  it("hands every view sharing the draft the notice, and none after it left", async () => {
+    const transport = limitedTransport();
+    const seenA: unknown[] = [];
+    const seenB: unknown[] = [];
+    const a = acquireDraft(KEY, transport, () => {}, (error) => seenA.push(error));
+    const b = acquireDraft(KEY, transport, () => {}, (error) => seenB.push(error));
+    b.release();
+    a.sync.edit("超长");
+    a.sync.flush();
+    await a.sync.settled();
+    expect(seenA).toHaveLength(1);
+    expect(seenB).toEqual([]);
+    a.release();
+  });
+
+  it("words the notice with the server's own reason, and a fallback for a bare refusal", () => {
+    expect(draftRefusedNotice(new TooLarge("草稿超过 64 KB"))).toBe("草稿超过 64 KB，没有同步到 server；仍保留在本机，发送不受影响");
+    expect(draftRefusedNotice(new TooLarge(""))).toBe("草稿太长，没有同步到 server；仍保留在本机，发送不受影响");
+    expect(draftRefusedNotice({ status: 413 })).toContain("草稿太长");
+  });
+});
+
+describe("attachments changed by function", () => {
+  const SECOND: DraftAttachment = { ...PNG, id: "b2", name: "第二张.png" };
+
+  it("lands both files when two reads finish one after the other", () => {
+    const sync = new DraftSync(KEY, fakeTransport(), () => {});
+    // What a view captured before either read finished: the empty list.
+    const captured = sync.current.attachments;
+
+    sync.setAttachments((current) => [...current, PNG]);
+    sync.setAttachments((current) => [...current, SECOND]);
+    expect(sync.current.attachments).toEqual([PNG, SECOND]);
+
+    // The bug this replaces: each result computed from the captured list.
+    const stale = new DraftSync(KEY, fakeTransport(), () => {});
+    stale.setAttachments([...captured, PNG]);
+    stale.setAttachments([...captured, SECOND]);
+    expect(stale.current.attachments).toEqual([SECOND]);
+  });
+
+  it("does not bring back a tile the user removed while a file was being read", () => {
+    const sync = new DraftSync(KEY, fakeTransport(), () => {});
+    sync.setAttachments([PNG]);
+    sync.setAttachments((current) => current.filter((file) => file.id !== PNG.id));
+    sync.setAttachments((current) => [...current, SECOND]);
+    expect(sync.current.attachments).toEqual([SECOND]);
+  });
+
+  it("answers with the list it stored and writes it at once", () => {
+    const transport = fakeTransport();
+    const sync = new DraftSync(KEY, transport, () => {});
+    expect(sync.setAttachments((current) => [...current, PNG])).toEqual([PNG]);
+    expect(transport.payloads).toEqual([{ text: "", attachments: [PNG] }]);
+  });
+});
+
+describe("useDraft", () => {
+  const view = { visibilityState: "visible", addEventListener() {}, removeEventListener() {} };
+
+  it("keeps both files when two reads land in the same tick, and says a refusal in words", async () => {
+    vi.stubGlobal("document", view);
+    vi.useRealTimers();
+    const transport = limitedTransport();
+    const messages: string[] = [];
+    const hook = await renderHook(() => useDraft("hook-1", transport, (message) => messages.push(message)));
+    const other: DraftAttachment = { ...PNG, id: "b2", name: "第二张.png" };
+
+    await hook.act(() => {
+      hook.result.current.setAttachments((current) => [...current, PNG]);
+      hook.result.current.setAttachments((current) => [...current, other]);
+    });
+    expect(hook.result.current.attachments).toEqual([PNG, other]);
+
+    // The transport refuses everything (413): the toast comes through the hook.
+    await vi.waitFor(() => expect(messages).toEqual(["草稿超过 64 KB，没有同步到 server；仍保留在本机，发送不受影响"]));
+    await hook.unmount();
+  });
 });

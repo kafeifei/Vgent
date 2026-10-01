@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { UIMessage } from "ai";
-import { ArrowUp, Check, ChevronDown, File, FileText, Folder, Plus, Square, X } from "lucide-react";
+import { ArrowUp, ChevronDown, File, FileText, Folder, Plus, Square, X } from "lucide-react";
 import { UrlFigure } from "@/components/Figure";
 import { ModelPicker, effectiveModel } from "@/components/ModelPicker";
 import type { OptionsSet } from "@/components/modelChoices";
 import { ACCOUNT_NAMES, accountOf, bareSpec, kindOf } from "@/features/accounts/accountOf";
 import { dirName } from "@/features/changes/paths";
 import type { ModelPickPatch } from "@/lib/api";
+import type { AttachmentsUpdate } from "@/lib/drafts";
 import { baseName } from "@/lib/format";
 import { useToast } from "@/lib/toast";
 import type {
@@ -24,19 +25,16 @@ import type {
 import { cn } from "@/lib/utils";
 import { ComposerStatusBar } from "./ComposerStatusBar";
 import { QueueStrip } from "./QueueStrip";
-import { MAX_ATTACHMENT_BYTES, formatBytes, isImage, readAttachments, type Attachment } from "./attachments";
+import { formatBytes, ingestFiles, isImage, type Attachment } from "./attachments";
 import { acceptMention, findMention, mentionSegments, type Mention } from "./mention";
+import { useMirrorScroll } from "./mirrorScroll";
+import { MODES, modeRows } from "./modes";
+import { SlashMenu } from "./SlashMenu";
 import { findSlash, matchSlash, removeSlash, type Slash, type SlashCommand } from "./slash";
 import { isImeKeyEvent } from "@/lib/ime";
 
 export const COMPOSER_PLACEHOLDER = "规划、构建，/ 输入命令，@ 引用上下文";
 const FOLLOW_UP_PLACEHOLDER = "继续追问";
-
-/** 模式: what the next message does. One line each, because that is the whole choice. */
-const MODES: ReadonlyArray<{ id: ThreadMode; label: string; hint: string }> = [
-  { id: "agent", label: "Agent", hint: "直接动手" },
-  { id: "plan", label: "Plan", hint: "先只读调研、出计划，你改完再 Build" },
-];
 
 /** Keystrokes settle before we ask the server for candidates. */
 const COMPLETE_DEBOUNCE_MS = 120;
@@ -157,7 +155,8 @@ export function Composer({
   completeFiles?: (q: string) => Promise<FileEntry[]>;
   /** 附件 waiting to go out with the next message; the caller owns them, as it owns the text. */
   attachments: readonly Attachment[];
-  onAttachments: (next: Attachment[]) => void;
+  /** A function changes the list as it is when it runs — files that finish reading one after the other all land. */
+  onAttachments: (update: AttachmentsUpdate) => void;
   /** The caller's rows for the `/` menu (压缩上下文, 新任务 …), listed after 模式. */
   commands?: readonly SlashCommand[];
   /** This task's history, for the context ring. Absent = no ring. */
@@ -174,6 +173,11 @@ export function Composer({
 }) {
   const toast = useToast();
   const textarea = useRef<HTMLTextAreaElement | null>(null);
+  /** The layer under the textarea that draws its text with the `@` pills. */
+  const mirror = useRef<HTMLDivElement | null>(null);
+  // It has to be scrolled exactly as far as the textarea is, or a text longer
+  // than the box shows its top under a caret that is at its end.
+  const syncMirror = useMirrorScroll(textarea, mirror, value);
   /** Set when an accepted mention has to move the caret after the re-render. */
   const pendingCaret = useRef<number | null>(null);
 
@@ -211,9 +215,8 @@ export function Composer({
   // control the user would only find out is dead by clicking it.
   const descriptor = engines.find((entry) => entry.id === engine);
   const noApprovals = descriptor != null && !descriptor.capabilities.approvals && runMode !== "allow-all";
-  // Same rule for Plan: the row is dead rather than absent, and it says why.
+  // Plan needs an engine that can be held to read-only; without one it is not offered.
   const planSupported = descriptor?.capabilities.planMode === true;
-  const planReason = planSupported ? undefined : `${descriptor?.label ?? "这个引擎"} 不支持 Plan 模式`;
   const canSwitchMode = !live && planSupported;
   /** Leaving a non-default mode is allowed even where entering it no longer is. */
   const canLeaveMode = !live;
@@ -266,12 +269,14 @@ export function Composer({
     if (element == null) return;
     element.style.height = "auto";
     element.style.height = `${element.scrollHeight}px`;
+    // The box just changed size, which can move what is scrolled.
+    syncMirror();
     const caret = pendingCaret.current;
     if (caret == null) return;
     pendingCaret.current = null;
     element.focus();
     element.setSelectionRange(caret, caret);
-  }, [value]);
+  }, [syncMirror, value]);
 
   const query = mention?.query ?? null;
 
@@ -308,28 +313,18 @@ export function Composer({
 
   /**
    * The `/` menu: 模式 first, then whatever the caller offers. A mode that
-   * cannot be entered is listed with its reason rather than left out.
+   * cannot be entered — Plan on an engine without it, either one while a turn
+   * runs — is not in the list, rather than listed dead with a reason.
    */
   const slashRows = useMemo<SlashCommand[]>(() => {
     if (slash == null) return [];
-    const modes: SlashCommand[] = MODES.map((entry) => {
-      const blocked = entry.id === "plan" && !planSupported ? planReason : !canLeaveMode && entry.id !== mode ? "运行中不能切换" : undefined;
-      return {
-        id: entry.id,
-        label: entry.label,
-        hint: entry.hint,
-        section: "模式",
-        selected: entry.id === mode,
-        disabledReason: blocked,
-        run: () => onPickMode(entry.id),
-      };
-    });
+    const modes = modeRows({ mode, planSupported, canLeaveMode, onPick: onPickMode });
     return matchSlash([...modes, ...(commands ?? [])], slash.query);
-  }, [canLeaveMode, commands, mode, onPickMode, planReason, planSupported, slash]);
+  }, [canLeaveMode, commands, mode, onPickMode, planSupported, slash]);
   const slashOpen = slash != null && slashRows.length > 0;
 
   const runSlash = (command: SlashCommand): void => {
-    if (slash == null || command.disabledReason != null) return;
+    if (slash == null) return;
     const next = removeSlash(value, slash);
     setSlash(null);
     pendingCaret.current = next.caret;
@@ -339,14 +334,7 @@ export function Composer({
 
   /** Picked, pasted or dropped: all three land here. */
   const addFiles = (files: readonly File[]): void => {
-    if (files.length === 0) return;
-    void readAttachments(files).then(
-      ({ attachments: added, rejected }) => {
-        if (added.length > 0) onAttachments([...attachments, ...added]);
-        if (rejected.length > 0) toast(`${rejected.join("、")} 超过 ${formatBytes(MAX_ATTACHMENT_BYTES)}，没有添加`);
-      },
-      (error: unknown) => toast(error instanceof Error ? error.message : "读取文件失败"),
-    );
+    void ingestFiles(files, onAttachments, toast);
   };
 
   return (
@@ -389,37 +377,7 @@ export function Composer({
           }}
         />
 
-        {slashOpen && (
-          <div className="absolute bottom-full left-0 z-10 mb-2xs max-h-[calc(var(--spacing-xl)*10)] w-full overflow-y-auto rounded-xl border border-border bg-bg-elevated p-2xs shadow-lg">
-            {slashRows.map((command, index) => (
-              <div key={command.id}>
-                {command.section !== slashRows[index - 1]?.section && (
-                  <div className="px-xs pt-2xs pb-3xs text-fg-faint text-xs">{command.section}</div>
-                )}
-                <button
-                  type="button"
-                  disabled={command.disabledReason != null}
-                  title={command.disabledReason}
-                  // `mousedown`, so the textarea never loses focus to the click.
-                  onMouseDown={(event) => {
-                    event.preventDefault();
-                    runSlash(command);
-                  }}
-                  onMouseEnter={() => setActive(index)}
-                  className={cn(
-                    "flex min-h-row w-full items-center gap-xs rounded-md px-xs text-left text-body disabled:cursor-not-allowed disabled:opacity-50",
-                    index === active ? "bg-bg-active" : "hover:bg-bg-hover",
-                  )}
-                >
-                  <span className="flex-none text-fg">{command.label}</span>
-                  <span className="min-w-0 flex-1 truncate text-fg-faint text-sm">{command.disabledReason ?? command.hint}</span>
-                  {command.selected === true && <Check className="size-md flex-none text-fg-muted" />}
-                  <span className="flex-none font-mono text-fg-faint text-xs">/{command.id}</span>
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+        {slashOpen && <SlashMenu rows={slashRows} active={active} onRun={runSlash} onHover={setActive} />}
 
         {open && (
           <div className="absolute bottom-full left-0 z-10 mb-2xs max-h-[calc(var(--spacing-xl)*8)] w-full overflow-y-auto rounded-xl border border-border bg-bg-elevated p-2xs shadow-lg">
@@ -488,7 +446,7 @@ export function Composer({
                 <button
                   type="button"
                   aria-label={`移除 ${entry.name}`}
-                  onClick={() => onAttachments(attachments.filter((other) => other.id !== entry.id))}
+                  onClick={() => onAttachments((current) => current.filter((other) => other.id !== entry.id))}
                   className="absolute top-3xs right-3xs grid size-lg place-items-center rounded-full bg-fg text-bg opacity-0 focus-visible:opacity-100 group-hover/tile:opacity-100"
                 >
                   <X className="size-sm" />
@@ -513,6 +471,7 @@ export function Composer({
           <div className={cn("relative min-w-0 flex-1", big && "order-first basis-full")}>
             {/* The pill layer: the textarea's own text is transparent above it. */}
             <div
+              ref={mirror}
               aria-hidden
               className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words px-2xs py-3xs text-fg text-md leading-chat"
             >
@@ -542,6 +501,7 @@ export function Composer({
                 setSlash(nextSlash);
                 setMention(completeFiles == null ? null : findMention(event.target.value, caret));
               }}
+              onScroll={syncMirror}
               onBlur={() => {
                 setMention(null);
                 setSlash(null);

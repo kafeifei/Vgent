@@ -302,3 +302,158 @@ describe("transportErrorText", () => {
     expect(transportErrorText('{"unrelated":true}')).toBe('{"unrelated":true}');
   });
 });
+
+// --- 等人的任务：没有流可接的时候不反复去问 -----------------------------------------
+
+const recordFor = (id: string, updatedAt: string, messages: UIMessage[] = []): ThreadRecord => ({ ...record(updatedAt, messages), id });
+
+const summaryFor = (id: string, status: ThreadStatus, updatedAt: string): ThreadSummary => ({
+  ...summary(status, updatedAt, 1),
+  id,
+});
+
+/** `updatedAt` for the n-th update: a bigger n is a more recent one. */
+const at = (n: number): string => new Date(Date.UTC(2026, 0, 1, 0, 0, n)).toISOString();
+
+/**
+ * The server for several tasks. `GET /stream` answers 204 unless the task is
+ * `serve`d, in which case it stays open — one held connection — until the
+ * client aborts it or the test ends it.
+ */
+function world() {
+  const calls: string[] = [];
+  const records = new Map<string, ThreadRecord>();
+  const serving = new Set<string>();
+  const connections = new Map<string, { closed: boolean; end: () => void }>();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      calls.push(url);
+      const stream = /\/api\/chat\/([^/]+)\/stream$/.exec(url);
+      if (stream != null) {
+        const id = stream[1] as string;
+        if (!serving.has(id)) return new Response(null, { status: 204 });
+        let controller!: ReadableStreamDefaultController<Uint8Array>;
+        const body = new ReadableStream<Uint8Array>({
+          start(started) {
+            controller = started;
+          },
+        });
+        const connection = {
+          closed: false,
+          end: () => {
+            if (connection.closed) return;
+            connection.closed = true;
+            controller.close();
+          },
+        };
+        connections.set(id, connection);
+        init?.signal?.addEventListener("abort", () => connection.end());
+        return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      const history = /\/api\/threads\/([^/]+)$/.exec(url);
+      if (history == null) throw new Error(`unexpected request ${url}`);
+      const id = history[1] as string;
+      return new Response(JSON.stringify(records.get(id) ?? recordFor(id, at(0))), { status: 200, headers: { "content-type": "application/json" } });
+    }),
+  );
+  return {
+    records,
+    serving,
+    streamCalls: (id: string) => calls.filter((url) => url.endsWith(`/api/chat/${id}/stream`)).length,
+    historyCalls: (id: string) => calls.filter((url) => url.endsWith(`/api/threads/${id}`)).length,
+    /** The tasks whose stream is open right now. */
+    open: () => [...connections].filter(([, connection]) => !connection.closed).map(([id]) => id).sort(),
+    end: (id: string) => connections.get(id)?.end(),
+    /** Puts the task on screen the way the open view does, and waits for its history. */
+    async show(id: string) {
+      chats.focus(id);
+      chats.get(id);
+      await chats.whenReady(id);
+    },
+  };
+}
+
+/** Lets the fire-and-forget resumes and refreshes the registry kicked off run to their next await. */
+const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 5));
+
+describe("ThreadChats and tasks waiting on the human", () => {
+  it("does not go back to the server for every snapshot of a task that has nothing to join", async () => {
+    const remote = world();
+    remote.records.set("t1", recordFor("t1", at(10), [message("m1")]));
+    const waiting = summaryFor("t1", "awaiting-approval", at(10));
+    chats.observeThreads([waiting]);
+    await remote.show("t1");
+    await vi.waitFor(() => expect(remote.streamCalls("t1")).toBe(1));
+    await settle();
+    expect(remote.historyCalls("t1")).toBe(1);
+
+    // The server pushes a state event for every change of anything; none of them touches this task.
+    for (let push = 0; push < 5; push++) {
+      chats.observeThreads([{ ...waiting }]);
+      await settle();
+    }
+    expect(remote.streamCalls("t1")).toBe(1);
+    expect(remote.historyCalls("t1")).toBe(1);
+  });
+
+  it("looks once more when the task really changed — one history read and one stream request, however often it is pushed", async () => {
+    const remote = world();
+    remote.records.set("t1", recordFor("t1", at(10), [message("m1")]));
+    chats.observeThreads([summaryFor("t1", "awaiting-approval", at(10))]);
+    await remote.show("t1");
+    await vi.waitFor(() => expect(remote.streamCalls("t1")).toBe(1));
+
+    remote.records.set("t1", recordFor("t1", at(20), [message("m1"), message("m2")]));
+    for (let push = 0; push < 4; push++) {
+      chats.observeThreads([summaryFor("t1", "awaiting-approval", at(20))]);
+      await settle();
+    }
+    expect(remote.historyCalls("t1")).toBe(2);
+    expect(remote.streamCalls("t1")).toBe(2);
+    expect(chats.peek("t1")?.messages.map((entry) => entry.id)).toEqual(["m1", "m2"]);
+  });
+
+  it("asks a running task's stream endpoint once per update, too, when it has no stream yet", async () => {
+    const remote = world();
+    chats.observeThreads([summaryFor("t1", "running", at(10))]);
+    await remote.show("t1");
+    await vi.waitFor(() => expect(remote.streamCalls("t1")).toBe(1));
+    for (let push = 0; push < 3; push++) {
+      chats.observeThreads([summaryFor("t1", "running", at(10))]);
+      await settle();
+    }
+    expect(remote.streamCalls("t1")).toBe(1);
+    chats.observeThreads([summaryFor("t1", "running", at(11))]);
+    await vi.waitFor(() => expect(remote.streamCalls("t1")).toBe(2));
+  });
+
+  it("asks once more when the task is opened again, however little it changed meanwhile", async () => {
+    const remote = world();
+    chats.observeThreads([summaryFor("t1", "awaiting-approval", at(10))]);
+    await remote.show("t1");
+    await vi.waitFor(() => expect(remote.streamCalls("t1")).toBe(1));
+
+    chats.focus(null);
+    chats.observeThreads([summaryFor("t1", "awaiting-approval", at(10))]);
+    await settle();
+    expect(remote.streamCalls("t1")).toBe(1);
+
+    chats.focus("t1");
+    await vi.waitFor(() => expect(remote.streamCalls("t1")).toBe(2));
+  });
+
+  it("still joins again after a stream that ran and then dropped, since that is not a 204", async () => {
+    const remote = world();
+    remote.serving.add("t1");
+    chats.observeThreads([summaryFor("t1", "running", at(10))]);
+    await remote.show("t1");
+    await vi.waitFor(() => expect(remote.open()).toEqual(["t1"]));
+
+    remote.end("t1");
+    await vi.waitFor(() => expect(chats.peek("t1")?.status).toBe("ready"));
+    chats.observeThreads([summaryFor("t1", "running", at(10))]);
+    await vi.waitFor(() => expect(remote.streamCalls("t1")).toBe(2));
+  });
+});

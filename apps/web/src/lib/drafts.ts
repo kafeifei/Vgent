@@ -18,6 +18,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
  * on task switch, unmount and `pagehide` / `visibilitychange`; a change to the
  * attachments goes up at once, with the bytes of any file the server has not
  * been sent yet — every later write names that file by id alone.
+ *
+ * A write the server refuses for its size (413) is not retried — the same
+ * request would only be refused again. The text stays in this window (the cache
+ * and the live draft), the user is told once, and the next edit tries again.
  */
 
 const PREFIX = "vgent.draft.";
@@ -121,6 +125,19 @@ function nextWrite(transport: DraftTransport): NonNullable<DraftPayload["writeId
   return { clientId: writer.clientId, sequence: ++writer.sequence };
 }
 
+/** The server refused the draft for its size (413, `draft_too_large`): the same request would be refused again. */
+const isTooLarge = (error: unknown): boolean =>
+  typeof error === "object" && error !== null && (error as { status?: unknown }).status === 413;
+
+/** The toast for such a refusal: the server's own reason, then what it means for the draft. */
+export function draftRefusedNotice(error: unknown): string {
+  const reason = error instanceof Error && error.message !== "" ? error.message : "草稿太长";
+  return `${reason}，没有同步到 server；仍保留在本机，发送不受影响`;
+}
+
+/** What `setAttachments` takes: the whole list, or a change to the list *as it is now*. */
+export type AttachmentsUpdate = DraftAttachment[] | ((current: DraftAttachment[]) => DraftAttachment[]);
+
 /**
  * One draft's lifetime, without React: the cache, the reconcile, the debounce
  * and the flush. `onRemote` paints server reconciliation and accepted-send
@@ -143,11 +160,17 @@ export class DraftSync {
   private revision = 0;
   private readonly writing = new Set<Promise<void>>();
   private acknowledged = 0;
+  /** The server refused the latest write for its size; cleared by the next write it accepts. */
+  private refused = false;
+  /** The user has been told about the current refusal, so a run of them says it once. */
+  private refusedNoticed = false;
 
   constructor(
     private readonly key: string,
     private readonly transport: DraftTransport,
     private readonly onRemote: (draft: DraftValue) => void,
+    /** Called once when the server starts refusing this draft for its size. */
+    private readonly onRefused?: (error: unknown) => void,
   ) {
     this.text = readCache(key);
   }
@@ -198,13 +221,19 @@ export class DraftSync {
    * A file added or a tile removed. Not debounced: this is not a keystroke,
    * and a file the user just dropped in should be on the server before the
    * window can be closed on it.
+   *
+   * A function is applied to the list as it is at this very moment, so two
+   * files read one after the other both land — a list captured when the read
+   * started would have the second overwrite the first. Answers the new list.
    */
-  setAttachments(attachments: DraftAttachment[]): void {
+  setAttachments(update: AttachmentsUpdate): DraftAttachment[] {
+    const attachments = typeof update === "function" ? update(this.attachments) : update;
     this.attachments = attachments;
     this.revision++;
     this.touchedFiles = true;
     this.dirty = true;
     this.flush();
+    return attachments;
   }
 
   /**
@@ -240,7 +269,12 @@ export class DraftSync {
     while (this.writing.size > 0) await Promise.all(this.writing);
   }
 
-  get unsaved(): boolean { return this.dirty || this.writing.size > 0; }
+  /**
+   * Also true while the server refuses the draft for its size: this window then
+   * holds the only copy, and a shared draft with an unsaved copy is kept alive
+   * (with its text) when the view that showed it goes away.
+   */
+  get unsaved(): boolean { return this.dirty || this.writing.size > 0 || this.refused; }
 
   /** Write what is pending. `keepalive` is for a page that is going away. */
   flush(options?: { keepalive?: boolean }): void {
@@ -261,11 +295,25 @@ export class DraftSync {
       () => {
         if (writeId.sequence < this.acknowledged) return;
         this.acknowledged = writeId.sequence;
+        this.refused = false;
+        this.refusedNoticed = false;
         this.uploaded.clear();
         for (const entry of sent) this.uploaded.add(entry.id);
       },
-      () => {
+      (error: unknown) => {
         if (writeId.sequence < this.acknowledged) return;
+        if (isTooLarge(error)) {
+          // Refused outright, so nothing of it reached the server: `uploaded`
+          // still says what the last accepted write left there. This write is
+          // not retried (it would be refused again, at every keystroke); the
+          // text stays in the cache and in this draft, and the user is told once.
+          this.refused = true;
+          if (!this.refusedNoticed) {
+            this.refusedNoticed = true;
+            this.onRefused?.(error);
+          }
+          return;
+        }
         // The cache still holds the text, and the next keystroke retries — with
         // the bytes again, since it is unknown how far this write got.
         this.dirty = true;
@@ -306,26 +354,44 @@ interface DraftLease {
 interface DraftSession {
   sync: DraftSync;
   listeners: Set<(value: DraftValue) => void>;
+  /** Views that want to hear that the server refuses this draft for its size. */
+  notices: Set<(error: unknown) => void>;
   references: number;
 }
 
 const sessions = new WeakMap<DraftTransport, Map<string, DraftSession>>();
 
-/** A view and its outstanding sends share ownership of the same draft. */
-export function acquireDraft(key: string, transport: DraftTransport, paint: (value: DraftValue) => void): DraftLease {
+/**
+ * A view and its outstanding sends share ownership of the same draft.
+ * `onRefused` is how the view hears that the server will not take the draft for
+ * its size — once per refusal, see `DraftSync`.
+ */
+export function acquireDraft(
+  key: string,
+  transport: DraftTransport,
+  paint: (value: DraftValue) => void,
+  onRefused?: (error: unknown) => void,
+): DraftLease {
   let drafts = sessions.get(transport);
   if (drafts == null) { drafts = new Map(); sessions.set(transport, drafts); }
   let session = drafts.get(key);
   if (session == null) {
     const listeners = new Set<(value: DraftValue) => void>();
-    const instance = new DraftSync(key, transport, value => { for (const listener of listeners) listener(value); });
-    session = { sync: instance, listeners, references: 0 };
+    const notices = new Set<(error: unknown) => void>();
+    const instance = new DraftSync(
+      key,
+      transport,
+      value => { for (const listener of listeners) listener(value); },
+      error => { for (const notice of notices) notice(error); },
+    );
+    session = { sync: instance, listeners, notices, references: 0 };
     drafts.set(key, session);
     void instance.start();
   }
   const held = session;
   held.references++;
   held.listeners.add(paint);
+  if (onRefused != null) held.notices.add(onRefused);
   paint(held.sync.current);
   // A prior failed save/clear is retried on reopening, before remote data can
   // replace the newer local value.
@@ -351,6 +417,7 @@ export function acquireDraft(key: string, transport: DraftTransport, paint: (val
       if (released) return;
       released = true;
       held.listeners.delete(paint);
+      if (onRefused != null) held.notices.delete(onRefused);
       release();
     },
   };
@@ -361,8 +428,8 @@ export interface Draft {
   attachments: DraftAttachment[];
   /** Every keystroke. */
   edit: (text: string) => void;
-  /** A file added or a tile removed. */
-  setAttachments: (attachments: DraftAttachment[]) => void;
+  /** A file added or a tile removed; a function changes the list as it is when it runs. */
+  setAttachments: (update: AttachmentsUpdate) => void;
   /** Bind acceptance and consumption before the async action can unmount this view. */
   submit: (send: () => Promise<boolean>) => Promise<boolean>;
   /** Reconcile after an in-flight first send was refused and saved as this task's draft. */
@@ -371,19 +438,22 @@ export interface Draft {
 
 /**
  * The draft of one task (or `NEW_TASK_DRAFT`), as React state. Mount paints the
- * cache, the server reconciles, and leaving flushes.
+ * cache, the server reconciles, and leaving flushes. `notify` says it in words
+ * when the server will not take the draft for its size.
  */
-export function useDraft(key: string, transport: DraftTransport): Draft {
+export function useDraft(key: string, transport: DraftTransport, notify?: (message: string) => void): Draft {
   const [value, setValue] = useState(() => readCache(key));
   const [attachments, setAttachmentsState] = useState<DraftAttachment[]>([]);
   const lease = useRef<DraftLease | null>(null);
+  const say = useRef(notify);
+  say.current = notify;
 
   useEffect(() => {
     const paint = (draft: DraftValue) => {
       setValue(draft.text);
       setAttachmentsState(draft.attachments);
     };
-    const held = acquireDraft(key, transport, paint);
+    const held = acquireDraft(key, transport, paint, (error) => say.current?.(draftRefusedNotice(error)));
     const instance = held.sync;
     lease.current = held;
     // A tab being hidden or torn down is the one moment a debounced write would
@@ -407,9 +477,12 @@ export function useDraft(key: string, transport: DraftTransport): Draft {
     lease.current?.sync.edit(text);
   }, []);
 
-  const setAttachments = useCallback((next: DraftAttachment[]) => {
-    setAttachmentsState(next);
-    lease.current?.sync.setAttachments(next);
+  const setAttachments = useCallback((update: AttachmentsUpdate) => {
+    const held = lease.current;
+    // The draft's own list is the one to change: the copy a view rendered with
+    // may already be a read behind. Before the lease exists only the view has one.
+    if (held == null) setAttachmentsState((current) => (typeof update === "function" ? update(current) : update));
+    else setAttachmentsState(held.sync.setAttachments(update));
   }, []);
 
   const submit = useCallback((send: () => Promise<boolean>) => lease.current?.submit(send) ?? Promise.resolve(false), []);

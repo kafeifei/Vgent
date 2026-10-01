@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Project, ThreadStatus, ThreadSummary } from "@/lib/types";
-import { groupThreads, needsReview } from "./grouping";
+import { renderHook, type HookHandle } from "@/lib/testing/renderHook";
+import { groupThreads, needsReview, useGroupedThreads, type Grouping } from "./grouping";
 
 const NOW = Date.parse("2026-09-17T12:00:00.000Z");
 const ago = (ms: number) => new Date(NOW - ms).toISOString();
@@ -124,3 +125,106 @@ describe("groupThreads", () => {
     expect(groups.at(-1)?.projectId).toBeUndefined();
   });
 });
+
+describe("useGroupedThreads", () => {
+  const handles: Array<HookHandle<unknown, unknown>> = [];
+  afterEach(async () => {
+    for (const handle of handles.splice(0)) await handle.unmount();
+    vi.useRealTimers();
+  });
+
+  interface Inputs {
+    threads: readonly ThreadSummary[];
+    projects: readonly Project[];
+    grouping: Grouping;
+  }
+
+  async function mount(inputs: Inputs) {
+    let calls = 0;
+    const hook = await renderHook((props: Inputs) => {
+      calls += 1;
+      return useGroupedThreads(props.threads, props.projects, props.grouping);
+    }, { props: inputs });
+    handles.push(hook as unknown as HookHandle<unknown, unknown>);
+    return { hook, renders: () => calls };
+  }
+
+  it("hands back the very same groups while the tasks, projects and grouping are the same objects", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    const inputs: Inputs = { threads, projects, grouping: "status" };
+    const { hook } = await mount(inputs);
+    const first = hook.result.current;
+    // The list around it renders again and again while a task streams: nothing it is given changed.
+    await hook.rerender({ ...inputs });
+    await hook.rerender({ ...inputs });
+    expect(hook.result.current).toBe(first);
+    expect(first).toEqual(groupThreads(threads, projects, "status", NOW));
+  });
+
+  it("groups again when a task, the projects or the way of grouping is a different object", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    const { hook } = await mount({ threads, projects, grouping: "status" });
+    const first = hook.result.current;
+
+    const changed = [{ ...threads[0]!, status: "idle" as const }, ...threads.slice(1)];
+    await hook.rerender({ threads: changed, projects, grouping: "status" });
+    const second = hook.result.current;
+    expect(second).not.toBe(first);
+    expect(second.map((group) => [group.title, group.count])).not.toEqual(first.map((group) => [group.title, group.count]));
+
+    await hook.rerender({ threads: changed, projects: [...projects], grouping: "status" });
+    const third = hook.result.current;
+    expect(third).not.toBe(second);
+    await hook.rerender({ threads: changed, projects: [...projects], grouping: "project" });
+    expect(hook.result.current).not.toBe(third);
+  });
+
+  it("groups again when the clock moves to another minute, because 今天 / 昨天 are cut against it", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    // Two hours before midnight-ish: a task updated 23 h 59 m ago is 今天 now and 昨天 a minute later.
+    const updated = new Date(Date.parse("2026-09-17T12:00:00.000Z")).toISOString();
+    const task = thread("t9", "p1", "idle", updated);
+    vi.setSystemTime(Date.parse("2026-09-18T11:58:00.000Z"));
+    const inputs: Inputs = { threads: [task], projects, grouping: "updated" };
+    const { hook } = await mount(inputs);
+    expect(hook.result.current.map((group) => group.title)).toEqual(["今天"]);
+
+    // Same minute, same inputs: the same groups.
+    vi.setSystemTime(Date.parse("2026-09-18T11:58:59.000Z"));
+    const held = hook.result.current;
+    await hook.rerender({ ...inputs });
+    expect(hook.result.current).toBe(held);
+
+    vi.setSystemTime(Date.parse("2026-09-18T12:01:00.000Z"));
+    await hook.rerender({ ...inputs });
+    expect(hook.result.current.map((group) => group.title)).toEqual(["昨天"]);
+  });
+
+  it("turns 今天 into 昨天 by itself on an idle window, with nothing rendering it again", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.parse("2026-09-18T11:58:00.000Z"));
+    const task = thread("t9", "p1", "idle", "2026-09-17T12:00:00.000Z");
+    const { hook, renders } = await mount({ threads: [task], projects, grouping: "updated" });
+    expect(hook.result.current.map((group) => group.title)).toEqual(["今天"]);
+    const before = renders();
+
+    // Not a prop, not a rerender: only the clock moves.
+    await hook.act(() => {
+      vi.advanceTimersByTime(3 * 60_000);
+    });
+    expect(hook.result.current.map((group) => group.title)).toEqual(["昨天"]);
+    expect(renders()).toBeGreaterThan(before);
+  });
+
+  it("stops ticking once it is gone", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.parse("2026-09-18T11:58:00.000Z"));
+    const { hook } = await mount({ threads: [], projects, grouping: "updated" });
+    expect(vi.getTimerCount()).toBe(1);
+    await hook.unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+

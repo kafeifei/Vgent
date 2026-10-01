@@ -1,9 +1,10 @@
 /**
  * The desktop shell's own file chooser. The workbench is a remote page inside
  * Tauri (`http://127.0.0.1:<port>`), and `capabilities/main.json` grants that
- * origin exactly one command — the dialog plugin's `open` — so the panel comes
- * up instantly instead of waiting the ~2 s the server-side `osascript` needs to
- * register itself as a GUI app.
+ * origin a short list of commands, the dialog plugin's `open` among them (the
+ * rest are notifications and the title bar's drag and zoom). This file uses only
+ * `open`: the panel comes up instantly instead of waiting the ~2 s the
+ * server-side `osascript` needs to register itself as a GUI app.
  */
 
 type TauriDialogOpen = (options: { directory: boolean; multiple: boolean; title: string }) => Promise<unknown>;

@@ -9,18 +9,19 @@ export interface Slash {
   query: string;
 }
 
-/** One row of the `/` menu. */
+/**
+ * One row of the `/` menu: a label under a small grey heading, and nothing
+ * else. A row that cannot be run right now is left out by whoever builds the
+ * list — not shown dead, and not shown with a reason.
+ */
 export interface SlashCommand {
   /** What is typed after the `/`, e.g. `plan`. */
   id: string;
   /** Other spellings that find the same row (`summarize` for `compact`). */
   aliases?: readonly string[];
   label: string;
-  hint: string;
   /** The small grey heading the row is listed under. */
   section: string;
-  /** A row that is shown but cannot be run right now, and why. */
-  disabledReason?: string | undefined;
   /** Marks the row that is already in force (the current mode). */
   selected?: boolean;
   run: () => void;

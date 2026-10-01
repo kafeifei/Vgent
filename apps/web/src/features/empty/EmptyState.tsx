@@ -15,16 +15,33 @@ import type { EngineDescriptor, EngineId, Project, Settings, ThreadMode, Workspa
  * The two run locations, with the sentence that tells them apart. 「独立检出」
  * is spelled out because the surprise it avoids — a worktree starts from the
  * *committed* HEAD, without your uncommitted work — is otherwise only
- * discovered afterwards.
+ * discovered afterwards (product.md: 选择器里要明说).
  */
-const WORKSPACES: ReadonlyArray<{ id: WorkspaceMode; label: string; hint: string }> = [
-  { id: "project", label: "本机 · 主目录", hint: "直接改你手上的文件，收口时只能提交或丢弃" },
+export const WORKSPACES: ReadonlyArray<{ id: WorkspaceMode; label: string; hint: string }> = [
+  { id: "project", label: "本机 · 主目录", hint: "直接改你手上的文件，收口时只能提交或按文件还原" },
   {
     id: "worktree",
     label: "本机 · worktree",
     hint: "独立检出，从已提交的 HEAD 开出，不带你未提交的改动；完成后可提交、开 PR 或带回主目录",
   },
 ];
+
+/** 运行位置's menu: the title, and the two rows. */
+export function WorkspaceItems({ workspace, onPick }: { workspace: WorkspaceMode; onPick: (workspace: WorkspaceMode) => void }) {
+  return (
+    <>
+      <PopTitle>运行位置</PopTitle>
+      {WORKSPACES.map((entry) => (
+        <PopItem key={entry.id} selected={entry.id === workspace} onClick={() => onPick(entry.id)}>
+          <span className="flex flex-col gap-3xs whitespace-normal">
+            <span className="text-fg">{entry.label}</span>
+            <span className="text-fg-faint text-xs leading-snug">{entry.hint}</span>
+          </span>
+        </PopItem>
+      ))}
+    </>
+  );
+}
 
 /**
  * 「配置 + 输入」, not 「欢迎语 + 建议」. One row above the composer — 项目, its
@@ -72,7 +89,7 @@ export function EmptyState({
   const toast = useToast();
   // 草稿不丢, here too: the empty state has no task yet, so its draft is kept
   // under a fixed key until it becomes a task's first message.
-  const draft = useDraft(NEW_TASK_DRAFT, client);
+  const draft = useDraft(NEW_TASK_DRAFT, client, toast);
   /**
    * The model this task will run on, and the engine that comes with it. Null
    * until the user picks one, so until then the settings answer — and keep
@@ -194,25 +211,14 @@ export function EmptyState({
             )}
           >
             {(close) => (
-              <>
-                <PopTitle>运行位置</PopTitle>
-                {WORKSPACES.map((entry) => (
-                  <PopItem
-                    key={entry.id}
-                    selected={entry.id === workspace}
-                    onClick={() => {
-                      setPickedWorkspace(entry.id);
-                      close();
-                      void client.putSettings({ defaultWorkspace: entry.id }).catch((error: Error) => toast(error.message));
-                    }}
-                  >
-                    <span className="flex flex-col gap-3xs whitespace-normal">
-                      <span className="text-fg">{entry.label}</span>
-                      <span className="text-fg-faint text-xs leading-snug">{entry.hint}</span>
-                    </span>
-                  </PopItem>
-                ))}
-              </>
+              <WorkspaceItems
+                workspace={workspace}
+                onPick={(picked) => {
+                  setPickedWorkspace(picked);
+                  close();
+                  void client.putSettings({ defaultWorkspace: picked }).catch((error: Error) => toast(error.message));
+                }}
+              />
             )}
           </Popover>
         )}

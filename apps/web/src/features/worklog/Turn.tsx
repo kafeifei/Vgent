@@ -342,7 +342,7 @@ function ToolGroup({ tools, kind, actions }: { tools: Extract<ProcessItem, { too
         onClick={() => setOpen((value) => !value)}
         className="group/explore flex min-h-row-tool w-full items-center gap-xs text-left text-fg-muted text-md leading-chat hover:text-fg"
       >
-        {busy && <Spinner />}
+        {busy && <Spinner label="运行中" />}
         <span className="min-w-0 truncate">{label}</span>
         <ChevronDown
           className={cn(

@@ -1,5 +1,6 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { X } from "lucide-react";
+import { Dialog as DialogPrimitive } from "radix-ui";
 import { isImeKeyEvent } from "@/lib/ime";
 import { cn } from "@/lib/utils";
 
@@ -153,46 +154,89 @@ export function Segmented<T extends string>({
 }
 
 /**
- * A modal over the settings page. Esc closes the dialog and only the dialog:
- * it is taken in the capture phase, before the page's own Esc-to-leave sees it.
+ * A modal over the settings page, on Radix's Dialog: while it is open focus is
+ * trapped inside it, the page behind is hidden from assistive technology and
+ * takes no pointer, Esc and a press on the scrim close it. Esc closes the
+ * dialog and only the dialog — the page's own Esc-to-leave never hears it.
+ *
+ * It is portalled to the body, outside the page it covers, so hiding that page
+ * does not hide it. The scrim and the panel are one `Overlay` around one
+ * `Content`, laid out as they always were. Nothing in the panel may sit under a
+ * transform: the popovers inside it are `position: fixed`, and would be placed
+ * against the panel instead of the window.
  */
 export function Dialog({ title, onClose, children, wide }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
+  // Radix gives focus back to a `Dialog.Trigger`; these open from ordinary
+  // buttons and menu rows, so the element that had focus just before is kept
+  // here. Read once the dialog has mounted and before its content does.
+  const opener = useRef<HTMLElement | null>(null);
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || isImeKeyEvent(event)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      onClose();
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [onClose]);
+    const active = document.activeElement;
+    opener.current = active instanceof HTMLElement && active !== document.body ? active : null;
+  }, []);
 
   return (
-    <div
-      role="presentation"
-      className="fixed inset-0 z-30 flex items-start justify-center bg-bg-scrim pt-[calc(var(--spacing-3xl)*1.5)]"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
+    <DialogPrimitive.Root
+      open
+      onOpenChange={(next) => {
+        if (!next) onClose();
       }}
     >
-      <div
-        role="dialog"
+      <DialogPrimitive.Portal>
+        <DialogShell
+          title={title}
+          {...(wide === true ? { wide } : {})}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            if (opener.current?.isConnected === true) opener.current.focus();
+          }}
+        >
+          {children}
+        </DialogShell>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
+  );
+}
+
+/** The dialog's scrim and panel; needs the Radix `Dialog.Root` above it. */
+export function DialogShell({
+  title,
+  wide,
+  onCloseAutoFocus,
+  children,
+}: {
+  title: string;
+  wide?: boolean;
+  onCloseAutoFocus?: (event: Event) => void;
+  children: ReactNode;
+}) {
+  return (
+    <DialogPrimitive.Overlay className="fixed inset-0 z-30 flex items-start justify-center bg-bg-scrim pt-[calc(var(--spacing-3xl)*1.5)]">
+      <DialogPrimitive.Content
+        // No description to point at: the title names it, the body is the form.
+        aria-describedby={undefined}
         aria-modal="true"
-        aria-label={title}
+        onEscapeKeyDown={(event) => {
+          // An input method's Esc cancels its candidate, not the dialog.
+          if (isImeKeyEvent(event)) event.preventDefault();
+          else event.stopPropagation();
+        }}
+        {...(onCloseAutoFocus != null ? { onCloseAutoFocus } : {})}
         className={cn(
-          "flex max-h-[calc(100vh-var(--spacing-3xl)*3)] max-w-[calc(100%-var(--spacing-xl))] flex-col overflow-hidden rounded-xl bg-bg-elevated shadow-lg ring-1 ring-border",
+          "flex max-h-[calc(100vh-var(--spacing-3xl)*3)] max-w-[calc(100%-var(--spacing-xl))] flex-col overflow-hidden rounded-xl bg-bg-elevated shadow-lg ring-1 ring-border outline-hidden",
           wide === true ? "w-[calc(var(--spacing-log-max)*0.8)]" : "w-[calc(var(--spacing-log-max)*0.6)]",
         )}
       >
         <div className="flex items-center gap-sm border-border border-b px-lg py-sm">
-          <h2 className="flex-1 truncate font-semibold text-fg text-lg">{title}</h2>
-          <button type="button" title="关闭" onClick={onClose} className="grid size-lg flex-none place-items-center rounded-md text-fg-muted hover:bg-bg-hover hover:text-fg">
-            <X className="size-md" />
-          </button>
+          <DialogPrimitive.Title className="flex-1 truncate font-semibold text-fg text-lg">{title}</DialogPrimitive.Title>
+          <DialogPrimitive.Close asChild>
+            <button type="button" title="关闭" aria-label="关闭" className="grid size-lg flex-none place-items-center rounded-md text-fg-muted hover:bg-bg-hover hover:text-fg">
+              <X className="size-md" />
+            </button>
+          </DialogPrimitive.Close>
         </div>
         {children}
-      </div>
-    </div>
+      </DialogPrimitive.Content>
+    </DialogPrimitive.Overlay>
   );
 }

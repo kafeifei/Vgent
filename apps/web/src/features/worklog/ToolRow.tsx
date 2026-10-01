@@ -16,9 +16,19 @@ import {
   type ToolPart,
 } from "./toolMeta";
 
-/** The running indicator: the only spinner in the log. */
-export function Spinner() {
-  return <span className="size-md flex-none animate-spin rounded-full border border-border-strong border-t-brand" />;
+/**
+ * The running indicator: the only spinner in the log. What it says is carried by
+ * its motion, which a screen reader does not see: pass `label` where nothing
+ * next to it already reads 「运行中」, and it is the spinner's name; without one
+ * it is decoration.
+ */
+export function Spinner({ label }: { label?: string }) {
+  return (
+    <span
+      {...(label != null ? { role: "img", "aria-label": label } : { "aria-hidden": true })}
+      className="size-md flex-none animate-spin rounded-full border border-border-strong border-t-brand"
+    />
+  );
 }
 
 /** `tokens.css +84 −12` — a write/edit result, not a text line. */

@@ -4,7 +4,6 @@ import { findSlash, matchSlash, removeSlash, type SlashCommand } from "./slash";
 const command = (id: string, label: string, aliases?: string[]): SlashCommand => ({
   id,
   label,
-  hint: "",
   section: "",
   ...(aliases != null ? { aliases } : {}),
   run: () => undefined,

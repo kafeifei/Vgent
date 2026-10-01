@@ -1,32 +1,55 @@
-import { useRef, useState, type RefObject } from "react";
+import { memo, useRef, useState, type RefObject } from "react";
 import { GitFork, MoreHorizontal } from "lucide-react";
 import { OutcomeBadge } from "@/components/OutcomeBadge";
 import { Shimmer } from "@/components/ai-elements/shimmer";
-import { PopItem, PopTitle, Popover } from "@/components/Popover";
+import { PopItem, Popover } from "@/components/Popover";
 import { shortTime } from "@/lib/format";
 import { isImeKeyEvent } from "@/lib/ime";
-import { LIVE_REASON, LIVE_STATUSES, TRANSITION_LABELS, type ThreadStatus, type ThreadSummary, type ThreadTransition } from "@/lib/types";
+import { LIVE_STATUSES, TRANSITION_LABELS, type ThreadStatus, type ThreadSummary, type ThreadTransition } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { UncommittedConfirm, useUncommittedGate } from "@/features/workspace/UncommittedConfirm";
+import { DeleteConfirm, useDeleteConfirm } from "./DeleteConfirm";
+import { useMinute } from "./grouping";
+
+/** What each colour of the dot means, for whoever cannot see the colour. */
+export const STATUS_NAMES: Record<ThreadStatus, string> = {
+  idle: "空闲",
+  running: "运行中",
+  "awaiting-approval": "等待审批",
+  "awaiting-input": "等待回答",
+  interrupted: "已中断",
+  error: "失败",
+};
 
 /** Shape, not just colour: 「等人」 is a hollow ring, 「在跑 / 结束」 is a solid dot. */
 export function StatusDot({ status }: { status: ThreadStatus }) {
   const base = "size-xs flex-none rounded-full";
-  if (status === "running") return <span className={cn(base, "animate-breathe bg-brand")} />;
-  if (status === "awaiting-approval") return <span className={cn(base, "shadow-[inset_0_0_0_2px_var(--color-warning)]")} />;
-  if (status === "awaiting-input") return <span className={cn(base, "shadow-[inset_0_0_0_2px_var(--color-info)]")} />;
-  if (status === "error" || status === "interrupted") return <span className={cn(base, "bg-danger")} />;
-  return <span className={cn(base, "bg-fg-faint")} />;
+  const name = { role: "img", "aria-label": STATUS_NAMES[status] } as const;
+  if (status === "running") return <span {...name} className={cn(base, "animate-breathe bg-brand")} />;
+  if (status === "awaiting-approval") return <span {...name} className={cn(base, "shadow-[inset_0_0_0_2px_var(--color-warning)]")} />;
+  if (status === "awaiting-input") return <span {...name} className={cn(base, "shadow-[inset_0_0_0_2px_var(--color-info)]")} />;
+  if (status === "error" || status === "interrupted") return <span {...name} className={cn(base, "bg-danger")} />;
+  return <span {...name} className={cn(base, "bg-fg-faint")} />;
 }
 
-type RowMenuActions = {
+/**
+ * The row's `now` / `5m` stamp. The row is memoised on its task, which does not
+ * change while the task sits idle, so the stamp follows the sidebar's minute
+ * clock by itself — only it renders again when the minute turns.
+ */
+function Stamp({ at }: { at: string }) {
+  useMinute();
+  return <span>{shortTime(at)}</span>;
+}
+
+export type RowMenuActions = {
   archived: boolean;
   unread: boolean;
   /** Archiving reclaims the worktree, so a turn that still owns it blocks it. Deleting stops the run first, so it does not. */
   live: boolean;
   /** The last 归档 / 取消归档 is still moving the worktree; another waits for it. */
   transition: ThreadTransition | undefined;
-  /** A worktree still on disk: archiving it asks about uncommitted changes first. */
+  /** A worktree still on disk: archiving or deleting it asks about uncommitted changes first. */
   worktree: boolean;
   /** `preserveChanges`: the user confirmed the worktree's uncommitted changes go along. */
   onArchive: (archived: boolean, preserveChanges?: boolean) => void;
@@ -41,10 +64,13 @@ type RowMenuActions = {
  * What the row's menu holds: 重命名, 标为未读 / 已读, 归档 / 取消归档 and a two-step
  * 删除任务. Each answers to a letter while the menu is open (R / U / A / D), and the
  * second step of deleting to ↵ — two different keys, so a double tap deletes
- * nothing. 归档 of a worktree with uncommitted changes opens a separate dialog.
- * Mounted per opening, so the menu never reopens on the delete confirmation.
+ * nothing. 归档 of a worktree with uncommitted changes opens a separate dialog;
+ * 删除 of one says, in its second step, how many files would be lost with it.
+ * 归档 is not listed while it cannot be done (a turn is live, the worktree is
+ * moving) rather than listed dead with a reason. Mounted per opening, so the
+ * menu never reopens on the delete confirmation.
  */
-function RowMenuItems({
+export function RowMenuItems({
   archived,
   unread,
   live,
@@ -58,7 +84,6 @@ function RowMenuItems({
   onStartRename,
   onConfirmArchive,
 }: RowMenuActions & { close: () => void; onConfirmArchive: (files: number | undefined) => void }) {
-  const [confirming, setConfirming] = useState(false);
   const archive = useUncommittedGate(onCheckUncommitted, () => {
     close();
     onArchive(true, false);
@@ -66,25 +91,18 @@ function RowMenuItems({
     close();
     onConfirmArchive(files);
   });
+  const remove = useDeleteConfirm(worktree, onCheckUncommitted);
 
-  if (confirming) {
+  if (typeof remove.phase === "object") {
     return (
-      <>
-        <PopTitle>删除这个任务？</PopTitle>
-        <p className="m-0 px-xs pb-2xs text-fg-muted text-xs leading-snug">
-          会删掉对话记录、worktree 和快照。分支上如果有提交会保留下来。
-        </p>
-        <PopItem
-          shortcut="Enter"
-          onClick={() => {
-            close();
-            onDelete();
-          }}
-        >
-          <span className="text-danger">确认删除</span>
-        </PopItem>
-        <PopItem onClick={() => setConfirming(false)}>取消</PopItem>
-      </>
+      <DeleteConfirm
+        files={remove.phase.files}
+        onConfirm={() => {
+          close();
+          onDelete();
+        }}
+        onCancel={remove.cancel}
+      />
     );
   }
 
@@ -108,22 +126,23 @@ function RowMenuItems({
       >
         {unread ? "标为已读" : "标为未读"}
       </PopItem>
-      <PopItem
-        shortcut="a"
-        disabled={live || transition != null || archive.phase === "checking"}
-        {...(transition != null ? { hint: TRANSITION_LABELS[transition] } : live ? { hint: "进行中", title: LIVE_REASON } : {})}
-        onClick={() => {
-          if (!archived && worktree) {
-            archive.start();
-            return;
-          }
-          close();
-          onArchive(!archived);
-        }}
-      >
-        {archived ? "取消归档" : "归档"}
-      </PopItem>
-      <PopItem shortcut="d" onClick={() => setConfirming(true)}>
+      {!live && transition == null && (
+        <PopItem
+          shortcut="a"
+          disabled={archive.phase === "checking"}
+          onClick={() => {
+            if (!archived && worktree) {
+              archive.start();
+              return;
+            }
+            close();
+            onArchive(!archived);
+          }}
+        >
+          {archived ? "取消归档" : "归档"}
+        </PopItem>
+      )}
+      <PopItem shortcut="d" disabled={remove.phase === "checking"} onClick={remove.start}>
         删除任务…
       </PopItem>
     </>
@@ -170,7 +189,23 @@ function RowMenu({ openRef, ...actions }: RowMenuActions & { openRef: RefObject<
   );
 }
 
-export function TaskItem({
+export interface TaskItemProps {
+  thread: ThreadSummary;
+  selected: boolean;
+  /**
+   * The row's actions take the task's id themselves, so the list can hand every
+   * row the same functions — and a row whose task did not change is not rendered
+   * again when another one does.
+   */
+  onSelect: (threadId: string) => void;
+  onArchive: (threadId: string, archived: boolean, preserveChanges?: boolean) => void;
+  onCheckUncommitted: (threadId: string) => Promise<number>;
+  onUnread: (threadId: string, unread: boolean) => void;
+  onDelete: (threadId: string) => void;
+  onRename: (threadId: string, title: string) => void;
+}
+
+export const TaskItem = memo(function TaskItem({
   thread,
   selected,
   onSelect,
@@ -179,22 +214,13 @@ export function TaskItem({
   onUnread,
   onDelete,
   onRename,
-}: {
-  thread: ThreadSummary;
-  selected: boolean;
-  onSelect: () => void;
-  onArchive: (archived: boolean, preserveChanges?: boolean) => void;
-  onCheckUncommitted: () => Promise<number>;
-  onUnread: (unread: boolean) => void;
-  onDelete: () => void;
-  onRename: (title: string) => void;
-}) {
+}: TaskItemProps) {
   const openMenu = useRef<(() => void) | null>(null);
   /** The title being typed, while the row is being renamed. */
   const [renaming, setRenaming] = useState<string | null>(null);
   const commitRename = (): void => {
     const next = renaming?.trim() ?? "";
-    if (next !== "" && next !== thread.title) onRename(next);
+    if (next !== "" && next !== thread.title) onRename(thread.id, next);
     setRenaming(null);
   };
   const unread = thread.unread === true;
@@ -245,7 +271,7 @@ export function TaskItem({
       )}
       <button
         type="button"
-        onClick={onSelect}
+        onClick={() => onSelect(thread.id)}
         aria-current={selected}
         title={state != null ? `${thread.title} · ${state}` : thread.title}
         className={cn(
@@ -276,7 +302,7 @@ export function TaskItem({
           {thread.transition != null ? (
             <Shimmer as="span">{TRANSITION_LABELS[thread.transition]}</Shimmer>
           ) : (
-            <span>{shortTime(thread.updatedAt)}</span>
+            <Stamp at={thread.updatedAt} />
           )}
         </span>
       </button>
@@ -287,12 +313,12 @@ export function TaskItem({
         transition={thread.transition}
         worktree={thread.workspace != null && thread.workspace.reclaimed !== true}
         openRef={openMenu}
-        onArchive={onArchive}
-        onCheckUncommitted={onCheckUncommitted}
-        onUnread={onUnread}
-        onDelete={onDelete}
+        onArchive={(archived, preserveChanges) => onArchive(thread.id, archived, preserveChanges)}
+        onCheckUncommitted={() => onCheckUncommitted(thread.id)}
+        onUnread={(unread) => onUnread(thread.id, unread)}
+        onDelete={() => onDelete(thread.id)}
         onStartRename={() => setRenaming(thread.title)}
       />
     </div>
   );
-}
+});

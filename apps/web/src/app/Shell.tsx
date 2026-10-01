@@ -1,7 +1,5 @@
 import { ModelCatalogClientContext } from "@/components/ModelPicker";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { UIMessage } from "ai";
-import { X } from "lucide-react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ResizeHandle } from "@/components/ResizeHandle";
 import { TopStrip } from "@/components/TopStrip";
 import { CommandPalette, type Command } from "@/features/cmdk/CommandPalette";
@@ -9,17 +7,18 @@ import { AccountLoginProvider } from "@/features/accounts/AccountLogin";
 import { EmptyState } from "@/features/empty/EmptyState";
 import { FileAccessProvider } from "@/features/files/fileAccess";
 import { FilePictureDialog } from "@/features/files/TaskPicture";
-import { RightPane } from "@/features/rightpane/RightPane";
 import { NO_PROJECT_NAME, isNoProject } from "@/lib/noProject";
 import { SettingsView, type SettingsTab } from "@/features/settings/SettingsView";
 import { Sidebar } from "@/features/sidebar/Sidebar";
 import { GROUPING_LABELS } from "@/features/sidebar/grouping";
-import type { QueueItem } from "@/features/worklog/queue";
 import { oneLine } from "@/lib/format";
 import { previewKindOf } from "@/lib/preview";
 import { type PaneKey, type PaneWidths, PANE_DEFAULT, clampPaneWidth, fitPaneWidths, loadPaneWidths, savePaneWidths } from "@/lib/paneWidths";
 import { usePrefs, usePrefsSync } from "@/lib/prefs";
 import { RightPaneToggle } from "@/features/taskheader/TaskHeader";
+import type { AccountId } from "@/lib/types";
+import { SettingsOverlay } from "./SettingsOverlay";
+import { FedRightPane, ThreadFeed } from "./threadFeed";
 import { ThreadView } from "./ThreadView";
 import { isCompacting, isLiveThread, useWorkbench } from "./useWorkbench";
 
@@ -56,16 +55,25 @@ export function Shell({ token }: { token: string }) {
   );
   const [styleLabOpen, setStyleLabOpen] = useState(false);
   const openStyleLab = useCallback(() => { actions.closeSettings(); actions.closePalette(); setStyleLabOpen(true); }, [actions]);
-  const [queue, setQueue] = useState<QueueItem[]>([]);
-  const [messages, setMessages] = useState<UIMessage[]>([]);
+  // The open task's messages and queue change with every streamed chunk. They are
+  // not this component's state: the ones that read them subscribe (see `ThreadFeed`),
+  // and the shell — with the sidebar and the columns under it — stays put.
+  const [feed] = useState(() => new ThreadFeed());
+  const questions = useSyncExternalStore(feed.subscribe, feed.getQuestions);
   const [picture, setPicture] = useState<{ threadId: string; path: string } | null>(null);
   const openPicture = useCallback((path: string) => {
     if (selectedThreadId != null) setPicture({ threadId: selectedThreadId, path });
   }, [selectedThreadId]);
   useEffect(() => setPicture(null), [selectedThreadId]);
-
-  const onQueue = useCallback((next: QueueItem[]) => setQueue(next), []);
-  const onMessages = useCallback((next: UIMessage[]) => setMessages(next), []);
+  const openFile = useCallback((file: string) => {
+    const kind = previewKindOf(file);
+    if (kind === "image" || kind === "svg") openPicture(file);
+    else if (kind === "markdown") actions.openPreview(file);
+    else actions.openChanges(file);
+  }, [actions, openPicture]);
+  // The handlers the memoised sidebar gets: one function each for as long as `actions` lasts.
+  const manageAccount = useCallback((id: AccountId) => { setSettingsTab("accounts"); setSettingsAccount(id); actions.openSettings(); }, [actions]);
+  const openSettings = useCallback(() => { setSettingsTab("general"); setSettingsAccount(undefined); actions.openSettings(); }, [actions]);
 
   const commands = useMemo<Command[]>(
     () => [
@@ -153,6 +161,8 @@ export function Shell({ token }: { token: string }) {
     // run the full height, and each column's top strip is the title bar.
     <ModelCatalogClientContext.Provider value={client}><AccountLoginProvider client={client}><div className="relative h-full overflow-hidden">
       <div inert={styleLabOpen || undefined} className="h-full">
+      {/* The workbench itself. Under 设置 it cannot be focused or clicked — the dialog says it is modal, and now it is. */}
+      <div inert={settingsOpen || undefined} className="h-full">
       <div
         ref={grid}
         className={
@@ -165,7 +175,7 @@ export function Shell({ token }: { token: string }) {
       >
         <Sidebar
           client={client}
-          onManageAccount={id => { setSettingsTab("accounts"); setSettingsAccount(id); actions.openSettings(); }}
+          onManageAccount={manageAccount}
           projects={state.projects}
           projectId={activeProjectId}
           threads={visibleThreads}
@@ -176,7 +186,7 @@ export function Shell({ token }: { token: string }) {
           onSelect={actions.selectThread}
           onNewTask={actions.newTask}
           onOpenPalette={actions.openPalette}
-          onOpenSettings={() => { setSettingsTab("general"); setSettingsAccount(undefined); actions.openSettings(); }}
+          onOpenSettings={openSettings}
           onToggle={actions.toggleLeft}
           onOpenProject={actions.openProject}
           onOpenFolder={actions.openFolder}
@@ -203,8 +213,8 @@ export function Shell({ token }: { token: string }) {
               runMode={state.settings?.runMode}
               modelPicks={state.settings?.modelPicks}
               allowlist={state.settings?.allowlist}
-              onQueue={onQueue}
-              onMessages={onMessages}
+              onQueue={feed.setQueue}
+              onMessages={feed.setMessages}
               onOpenPicture={openPicture}
             />
           ) : (
@@ -229,8 +239,8 @@ export function Shell({ token }: { token: string }) {
         </main>
 
         {showRight && (
-          <RightPane
-            queue={queue}
+          <FedRightPane
+            feed={feed}
             open={right.open}
             tab={right.tab}
             onTab={actions.setRightTab}
@@ -242,18 +252,12 @@ export function Shell({ token }: { token: string }) {
             onPreviewTaken={actions.clearPreview}
             inspect={right.inspect}
             summary={right.summary}
-            messages={messages}
             thread={thread}
             place={isNoProject(thread?.projectId) ? NO_PROJECT_NAME : state.projects.find((entry) => entry.id === thread?.projectId)?.name}
             live={isLiveThread(thread)}
             onBuild={actions.buildFromPlan}
             onOpenPicture={openPicture}
-            onOpenFile={(file) => {
-              const kind = previewKindOf(file);
-              if (kind === "image" || kind === "svg") openPicture(file);
-              else if (kind === "markdown") actions.openPreview(file);
-              else actions.openChanges(file);
-            }}
+            onOpenFile={openFile}
           />
         )}
 
@@ -291,12 +295,13 @@ export function Shell({ token }: { token: string }) {
         <div className="pointer-events-none absolute top-0 right-0 z-10 flex h-topbar items-center pr-sm">
           <RightPaneToggle
             open={right.open}
-            pending={thread.pendingApprovals + queue.filter((item) => item.kind === "question").length}
+            pending={thread.pendingApprovals + questions}
             onToggle={actions.toggleRight}
             className="pointer-events-auto"
           />
         </div>
       )}
+      </div>
 
       {palette && <CommandPalette commands={commands} onClose={actions.closePalette} />}
       {picture != null && picture.threadId === selectedThreadId && (
@@ -305,34 +310,9 @@ export function Shell({ token }: { token: string }) {
         </FileAccessProvider>
       )}
       {settingsOpen && (
-        // 设置 floats over the workbench like Cursor's: the columns stay put
-        // underneath, dimmed and softly blurred, and come back untouched on close.
-        <div
-          role="presentation"
-          className="fixed inset-0 z-20 flex items-center justify-center bg-bg-scrim p-2xl backdrop-blur-xs"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) actions.closeSettings();
-          }}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="设置"
-            className="relative flex h-full max-h-[calc(var(--spacing-3xl)*15)] w-full max-w-[calc(var(--spacing-log-max)+var(--spacing-3xl)*3)] min-h-0 flex-col overflow-hidden rounded-xl bg-bg-elevated shadow-lg ring-1 ring-border-strong"
-          >
-            <button
-              type="button"
-              title="关闭"
-              onClick={actions.closeSettings}
-              className="absolute top-sm right-sm z-10 grid size-lg place-items-center rounded-md text-fg-muted hover:bg-bg-hover hover:text-fg"
-            >
-              <X className="size-md" />
-            </button>
-            <div className="min-h-0 flex-1">
-              <SettingsView initialTab={settingsTab} initialAccount={settingsAccount} onOpenStyleLab={openStyleLab} settings={state.settings} engines={engines} client={client} onClose={actions.closeSettings} />
-            </div>
-          </div>
-        </div>
+        <SettingsOverlay onClose={actions.closeSettings}>
+          <SettingsView initialTab={settingsTab} initialAccount={settingsAccount} onOpenStyleLab={openStyleLab} settings={state.settings} engines={engines} client={client} onClose={actions.closeSettings} />
+        </SettingsOverlay>
       )}
       </div>
       {styleLabOpen && <Suspense fallback={<div className="absolute inset-0 z-30 grid place-items-center bg-bg">加载聊天样式…</div>}><ChatStyleLab onClose={() => setStyleLabOpen(false)} /></Suspense>}

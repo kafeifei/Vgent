@@ -1,6 +1,7 @@
 import { ChevronRight } from "lucide-react";
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { entryRow, focusRow, handleMenuKeyDown, isHeldEnter, menuIntent, menuRows } from "./menuKeys";
 
 /**
  * One row of a cascading menu. A row with `children` or `content` opens the next
@@ -35,10 +36,15 @@ const HOVER_INTENT_MS = 110;
 const PANEL = "rounded-md bg-bg-elevated p-2xs shadow-popover";
 
 /**
- * One level of a cascading menu, and — through the row under the pointer — the
- * levels after it. The next level is `position: fixed` next to its row, so the
- * scrolling list never clips it; it stays a DOM descendant of the popover panel,
- * which is what keeps the popover's outside-click from closing it.
+ * One level of a cascading menu, and — through the row under the pointer, or
+ * → / Enter on the row that has focus — the levels after it. The next level is
+ * `position: fixed` next to its row, so the scrolling list never clips it; it
+ * stays a DOM descendant of the popover panel, which is what keeps the
+ * popover's outside-click from closing it.
+ *
+ * With a keyboard, ↑ ↓ Home End walk a level's rows (`menuKeys.ts`), → or Enter
+ * on a row with a submenu opens it and moves focus in, ← or Esc closes it and
+ * puts focus back on that row.
  */
 export function CascadeLevel({
   nodes,
@@ -50,7 +56,8 @@ export function CascadeLevel({
   /** A list that scrolls opens on its selected row, not at the top — once, so searching does not jump it back. */
   revealSelected?: boolean;
 }) {
-  const [active, setActive] = useState<{ key: string; rect: DOMRect } | null>(null);
+  /** The row whose submenu is open, where it is, and whether a keyboard opened it — so focus goes in. */
+  const [active, setActive] = useState<{ key: string; rect: DOMRect; row: HTMLElement; focusIn: boolean } | null>(null);
   const list = useRef<HTMLDivElement | null>(null);
   const revealed = useRef(false);
   const selectedKey = nodes.find((node) => node.selected === true)?.key;
@@ -75,11 +82,19 @@ export function CascadeLevel({
 
   const submenu = (node: CascadeNode): boolean => node.children != null || node.content != null;
 
-  const activate = (node: CascadeNode, element: HTMLElement, now: boolean) => {
+  const activate = (node: CascadeNode, element: HTMLElement, now: boolean, focusIn = false) => {
     cancel();
-    const apply = () => setActive(submenu(node) && node.disabled !== true ? { key: node.key, rect: element.getBoundingClientRect() } : null);
+    const apply = () =>
+      setActive(submenu(node) && node.disabled !== true ? { key: node.key, rect: element.getBoundingClientRect(), row: element, focusIn } : null);
     if (now) apply();
     else timer.current = setTimeout(apply, HOVER_INTENT_MS);
+  };
+
+  /** ← / Esc inside a submenu: it goes, and focus is back on the row that opened it. */
+  const closeSubmenu = () => {
+    const row = active?.row;
+    setActive(null);
+    if (row?.isConnected === true) focusRow(row);
   };
 
   const open = active == null ? undefined : nodes.find((node) => node.key === active.key);
@@ -94,10 +109,12 @@ export function CascadeLevel({
             {node.section != null && node.section !== nodes[at - 1]?.section && (
               <div className="px-xs pt-xs pb-3xs text-fg-faint text-xs">{node.section}</div>
             )}
+            {/* tabIndex -1: a level is one stop, and ↑ ↓ move between its rows — Tab does not walk them. */}
             <button
               type="button"
               role={node.toggle != null ? "menuitemcheckbox" : "menuitem"}
               {...(node.toggle != null ? { "aria-checked": node.toggle } : {})}
+              tabIndex={-1}
               disabled={node.disabled === true}
               aria-haspopup={submenu(node) ? "menu" : undefined}
               aria-expanded={submenu(node) ? active?.key === node.key : undefined}
@@ -105,12 +122,24 @@ export function CascadeLevel({
               {...(node.selected === true ? { "data-selected": "" } : {})}
               onMouseEnter={(event) => activate(node, event.currentTarget, false)}
               onMouseLeave={cancel}
+              // Focus on another row lets go of a submenu that belongs to none of them.
+              onFocus={() => {
+                if (active != null && active.key !== node.key) setActive(null);
+              }}
+              onKeyDown={(event) => {
+                if (isHeldEnter(event)) event.preventDefault();
+                if (menuIntent(event) !== "into" || !submenu(node) || node.disabled === true) return;
+                event.preventDefault();
+                event.stopPropagation();
+                activate(node, event.currentTarget, true, true);
+              }}
               onClick={(event) => {
                 if (node.onPick != null) node.onPick();
-                else activate(node, event.currentTarget, true);
+                // Enter and Space click with `detail` 0: a keyboard opened it, so focus goes in.
+                else activate(node, event.currentTarget, true, event.detail === 0);
               }}
               className={cn(
-                "flex w-full items-center gap-xs rounded-sm px-xs py-2xs text-left text-fg-muted text-sm hover:bg-bg-active hover:text-fg disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-fg-muted",
+                "flex w-full items-center gap-xs rounded-sm px-xs py-2xs text-left text-fg-muted text-sm outline-hidden hover:bg-bg-active hover:text-fg focus-visible:bg-bg-active focus-visible:text-fg disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-fg-muted",
                 active?.key === node.key && "bg-bg-active text-fg",
               )}
             >
@@ -128,7 +157,9 @@ export function CascadeLevel({
         ))}
       </div>
       {open != null && active != null && (open.content != null || open.children != null) && (
-        <Flyout anchor={active.rect}>{open.content ?? <CascadeLevel nodes={open.children ?? []} />}</Flyout>
+        <Flyout anchor={active.rect} focusIn={active.focusIn} onClose={closeSubmenu}>
+          {open.content ?? <CascadeLevel nodes={open.children ?? []} />}
+        </Flyout>
       )}
     </>
   );
@@ -157,8 +188,13 @@ function Toggle({ on }: { on: boolean }) {
   );
 }
 
-/** A submenu panel beside its row: to the right when it fits, else to the left; never off the bottom. */
-function Flyout({ anchor, children }: { anchor: DOMRect; children: ReactNode }) {
+/**
+ * A submenu panel beside its row: to the right when it fits, else to the left;
+ * never off the bottom. Opened from the keyboard (`focusIn`), focus goes in
+ * with it — onto the row that is the current choice, else its first, or where a
+ * field of its own (the model list's search box, `autoFocus`) has already put it.
+ */
+function Flyout({ anchor, focusIn, onClose, children }: { anchor: DOMRect; focusIn: boolean; onClose: () => void; children: ReactNode }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
 
@@ -171,12 +207,22 @@ function Flyout({ anchor, children }: { anchor: DOMRect; children: ReactNode }) 
     setPosition({ left, top });
   }, [anchor]);
 
+  useLayoutEffect(() => {
+    const panel = ref.current;
+    if (!focusIn || panel == null || panel.contains(document.activeElement)) return;
+    focusRow(entryRow(menuRows(panel)) ?? panel, false);
+  }, [focusIn]);
+
   return (
     <div
       ref={ref}
       role="menu"
+      tabIndex={-1}
+      onKeyDown={(event) => {
+        if (ref.current != null) handleMenuKeyDown(event, ref.current, { nested: true, closeSubmenu: onClose });
+      }}
       style={{ left: position?.left ?? -9999, top: position?.top ?? -9999 }}
-      className={cn("fixed z-40 min-w-[calc(var(--spacing-3xl)*2.4)] max-w-[calc(var(--spacing-3xl)*5)]", PANEL)}
+      className={cn("fixed z-40 min-w-[calc(var(--spacing-3xl)*2.4)] max-w-[calc(var(--spacing-3xl)*5)] outline-hidden", PANEL)}
     >
       {children}
     </div>

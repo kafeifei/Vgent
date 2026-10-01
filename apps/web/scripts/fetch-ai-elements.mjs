@@ -29,11 +29,12 @@ const ELEMENTS_URL = (name) => `https://elements.ai-sdk.dev/api/registry/${name}
 const SHADCN_URL = (name) => `https://ui.shadcn.com/r/styles/new-york-v4/${name}.json`;
 
 /**
- * The elements the workbench actually renders. `response` is not its own
- * registry item — the streamdown renderer ships inside `message` as
- * `MessageResponse`.
+ * The elements the workbench actually renders. The chat log itself is ours
+ * (`features/worklog`), so `conversation` / `message` / `reasoning` / `tool` /
+ * `confirmation` are not fetched: nothing imports them, and a fetched but
+ * unreferenced source is dead code (`manifest.test.ts` fails on it).
  */
-const ELEMENTS = ["conversation", "message", "reasoning", "tool", "code-block", "shimmer", "confirmation", "image", "queue", "context"];
+const ELEMENTS = ["code-block", "shimmer", "image", "queue", "context"];
 
 /**
  * shadcn primitives the workbench uses on its own, not through an element:
@@ -68,20 +69,13 @@ const PATCHES = [
     },
   },
   {
-    id: "exact-optional-reasoning",
-    only: "reasoning.tsx",
-    why: "reasoning.tsx passes an optional `onOpenChange` straight into `useControllableState`, whose `onChange` is required-or-absent under `exactOptionalPropertyTypes`.",
-    apply: (source) =>
-      source.replace(
-        "      onChange: onOpenChange,\n",
-        "      ...(onOpenChange === undefined ? {} : { onChange: onOpenChange }),\n",
-      ),
-  },
-  {
     id: "exact-optional-shimmer",
     only: "shimmer.tsx",
-    why: "shimmer.tsx casts its style object to React's `CSSProperties`, which motion's `MotionStyle` rejects under `exactOptionalPropertyTypes`.",
-    apply: (source) => source.replace("} as CSSProperties\n", '} as NonNullable<MotionProps["style"]>\n'),
+    why: "shimmer.tsx casts its style object to React's `CSSProperties`, which motion's `MotionStyle` rejects under `exactOptionalPropertyTypes`; the import the cast leaves unused goes too (`noUnusedLocals`).",
+    apply: (source) => {
+      const cast = source.replace("} as CSSProperties\n", '} as NonNullable<MotionProps["style"]>\n');
+      return cast === source ? source : cast.replace('import type { CSSProperties, ElementType, JSX } from "react";', 'import type { ElementType, JSX } from "react";');
+    },
   },
   {
     id: "v7-usage-details",
@@ -98,6 +92,18 @@ const PATCHES = [
     why: "context.tsx rebuilds its schema from destructured, possibly-undefined `usage` / `modelId`, which `exactOptionalPropertyTypes` rejects for set-or-absent fields.",
     apply: (source) =>
       source.replace("  usage?: LanguageModelUsage;\n  modelId?: ModelId;\n", "  usage?: LanguageModelUsage | undefined;\n  modelId?: ModelId | undefined;\n"),
+  },
+  {
+    id: "image-frame-props",
+    only: "image.tsx",
+    why: "An SVG's own aspect has to reach the `<img>` (width, height, style) so its box exists before the drawing decodes; the registry's `ImageProps` has no such props.",
+    apply: (source) =>
+      source
+        .replace('import { cn } from "@/lib/utils";', 'import type { CSSProperties } from "react";\nimport { cn } from "@/lib/utils";')
+        .replace(
+          "  alt?: string;\n};",
+          "  alt?: string;\n  /** The drawing's own aspect, so an SVG reserves its box before it decodes. */\n  width?: number;\n  height?: number;\n  style?: CSSProperties;\n};",
+        ),
   },
   {
     id: "exact-optional-context-menu",
@@ -190,7 +196,7 @@ async function main() {
   }
 
   const provenance = {
-    note: "Fetched from the official registries by scripts/fetch-ai-elements.mjs. `response` has no registry item of its own — the streamdown renderer ships inside `message` as `MessageResponse`.",
+    note: "Fetched from the official registries by scripts/fetch-ai-elements.mjs. Only what the workbench renders is fetched; the chat log itself is ours (features/worklog).",
     fetchedAt,
     patches: PATCHES.map(({ id, why }) => ({ id, why })),
     npmDependencies: [...npmDependencies].sort(),

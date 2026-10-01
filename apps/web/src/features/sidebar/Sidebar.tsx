@@ -1,4 +1,4 @@
-import { useState, type ComponentType } from "react";
+import { memo, useState, type ComponentType } from "react";
 import { ChevronRight, FolderOpen, FolderPlus, ListFilter, PanelLeft, Plus, Search, Settings, SquarePen } from "lucide-react";
 import { PopItem, PopTitle, Popover } from "@/components/Popover";
 import { ProjectPicker } from "@/components/ProjectPicker";
@@ -8,7 +8,7 @@ import type { AccountId } from "@/lib/types";
 import { hasTrafficLights } from "@/lib/host";
 import type { Project, ThreadSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { GROUPING_LABELS, groupThreads, type Grouping } from "./grouping";
+import { GROUPING_LABELS, useGroupedThreads, type Grouping } from "./grouping";
 import { TaskItem } from "./TaskItem";
 
 const GROUPINGS: readonly Grouping[] = ["project", "status", "updated"];
@@ -47,32 +47,7 @@ function TopEntry({
   );
 }
 
-/** Left column: the window strip, the top entries, the grouped task list, the foot. */
-export function Sidebar({
-  client,
-  onManageAccount,
-  projects,
-  projectId,
-  threads,
-  grouping,
-  onGrouping,
-  selectedThreadId,
-  connected,
-  onSelect,
-  onNewTask,
-  onOpenPalette,
-  onOpenSettings,
-  onToggle,
-  onOpenProject,
-  onOpenFolder,
-  onPickFolder,
-  settingsOpen,
-  onArchive,
-  onCheckUncommitted,
-  onUnread,
-  onDelete,
-  onRename,
-}: {
+export interface SidebarProps {
   client: ApiClient;
   onManageAccount: (id: AccountId) => void;
   projects: Project[];
@@ -96,14 +71,48 @@ export function Sidebar({
   settingsOpen: boolean;
   /** `preserveChanges`: the row's menu confirmed the worktree's uncommitted changes go along. */
   onArchive: (threadId: string, archived: boolean, preserveChanges?: boolean) => void;
-  /** How many files a task's worktree has not committed, asked before archiving it. */
+  /** How many files a task's worktree has not committed, asked before archiving or deleting it. */
   onCheckUncommitted: (threadId: string) => Promise<number>;
   /** 标为未读 / 标为已读 from the row's menu. */
   onUnread: (threadId: string, unread: boolean) => void;
   onDelete: (threadId: string) => void;
   onRename: (threadId: string, title: string) => void;
-}) {
-  const groups = groupThreads(threads, projects, grouping);
+}
+
+/**
+ * Left column: the window strip, the top entries, the grouped task list, the foot.
+ *
+ * It is memoised, and so is every row: a snapshot that changes one task
+ * re-renders that task's row, not the list around it. That holds only while what comes in is stable —
+ * the snapshot keeps the identity of every task that did not change, and the
+ * handlers are the workbench's own.
+ */
+export const Sidebar = memo(function Sidebar({
+  client,
+  onManageAccount,
+  projects,
+  projectId,
+  threads,
+  grouping,
+  onGrouping,
+  selectedThreadId,
+  connected,
+  onSelect,
+  onNewTask,
+  onOpenPalette,
+  onOpenSettings,
+  onToggle,
+  onOpenProject,
+  onOpenFolder,
+  onPickFolder,
+  settingsOpen,
+  onArchive,
+  onCheckUncommitted,
+  onUnread,
+  onDelete,
+  onRename,
+}: SidebarProps) {
+  const groups = useGroupedThreads(threads, projects, grouping);
   // Only 已归档 folds, and only for as long as the sidebar is mounted: it is a
   // glance, not a preference.
   const [expanded, setExpanded] = useState(false);
@@ -226,12 +235,12 @@ export function Sidebar({
                     key={thread.id}
                     thread={thread}
                     selected={thread.id === selectedThreadId}
-                    onSelect={() => onSelect(thread.id)}
-                    onArchive={(archived, preserveChanges) => onArchive(thread.id, archived, preserveChanges)}
-                    onCheckUncommitted={() => onCheckUncommitted(thread.id)}
-                    onUnread={(unread) => onUnread(thread.id, unread)}
-                    onDelete={() => onDelete(thread.id)}
-                    onRename={(title) => onRename(thread.id, title)}
+                    onSelect={onSelect}
+                    onArchive={onArchive}
+                    onCheckUncommitted={onCheckUncommitted}
+                    onUnread={onUnread}
+                    onDelete={onDelete}
+                    onRename={onRename}
                   />
                 ))}
             </div>
@@ -255,4 +264,4 @@ export function Sidebar({
       </div>
     </aside>
   );
-}
+});

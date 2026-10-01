@@ -1,3 +1,4 @@
+import { useMemo, useSyncExternalStore } from "react";
 import { NO_PROJECT_NAME, isNoProject } from "@/lib/noProject";
 import type { Project, ThreadStatus, ThreadSummary } from "@/lib/types";
 
@@ -129,4 +130,50 @@ export function groupThreads(
     byDay.set(bucket.key, group);
   }
   return withArchived([...byDay.values()].sort((a, b) => a.order - b.order));
+}
+
+const currentMinute = (): number => Math.floor(Date.now() / 60_000);
+
+const minuteListeners = new Set<() => void>();
+let minuteTimer: ReturnType<typeof setTimeout> | undefined;
+
+function armMinute(): void {
+  minuteTimer = setTimeout(() => {
+    for (const listener of [...minuteListeners]) listener();
+    armMinute();
+  }, 60_000 - (Date.now() % 60_000) + 50);
+}
+
+/**
+ * Ticks on the clock's own minute boundaries, so a window left open and idle
+ * still turns 今天 into 昨天 on time. One timer for every subscriber: each row's
+ * stamp listens too, and they all move in the same render.
+ */
+function subscribeMinute(notify: () => void): () => void {
+  minuteListeners.add(notify);
+  if (minuteListeners.size === 1) armMinute();
+  return () => {
+    minuteListeners.delete(notify);
+    if (minuteListeners.size > 0) return;
+    clearTimeout(minuteTimer);
+    minuteTimer = undefined;
+  };
+}
+
+/** The current minute (since the epoch), rendering again when the clock moves to the next. */
+export function useMinute(): number {
+  return useSyncExternalStore(subscribeMinute, currentMinute, currentMinute);
+}
+
+/**
+ * `groupThreads` for a component that renders far more often than its tasks
+ * change (a task streaming re-renders everything above it): grouped again only
+ * when the tasks, the projects or the way of grouping are different objects —
+ * or the clock moved to another minute, since the day groups ("今天" / "昨天")
+ * are cut against it, which it hears of itself: an idle window has nothing else
+ * that would render it again. Anything else hands back the very same groups.
+ */
+export function useGroupedThreads(threads: readonly ThreadSummary[], projects: readonly Project[], grouping: Grouping): ThreadGroup[] {
+  const minute = useMinute();
+  return useMemo(() => groupThreads(threads, projects, grouping, minute * 60_000), [threads, projects, grouping, minute]);
 }

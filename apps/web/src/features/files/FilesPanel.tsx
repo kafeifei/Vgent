@@ -10,9 +10,7 @@ import { type PreviewKind, previewKindOf } from "@/lib/preview";
 import type { FileContent, FileEntry, FileListing } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { FileAccessProvider } from "./fileAccess";
-
-/** Up to this many entries, the tree opens fully — collapsing would hide everything. */
-const EXPAND_ALL_MAX = 8;
+import { useTreeExpansion } from "./treeExpansion";
 
 const LANGUAGES: Record<string, BundledLanguage> = {
   ts: "ts",
@@ -216,7 +214,7 @@ export function FilesPanel({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  const { expanded, toggle, settle } = useTreeExpansion(threadId);
   const [selected, setSelected] = useState<string | null>(null);
   const [content, setContent] = useState<FileContent | null>(null);
   const [contentError, setContentError] = useState<string | null>(null);
@@ -246,12 +244,9 @@ export function FilesPanel({
         if (mine !== generation.current) return;
         setListing(next);
         setError(null);
-        // Everything open when there is little to show, all closed otherwise.
-        setExpanded(
-          next.entries.length <= EXPAND_ALL_MAX
-            ? new Set(next.entries.filter((entry) => entry.kind === "dir").map((entry) => entry.path))
-            : new Set(),
-        );
+        // What starts open is decided by a task's first listing only: this runs
+        // again whenever the task writes, and must not fold the tree under the reader.
+        settle(next.entries);
       })
       .catch((failure: unknown) => {
         if (mine !== generation.current) return;
@@ -261,7 +256,7 @@ export function FilesPanel({
       .finally(() => {
         if (mine === generation.current) setLoading(false);
       });
-  }, [active, client, threadId, refreshKey, reload]);
+  }, [active, client, threadId, refreshKey, reload, settle]);
 
   // A thread switch invalidates the open file, not just the listing.
   useEffect(() => {
@@ -335,13 +330,6 @@ export function FilesPanel({
     [entries, needle],
   );
   const tree = useMemo(() => (needle === "" ? buildTree(entries) : []), [entries, needle]);
-
-  const toggle = (path: string): void =>
-    setExpanded((current) => {
-      const next = new Set(current);
-      if (!next.delete(path)) next.add(path);
-      return next;
-    });
 
   if (selected != null) {
     return (

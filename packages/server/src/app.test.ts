@@ -659,14 +659,22 @@ describe("createApp", () => {
     const reader = (response.body as ReadableStream<Uint8Array>).getReader();
     const decoder = new TextDecoder();
 
+    // One event per `data:` line; what a read brings beyond the event asked for
+    // stays for the next one.
+    let buffer = "";
     const readEvent = async (): Promise<{ threads: ThreadSummary[] }> => {
-      let buffer = "";
       for (;;) {
+        const end = buffer.indexOf("\n\n");
+        if (end >= 0) {
+          const event = buffer.slice(0, end);
+          buffer = buffer.slice(end + 2);
+          const line = event.split("\n").find((entry) => entry.startsWith("data: "));
+          if (line != null) return JSON.parse(line.slice(6)) as { threads: ThreadSummary[] };
+          continue;
+        }
         const { value, done } = await reader.read();
         if (done) throw new Error("状态流提前结束");
         buffer += decoder.decode(value, { stream: true });
-        const line = buffer.split("\n").find((entry) => entry.startsWith("data: "));
-        if (line != null) return JSON.parse(line.slice(6)) as { threads: ThreadSummary[] };
       }
     };
 
@@ -675,7 +683,12 @@ describe("createApp", () => {
 
     await readSse(await postJson(app, `/api/chat/${thread.id}`, { messages: [userMessage("u1", "你好")] }));
     await waitForStatus(app, thread.id, "idle");
-    const updated = await readEvent();
+    // The run pushes several snapshots on its way (running, the reply, idle);
+    // which of them a read lands on depends on timing, so read on to the last.
+    let updated = await readEvent();
+    for (let read = 0; read < 50 && !updated.threads.some((entry) => entry.id === thread.id && entry.status === "idle" && entry.messageCount > 0); read++) {
+      updated = await readEvent();
+    }
     expect(updated.threads.find((entry) => entry.id === thread.id)?.messageCount).toBeGreaterThan(0);
 
     await reader.cancel();

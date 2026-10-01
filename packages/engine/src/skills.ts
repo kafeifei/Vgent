@@ -6,7 +6,7 @@
  * decides the skill applies. That is the whole mechanism: an index costs a line
  * per skill, the instructions cost nothing until they are needed.
  */
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 /** Header bytes read per skill. Frontmatter lives at the very top. */
@@ -62,7 +62,9 @@ export async function loadSkillsIndex(dirs: readonly string[]): Promise<SkillSum
   for (const dir of dirs) {
     const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
+      // A skill installed as a symlink (a shared skills repo linked into place) is a
+      // directory to whoever opens it; only `stat` follows the link where `Dirent` does not.
+      if (!entry.isDirectory() && !(entry.isSymbolicLink() && (await stat(join(dir, entry.name)).catch(() => null))?.isDirectory())) continue;
       const path = join(dir, entry.name, "SKILL.md");
       const source = await readFile(path, "utf8").catch(() => undefined);
       if (source == null) continue;

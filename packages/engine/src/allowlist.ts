@@ -94,7 +94,10 @@ export function isVoidedBashEntry(entry: string): boolean {
  * Commands `bash` may run unattended in `allow-edits`, and which a `bash(...)`
  * entry never has to name. Deliberately tiny: it exists to stop the agent
  * stalling on `git status`, not to be a sandbox. Everything here must be
- * read-only *and* free of shell side effects.
+ * read-only *and* free of shell side effects — which rules out a test runner:
+ * `pnpm test` runs whatever the agent has just written into the tests or the
+ * `test` script, and this mode lets it write both. The first `pnpm test` asks;
+ * 「一直允许」 then writes `bash(pnpm test)`, which is the user's own decision.
  */
 const BASH_SAFE_LIST: readonly (readonly string[])[] = [
   ["ls"],
@@ -107,12 +110,55 @@ const BASH_SAFE_LIST: readonly (readonly string[])[] = [
   ["git", "diff"],
   ["git", "log"],
   ["node", "--version"],
-  ["pnpm", "test"],
-  ["npm", "test"],
 ];
 
-/** `find` predicates that execute or delete. Their presence disqualifies a `find`. */
-const FIND_DANGEROUS_FLAGS = new Set(["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf"]);
+/** `find` predicates that execute, delete or write a file. Their presence disqualifies a `find`. */
+const FIND_DANGEROUS_FLAGS = new Set([
+  "-delete",
+  "-exec",
+  "-execdir",
+  "-ok",
+  "-okdir",
+  "-fprint",
+  "-fprint0",
+  "-fprintf",
+  "-fls",
+]);
+
+/**
+ * Options that turn a read-only `git` command into one that writes a file
+ * (`--output=<file>`) or runs a program the repository's config names
+ * (`--ext-diff`, `--textconv`). Some git commands (and older versions of others)
+ * accept any unambiguous prefix of a long option, so the check is on the prefix,
+ * not on the full spelling — stricter than the newest `diff` and `log` need, and
+ * free: none of these belongs in a read-only call.
+ */
+const GIT_DANGEROUS_OPTION = /^--(?:out|ext|textc)/;
+
+/**
+ * Options that make `rg` run another program: `--pre` (a preprocessor for every
+ * file it searches), `--hostname-bin`, and `-z` / `--search-zip` (external
+ * decompressors). Short flags can be bundled, and not only with letters: `-nz`,
+ * but also `-0z` (`--null`) and `-.z` (`--hidden`). So any single-dash word with
+ * a `z` in it counts; one where the `z` is really a value (`-ezip`, a pattern)
+ * only costs a question.
+ */
+const RG_DANGEROUS_OPTION = /^(?:--(?:pre|hostname-bin|search-zip)|-(?!-).*z)/;
+
+/** Whether a safe-listed command carries an option that makes it write or execute. */
+function hasDangerousOption(words: readonly string[]): boolean {
+  switch (words[0]) {
+    case "find":
+      return words.some((word) => FIND_DANGEROUS_FLAGS.has(word));
+    case "git":
+      // words[1] is the sub-command; only what follows it is an option.
+      return words.slice(2).some((word) => GIT_DANGEROUS_OPTION.test(word));
+    case "rg":
+      return words.slice(1).some((word) => RG_DANGEROUS_OPTION.test(word));
+    default:
+      return false;
+  }
+}
 
 /** Characters that chain, redirect or substitute — a segment containing one is never auto-approved. */
 const UNSAFE_SHELL_CHARS = /[<>$`(){}\\!*?~#\n\r]/;
@@ -126,17 +172,36 @@ const UNSAFE_SHELL_CHARS = /[<>$`(){}\\!*?~#\n\r]/;
 const COMMAND_WRAPPERS = new Set([
   "sudo",
   "doas",
+  "su",
   "env",
   "xargs",
   "nohup",
   "time",
+  "timeout",
+  "gtimeout",
+  "nice",
+  "ionice",
+  "stdbuf",
+  "setsid",
+  "watch",
+  "caffeinate",
+  "arch",
+  "flock",
+  "unshare",
+  "nsenter",
+  "chroot",
+  "parallel",
+  "busybox",
   "command",
+  "builtin",
   "exec",
   "eval",
   "sh",
   "bash",
   "zsh",
   "fish",
+  "dash",
+  "ksh",
 ]);
 
 /**
@@ -209,13 +274,10 @@ function isSafeListedSegment(segment: string): boolean {
   const match = BASH_SAFE_LIST.find((prefix) => prefix.every((word, index) => words[index] === word));
   if (match === undefined) return false;
 
-  // A bare `node`/`pnpm`/`npm` prefix is only allowed in the exact form on the
-  // list; extra arguments would change what runs.
-  if (match[0] === "node" || match[0] === "pnpm" || match[0] === "npm") {
-    return words.length === match.length;
-  }
-  if (words[0] === "find" && words.some((word) => FIND_DANGEROUS_FLAGS.has(word))) return false;
-  return true;
+  // A bare `node` prefix is only allowed in the exact form on the list; extra
+  // arguments (`--eval`, a script) would change what runs.
+  if (match[0] === "node") return words.length === match.length;
+  return !hasDangerousOption(words);
 }
 
 /**

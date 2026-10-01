@@ -30,6 +30,42 @@ function within(root: string, target: string): boolean {
   return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`));
 }
 
+/**
+ * True when `target` lies inside a `.git` entry below `root`: a repository's
+ * `.git` directory, or the `.git` file a linked worktree has instead. Whatever
+ * is written there decides which programs git runs (`config`'s `core.fsmonitor`,
+ * `hooks/*`), so a file tool has no business changing it. Both paths have to be
+ * canonical (symlinks resolved) for the answer to mean anything.
+ */
+export function isInsideGitMetadata(root: string, target: string): boolean {
+  const rel = relative(root, target);
+  if (rel === "" || isAbsolute(rel) || rel === ".." || rel.startsWith(`..${sep}`)) return false;
+  return rel.split(sep).some(isGitName);
+}
+
+/** `.git`, however the filesystem is willing to spell it (see `foldFileName`). */
+const isGitName = (segment: string): boolean => foldFileName(segment) === ".git";
+
+/**
+ * One path segment in a form where every spelling a filesystem treats as the
+ * same name compares equal. macOS volumes are case-insensitive by default, and
+ * the case folding is Unicode's, not ASCII's: APFS takes `ſ` for `s`, the
+ * Kelvin sign for `k`, `ß` and `ẞ` for `ss`, `ﬅ` for `st`. Both APFS and HFS+
+ * ignore NFC vs NFD, and HFS+ also ignores zero-width code points inside a
+ * name. NFKC folds wider still (fullwidth `ｇ` becomes `g`, which no volume
+ * does), on purpose: this only decides what a guard refuses or asks about, and
+ * a name folded in by mistake costs one question where one left out is a bypass.
+ */
+export const foldFileName = (segment: string): string =>
+  segment
+    .replace(/\p{Default_Ignorable_Code_Point}/gu, "")
+    .normalize("NFKC")
+    // Lower, upper, lower: `ẞ` only lowers to `ß`, and only upper-casing makes that `ss`.
+    .toLowerCase()
+    .toUpperCase()
+    .toLowerCase()
+    .normalize("NFKC");
+
 function expandHome(path: string): string {
   if (path === "~") return homedir();
   if (path.startsWith(`~${sep}`) || path.startsWith("~/")) return join(homedir(), path.slice(2));

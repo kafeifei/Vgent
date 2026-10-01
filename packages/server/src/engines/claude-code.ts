@@ -1,6 +1,6 @@
 import { collectHarnessAgentToolApprovalContinuations, collectHarnessAgentToolResultContinuations } from "@ai-sdk/harness/agent";
 import { engineOptionsOf, type EngineOptions } from "../engine-options.js";
-import { agentInstructionsSection, connectMcpServers, loadAgentInstructions, planModeInstructions } from "@vgent/engine";
+import { agentInstructionsSection, connectMcpServers, decideApproval, loadAgentInstructions, planModeInstructions, type PermissionMode } from "@vgent/engine";
 import { cuaMcpConfig, onlyCuaTools, requireCuaDriver } from "../computer-use/cua.js";
 import { claudeCodeEffort, claudeCodeProviderEnv, claudeCodeThinking, createClaudeCodeEngine } from "@vgent/engines";
 import { splitProviderModelSpec, type ProviderConfig } from "@vgent/providers";
@@ -106,6 +106,21 @@ export function asHostTools(tools: ToolSet): ToolSet {
   return Object.fromEntries(
     Object.entries(tools).map(([name, tool]) => [name, { ...tool, type: "function", deferLoading: false } as Tool]),
   );
+}
+
+/**
+ * What each host tool needs before it runs. The runtime's `permissionMode` only
+ * governs its own built-in tools — the bridge lets `mcp__harness-tools__*`
+ * through — so without this the desktop-control tools would run unattended in
+ * every mode, 只读 included. It is the very policy the in-house engine applies
+ * to the same tools: looking is free, acting asks, 全自动 and a standing
+ * 「一直允许」 of the tool waive the question.
+ */
+export function hostToolApproval(
+  names: readonly string[],
+  policy: { mode: PermissionMode; alwaysAllow: readonly string[] },
+): Record<string, "not-applicable" | "user-approval"> {
+  return Object.fromEntries(names.map((toolName) => [toolName, decideApproval({ toolName, input: undefined, ...policy })]));
 }
 
 /**
@@ -219,7 +234,12 @@ export function createClaudeCodeEngineFactory(accounts?: EngineAccounts): Engine
         permissionMode: ctx.permissionMode,
         ...(route != null ? { model: route.model, auth: route.auth } : model != null ? { model: withLongContext(model, window) } : {}),
         env,
-        ...(cua != null ? { tools: asHostTools(cuaTools) } : {}),
+        ...(cua != null
+          ? {
+              tools: asHostTools(cuaTools),
+              toolApproval: hostToolApproval(Object.keys(cuaTools), { mode: ctx.permissionMode, alwaysAllow: ctx.alwaysAllow }),
+            }
+          : {}),
         // 推理强度 is the harness's `effort`; thinking itself stays adaptive and
         // `summarized`, which is what puts the reasoning in the stream. A task
         // that names no level runs on 高.

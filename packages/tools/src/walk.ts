@@ -1,6 +1,6 @@
 /** Shared file-walking helpers for `grep` and `glob`, built on Node 22's `fs.promises.glob`. */
 import { glob as fsGlob } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 
 // A function-valued `exclude` is only honored by fs.promises.glob's recursive (`**`) walk path;
 // non-magic/single-level patterns like `*` skip the callback entirely and yield everything,
@@ -13,10 +13,31 @@ export interface WalkEntry {
   isDirectory: boolean;
 }
 
+/**
+ * `fs.promises.glob` matches an absolute pattern (`/Users/x/.ssh/*`) or one that
+ * climbs out with `..` wherever it points, ignoring `cwd`. The search root was
+ * already validated by the caller; the pattern must not take the walk out of it.
+ */
+function assertPatternInsideRoot(pattern: string): void {
+  if (isAbsolute(pattern) || pattern.split(/[\\/]/).includes("..")) {
+    throw new Error(`Pattern ${JSON.stringify(pattern)} must be relative to the search directory and must not contain "..".`);
+  }
+}
+
+/** True when `target` is `root` itself or lies below it (lexically; resolve symlinks first when they matter). */
+export function isInside(root: string, target: string): boolean {
+  const rel = relative(root, target);
+  return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`));
+}
+
 /** Yields absolute paths (files and directories) under `root` matching `pattern`, skipping `.git` and `node_modules`. */
 export async function* walkEntries(root: string, pattern = "**/*"): AsyncGenerator<WalkEntry> {
+  assertPatternInsideRoot(pattern);
   for await (const entry of fsGlob(pattern, { cwd: root, withFileTypes: true, exclude: EXCLUDE_PATTERNS })) {
-    yield { path: join(entry.parentPath, entry.name), isDirectory: entry.isDirectory() };
+    const path = join(entry.parentPath, entry.name);
+    // Backstop for spellings the syntactic check cannot see, e.g. `{..,x}/*`.
+    if (!isInside(root, path)) continue;
+    yield { path, isDirectory: entry.isDirectory() };
   }
 }
 

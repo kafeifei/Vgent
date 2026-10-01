@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -29,6 +29,17 @@ describe("loadSkillsIndex", () => {
       { name: "ai-sdk", description: "Write AI SDK v7 code.", path: join(dir, "ai-sdk", "SKILL.md") },
       { name: "release-notes", description: "", path: join(dir, "release-notes", "SKILL.md") },
     ]);
+  });
+
+  it("indexes a skill that is installed as a symlink to a directory, and skips a dangling one", async () => {
+    const shared = join(root, "shared-skills");
+    await writeSkill(shared, "learn", `---\nname: learn\ndescription: "Distill a skill."\n---\n`);
+    const dir = join(root, "skills");
+    await mkdir(dir, { recursive: true });
+    await symlink(join(shared, "learn"), join(dir, "learn"));
+    await symlink(join(root, "gone"), join(dir, "dangling"));
+
+    expect(await loadSkillsIndex([dir])).toEqual([{ name: "learn", description: "Distill a skill.", path: join(dir, "learn", "SKILL.md") }]);
   });
 
   it("lets an earlier directory shadow a later one of the same name", async () => {

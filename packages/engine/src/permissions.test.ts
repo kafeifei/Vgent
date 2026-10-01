@@ -1,3 +1,7 @@
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createApprovalPolicy, decideApproval } from "./permissions.js";
 
@@ -30,6 +34,76 @@ describe("decideApproval", () => {
     for (const toolName of ["write", "edit"]) {
       expect(decideApproval({ mode: "allow-reads", toolName, input: {} })).toBe("user-approval");
       expect(decideApproval({ mode: "allow-edits", toolName, input: {} })).toBe("not-applicable");
+    }
+  });
+
+  it("asks before a write that leaves commands for the next worktree, even where edits are approved", () => {
+    for (const toolName of ["write", "edit"]) {
+      for (const file_path of [".vgent/worktrees.json", "/repo/.cursor/worktrees.json", "sub\\.vgent\\worktrees.json"]) {
+        expect(decideApproval({ mode: "allow-edits", toolName, input: { file_path } }), `${toolName} ${file_path}`).toBe("user-approval");
+      }
+      // The same file under another spelling of its path is still that file.
+      for (const file_path of [".vgent/./worktrees.json", ".vgent//worktrees.json", "src/../.vgent/worktrees.json", "./.cursor/worktrees.json", ".VGENT/Worktrees.JSON", "/repo/./.cursor//worktrees.json"]) {
+        expect(decideApproval({ mode: "allow-edits", toolName, input: { file_path } }), `${toolName} ${file_path}`).toBe("user-approval");
+      }
+      // Ordinary files, and look-alikes, are edited as before.
+      for (const file_path of ["src/worktrees.json", ".vgent/settings.json", "not.vgent/worktrees.json", ".vgent/worktrees.json.bak", ".vgent/x/../settings.json", "../.vgent/worktrees.json.d"]) {
+        expect(decideApproval({ mode: "allow-edits", toolName, input: { file_path } }), `${toolName} ${file_path}`).toBe("not-applicable");
+      }
+      // A standing 「一直允许」 of the tool, and 全自动, are the user's own call.
+      expect(decideApproval({ mode: "allow-edits", toolName, input: { file_path: ".vgent/worktrees.json" }, alwaysAllow: [toolName] })).toBe("not-applicable");
+      expect(decideApproval({ mode: "allow-all", toolName, input: { file_path: ".vgent/worktrees.json" } })).toBe("not-applicable");
+    }
+  });
+
+  // Spellings of `.vgent/worktrees.json` / `.cursor/worktrees.json` that a filesystem
+  // may take for the file itself, and that ASCII-only `/i` matching missed.
+  const setupConfigSpellings = [
+    ".vgent/worktreeſ.json", // long s: APFS folds it to `s`
+    ".curſor/worktrees.json",
+    ".VGENT/WORKTREEſ.JSON",
+    ".vgent/wor\u212atrees.json", // Kelvin sign: canonically `K`
+    ".cursor/ｗｏｒｋｔｒｅｅｓ．ｊｓｏｎ", // fullwidth
+    "．ｖｇｅｎｔ/worktrees.json",
+    ".vg\u200cent/worktrees.json", // HFS+ ignores zero-width code points
+    ".vgent\u034f/worktrees.json", // combining grapheme joiner, default-ignorable
+    "sub/../.curſor/./worktreeſ.json",
+  ];
+
+  it("asks before a worktree setup config under any spelling the filesystem folds to it", () => {
+    for (const toolName of ["write", "edit"]) {
+      for (const file_path of setupConfigSpellings) {
+        expect(decideApproval({ mode: "allow-edits", toolName, input: { file_path } }), `${toolName} ${JSON.stringify(file_path)}`).toBe("user-approval");
+      }
+      // A combining mark makes another name (`é` is not `e`), and a fullwidth
+      // solidus is part of a name, not a separator.
+      for (const file_path of [".vgent/worktree\u0301s.json", ".vgent／worktrees.json", "docs/worktrees.json", ".vgent/other.json"]) {
+        expect(decideApproval({ mode: "allow-edits", toolName, input: { file_path } }), `${toolName} ${JSON.stringify(file_path)}`).toBe("not-applicable");
+      }
+    }
+  });
+
+  it("asks before every spelling this filesystem resolves to a worktree setup config", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vgent-setup-config-"));
+    try {
+      for (const dir of [".vgent", ".cursor"]) {
+        await mkdir(join(root, dir));
+        await writeFile(join(root, dir, "worktrees.json"), "{}");
+      }
+      // macOS's default volume is case-insensitive APFS, where the long s and the
+      // Kelvin sign really are the file: without that the check below would say nothing.
+      if (process.platform === "darwin" && existsSync(join(root, ".VGENT", "WORKTREES.JSON"))) {
+        expect(existsSync(join(root, ".vgent", "worktreeſ.json"))).toBe(true);
+        expect(existsSync(join(root, ".curſor", "worktrees.json"))).toBe(true);
+        expect(existsSync(join(root, ".vgent", "wor\u212atrees.json"))).toBe(true);
+      }
+      const candidates = [...setupConfigSpellings, ".Vgent/WorkTrees.Json", ".vgent/worktrees.json\u200b", ".vgent/wor\u212atreeſ.json"];
+      for (const file_path of candidates) {
+        if (!existsSync(join(root, file_path))) continue;
+        expect(decideApproval({ mode: "allow-edits", toolName: "write", input: { file_path: join(root, file_path) } }), JSON.stringify(file_path)).toBe("user-approval");
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -129,6 +203,14 @@ describe("policy description and execution", () => {
       const line = lines.find((line) => line.startsWith(decision === "not-applicable" ? "Run without tool approval:" : "Calls to "));
       expect(line).toContain(name);
     }
+  });
+
+  it("tells a subagent under allow-edits that worktree setup configs are still denied", () => {
+    const line = (mode: "allow-reads" | "allow-edits" | "allow-all") =>
+      createApprovalPolicy(mode).describe(["read", "write"], false).split("\n").find((text) => text.includes("worktree setup config"));
+    expect(line("allow-edits")).toContain("are denied in this subagent");
+    expect(line("allow-reads")).toBeUndefined();
+    expect(line("allow-all")).toBeUndefined();
   });
 
   it("tells the interactive agent the same thing in every mode, so a mode change keeps the prompt cache", () => {

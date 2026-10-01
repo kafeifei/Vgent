@@ -7,6 +7,7 @@
  * side-effecting.
  */
 
+import { foldFileName } from "@vgent/tools";
 import { BASH_TOOL, bashEntryCommand, isVoidedBashEntry, isAllowlisted, isReadOnlyCommand } from "./allowlist.js";
 
 /** How much the agent may do without asking. Mirrors the harness engines' modes. */
@@ -49,6 +50,43 @@ const HUMAN_INPUT_TOOLS = new Set(["askUserQuestions"]);
 const EDIT_TOOLS = new Set(["write", "edit", "coder"]);
 
 /**
+ * The files whose commands the server runs by itself, later, with its own
+ * environment: a worktree's setup scripts run the next time one is created,
+ * and nobody reads them first. `allow-edits` approves edits so the agent can
+ * work — not so that it can leave a command there for that moment.
+ *
+ * Names are compared the way the filesystem compares them (`foldFileName`), not
+ * as spelled: on macOS `.VGENT/worktreeſ.json` and `.curſor/worktrees.json`
+ * are these very files.
+ */
+const WORKTREE_SETUP_DIRS = new Set([".vgent", ".cursor"]);
+const WORKTREE_SETUP_FILE = "worktrees.json";
+
+/**
+ * `.vgent/./x`, `.vgent//x` and `y/../.vgent/x` are all the same file: judge the
+ * path by where it lands. `.` and `..` are resolved as spelled, before any
+ * folding — only those exact names mean "here" and "up" to the OS.
+ */
+const landingSegments = (path: string): string[] => {
+  const kept: string[] = [];
+  for (const segment of path.replaceAll("\\", "/").split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === ".." && kept.length > 0 && kept[kept.length - 1] !== "..") kept.pop();
+    else kept.push(segment);
+  }
+  return kept;
+};
+
+const writesWorktreeSetup = (input: unknown): boolean => {
+  const path = (input as { file_path?: unknown } | null | undefined)?.file_path;
+  if (typeof path !== "string") return false;
+  const segments = landingSegments(path);
+  if (segments.length < 2) return false;
+  const [dir, file] = segments.slice(-2).map(foldFileName);
+  return file === WORKTREE_SETUP_FILE && WORKTREE_SETUP_DIRS.has(dir!);
+};
+
+/**
  * The permission decision for one tool call, with no AI SDK types involved so
  * it can be unit-tested directly.
  *
@@ -77,6 +115,16 @@ function requirement(options: ApprovalOptions, toolName: string): "immediate" | 
 
 export function decideApproval(options: ApprovalOptions & { toolName: string; input: unknown }): ApprovalDecision {
   const { toolName, input, mode, alwaysAllow } = options;
+  // Only `allow-edits` approves this write by itself; a standing 「一直允许」 of the
+  // tool, or 全自动, is the user's own decision to let it.
+  if (
+    mode === "allow-edits" &&
+    EDIT_TOOLS.has(toolName) &&
+    writesWorktreeSetup(input) &&
+    !isAllowlisted({ toolName, input: undefined, allowlist: alwaysAllow })
+  ) {
+    return "user-approval";
+  }
   const kind = requirement(options, toolName);
   if (kind === "immediate") return "not-applicable";
   if (kind === "command") {
@@ -113,6 +161,9 @@ export function createApprovalPolicy(mode: PermissionMode, alwaysAllow: readonly
         groups.immediate.length ? `Run without tool approval: ${groups.immediate.join(", ")}.` : "",
         groups.command.length ? `Command-dependent approval: ${groups.command.join(", ")}. The engine checks the full input against its built-in command rules and standing approvals; unmatched calls ${pending}. These checks do not provide OS isolation.` : "",
         groups.approval.length ? `Calls to ${groups.approval.join(", ")} ${pending}.` : "",
+        mode === "allow-edits" && ["write", "edit"].some((name) => toolNames.includes(name))
+          ? `Writes to a worktree setup config (.vgent/worktrees.json, .cursor/worktrees.json) ${pending}: what is in it runs unattended later.`
+          : "",
         standing.length ? `Applicable standing approvals: ${JSON.stringify(standing)}. Shell entries are command-scoped and every segment must pass the engine's checks.` : "",
         toolNames.some((name) => name === "toolSearch" || name === "tool_search") ? `Tools discovered later use the same policy; unrecognized tools ${mode === "allow-all" ? "run without tool approval" : pending}.` : "",
         "This subagent cannot ask the user for approval. A denied call is a limitation to report, not permission to bypass the policy.",

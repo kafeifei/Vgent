@@ -29,7 +29,27 @@ export interface AgentInstructionsFile {
   scope?: string;
 }
 
-const readIfAny = async (path: string): Promise<AgentInstructionsFile | undefined> => {
+/** Whether `path`, symlinks resolved, is `root` or lies below it. A missing file is not. */
+const staysWithin = async (root: string, path: string): Promise<boolean> => {
+  try {
+    const [realRoot, real] = await Promise.all([realpath(root), realpath(path)]);
+    const rel = relative(realRoot, real);
+    return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`));
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * `within` is the repository the file is read from. A repository's instruction
+ * file that is really a symlink to somewhere else (`AGENTS.md -> ~/.codex/auth.json`)
+ * would be pasted into the prompt and sent to the model provider on the first
+ * turn, so it is not read. A link that stays inside the repository (`AGENTS.md ->
+ * docs/rules.md`) is fine. The user's own global file passes no `within`: it is
+ * theirs to point wherever they keep their dotfiles.
+ */
+const readIfAny = async (path: string, within?: string): Promise<AgentInstructionsFile | undefined> => {
+  if (within != null && !(await staysWithin(within, path))) return undefined;
   const source = await readFile(path, "utf8").catch(() => undefined);
   const content = source?.trim();
   if (content == null || content === "") return undefined;
@@ -38,7 +58,7 @@ const readIfAny = async (path: string): Promise<AgentInstructionsFile | undefine
 
 /** The global file first, then the project's, so the project's reads as the more specific rule. */
 export async function loadAgentInstructions({ repoPath, home = homedir() }: AgentInstructionsOptions): Promise<AgentInstructionsFile[]> {
-  const files = [await readIfAny(join(home, ".agents", FILE_NAME)), await readIfAny(join(repoPath, FILE_NAME))];
+  const files = [await readIfAny(join(home, ".agents", FILE_NAME)), await readIfAny(join(repoPath, FILE_NAME), repoPath)];
   return files.filter((file): file is AgentInstructionsFile => file != null);
 }
 
@@ -73,7 +93,7 @@ export async function loadScopedInstructions(repoPath: string, files: readonly s
   }
   const result: AgentInstructionsFile[] = [];
   for (const dir of [...directories].sort((a, b) => a.split(sep).length - b.split(sep).length || a.localeCompare(b))) {
-    const rule = await readIfAny(join(dir, FILE_NAME));
+    const rule = await readIfAny(join(dir, FILE_NAME), repoPath);
     if (rule) result.push({ ...rule, scope: dir });
   }
   return result;

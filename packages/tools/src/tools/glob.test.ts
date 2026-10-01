@@ -43,6 +43,13 @@ describe("glob tool", () => {
     await expect(makeTool().execute!({ pattern: "*", path: "../escape" }, execOptions)).rejects.toThrow(/outside the working directory/);
   });
 
+  it("rejects a pattern that leaves the search directory", async () => {
+    // fs.promises.glob would match these wherever they point, `cwd` or not.
+    for (const pattern of [join(workDir, "src", "*"), "/etc/*", "../*", "src/../../*", "**/../*"]) {
+      await expect(makeTool().execute!({ pattern }, execOptions), pattern).rejects.toThrow(/must be relative/);
+    }
+  });
+
   it("includes matching directories, marked with a trailing slash", async () => {
     const result = await makeTool().execute!({ pattern: "*" }, execOptions);
     expect(result.paths).toEqual(["src/"]);

@@ -24,10 +24,48 @@ describe("isReadOnlyCommand", () => {
       "git status",
       "git diff --stat",
       "git log -5",
+      "git log --oneline --no-ext-diff",
+      "rg -n --hidden needle src",
       "node --version",
-      "pnpm test",
-      "npm test",
     ]) {
+      expect(isReadOnlyCommand(command), command).toBe(true);
+    }
+  });
+
+  it("does not treat a test runner as read-only: it runs code the agent may have just written", () => {
+    for (const command of ["pnpm test", "npm test", "yarn test", "pnpm run test", "make test"]) {
+      expect(isReadOnlyCommand(command), command).toBe(false);
+    }
+  });
+
+  it("rejects git options that write a file or run a program, abbreviations included", () => {
+    for (const command of [
+      "git diff --output=out.txt",
+      "git diff --output out.txt",
+      "git log --output=out.txt",
+      "git log --outp=out.txt",
+      "git diff --ext-diff",
+      "git diff --ext",
+      "git diff --textconv",
+      "git log -p --textc",
+    ]) {
+      expect(isReadOnlyCommand(command), command).toBe(false);
+    }
+  });
+
+  it("rejects rg options that run another program", () => {
+    for (const command of ["rg --pre sh needle .", "rg --pre=sh needle .", "rg -z needle .", "rg -nz needle .", "rg --search-zip needle .", "rg --hostname-bin=sh needle"]) {
+      expect(isReadOnlyCommand(command), command).toBe(false);
+    }
+  });
+
+  it("finds -z in a short-flag cluster whatever its neighbours are", () => {
+    // `-0` is --null and `-.` is --hidden: `rg -0z` still decompresses with an external program.
+    for (const command of ["rg -0z needle .", "rg -.z needle .", "rg -z0 needle .", "rg -n.z needle ."]) {
+      expect(isReadOnlyCommand(command), command).toBe(false);
+    }
+    // Clusters without `z`, and a `z` outside any option, are still plain searches.
+    for (const command of ["rg -0 needle .", "rg -.n needle .", "rg -A1 zebra src", "rg --hidden lazy src"]) {
       expect(isReadOnlyCommand(command), command).toBe(true);
     }
   });
@@ -55,6 +93,9 @@ describe("isReadOnlyCommand", () => {
     expect(isReadOnlyCommand("find . -delete")).toBe(false);
     expect(isReadOnlyCommand("find . -name x -exec rm y ;")).toBe(false);
     expect(isReadOnlyCommand("find . -execdir rm y +")).toBe(false);
+    // Predicates that write a file: GNU find has them, and a PATH may put GNU find first.
+    expect(isReadOnlyCommand("find . -fls out.txt")).toBe(false);
+    expect(isReadOnlyCommand("find . -fprint0 out.txt")).toBe(false);
   });
 
   it("rejects substitution, redirection and quoting", () => {
@@ -69,7 +110,6 @@ describe("isReadOnlyCommand", () => {
     expect(isReadOnlyCommand("node --version")).toBe(true);
     expect(isReadOnlyCommand("node evil.js")).toBe(false);
     expect(isReadOnlyCommand("node --version --eval x")).toBe(false);
-    expect(isReadOnlyCommand("pnpm test")).toBe(true);
     expect(isReadOnlyCommand("pnpm run deploy")).toBe(false);
     expect(isReadOnlyCommand("npm install")).toBe(false);
   });
@@ -136,6 +176,13 @@ describe("segmentCommand", () => {
     // `sudo git status` included on purpose: a wrapper wins over the composite
     // table, so it stays unallowlistable rather than becoming `bash(sudo git)`.
     for (const segment of ["sudo rm -rf /", "sudo git status", "env rm x", "xargs cat", "bash script.sh", "time pnpm test"]) {
+      expect(segmentCommand(segment), segment).toBeUndefined();
+    }
+  });
+
+  it("refuses the wrappers that take a whole command as their arguments", () => {
+    // 「一直允许 timeout」 would otherwise be a blank cheque: `timeout 5 rm x` names `timeout`.
+    for (const segment of ["timeout 5 rm x", "nice rm x", "watch rm x", "stdbuf -o0 rm x", "caffeinate rm x", "setsid rm x", "arch -arm64 rm x"]) {
       expect(segmentCommand(segment), segment).toBeUndefined();
     }
   });

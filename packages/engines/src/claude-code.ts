@@ -11,7 +11,7 @@ import {
 } from "@ai-sdk/harness/agent";
 import { createClaudeCode, type ClaudeCodeThinkingConfig } from "@ai-sdk/harness-claude-code";
 import { createLocalSandboxProvider } from "@vgent/sandbox-local";
-import type { ToolSet } from "ai";
+import type { ToolApprovalStatus, ToolSet } from "ai";
 import { ensureDirectory, resolvePnpmDir, resolveRepoPath, trackSandboxSessions, withRepoWorkDir } from "./shared.js";
 import { toTUIAgent, type TUIAgent } from "./to-tui-agent.js";
 
@@ -42,6 +42,14 @@ export interface ClaudeCodeEngineOptions {
   effort?: ClaudeCodeEffort;
   /** AI SDK tools executed in this host process when Claude calls them. */
   tools?: ToolSet;
+  /**
+   * What each of `tools` needs before it runs, by tool name
+   * (`HarnessAgentSettings.toolApproval`): `user-approval` pauses the turn for
+   * the human's decision. `permissionMode` is about the runtime's *built-in*
+   * tools only — the bridge lets every host tool through — so a host tool with
+   * no entry here runs unattended, whatever the mode.
+   */
+  toolApproval?: Readonly<Record<string, ToolApprovalStatus>>;
   /**
    * The only tools the runtime may call this session, by their harness names
    * (`read`, `grep`, `glob`, `TodoWrite`, …). Everything else is excluded —
@@ -328,6 +336,7 @@ export async function createClaudeCodeEngine(options: ClaudeCodeEngineOptions): 
     permissionMode: options.permissionMode ?? "allow-edits",
     ...(options.model != null ? { model: options.model } : {}),
     ...(options.tools != null ? { tools: options.tools } : {}),
+    ...(options.toolApproval != null ? { toolApproval: options.toolApproval } : {}),
     ...(options.skills != null ? { skills: options.skills } : {}),
     ...(options.instructions != null ? { instructions: options.instructions } : {}),
     // `activeTools` is typed against the adapter's own tool map; the caller

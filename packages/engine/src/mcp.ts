@@ -104,17 +104,56 @@ export function parseMcpServers(value: unknown): McpServerConfig[] {
   });
 }
 
-async function connectOne(config: McpServerConfig): Promise<MCPClient> {
+/**
+ * A server that says nothing must not hold the turn: connecting to it and
+ * listing its tools get this long, and then the turn goes on without it.
+ */
+const CONNECT_TIMEOUT_MS = 30_000;
+
+/**
+ * Starts one server. `abandon` is what to do with a server that never answered:
+ * for a local process it kills the child, which is otherwise left running on
+ * every turn for as long as the entry stays in the settings.
+ */
+function startOne(config: McpServerConfig): { client: Promise<MCPClient>; abandon: () => Promise<void> } {
   if (isStdio(config)) {
-    return createMCPClient({
-      transport: new Experimental_StdioMCPTransport({
-        command: config.command,
-        ...(config.args == null ? {} : { args: config.args }),
-        ...(config.env == null ? {} : { env: config.env }),
-      }),
+    const transport = new Experimental_StdioMCPTransport({
+      command: config.command,
+      ...(config.args == null ? {} : { args: config.args }),
+      ...(config.env == null ? {} : { env: config.env }),
     });
+    return { client: createMCPClient({ transport }), abandon: () => transport.close().catch(() => {}) };
   }
-  return createMCPClient({ transport: { type: config.transport ?? "http", url: config.url } });
+  return { client: createMCPClient({ transport: { type: config.transport ?? "http", url: config.url } }), abandon: async () => {} };
+}
+
+async function connectWithin(config: McpServerConfig, timeoutMs: number): Promise<{ client: MCPClient; tools: ToolSet }> {
+  const started = startOne(config);
+  const attempt = (async () => {
+    const client = await started.client;
+    try {
+      return { client, tools: await client.tools() };
+    } catch (error) {
+      await client.close().catch(() => {});
+      throw error;
+    }
+  })();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${timeoutMs / 1000} 秒内没有响应`)), timeoutMs);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([attempt, deadline]);
+  } catch (error) {
+    // Whatever the attempt turns into after this is nobody's: stop the process,
+    // and close the client should it still arrive.
+    await started.abandon();
+    void attempt.then(({ client }) => client.close().catch(() => {}), () => {});
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -123,7 +162,7 @@ async function connectOne(config: McpServerConfig): Promise<MCPClient> {
  */
 export async function connectMcpServers(
   configs: readonly McpServerConfig[],
-  options: { log?: McpLogger } = {},
+  options: { log?: McpLogger; /** Per server; defaults to 30 s. */ timeoutMs?: number } = {},
 ): Promise<McpConnection> {
   const { log } = options;
   const clients: MCPClient[] = [];
@@ -132,9 +171,9 @@ export async function connectMcpServers(
   await Promise.all(
     configs.map(async (config) => {
       try {
-        const client = await connectOne(config);
+        const { client, tools: found } = await connectWithin(config, options.timeoutMs ?? CONNECT_TIMEOUT_MS);
         clients.push(client);
-        Object.assign(tools, prepareMcpTools(config.name, await client.tools()));
+        Object.assign(tools, prepareMcpTools(config.name, found));
       } catch (error) {
         log?.warn(`MCP 服务 ${config.name} 连接失败，已跳过`, error);
       }

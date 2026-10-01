@@ -11,12 +11,12 @@
  * primitive to walk, so there is nothing sandboxed to fall back to for them.
  */
 import type { Experimental_SandboxSession, ToolSet } from "ai";
-import { mkdir } from "node:fs/promises";
+import { mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createNodeFileSystem, createSandboxFileSystem, type FileSystemLike } from "./fs.js";
 import { createLocalRunner } from "./local-runner.js";
-import { resolveToolPath, resolveWorkspacePath } from "./paths.js";
+import { isInsideGitMetadata, resolveToolPath, resolveWorkspacePath } from "./paths.js";
 import { createStreamingBashTool } from "./streaming-bash.js";
 import type { ObservedFiles } from "./mutations.js";
 import { createBashTool, type Runner } from "./tools/bash.js";
@@ -27,7 +27,7 @@ import { createReadTool } from "./tools/read.js";
 import { createWriteTool } from "./tools/write.js";
 
 export { mutateFile } from "./mutations.js";
-export { resolveToolPath, resolveWorkspacePath, type ResolvePathOptions } from "./paths.js";
+export { foldFileName, isInsideGitMetadata, resolveToolPath, resolveWorkspacePath, type ResolvePathOptions } from "./paths.js";
 export { createNodeFileSystem, createSandboxFileSystem, type FileSystemLike, type FileStat } from "./fs.js";
 export { createLocalRunner, type LocalRunner, type LocalRunOptions, type LocalRunResult } from "./local-runner.js";
 export { truncateKeepingEnds, type TruncatedText } from "./output.js";
@@ -95,14 +95,38 @@ export function createCodingTools(options: CreateCodingToolsOptions): ToolSet {
   const resolveForReadOnly = (input: string) =>
     resolveInRoots(input, readRoots);
 
+  // A write into `.git` is a way to run code: git executes the programs its
+  // config and hooks name (`core.fsmonitor`, `hooks/*`), and `git status` — on
+  // the built-in safe list — would run them on the next call. Refused in every
+  // mode; `git config` through `bash` is the door that asks.
+  const refuseGitMetadata = async (input: string, resolved: string): Promise<void> => {
+    const roots = sandbox ? [workDir] : await Promise.all(fileRoots.map((root) => realpath(root).catch(() => root)));
+    if (roots.some((root) => isInsideGitMetadata(root, resolved))) {
+      throw new Error(
+        `Refusing to modify ${JSON.stringify(input)}: it is inside a .git directory, where files decide which programs git runs. Use git commands instead.`,
+      );
+    }
+  };
+
   // Write-oriented resolution additionally ensures the parent directory
   // exists and, on the real filesystem, re-validates afterwards in case a
-  // symlink was planted while `mkdir` ran.
+  // symlink was planted while `mkdir` ran. The `.git` check comes before the
+  // `mkdir`, so a refused path leaves nothing behind.
   const resolveForWrite = async (input: string): Promise<string> => {
-    if (sandbox) return resolveWorkspacePath(workDir, input);
+    if (sandbox) {
+      const resolved = resolveWorkspacePath(workDir, input);
+      await refuseGitMetadata(input, resolved);
+      return resolved;
+    }
     const resolved = await resolveForRead(input);
+    await refuseGitMetadata(input, resolved);
     await mkdir(dirname(resolved), { recursive: true });
     return resolveForRead(input);
+  };
+  const resolveForEdit = async (input: string): Promise<string> => {
+    const resolved = await resolveForRead(input);
+    await refuseGitMetadata(input, resolved);
+    return resolved;
   };
 
   // grep/glob always walk the host filesystem directly (see module doc), so their
@@ -129,7 +153,7 @@ export function createCodingTools(options: CreateCodingToolsOptions): ToolSet {
         : {}),
     }),
     write: createWriteTool({ fs, resolvePath: resolveForWrite, observed, ...(sandbox ? { mutationScope: sandbox } : {}) }),
-    edit: createEditTool({ fs, resolvePath: resolveForRead, ...(sandbox ? { mutationScope: sandbox } : {}) }),
+    edit: createEditTool({ fs, resolvePath: resolveForEdit, ...(sandbox ? { mutationScope: sandbox } : {}) }),
     bash: (sandbox ? createBashTool : createStreamingBashTool)({ runner, workDir, resolveDir: resolveForRead, maxOutputChars }),
     grep: createGrepTool({ workDir, resolveDir: resolveHostDir, preferRg }),
     glob: createGlobTool({ workDir, resolveDir: resolveHostDir }),

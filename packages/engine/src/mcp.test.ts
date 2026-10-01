@@ -83,6 +83,24 @@ describe("connectMcpServers", () => {
   });
 });
 
+describe("connectMcpServers: a server that answers nothing", () => {
+  it("is given up on after the timeout, so the turn still starts, and the rest still connect", async () => {
+    const warnings: string[] = [];
+    const started = Date.now();
+    // Reads its input and never says a word: an initialize request that gets no answer.
+    const connection = await connectMcpServers(
+      [{ name: "silent", command: process.execPath, args: ["-e", "process.stdin.resume(); setInterval(() => {}, 1000)"] }],
+      { log: { warn: (message) => warnings.push(message) }, timeoutMs: 400 },
+    );
+
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(connection.tools).toEqual({});
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("silent");
+    await expect(connection.close()).resolves.toBeUndefined();
+  });
+});
+
 describe("createVgentEngine with extra tools", () => {
   const model = new MockLanguageModelV3({});
 

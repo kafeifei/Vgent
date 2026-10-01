@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dynamicTool, isToolUIPart, jsonSchema, readUIMessageStream, simulateReadableStream, type UIMessage, type UIMessageChunk } from "ai";
 import { describe, expect, it } from "vitest";
-import { asHostTools, claudeCodeInstructions, withLongContext } from "./claude-code.js";
+import { asHostTools, claudeCodeInstructions, hostToolApproval, withLongContext } from "./claude-code.js";
 
 describe("claudeCodeInstructions", () => {
   it("hands Claude Code the global and the repository's AGENTS.md, then plan mode's rules", async () => {
@@ -36,6 +36,38 @@ describe("withLongContext", () => {
     expect(withLongContext("opus", 200_000)).toBe("opus");
     expect(withLongContext("opus", undefined)).toBe("opus");
     expect(withLongContext("opus[1m]", 1_000_000)).toBe("opus[1m]");
+  });
+});
+
+describe("hostToolApproval", () => {
+  const tools = ["cua__list_windows", "cua__get_desktop_state", "cua__click", "cua__type_text", "cua__hotkey", "cua__launch_app"];
+
+  it("lets the desktop be looked at, and asks before it is acted on, in 只读 and 自动改文件 alike", () => {
+    for (const mode of ["allow-reads", "allow-edits"] as const) {
+      expect(hostToolApproval(tools, { mode, alwaysAllow: [] }), mode).toEqual({
+        cua__list_windows: "not-applicable",
+        cua__get_desktop_state: "not-applicable",
+        cua__click: "user-approval",
+        cua__type_text: "user-approval",
+        cua__hotkey: "user-approval",
+        cua__launch_app: "user-approval",
+      });
+    }
+  });
+
+  it("asks nothing in 全自动", () => {
+    const approval = hostToolApproval(tools, { mode: "allow-all", alwaysAllow: [] });
+    expect(Object.values(approval).every((status) => status === "not-applicable")).toBe(true);
+  });
+
+  it("takes a standing 「一直允许」 of the tool as the answer, and only for that tool", () => {
+    const approval = hostToolApproval(tools, { mode: "allow-reads", alwaysAllow: ["cua__click"] });
+    expect(approval.cua__click).toBe("not-applicable");
+    expect(approval.cua__type_text).toBe("user-approval");
+  });
+
+  it("does not let a tool the policy has not heard of through", () => {
+    expect(hostToolApproval(["cua__something_new"], { mode: "allow-edits", alwaysAllow: [] })).toEqual({ cua__something_new: "user-approval" });
   });
 });
 

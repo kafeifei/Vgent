@@ -1,9 +1,9 @@
 import { tool } from "ai";
 import { execFile } from "node:child_process";
-import { stat as fsStat, readFile } from "node:fs/promises";
-import { relative, sep } from "node:path";
+import { lstat, realpath, stat as fsStat, readFile } from "node:fs/promises";
+import { basename, dirname, join, relative, sep } from "node:path";
 import { z } from "zod";
-import { walkFiles } from "../walk.js";
+import { isInside, walkFiles } from "../walk.js";
 
 const DEFAULT_MAX_RESULTS = 200;
 const MAX_GREP_FILE_BYTES = 4 * 1024 * 1024;
@@ -53,13 +53,39 @@ function parseRipgrepLine(line: string): GrepMatch | null {
 
 async function grepWalk(root: string, workDir: string, pattern: RegExp, globPattern: string | undefined, limit: number): Promise<GrepMatch[]> {
   const matches: GrepMatch[] = [];
+  // A symlink inside the tree can point anywhere. `read` refuses those, so this
+  // walk must not read through one either: only files whose real path stays
+  // under the search root are opened.
+  const realRoot = await realpath(root);
+  // A directory is resolved once for all the files in it; a file only costs a
+  // `lstat`, and a full `realpath` only when it turns out to be a link itself.
+  const realDirs = new Map<string, Promise<string | null>>();
+  const realDirOf = (dir: string): Promise<string | null> => {
+    let known = realDirs.get(dir);
+    if (known == null) {
+      known = realpath(dir).then((real) => (isInside(realRoot, real) ? real : null), () => null);
+      realDirs.set(dir, known);
+    }
+    return known;
+  };
+  /** Where the file really is, or null when that is not under the search root. */
+  const resolveInside = async (absPath: string): Promise<string | null> => {
+    const dir = await realDirOf(dirname(absPath));
+    if (dir == null) return null;
+    const candidate = join(dir, basename(absPath));
+    if (!(await lstat(candidate)).isSymbolicLink()) return candidate;
+    const real = await realpath(candidate);
+    return isInside(realRoot, real) ? real : null;
+  };
   for await (const absPath of walkFiles(root, globPattern ?? "**/*")) {
     if (matches.length >= limit) break;
     let content: string;
     try {
-      const info = await fsStat(absPath);
+      const real = await resolveInside(absPath);
+      if (real == null) continue;
+      const info = await fsStat(real);
       if (!info.isFile() || info.size > MAX_GREP_FILE_BYTES) continue;
-      content = await readFile(absPath, "utf8");
+      content = await readFile(real, "utf8");
     } catch {
       continue; // Unreadable, disappeared mid-walk, or not valid UTF-8.
     }
@@ -106,7 +132,9 @@ export function createGrepTool({ workDir, resolveDir, preferRg }: GrepToolDeps) 
         const args = ["--line-number", "--no-heading", "--color=never", "--glob", "!.git/**", "--glob", "!node_modules/**"];
         if (case_insensitive) args.push("-i");
         if (globPattern) args.push("-g", globPattern);
-        args.push("-e", pattern, relative(workDir, root) || ".");
+        // `--` before the path: a directory named `--pre=sh` must be searched,
+        // not parsed as a ripgrep option that runs a program over every file.
+        args.push("-e", pattern, "--", relative(workDir, root) || ".");
 
         let stdout: string;
         try {

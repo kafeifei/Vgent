@@ -294,6 +294,8 @@ export function PopItem({
   children,
   onClick,
   selected = false,
+  role = "menuitem",
+  checked,
   disabled = false,
   hint,
   title,
@@ -302,6 +304,8 @@ export function PopItem({
   children: ReactNode;
   onClick?: () => void;
   selected?: boolean;
+  role?: "menuitem" | "menuitemcheckbox" | "menuitemradio";
+  checked?: boolean;
   disabled?: boolean;
   /** The key that picks this row while the menu is open: a letter, or `Enter`. */
   shortcut?: string;
@@ -314,7 +318,8 @@ export function PopItem({
     // tabIndex -1: the menu is one stop, and ↑ ↓ move between its rows (`menuKeys.ts`) — Tab does not walk them.
     <button
       type="button"
-      role="menuitem"
+      role={role}
+      aria-checked={checked}
       tabIndex={-1}
       disabled={disabled}
       {...(title != null ? { title } : {})}
@@ -327,7 +332,7 @@ export function PopItem({
     >
       <span className="min-w-0 flex-1 truncate">{children}</span>
       {hint != null && <span className="flex-none font-mono text-fg-faint text-xs">{hint}</span>}
-      {selected && <span className="flex-none text-brand">✓</span>}
+      {(selected || checked === true) && <span aria-hidden className="flex-none text-brand">✓</span>}
       {/* A disabled row says why instead: its key does nothing. */}
       {shortcut != null && !disabled && (
         <span aria-hidden className="flex-none pl-md font-mono text-fg-faint text-xs">

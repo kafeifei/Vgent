@@ -93,7 +93,6 @@ export function AccountPanel({ snapshot, refreshing, error, refresh, watchUsage,
       <span className="text-2xs text-fg-faint" title="百分比均表示已使用的额度">已用</span>
       <button type="button" aria-label="刷新账号与用量" title="刷新账号与用量" aria-busy={refreshing} disabled={refreshing} onClick={() => void refresh()} className="grid size-xl place-items-center rounded-md text-fg-muted hover:bg-bg-hover disabled:opacity-50"><RefreshCw className={cn("size-md", refreshing && "animate-spin")} /></button>
     </div>
-    <p className="px-md pb-xs text-2xs text-fg-faint">随对话更新；缺失或超过 15 分钟时补查，刷新也受此间隔限制</p>
     <div className="min-h-0 overflow-y-auto px-2xs pb-2xs">
       {error && <p role="status" className="px-sm py-xs text-xs text-warning">{error}{snapshot && !error.includes("上次结果") ? "，仍显示上次结果" : ""}</p>}
       {!snapshot && refreshing && <p className="px-sm py-sm text-xs text-fg-muted">正在读取账号与用量…</p>}

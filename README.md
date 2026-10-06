@@ -1,8 +1,10 @@
 # Vgent
 
-本地的 coding agent 工作台：你派活，它干，你验收，收口。不是聊天软件，也不是 IDE。
+Vgent 是我的个人项目，用于调研和探索 Coding Agent 的技术实现，以及人与 Agent 的协作方式。
 
-引擎可插拔：Claude Code、Codex、OpenCode，以及用 AI SDK `ToolLoopAgent` 自研的引擎。界面是 Web（本机 Hono server 自带），也有 macOS 桌面壳（Tauri）。任务可以在项目主目录或独立的 git worktree 里跑，有 Plan、审批、排队与插话、diff 验收、提交 / 开 PR / 带回主目录，也能从别的设备远程访问同一批任务。
+我以本地 Agent 工作台为载体，接入 Claude Code、Codex、OpenCode 和基于 AI SDK `ToolLoopAgent` 的自研引擎，在实际开发中比较不同引擎的能力与边界，并尝试项目与任务组织、Git worktree 隔离、执行中干预、改动验收与交付等设计。
+
+目前提供 macOS 桌面、本地 Web 和远程访问入口，支持从计划、执行、纠偏到验收、提交与归档的任务流程。项目会随着个人调研和使用需求持续演进。
 
 ## 要求
 

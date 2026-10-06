@@ -38,6 +38,20 @@ export function RuntimesSection({
 }) {
   const toast = useToast();
   const [runtimes, setRuntimes] = useState<HarnessRuntimeStatus[] | null>(null);
+  const [native, setNative] = useState<Awaited<ReturnType<ApiClient["nativeCodexStatus"]>> | null>(null);
+  const [installingNative, setInstallingNative] = useState(false);
+  useEffect(() => {
+    if (client.nativeCodexStatus == null) return;
+    let disposed = false;
+    const refresh = () => void client.nativeCodexStatus().then(next => { if (!disposed) setNative(next); }, () => undefined);
+    refresh();
+    const timer = setInterval(refresh, 1_000);
+    return () => { disposed = true; clearInterval(timer); };
+  }, [client]);
+  const installNative = () => {
+    setInstallingNative(true);
+    void client.installNativeCodex().then(() => client.nativeCodexStatus()).then(setNative, (error: Error) => toast(error.message)).finally(() => setInstallingNative(false));
+  };
   const [checking, setChecking] = useState(false);
   /** The engine an install or rollback was asked for, until the server answers. */
   const [pending, setPending] = useState<{ engine: HarnessEngineId; action: "upgrade" | "rollback" } | null>(null);
@@ -101,7 +115,7 @@ export function RuntimesSection({
   return (
     <SettingsGroup
       title="引擎运行时"
-      note="Claude Code 和 Codex 的 CLI，装在 ~/.vgent/harness 里，和你自己终端里的那份无关。"
+      note={native?.available ? "Codex 随应用版本固定，可提前安装；Claude Code 支持独立升级。" : "引擎在首次使用时安装，运行时和终端里的安装独立。"}
       actions={
         <button type="button" disabled={checking || working} onClick={check} className={BUTTON_GHOST}>
           <RefreshCw className={cn("size-md", checking && "animate-spin")} />
@@ -113,7 +127,13 @@ export function RuntimesSection({
         <Switch checked={autoUpgrade} onChange={onAutoUpgrade} label="自动升级引擎运行时" disabled={disabled === true} />
       </SettingsRow>
 
-      {(runtimes ?? []).map((runtime) => {
+      {native?.available && (
+        <SettingsRow title="原生 Codex" help={native.phase === "ready" ? "已安装，后续直接使用本地缓存" : native.phase === "error" ? native.error : native.phase === "installing" ? "正在校验和安装…" : native.phase === "downloading" ? `正在下载 ${(native.downloaded / 1048576).toFixed(1)} / ${(native.total / 1048576).toFixed(1)} MB` : `首次使用时自动安装 · ${(native.total / 1048576).toFixed(1)} MB`}>
+          {native.phase !== "ready" && <button type="button" className={BUTTON_SECONDARY} disabled={disabled || installingNative || native.phase === "downloading" || native.phase === "installing"} onClick={installNative}>{native.phase === "downloading" || native.phase === "installing" || installingNative ? "安装中…" : native.phase === "error" ? "重试安装" : "立即安装"}</button>}
+        </SettingsRow>
+      )}
+
+      {(runtimes ?? []).filter(runtime => !(native?.available && runtime.engine === "codex")).map((runtime) => {
         const action = pending?.engine === runtime.engine ? pending.action : undefined;
         return (
           <SettingsRow

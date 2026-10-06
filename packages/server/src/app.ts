@@ -37,6 +37,7 @@ import type { Files } from "./files.js";
 import { defaultDownloadsDir, saveDownload } from "./downloads.js";
 import { createFiles } from "./files.js";
 import { harnessBootstrapRecipe } from "@vgent/engines";
+import { ensureNativeCodex, nativeCodexStatus } from "./native-codex-runtime.js";
 import type { HarnessEngineId, HarnessRuntime } from "./harness-runtime.js";
 import { createHarnessRuntime } from "./harness-runtime.js";
 import type { ChangesResponse, DiffBase, Git } from "./git.js";
@@ -1900,6 +1901,13 @@ export function createApp(options: CreateAppOptions): VgentApp {
     if (value === "claude-code" || value === "codex") return value;
     throw new NotFoundError(`${value} 没有可升级的运行时`);
   };
+  app.get("/api/runtimes/native-codex", async (c) => c.json(await nativeCodexStatus(dataDir)));
+  app.post("/api/runtimes/native-codex/install", async (c) => {
+    const status = await nativeCodexStatus(dataDir);
+    if (!status.available) return c.json({ error: "当前安装不需要单独下载 Codex。" }, 409);
+    void ensureNativeCodex(dataDir).catch(error => log.warn("Codex 首次安装失败", error));
+    return c.json({ ...status, phase: status.phase === "ready" ? "ready" : "downloading" }, 202);
+  });
   app.get("/api/runtimes", async (c) => c.json({ runtimes: await harnessRuntime.status() }));
   app.post("/api/runtimes/check", async (c) => c.json({ runtimes: await harnessRuntime.check() }));
   app.post("/api/runtimes/:engine/upgrade", async (c) =>

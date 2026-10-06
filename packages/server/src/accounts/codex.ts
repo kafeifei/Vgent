@@ -1,3 +1,5 @@
+import { ensureNativeCodex } from "../native-codex-runtime.js";
+import { resolveDataDir } from "../paths.js";
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { access, mkdir } from "node:fs/promises";
@@ -33,7 +35,7 @@ export async function codexCommand(): Promise<string> {
       return candidate;
     } catch { /* Try the next official CLI installation. */ }
   }
-  return "codex";
+  return await ensureNativeCodex(resolveDataDir()) ?? "codex";
 }
 
 /** `codex login` in this home. It serves its callback on localhost and opens the browser itself. */

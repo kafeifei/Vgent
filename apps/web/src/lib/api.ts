@@ -510,6 +510,8 @@ export function createClient(token: string) {
       api<ModelCatalog>(`/engines/${engine}/models${refresh ? "?refresh=1" : ""}`, token),
 
     /** 引擎运行时: which Claude Code / Codex is installed, and what the newest is. */
+    nativeCodexStatus: () => api<{ available: boolean; phase: "missing" | "downloading" | "installing" | "ready" | "error"; downloaded: number; total: number; error?: string }>("/runtimes/native-codex", token),
+    installNativeCodex: () => api<unknown>("/runtimes/native-codex/install", token, { method: "POST" }),
     listRuntimes: () => api<{ runtimes: HarnessRuntimeStatus[] }>("/runtimes", token).then((body) => body.runtimes),
     /** Asks npm again first. */
     checkRuntimes: () =>

@@ -1,6 +1,5 @@
 /**
- * Fills `src-tauri/binaries` and `src-tauri/resources` with everything the
- * `.app` needs to run offline: the official standalone Node runtime (never a
+ * Fills `src-tauri/binaries` and `src-tauri/resources` with the downloadable runtime: the official standalone Node runtime (never a
  * Homebrew-linked one), a self-contained `@vgent/server` tree, and the built web
  * app. Runs from `apps/desktop` as tauri's `beforeBuildCommand`.
  */
@@ -152,6 +151,8 @@ export async function prepareDesktop() {
     join(serverDir, "runtime.json"),
     `${JSON.stringify({ nodeVersion, target: target.triple, archiveSha256: target.checksum, gitSha, builtAt: new Date().toISOString() }, null, 2)}\n`,
   );
+  const { createRuntimeArchive } = await import("./runtime-archive.mjs");
+  await createRuntimeArchive({ desktopRoot, repoRoot, bundledNode, serverDir, webDir, gitSha, target: target.triple });
   console.log(`桌面资源已就绪：Node ${nodeVersion}（${target.triple}）、内置服务、Web 工作台。`);
 }
 

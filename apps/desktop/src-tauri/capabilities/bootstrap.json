@@ -1,0 +1,12 @@
+{
+  "identifier": "bootstrap",
+  "description": "仅本地初始化页面可以查询运行环境状态和重试安装。远端工作台不获得这些权限。",
+  "windows": [
+    "main"
+  ],
+  "local": true,
+  "permissions": [
+    "allow-runtime-status",
+    "allow-runtime-retry"
+  ]
+}

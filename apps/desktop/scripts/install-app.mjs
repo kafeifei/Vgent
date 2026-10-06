@@ -37,7 +37,7 @@ if (!team) fail("安装包必须使用固定的 Developer ID Application 签名�
 const signingRequirement = `=identifier ${JSON.stringify(config.identifier)} and anchor apple generic and certificate leaf[subject.OU] = "${team}" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists`;
 const builtVersion = run("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleShortVersionString", join(built, "Contents", "Info.plist")]);
 if (builtVersion !== version) fail(`产物是 ${builtVersion}，这个提交是 ${version}；产物可能被别的会话的构建覆盖了`);
-const builtSha = JSON.parse(readFileSync(join(built, "Contents", "Resources", "server", "runtime.json"), "utf8")).gitSha;
+const builtSha = JSON.parse(readFileSync(join(built, "Contents", "Resources", "bootstrap.json"), "utf8")).gitSha;
 if (builtSha !== head) fail(`产物来自提交 ${builtSha}，不是当前的 ${head}`);
 
 /** 同一卷上的 rename：瞬间完成，可以从废纸篓捞回，挂在上面的进程也不丢文件。 */

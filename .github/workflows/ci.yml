@@ -59,6 +59,7 @@ jobs:
         run: |
           triple="$(rustc -vV | sed -n 's/^host: //p')"
           mkdir -p apps/desktop/src-tauri/binaries apps/desktop/src-tauri/resources/server apps/desktop/src-tauri/resources/web
+          echo '{}' > apps/desktop/src-tauri/resources/bootstrap.json
           cp "$(node -p process.execPath)" "apps/desktop/src-tauri/binaries/vgent-node-${triple}"
 
       - run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml -- --include-ignored

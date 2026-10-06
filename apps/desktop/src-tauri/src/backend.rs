@@ -166,6 +166,16 @@ impl Backend {
         web_dist: &Path,
         data_dir: &Path,
     ) -> Result<(Self, BackendReady), SpawnError> {
+        Self::spawn_tracked(node, script, web_dist, data_dir, None)
+    }
+
+    pub fn spawn_tracked(
+        node: &Path,
+        script: &Path,
+        web_dist: &Path,
+        data_dir: &Path,
+        tracker: Option<&crate::runtime::RuntimeState>,
+    ) -> Result<(Self, BackendReady), SpawnError> {
         if !node.is_file() || !script.is_file() {
             return Err("应用缺少内置运行时或后端资源，请重新构建完整的 Vgent.app。".into());
         }
@@ -179,6 +189,7 @@ impl Backend {
             .arg(web_dist)
             .current_dir(script.parent().ok_or("后端资源目录无效。")?)
             .env("VGENT_DESKTOP", "1")
+            .env("VGENT_DATA_DIR", data_dir)
             .env_remove("NODE_OPTIONS")
             .env_remove("NODE_PATH")
             .stdin(Stdio::null())
@@ -198,6 +209,7 @@ impl Backend {
             .spawn()
             .map_err(|e| format!("无法启动内置服务：{e}"))?;
         let child_pid = child.id();
+        let _tracked = tracker.map(|state| state.track(child_pid));
         let stdout = child.stdout.take().ok_or("无法建立内置服务的日志管道。")?;
         let stderr = child.stderr.take().ok_or("无法建立内置服务的日志管道。")?;
         let log = ServerLog::open(data_dir);
@@ -447,7 +459,10 @@ mod tests {
     #[ignore = "needs the bundled Node from scripts/prepare-desktop.mjs; run with --ignored"]
     fn spawn_waits_for_our_own_connection_file_and_shuts_down_cleanly() {
         let node = bundled_node();
-        assert!(node.is_file(), "未准备内置 Node（先跑 scripts/prepare-desktop.mjs）");
+        assert!(
+            node.is_file(),
+            "未准备内置 Node（先跑 scripts/prepare-desktop.mjs）"
+        );
         let directory = scratch("spawn");
         let data_dir = directory.join("data");
         std::fs::create_dir_all(&data_dir).unwrap();
@@ -490,7 +505,10 @@ setInterval(() => {{}}, 1000);
     #[ignore = "needs the bundled Node from scripts/prepare-desktop.mjs; run with --ignored"]
     fn a_startup_failure_keeps_the_stderr_tail_for_the_native_dialog() {
         let node = bundled_node();
-        assert!(node.is_file(), "未准备内置 Node（先跑 scripts/prepare-desktop.mjs）");
+        assert!(
+            node.is_file(),
+            "未准备内置 Node（先跑 scripts/prepare-desktop.mjs）"
+        );
         let directory = scratch("failure");
         let script = directory.join("main.js");
         std::fs::write(
@@ -521,7 +539,10 @@ setInterval(() => {{}}, 1000);
     #[ignore = "needs the bundled Node from scripts/prepare-desktop.mjs; run with --ignored"]
     fn an_unexpected_death_ends_the_log_with_its_signal() {
         let node = bundled_node();
-        assert!(node.is_file(), "未准备内置 Node（先跑 scripts/prepare-desktop.mjs）");
+        assert!(
+            node.is_file(),
+            "未准备内置 Node（先跑 scripts/prepare-desktop.mjs）"
+        );
         let directory = scratch("killed");
         let script = directory.join("main.js");
         std::fs::write(
@@ -571,7 +592,10 @@ setInterval(() => {{}}, 1000);
     #[ignore = "needs the bundled Node from scripts/prepare-desktop.mjs; run with --ignored"]
     fn a_locked_data_directory_fails_fast_as_already_running() {
         let node = bundled_node();
-        assert!(node.is_file(), "未准备内置 Node（先跑 scripts/prepare-desktop.mjs）");
+        assert!(
+            node.is_file(),
+            "未准备内置 Node（先跑 scripts/prepare-desktop.mjs）"
+        );
         let directory = scratch("locked");
         let data_dir = directory.join("data");
         std::fs::create_dir_all(&data_dir).unwrap();

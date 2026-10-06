@@ -16,7 +16,7 @@ const head = run("git", ["rev-parse", "HEAD"]);
 if (head !== run("git", ["rev-parse", "main"]) || run("git", ["status", "--porcelain", "--untracked-files=no"])) {
   throw new Error("Release signing requires a clean checkout at main.");
 }
-const runtime = JSON.parse(await readFile(join(app, "Contents/Resources/server/runtime.json"), "utf8"));
+const runtime = JSON.parse(await readFile(join(app, "Contents/Resources/bootstrap.json"), "utf8"));
 if (runtime.gitSha !== head) throw new Error("App source commit does not match main.");
 const version = run("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleShortVersionString", join(app, "Contents/Info.plist")]);
 if (version !== config.version) throw new Error("App version does not match the desktop config.");

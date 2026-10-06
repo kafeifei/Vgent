@@ -1,6 +1,6 @@
 # @vgent/desktop
 
-Tauri 2 的 macOS 桌面壳。它本身没有界面代码：窗口是一个浏览器，指向自己拉起来的内置 Node 服务。
+Tauri 2 的 macOS 桌面壳。安装包仅含原生壳和初始化页。首次启动自动安装工作台运行环境，之后窗口指向本机 Node 服务；原生 Codex 首次使用时独立安装。
 
 ## 构建
 
@@ -9,7 +9,7 @@ pnpm desktop:build          # 仓库根目录执行
 pnpm desktop:install        # 装到 /Applications/Vgent.app
 ```
 
-产物在 `apps/desktop/src-tauri/target/release/bundle/macos/Vgent.app`（设了 `CARGO_TARGET_DIR` 就在它下面），第一次 cargo 编译约 5–10 分钟。`desktop:install` 先核对产物的版本号和 `runtime.json` 里的提交等于当前 main，并验证 bundle ID 和 Developer ID 签名团队，再替换；换下来的旧包保存在 `/Applications/.Vgent.app.old-<时间>/Vgent.app`，保留正常的应用名称。没有 Vgent 进程在用时连目录移进废纸篓，兼容清理以前的 `Vgent.app.old-<时间>`，从不删除，也不启动或退出正在运行的实例。
+产物在 `apps/desktop/src-tauri/target/release/bundle/macos/Vgent.app`（设了 `CARGO_TARGET_DIR` 就在它下面），第一次 cargo 编译约 5–10 分钟。`desktop:install` 先核对产物的版本号和 `bootstrap.json` 里的提交等于当前 main，并验证 bundle ID 和 Developer ID 签名团队，再替换；换下来的旧包保存在 `/Applications/.Vgent.app.old-<时间>/Vgent.app`，保留正常的应用名称。没有 Vgent 进程在用时连目录移进废纸篓，兼容清理以前的 `Vgent.app.old-<时间>`，从不删除，也不启动或退出正在运行的实例。
 
 打包使用 `tauri.conf.json` 中固定的 Developer ID Application 证书（团队 `UVZM439VGU`），构建机器的钥匙串需要有对应私钥。bundle ID 固定为 `dev.vgent.desktop`，让 macOS 的系统授权跨版本沿用；缺少证书时构建失败，不能退回 ad-hoc 签名交付。从旧版 ad-hoc 签名第一次升级后，系统可能要求重新授权一次；仍在运行的旧进程继续使用原来的身份，需用户自己 ⌘Q 重开才切到新包。
 
@@ -17,27 +17,21 @@ pnpm desktop:install        # 装到 /Applications/Vgent.app
 
 产品版本以 `src-tauri/tauri.conf.json` 的 `version` 为准，Web 界面读取同一份配置；`build-number` 是独立递增的构建计数。`desktop:bump` 保留当前 major/minor，将 patch 设为新 build 号，用于日常 debug 交付。正式发布时递增 build 号，再将产品版本设为目标版本（如 `0.2.0`）。
 
-在干净且等于 main 的提交上构建后，执行 `node apps/desktop/scripts/sign-release.mjs`：验证版本和来源提交，为内置服务中的原生二进制和动态库补齐 Developer ID、hardened runtime 与时间戳签名，再重新签整个 App。Tauri 默认只签壳和 Node sidecar，不会处理服务资源里的 Codex 和原生依赖。
+在干净且等于 main 的提交上构建。`prepare-desktop.mjs` 构建服务与 Web、下载并校验官方 Node、真实启动部署后的服务自检，再给全部 Mach-O 签名并产出：
 
-用 `ditto -c -k --sequesterRsrc --keepParent` 打包为 `Vgent-<version>-mac-arm64.zip`（Intel 构建用 `mac-x64`），并生成 SHA-256 校验文件。标签使用 `v<version>`，与安装包来自同一提交；GitHub Release 上传 ZIP 和校验文件。
+- `src-tauri/resources/bootstrap.json`：App 内固定版本、架构、大小和 SHA-256 的下载清单。
+- `.local/runtime/Vgent-runtime-<target>-<gitSha>.tar.gz`：Node、server 和 Web；不含 Codex native vendor。
+- `.local/runtime/Vgent-codex-<target>-<gitSha>.tar.gz`：Codex 和完整配套资源，首次用到才下载。
 
-目前默认构建没有 Apple 公证。发布说明必须标明实际签名、公证状态，不能把已签名当作已公证；若另行完成公证，应先给 App 附加票据，再生成最终 ZIP。发布和安装都不启动、退出或重启已有 Vgent 进程。
+**分发 App 前必须**将两个 archive 上传至 GitHub `runtime-<gitSha>` Release，资产名与清单一致；不要覆盖已发布 archive。再执行 `node apps/desktop/scripts/sign-release.mjs` 签壳、用 `xcrun notarytool ... --keychain-profile vgent-release` 公证 ZIP，并 staple / spctl 验证。首次启动需要联网，下载失败在初始化页点「重试安装」。工作台环境缓存到 `~/.vgent/desktop-runtime/`，原生 Codex 可在设置的「引擎运行时」里提前安装、查看下载进度或重试，缓存到 `~/.vgent/native-codex/`；`VGENT_DATA_DIR` 可改位置。完整缓存不再次下载；首次升级到不同内容版本需重新安装，不改动旧环境和任务数据。
 
-`tauri build` 之前会自动跑 `scripts/prepare-desktop.mjs`（也可以单独 `pnpm --filter @vgent/desktop prepare:resources`），它做五件事：
-
-1. 下载官方 Node.js **22.23.2** 独立发行包（不是 Homebrew 的），**先校验 sha256 再解压**，放到 `src-tauri/binaries/vgent-node-<triple>`（Tauri 的 sidecar），许可证放 `resources/server/NODE-LICENSE.txt`。压缩包缓存在 `apps/desktop/.local/node-runtime/`。
-2. `pnpm -w build` + `pnpm --filter @vgent/web build`。
-3. `pnpm deploy --filter @vgent/server --prod --legacy --node-linker=hoisted src-tauri/resources/server` 生成自包含的服务端目录。
-   - `--legacy`：pnpm 10 在共享 lockfile 的 workspace 里默认拒绝 `deploy`，另一条路是在根 `.npmrc` 写 `inject-workspace-packages=true`，那会改变整个仓库的安装方式，所以选了 `--legacy`。
-   - `--node-linker=hoisted`：默认的符号链接农场过不了 Tauri 往 `.app` 里拷资源这一步，hoisted 出来的目录里零符号链接。
-4. 用**打包进去的那个 Node** 真起一次服务（`--port 0` + 临时 data dir），等到 `connection.json` 出现才算通过，否则整个构建失败。
-5. `apps/web/dist` → `resources/web/`，并写 `resources/server/runtime.json`（Node 版本、目标三元组、压缩包 sha256、git sha）。
+开发模式仍从 `src-tauri/binaries` 和 `resources/server` / `resources/web` 直接启动，保留已有本机调试方式。`pnpm deploy --prod --legacy --node-linker=hoisted` 生成 standalone server；构建自检使用固定 Node 真启动，确认远程控制默认关闭。
 
 ## 壳和服务怎么对话
 
 没有自定义协议。壳只是服务端已有机制的又一个客户端：
 
-- 壳用 sidecar Node 跑 `resources/server/dist/main.js --port 0 --web-dist <resources/web>`，环境变量加 `VGENT_DESKTOP=1`，清掉 `NODE_OPTIONS` / `NODE_PATH`。
+- 壳先显示本地初始化页，安装完成后用缓存 Node 跑 `server/dist/main.js --port 0 --web-dist <web>`，环境变量加 `VGENT_DESKTOP=1`，清掉 `NODE_OPTIONS` / `NODE_PATH`。
 - 服务端照常把 `{ url, token, pid }` 写进 `<dataDir>/connection.json`（0600）。壳每 100ms 读一次，**直到 `pid` 等于自己 spawn 出来的那个子进程**（别的窗口跑着 `pnpm server` 留下的文件因此不会被误认），最多等 30 秒；期间子进程提前退出就把 stderr 末尾几行塞进原生错误对话框。
 - url 必须是 `http://127.0.0.1:<port>/`（无 userinfo / query / fragment），token 必须是 32–128 位 `[A-Za-z0-9_-]`，否则拒绝启动。
 - 窗口直接导航到 `<url>/#token=<token>`，`apps/web` 自己从 hash 里取 token 存进 sessionStorage 再抹掉 hash，所以**不需要注入任何脚本**。API 调用是同源相对路径。
@@ -74,13 +68,21 @@ pnpm --filter @vgent/desktop prepare:resources   # Tauri 的构建脚本要求 b
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml -- --include-ignored
 ```
 
+已发布 companion 资产的端到端校验可在隔离目录运行，不触碰已安装的 Vgent：
+
+```bash
+cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml --example runtime-install -- apps/desktop/.local/runtime/bootstrap.json /tmp/vgent-runtime-qa
+```
+
+该工具执行真实下载、校验、安装、离线缓存复用以及服务握手和关停。
+
 `backend.rs` 里四个要真起内置 Node 的测试（拉起并关停、启动失败留 stderr 尾巴、意外退出记信号、数据目录被占时立刻报「已在运行」）标了 `#[ignore]`：默认的 `cargo test` 只把它们报成 ignored，不算通过；没放好内置 Node 时加 `--include-ignored` 它们会失败，不会假装通过。只跑它们用 `-- --ignored`。CI 的 `desktop` job（`.github/workflows/ci.yml`）不跑 prepare 脚本（太重），而是把 `setup-node` 装的 Node 22 拷成 `binaries/vgent-node-<triple>`、建好空的 `resources/server` 和 `resources/web`，再 `cargo test -- --include-ignored`。
 
 ## 已知限制
 
 - **只支持 macOS**（arm64 / x64），`bundle.targets` 只有 `app`，不出 dmg。
-- **有 Developer ID 签名，尚无公证和自动更新**。跨机器分发仍需要处理 Gatekeeper 的公证要求。
+- **有 Developer ID 签名和发布公证流程，尚无自动更新**。
 - 退出只认 macOS 的正常退出（⌘Q、菜单退出、AppleScript `quit`）。关窗口不会退出。直接对 `vgent-desktop` 进程 `kill` 不会走清理，内置服务会变成孤儿进程（`kill -TERM -<pid>` 手动收掉）。
 - 单窗口，没有多开；桌面实例和命令行 `pnpm server` 共用 `~/.vgent`，`connection.json` 会互相覆盖（壳自己靠 pid 判断，但命令行那边的文件会被抹掉）。
 - Claude Code / Codex 引擎第一次运行时，官方 harness 会在 `~/.vgent/harness/<harness>/` 里用 `pnpm install` 拉自己的 bootstrap（`@anthropic-ai/claude-code` 等不在 `.app` 里）。所以首次使用需要联网，且机器上要有 `pnpm` —— 这也是上面那段登录 shell PATH 的原因之一。
-- `.app` 约 180MB，主要是内置 Node（112MB）和服务端依赖树。
+- 初始 App 不包含 Node 或引擎。安装与启动的联网状态、磁盘占用应分别计算；旧版缓存暂不自动回收。

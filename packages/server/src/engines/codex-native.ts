@@ -1,6 +1,7 @@
 import { CHATGPT_CODEX_BASE_URL, getCodexTokenProvider } from "@vgent/providers";
 import { DEFAULT_CODEX_DATA_DIR, prepareCodexHome, type CodexAuthEnvironment } from "@vgent/engines";
 import type { LanguageModelUsage, ModelMessage, TextStreamPart, ToolSet } from "ai";
+import { ensureNativeCodex } from "../native-codex-runtime.js";
 import { CodexAppServer, type CodexNotification } from "./codex-app-server.js";
 import type { EngineContext, EngineRunner } from "./registry.js";
 import { prepareCodexSpeedCatalog } from "../codex-catalog.js";
@@ -129,7 +130,9 @@ export async function createNativeCodexRunner(
     model_providers: { agent_bridge_openai: provider },
     ...options.codexConfig,
   };
+  const nativeCommand = await ensureNativeCodex(ctx.dataDir, message => ctx.log.info(message));
   const server = new CodexAppServer({
+    ...(nativeCommand != null ? { nativeCommand } : {}),
     cwd: ctx.project.repoPath,
     env: { ...process.env, CODEX_HOME: home, CODEX_API_KEY: key },
     ...(catalog != null ? { modelCatalogPath: catalog.path } : {}),

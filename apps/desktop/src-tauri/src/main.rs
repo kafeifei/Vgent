@@ -2,10 +2,11 @@
 
 mod backend;
 mod notify;
+mod runtime;
 mod server_log;
 mod unfinished;
 
-use backend::{Backend, BackendReady, SpawnError};
+use backend::{Backend, BackendReady};
 use std::{
     path::PathBuf,
     sync::{
@@ -58,6 +59,7 @@ impl Lifecycle {
         if self.closing.swap(true, Ordering::SeqCst) {
             return;
         }
+        app.state::<runtime::RuntimeState>().cancel();
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.set_title("Vgent · 正在停止任务…");
         }
@@ -141,19 +143,13 @@ fn locate_bundle(app: &tauri::AppHandle) -> Result<Bundle, String> {
             web_dist: manifest.join("resources/web"),
         });
     }
-    let resources = app
-        .path()
-        .resource_dir()
-        .map_err(|error| format!("找不到应用资源目录：{error}"))?;
-    let node = std::env::current_exe()
-        .map_err(|error| format!("找不到应用可执行文件：{error}"))?
-        .parent()
-        .ok_or("应用可执行目录不存在")?
-        .join("vgent-node");
+    let manifest = runtime::manifest(app)?;
+    let state = app.state::<runtime::RuntimeState>();
+    let root = runtime::install(&manifest, &data_dir()?, &state)?;
     Ok(Bundle {
-        node,
-        script: resources.join("server/dist/main.js"),
-        web_dist: resources.join("web"),
+        node: root.join("node"),
+        script: root.join("server/dist/main.js"),
+        web_dist: root.join("web"),
     })
 }
 
@@ -180,13 +176,9 @@ fn open_external(url: &Url) {
     }
 }
 
-fn create_window(app: &tauri::AppHandle, ready: BackendReady) -> tauri::Result<()> {
-    let origin = ready.url.clone();
-    // `apps/web` picks the token out of the hash, stores it and strips it, so no
-    // injected script is needed — the shell is just a browser pointed at the server.
-    let mut location = ready.url;
-    location.set_fragment(Some(&format!("token={}", ready.token)));
-    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(location))
+fn create_window(app: &tauri::AppHandle) -> tauri::Result<()> {
+    let lifecycle = app.state::<Lifecycle>().inner().clone();
+    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("Vgent")
         .inner_size(1280.0, 860.0)
         .min_inner_size(900.0, 600.0)
@@ -202,7 +194,17 @@ fn create_window(app: &tauri::AppHandle, ready: BackendReady) -> tauri::Result<(
         .traffic_light_position(tauri::LogicalPosition::new(14.0, 18.0));
     builder
         .on_navigation(move |url| {
-            if is_internal_navigation(url, &origin) {
+            let internal = (url.scheme() == "tauri" && url.host_str() == Some("localhost"))
+                || lifecycle
+                    .connection
+                    .lock()
+                    .ok()
+                    .and_then(|slot| {
+                        slot.as_ref()
+                            .map(|ready| is_internal_navigation(url, &ready.url))
+                    })
+                    .unwrap_or(false);
+            if internal {
                 true
             } else {
                 open_external(url);
@@ -215,6 +217,124 @@ fn create_window(app: &tauri::AppHandle, ready: BackendReady) -> tauri::Result<(
         })
         .build()?;
     Ok(())
+}
+
+#[tauri::command]
+fn runtime_status(
+    state: tauri::State<'_, runtime::RuntimeState>,
+) -> Result<runtime::Status, String> {
+    state
+        .status
+        .lock()
+        .map(|s| s.clone())
+        .map_err(|_| "无法读取安装状态".into())
+}
+#[tauri::command]
+fn runtime_retry(app: tauri::AppHandle) {
+    start_runtime(&app);
+}
+
+/// Installation and Node startup happen away from the native UI thread. Retry is
+/// local-only, and an atomic guard prevents overlapping installers/backends.
+fn start_runtime(app: &tauri::AppHandle) {
+    let state = app.state::<runtime::RuntimeState>().inner().clone();
+    let lifecycle = app.state::<Lifecycle>().inner().clone();
+    if lifecycle.closing.load(Ordering::SeqCst) || state.busy.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    if lifecycle
+        .connection
+        .lock()
+        .map(|slot| slot.is_some())
+        .unwrap_or(true)
+    {
+        state.busy.store(false, Ordering::SeqCst);
+        return;
+    }
+    let app = app.clone();
+    thread::spawn(move || {
+        let result = (|| -> Result<(), String> {
+            let bundle = locate_bundle(&app)?;
+            if state.cancelled.load(Ordering::SeqCst) {
+                return Err("启动已取消。".into());
+            }
+            state.update("starting", "正在启动工作台…", 0, 0);
+            let mut slot = lifecycle.backend.lock().map_err(|_| "无法记录服务进程")?;
+            let (mut backend, ready) = Backend::spawn_tracked(
+                &bundle.node,
+                &bundle.script,
+                &bundle.web_dist,
+                &data_dir()?,
+                Some(&state),
+            )
+            .map_err(|e| e.message().to_string())?;
+            // Hold the backend slot across checking closing and publishing; quit
+            // cannot miss a process started while the handshake was in progress.
+            if lifecycle.closing.load(Ordering::SeqCst) {
+                backend.shutdown();
+                return Err("启动已取消。".into());
+            }
+            *lifecycle
+                .connection
+                .lock()
+                .map_err(|_| "无法记录服务地址")? = Some(ready.clone());
+            *slot = Some(backend);
+            drop(slot);
+            let mut location = ready.url;
+            location.set_fragment(Some(&format!("token={}", ready.token)));
+            app.get_webview_window("main")
+                .ok_or("工作台窗口不存在")?
+                .navigate(location)
+                .map_err(|e| e.to_string())?;
+            state.update("ready", "运行环境已就绪", 0, 0);
+            let app_handle = app.clone();
+            let lifecycle = lifecycle.clone();
+            thread::spawn(move || loop {
+                if lifecycle.closing.load(Ordering::SeqCst) {
+                    return;
+                }
+                // A quit takes the backend out of the slot before stopping
+                // it, so an exit seen here was not asked for.
+                let exited = lifecycle
+                    .backend
+                    .lock()
+                    .map(|mut slot| {
+                        slot.as_mut().is_some_and(|backend| {
+                            let Some(status) = backend.exit_status() else {
+                                return false;
+                            };
+                            backend.record_exit("内置服务意外退出", status);
+                            true
+                        })
+                    })
+                    .unwrap_or(false);
+                if exited {
+                    let handle = app_handle.clone();
+                    app_handle
+                        .dialog()
+                        .message("内置服务意外退出。已保存的任务仍保留；请重新打开 Vgent。")
+                        .title("Vgent")
+                        .kind(MessageDialogKind::Error)
+                        .show(move |_| handle.exit(1));
+                    return;
+                }
+                thread::sleep(Duration::from_millis(250));
+            });
+            Ok(())
+        })();
+        if let Err(error) = result {
+            if lifecycle.closing.load(Ordering::SeqCst) {
+                state.busy.store(false, Ordering::SeqCst);
+                return;
+            }
+            lifecycle.shutdown();
+            // Startup failure is retryable, unlike normal application shutdown.
+            lifecycle.stopped.store(false, Ordering::SeqCst);
+            *lifecycle.connection.lock().unwrap() = None;
+            state.update("error", &error, 0, 0);
+        }
+        state.busy.store(false, Ordering::SeqCst);
+    });
 }
 
 fn main() {
@@ -237,7 +357,12 @@ fn main() {
         // `window.__TAURI__.notification`, and sends through `notify_task` so a
         // click can open the task. `capabilities/main.json` opens exactly those.
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![notify::notify_task])
+        .invoke_handler(tauri::generate_handler![
+            notify::notify_task,
+            runtime_status,
+            runtime_retry
+        ])
+        .manage(runtime::RuntimeState::default())
         .manage(lifecycle)
         .setup(|app| {
             let menu = Menu::default(app.handle())?;
@@ -246,69 +371,8 @@ fn main() {
             menu.append(&Submenu::with_items(app, "调试", true, &[&inspector])?)?;
             app.set_menu(menu)?;
 
-            let lifecycle = app.state::<Lifecycle>().inner().clone();
-            let started = locate_bundle(app.handle())
-                .and_then(|bundle| data_dir().map(|dir| (bundle, dir)))
-                .map_err(SpawnError::from)
-                .and_then(|(bundle, dir)| {
-                    Backend::spawn(&bundle.node, &bundle.script, &bundle.web_dist, &dir)
-                });
-            match started {
-                Ok((backend, ready)) => {
-                    *lifecycle
-                        .connection
-                        .lock()
-                        .map_err(|_| "无法记录内置服务地址")? = Some(ready.clone());
-                    *lifecycle
-                        .backend
-                        .lock()
-                        .map_err(|_| "无法记录内置服务进程")? = Some(backend);
-                    if let Err(error) = create_window(app.handle(), ready) {
-                        lifecycle.shutdown();
-                        return Err(error.into());
-                    }
-                    let app_handle = app.handle().clone();
-                    thread::spawn(move || loop {
-                        if lifecycle.closing.load(Ordering::SeqCst) {
-                            return;
-                        }
-                        // A quit takes the backend out of the slot before stopping
-                        // it, so an exit seen here was not asked for.
-                        let exited = lifecycle
-                            .backend
-                            .lock()
-                            .map(|mut slot| {
-                                slot.as_mut().is_some_and(|backend| {
-                                    let Some(status) = backend.exit_status() else {
-                                        return false;
-                                    };
-                                    backend.record_exit("内置服务意外退出", status);
-                                    true
-                                })
-                            })
-                            .unwrap_or(false);
-                        if exited {
-                            let handle = app_handle.clone();
-                            app_handle
-                                .dialog()
-                                .message("内置服务意外退出。已保存的任务仍保留；请重新打开 Vgent。")
-                                .title("Vgent")
-                                .kind(MessageDialogKind::Error)
-                                .show(move |_| handle.exit(1));
-                            return;
-                        }
-                        thread::sleep(Duration::from_millis(250));
-                    });
-                }
-                Err(error) => {
-                    let handle = app.handle().clone();
-                    app.dialog()
-                        .message(error.message())
-                        .title(error.title())
-                        .kind(MessageDialogKind::Error)
-                        .show(move |_| handle.exit(1));
-                }
-            }
+            create_window(app.handle())?;
+            start_runtime(app.handle());
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -346,7 +410,14 @@ fn main() {
             // process is gone the moment this returns. So stop the server *here*,
             // synchronously. `shutdown` holds the lock across the whole stop, so a
             // `request_exit` thread already doing it just makes this call wait.
-            RunEvent::Exit => handle.state::<Lifecycle>().shutdown(),
+            RunEvent::Exit => {
+                handle
+                    .state::<Lifecycle>()
+                    .closing
+                    .store(true, Ordering::SeqCst);
+                handle.state::<runtime::RuntimeState>().cancel();
+                handle.state::<Lifecycle>().shutdown();
+            }
             // Dock-icon click while the window is hidden or minimized.
             #[cfg(target_os = "macos")]
             RunEvent::Reopen { .. } => {

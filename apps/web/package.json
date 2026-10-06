@@ -22,7 +22,7 @@
     "ai": "7.0.111",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
-    "katex": "0.16.47",
+    "katex": "0.18.2",
     "lucide-react": "1.47.0",
     "motion": "13.4.0",
     "qrcode.react": "4.2.0",

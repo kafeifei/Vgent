@@ -7,7 +7,7 @@ import type { ClaudeLoginStatus } from "../subscriptions.js";
 import { createGitHubAccounts } from "./github.js";
 import { createAccountRegistry, type AccountRegistry } from "./registry.js";
 import { createAccountService } from "./service.js";
-import { createCopilotAccess } from "./copilot.js";
+import { copilotEntry, createCopilotAccess, fitLevel } from "./copilot.js";
 import { parseClaudeUsage, parseCodexUsage, parseCopilotUsage } from "./usage.js";
 import { USAGE_FALLBACK_INTERVAL } from "./usage-cache.js";
 
@@ -355,6 +355,12 @@ describe("GitHub credentials", () => {
   });
 });
 
+/** One entry of Copilot's `/models`, the way it answers today. */
+const copilotModel = (id: string, endpoints: string[], extra: { effort?: string[]; prompt?: number; context?: number; output?: number; vendor?: string } = {}) => ({
+  id, name: id.toUpperCase(), ...(extra.vendor != null ? { vendor: extra.vendor } : {}), supported_endpoints: endpoints,
+  capabilities: { type: "chat", limits: { max_context_window_tokens: extra.context ?? 328_000, max_prompt_tokens: extra.prompt ?? 200_000, max_output_tokens: extra.output ?? 128_000 }, supports: { tool_calls: true, ...(extra.effort != null ? { reasoning_effort: extra.effort } : {}) } },
+});
+
 describe("Copilot model access", () => {
   it("derives model access from the same GitHub login and rejects calls after logout", async () => {
     const remote = remoteFixture(), sent: { url: string; authorization: string | null }[] = [];
@@ -369,7 +375,7 @@ describe("Copilot model access", () => {
       return Response.json({ id: "fixture", created: 1, model: "usable", choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } });
     });
     const models = await access.models();
-    expect(models.map(m => m.id)).toEqual(["github-copilot:usable", "github-copilot:responses-only"]);
+    expect(models.map(m => [m.id, m.protocols])).toEqual([["usable", ["chat-completions"]], ["responses-only", ["responses"]]]);
     const { generateText } = await import("ai");
     const result = await generateText({ model: await access.model("usable"), prompt: "test", maxRetries: 0 });
     expect(result.text).toBe("ok");
@@ -378,6 +384,67 @@ describe("Copilot model access", () => {
     expect(sent.at(-1)?.url).toBe("https://api.githubcopilot.com/chat/completions");
     await remote.logout();
     await expect(access.available()).rejects.toThrow("signed out");
+  });
+
+  it("reads each model's prompt limit, effort levels, maker and protocols, and offers it to the engines that speak one", async () => {
+    const access = createCopilotAccess(remoteFixture().githubAccess, async (input) => {
+      const url = String(input);
+      if (url.endsWith("/token")) return Response.json({ token: "derived", expires_at: Date.now() / 1000 + 600 });
+      return Response.json({ data: [
+        copilotModel("claude", ["/v1/messages", "/chat/completions"], { effort: ["low", "medium", "high", "xhigh", "max"], vendor: "Anthropic" }),
+        copilotModel("gpt", ["/responses", "ws:/responses"], { effort: ["none", "low", "medium", "high", "xhigh", "max"], prompt: 272_000, context: 400_000, vendor: "Azure OpenAI" }),
+        copilotModel("gemini", ["/chat/completions"], { effort: ["low", "medium", "high"], vendor: "Google" }),
+        copilotModel("haiku", ["/chat/completions", "/v1/messages"], { prompt: 128_000, context: 200_000, vendor: "Anthropic" }),
+        { ...copilotModel("old", ["/chat/completions"]), capabilities: { type: "chat", limits: { max_context_window_tokens: 128_000, max_output_tokens: 16_000 }, supports: { tool_calls: true } } },
+      ] });
+    });
+    const models = await access.models();
+    // The prompt limit, not the context window that counts the reply too; without one, the window less the reply.
+    expect(models.map(m => [m.id, m.contextWindow])).toEqual([["claude", 200_000], ["gpt", 272_000], ["gemini", 200_000], ["haiku", 128_000], ["old", 112_000]]);
+    expect(models.map(m => m.vendor)).toEqual(["anthropic", "openai", "google", "anthropic", undefined]);
+    const offered = (engine: Parameters<typeof copilotEntry>[1]) => models.flatMap(m => copilotEntry(m, engine)?.id ?? []);
+    expect(offered("claude-code")).toEqual(["github-copilot:claude", "github-copilot:haiku"]);
+    expect(offered("codex")).toEqual(["github-copilot:gpt"]);
+    expect(offered("opencode")).toEqual(models.map(m => `github-copilot:${m.id}`));
+    expect(offered("vgent")).toEqual(models.map(m => `github-copilot:${m.id}`));
+    // The levels the engine can carry, and none at all for a model that takes none.
+    const claude = models[0]!, haiku = models[3]!;
+    expect(copilotEntry(claude, "vgent")).toMatchObject({ reasoningLevels: ["low", "medium", "high", "xhigh"], defaultReasoningLevel: "high", contextWindow: 200_000, vendor: "anthropic", modelKey: "github-copilot/claude" });
+    expect(copilotEntry(claude, "claude-code")?.reasoningLevels).toContain("max");
+    expect(copilotEntry(haiku, "vgent")).not.toHaveProperty("reasoningLevels");
+  });
+
+  it("sends each request to the account's own host with an effort the model takes, and counts a tool result as the agent's", async () => {
+    const sent: { url: string; body: Record<string, unknown>; headers: Headers }[] = [];
+    const access = createCopilotAccess(remoteFixture().githubAccess, async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/token")) return Response.json({ token: "derived", expires_at: Date.now() / 1000 + 600, endpoints: { api: "https://api.individual.githubcopilot.com" } });
+      if (url.endsWith("/models")) return Response.json({ data: [
+        copilotModel("claude", ["/v1/messages"], { effort: ["low", "medium", "high"] }),
+        copilotModel("haiku", ["/v1/messages"]),
+        copilotModel("gpt", ["/responses"], { effort: ["none", "low", "medium", "high", "xhigh"] }),
+      ] });
+      sent.push({ url, body: JSON.parse(String(init?.body)), headers: new Headers(init?.headers) });
+      return Response.json({});
+    });
+    const post = (path: string, body: unknown) => access.fetch(`https://api.githubcopilot.com${path}`, { method: "POST", headers: { "x-api-key": "relay-key" }, body: JSON.stringify(body) });
+    await post("/v1/messages", { model: "claude", output_config: { effort: "max" }, messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "done" }, { type: "text", text: "<reminder>" }] }] });
+    await post("/v1/messages", { model: "haiku", output_config: { effort: "high" }, messages: [{ role: "user", content: "hi" }] });
+    await post("/responses", { model: "gpt", reasoning: { effort: "max", summary: "auto" }, input: [{ role: "user", content: "hi" }, { type: "function_call_output", call_id: "c", output: "x" }] });
+    await post("/responses", { model: "gpt", reasoning: { effort: "minimal" }, input: [{ role: "user", content: "hi" }] });
+    expect(sent.map(s => s.url)).toEqual(["/v1/messages", "/v1/messages", "/responses", "/responses"].map(path => `https://api.individual.githubcopilot.com${path}`));
+    expect(sent.map(s => s.body.output_config ?? s.body.reasoning)).toEqual([{ effort: "high" }, {}, { effort: "xhigh", summary: "auto" }, { effort: "none" }]);
+    expect(sent.map(s => s.headers.get("X-Initiator"))).toEqual(["agent", "user", "agent", "user"]);
+    expect(sent.every(s => s.headers.get("x-api-key") == null && s.headers.get("Authorization") === "Bearer derived")).toBe(true);
+    await expect(access.fetch("https://example.com/v1/messages", {})).rejects.toThrow("Unexpected Copilot endpoint");
+  });
+
+  it("fits an effort level to what a model offers", () => {
+    expect(fitLevel("high", ["low", "medium", "high"])).toBe("high");
+    expect(fitLevel("max", ["low", "medium", "high", "xhigh"])).toBe("xhigh");
+    expect(fitLevel("medium", ["low", "high", "max"])).toBe("low");
+    expect(fitLevel("minimal", ["low", "high"])).toBe("low");
+    expect(fitLevel("high", [])).toBeUndefined();
   });
 });
 

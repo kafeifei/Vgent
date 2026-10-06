@@ -380,6 +380,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
     claudeEnv: accounts.claudeEnv,
     codexHome: accounts.codexHome,
     bindUsage: accounts.bindUsage,
+    copilot: accounts.copilotRoute,
     async ensure(id: string) {
       const account = isAccountId(id) ? (await accounts.list()).accounts.find((entry) => entry.id === id) : undefined;
       const name = isAccountId(id) ? { claude: "Claude", codex: "Codex", github: "GitHub" }[kindOfAccount(id)] : "这个";
@@ -1999,7 +2000,7 @@ export function createApp(options: CreateAppOptions): VgentApp {
         )
       : [];
     // What the 模型 table switched off stays in the list, marked: see `ModelEntry.hidden`.
-    const copilotModels = engine === "vgent" ? await accounts.copilotModels(refresh) : [];
+    const copilotModels = await accounts.copilotModels(engine, refresh);
     const priceOf = modelOf ?? (await catalog.get().then((snapshot) => createModelIndex(snapshot.providers), () => undefined));
     const models = orderBySource([...markHidden([...listing.models, ...copilotModels], current.hiddenModels?.[engine]), ...fromProviders], current.providerOrder)
       .map((entry) => withCost(entry, priceOf));
@@ -2175,6 +2176,8 @@ export function createApp(options: CreateAppOptions): VgentApp {
       for (const unsubscribe of unsubscribes) unsubscribe();
       clients.clear();
       await Promise.all([runs.stopAll(shutdownOptions), options.remote?.stop()]);
+      // Last: the runs above are what send requests through the Copilot relay.
+      await accounts.close();
     },
   };
 }

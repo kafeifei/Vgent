@@ -10,6 +10,8 @@ import { createNativeCodexRunner } from "./codex-native.js";
 import { effectiveReasoningLevel } from "../reasoning.js";
 import type { EngineAccounts, EngineContext, EngineFactory, EngineRunner } from "./registry.js";
 import { DEFAULT_ACCOUNT, splitAccountSpec } from "../accounts/spec.js";
+import { COPILOT_SPEC_PREFIX } from "../accounts/copilot.js";
+import { copilotRouteFor, type CopilotRoute } from "./copilot.js";
 
 /**
  * 引擎能力表, the Codex row. `update_plan` exists but produces no UI part, and
@@ -54,6 +56,15 @@ export function codexProviderRoute(model: string | undefined, providers: readonl
     model: split.modelId,
     auth: codexProviderEnv({ baseURL: agent.baseURL, ...(provider.apiKey != null ? { apiKey: provider.apiKey } : {}) }),
     ...(contextWindow != null ? { codexConfig: { model_context_window: contextWindow } } : {}),
+  };
+}
+
+/** A Copilot model on Codex: the relay is a Responses endpoint like any provider's, and Copilot says the window. */
+export function codexCopilotRoute(route: CopilotRoute) {
+  return {
+    model: route.model.id,
+    auth: codexProviderEnv({ baseURL: route.baseURL, apiKey: route.apiKey }),
+    ...(route.model.contextWindow != null ? { codexConfig: { model_context_window: route.model.contextWindow } } : {}),
   };
 }
 
@@ -103,9 +114,9 @@ export function createCodexEngineFactory(accounts?: EngineAccounts): EngineFacto
 
     async ensureAvailable({ thread }) {
       const { accountId, spec } = thread.model == null ? { spec: undefined } : splitAccountSpec(thread.model);
-      // A provider's model runs on the provider's key; the login is not needed, so its absence is no obstacle.
-      if (spec != null && splitProviderModelSpec(spec) != null) return;
       if (accountId != null) { await accounts?.ensure(accountId); return; }
+      // A provider's model runs on the provider's key, Copilot's on the GitHub login; the Codex login is not needed, so its absence is no obstacle.
+      if (spec != null && (spec.startsWith(COPILOT_SPEC_PREFIX) || splitProviderModelSpec(spec) != null)) return;
       // The native runner's token provider reads the same login store.
       const home = accounts?.codexHome(DEFAULT_ACCOUNT.codex);
       const report = await describeSubscriptionAuth(home != null ? { env: { ...process.env, CODEX_HOME: home } } : {});
@@ -118,7 +129,8 @@ export function createCodexEngineFactory(accounts?: EngineAccounts): EngineFacto
       const reasoningEffort = asCodexEffort(effectiveReasoningLevel(ctx.thread.reasoningEffort));
       // `@<account>:<slug>`: the same model on another Codex account's login.
       const { accountId, spec } = ctx.thread.model == null ? { spec: undefined } : splitAccountSpec(ctx.thread.model);
-      const route = codexProviderRoute(spec, await createProviderStore(ctx.dataDir, ctx.log).list());
+      const copilot = await copilotRouteFor(DESCRIPTOR, { accountId, spec }, accounts);
+      const route = copilot != null ? codexCopilotRoute(copilot) : codexProviderRoute(spec, await createProviderStore(ctx.dataDir, ctx.log).list());
       const model = route?.model ?? spec;
       const codexHome = route == null ? accounts?.codexHome(accountId ?? DEFAULT_ACCOUNT.codex) : undefined;
       const reportUsage = route == null ? await accounts?.bindUsage?.(accountId ?? DEFAULT_ACCOUNT.codex).catch(() => undefined) : undefined;

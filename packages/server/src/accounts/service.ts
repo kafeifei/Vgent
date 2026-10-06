@@ -7,7 +7,10 @@ import type { ModelEntry } from "../models.js";
 import { claudeAccountEnv, claudeHomeOf, logoutClaude, probeClaudeAccount, readClaudeUsageToken, startClaudeLogin } from "./claude.js";
 import type { CliLogin } from "./cli-login.js";
 import { codexHomeOf, codexTokens, logoutCodex, probeCodexAccount, startCodexLogin } from "./codex.js";
-import { createCopilotAccess } from "./copilot.js";
+import { BadRequestError } from "../errors.js";
+import type { EngineId } from "../types.js";
+import { copilotEntry, createCopilotAccess, type CopilotModel } from "./copilot.js";
+import { createCopilotRelay, type CopilotEndpoint } from "./copilot-relay.js";
 import { createGitHubAccounts, type GitHubAccounts } from "./github.js";
 import { createAccountRegistry, useEnabled, type AccountRecord, type AccountRegistry } from "./registry.js";
 import { accountModelKey, accountSpec, DEFAULT_ACCOUNT, isAccountId, isDefaultAccount, kindOfAccount, newAccountId } from "./spec.js";
@@ -62,6 +65,7 @@ export function createAccountService(options: {
     if (access == null) { access = createCopilotAccess(() => github.access(id), fetcher); copilots.set(id, access); }
     return access;
   };
+  const relay = createCopilotRelay(copilot);
 
   let revision = 0;
   let cache: { at: number; data: AccountSnapshot; usageAt: number } | undefined;
@@ -357,22 +361,35 @@ export function createAccountService(options: {
     return (await list()).accounts.filter((account) => account.kind === kind && account.loggedIn !== false && account.uses.some((entry) => entry.id === use && entry.enabled));
   }
 
-  /** Copilot's models for every GitHub account switched on for it, each under its own account. */
-  async function copilotModels(refresh = false): Promise<ModelEntry[]> {
+  /** Copilot's models `engine` can run, for every GitHub account switched on for it, each under its own account. */
+  async function copilotModels(engine: EngineId, refresh = false): Promise<ModelEntry[]> {
     const accounts = await usable("github", "models");
     const lists = await Promise.all(accounts.map(async (account) => {
-      const entries = await copilot(account.id).models(refresh).catch(() => [] as ModelEntry[]);
-      return entries.map((entry) => {
-        const model = entry.id.slice("github-copilot:".length);
-        return {
+      const models = await copilot(account.id).models(refresh).catch(() => [] as CopilotModel[]);
+      return models.flatMap((model) => {
+        const entry = copilotEntry(model, engine);
+        if (entry == null) return [];
+        return [{
           ...entry,
           id: accountSpec(account.id, entry.id),
-          modelKey: accountModelKey(account.id, model),
+          modelKey: accountModelKey(account.id, model.id),
           source: { ...entry.source!, account: account.id, name: account.username ? `GitHub Copilot · @${account.username}` : "GitHub Copilot" },
-        };
+        }];
       });
     }));
     return lists.flat();
+  }
+
+  /**
+   * A Copilot model as an engine process reaches it: the relay's address for
+   * the account, its key, and what the account's list says about the model.
+   * Refused when the list does not have it, so a task never sends Copilot a
+   * model it would only turn down.
+   */
+  async function copilotRoute(id: AccountId, model: string): Promise<CopilotEndpoint & { model: CopilotModel }> {
+    const found = await copilot(id).find(model);
+    if (found == null) throw new BadRequestError(`这个 GitHub 账号的 Copilot 里没有 ${model}，请换一个模型`, "invalid_model");
+    return { ...(await relay.endpoint(id)), model: found };
   }
 
   return {
@@ -395,6 +412,9 @@ export function createAccountService(options: {
     usable,
     copilot,
     copilotModels,
+    copilotRoute,
+    /** Stops what serves the engines from here: the Copilot relay. */
+    close: () => relay.close(),
     startLogin,
     loginStatus: publicAttempt,
     cancelLogin(): AccountLoginAttempt {

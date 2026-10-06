@@ -123,7 +123,8 @@ export interface SubscriptionService {
 const ENGINES: Record<AccountKind, EngineId[]> = {
   claude: ["claude-code"],
   codex: ["vgent", "codex", "opencode"],
-  github: ["vgent"],
+  // Each Copilot model only under the engines that speak a protocol Copilot serves it on: see `copilotEntry`.
+  github: ["vgent", "codex", "claude-code", "opencode"],
 };
 
 /** The model a row stands for, whichever engine names it: its id without the account and the subscription prefix. */
@@ -151,8 +152,8 @@ export function createSubscriptionService(options: {
     for (const engine of agents) {
       let entries: ModelEntry[];
       if (account.kind === "github") {
-        entries = await options.accounts.copilotModels(refresh);
-        if (!entries.some((entry) => entry.source?.account === account.id)) warning = "暂时无法读取 Copilot 模型，请确认此 GitHub 账号具有 Copilot 权限后重试。";
+        // Asked again only for the first engine: the account has one list, which each engine takes its share of.
+        entries = await options.accounts.copilotModels(engine, refresh && engine === agents[0]);
       } else {
         const catalog = await modelCatalog.list(engine, { refresh });
         entries = catalog.models;
@@ -172,6 +173,7 @@ export function createSubscriptionService(options: {
         byRow.set(id, existing);
       }
     }
+    if (account.kind === "github" && agents.length > 0 && byRow.size === 0) warning = "暂时无法读取 Copilot 模型，请确认此 GitHub 账号具有 Copilot 权限后重试。";
     return { models: [...byRow.values()], ...(warning != null ? { warning } : {}) };
   };
 

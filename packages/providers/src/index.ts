@@ -68,6 +68,7 @@ export {
   summarizeCatalogProvider,
 } from "./catalog.js";
 export type { CatalogEndpoint, CatalogModelMatch, CatalogProvider, CatalogProviderSummary, FetchCatalogOptions } from "./catalog.js";
-export { createCopilotModel } from "./copilot-model.js";
+export { COPILOT_API, createCopilotModel } from "./copilot-model.js";
+export type { CopilotProtocol } from "./copilot-model.js";
 export { openCodeProviderConfig, openCodeProviderId } from "./opencode-config.js";
 export type { OpenCodeModelFacts } from "./opencode-config.js";

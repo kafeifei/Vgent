@@ -128,6 +128,32 @@ describe("createSubscriptionService", () => {
     expect((await service(accounts).list(DEFAULT_SETTINGS)).map((row) => row.accountId)).toEqual(["claude", "claude-0a1b2c3d"]);
   });
 
+  it("lists a Copilot model under each engine that can run it, and warns only when the account brings none", async () => {
+    const github: AccountSummary = { id: "github", kind: "github", name: "GitHub", loggedIn: true, username: "octo", uses: uses("models") };
+    const source = { kind: "provider" as const, id: "github-copilot", name: "GitHub Copilot · @octo", account: "github" };
+    const offered: Record<EngineId, string[]> = { vgent: ["claude", "gpt", "gemini"], opencode: ["claude", "gpt", "gemini"], codex: ["gpt"], "claude-code": ["claude"] };
+    const asked: Array<[EngineId, boolean]> = [];
+    const copilotModels = async (engine: EngineId, refresh?: boolean) => {
+      asked.push([engine, refresh === true]);
+      return offered[engine].map((id) => ({ id: `github-copilot:${id}`, label: id.toUpperCase(), contextWindow: 200_000, source }));
+    };
+    const withCopilot = createSubscriptionService({ modelCatalog: catalogOf(LISTS), accounts: { list: async () => ({ accounts: [github], revision: 1 }), copilotModels } });
+    const [row] = await withCopilot.list({ ...DEFAULT_SETTINGS, hiddenModels: { codex: ["github-copilot:gpt"] } }, { refresh: true });
+    expect(row?.agents).toEqual(["vgent", "codex", "claude-code", "opencode"]);
+    expect(row?.warning).toBeUndefined();
+    expect(Object.fromEntries((row?.models ?? []).map((model) => [model.id, Object.keys(model.agents)]))).toEqual({
+      claude: ["vgent", "claude-code", "opencode"],
+      gpt: ["vgent", "codex", "opencode"],
+      gemini: ["vgent", "opencode"],
+    });
+    expect(row?.models.find((model) => model.id === "gpt")?.agents.codex).toEqual({ spec: "github-copilot:gpt", enabled: false });
+    // One list per account: only the first engine asks Copilot again.
+    expect(asked).toEqual([["vgent", true], ["codex", false], ["claude-code", false], ["opencode", false]]);
+
+    const silent = createSubscriptionService({ modelCatalog: catalogOf(LISTS), accounts: { list: async () => ({ accounts: [github], revision: 1 }), copilotModels: async () => [] } });
+    expect((await silent.list(DEFAULT_SETTINGS))[0]?.warning).toContain("Copilot");
+  });
+
   it("answers one account's rows by its key, and nothing for one that is not there", async () => {
     expect((await service().models("claude-subscription@claude-0a1b2c3d", DEFAULT_SETTINGS))?.length).toBe(1);
     expect(await service().models("claude-subscription@claude-99999999", DEFAULT_SETTINGS)).toBeUndefined();

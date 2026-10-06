@@ -1,8 +1,8 @@
 # Vgent
 
-Vgent 是我用于学习、研究和探索 Coding Agent 技术及人与 Agent 协作方式的项目。
+Vgent 是一个用于学习、研究和探索 Coding Agent 技术及人与 Agent 协作方式的项目。
 
-我以本地 Agent 工作台为载体，接入 Claude Code、Codex、OpenCode 和基于 AI SDK `ToolLoopAgent` 的自研引擎，在实际开发中比较不同引擎的能力与边界，并尝试项目与任务组织、Git worktree 隔离、执行中干预、改动验收与交付等设计。
+项目以本地 Agent 工作台为载体，接入 Claude Code、Codex、OpenCode 和基于 AI SDK `ToolLoopAgent` 的自研引擎，在实际开发中比较不同引擎的能力与边界，并尝试项目与任务组织、Git worktree 隔离、执行中干预、改动验收与交付等设计。
 
 目前提供 macOS 桌面、本地 Web 和远程访问入口，支持从计划、执行、纠偏到验收、提交与归档的任务流程。项目会随着学习、研究和实际使用中的发现持续演进。
 

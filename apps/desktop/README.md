@@ -17,7 +17,9 @@ pnpm desktop:install        # 装到 /Applications/Vgent.app
 
 产品版本以 `src-tauri/tauri.conf.json` 的 `version` 为准，Web 界面读取同一份配置；`build-number` 是独立递增的构建计数。`desktop:bump` 保留当前 major/minor，将 patch 设为新 build 号，用于日常 debug 交付。正式发布时递增 build 号，再将产品版本设为目标版本（如 `0.2.0`）。
 
-在干净且等于 main 的提交上构建，验证 App 版本、`server/runtime.json` 的来源提交以及 Developer ID 签名后，用 `ditto -c -k --sequesterRsrc --keepParent` 打包为 `Vgent-<version>-mac-arm64.zip`（Intel 构建用 `mac-x64`），并生成 SHA-256 校验文件。标签使用 `v<version>`，与安装包来自同一提交；GitHub Release 上传 ZIP 和校验文件。
+在干净且等于 main 的提交上构建后，执行 `node apps/desktop/scripts/sign-release.mjs`：验证版本和来源提交，为内置服务中的原生二进制和动态库补齐 Developer ID、hardened runtime 与时间戳签名，再重新签整个 App。Tauri 默认只签壳和 Node sidecar，不会处理服务资源里的 Codex 和原生依赖。
+
+用 `ditto -c -k --sequesterRsrc --keepParent` 打包为 `Vgent-<version>-mac-arm64.zip`（Intel 构建用 `mac-x64`），并生成 SHA-256 校验文件。标签使用 `v<version>`，与安装包来自同一提交；GitHub Release 上传 ZIP 和校验文件。
 
 目前默认构建没有 Apple 公证。发布说明必须标明实际签名、公证状态，不能把已签名当作已公证；若另行完成公证，应先给 App 附加票据，再生成最终 ZIP。发布和安装都不启动、退出或重启已有 Vgent 进程。
 

@@ -182,7 +182,10 @@ impl Backend {
         let mut command = Command::new(node);
         command
             .arg("--enable-source-maps")
-            .arg(script)
+            // Node resolves symlinks in import.meta.url. Its direct-entry check
+            // must receive the same path (not /tmp vs /private/tmp, or a linked
+            // VGENT_DATA_DIR), otherwise the server silently exits without main.
+            .arg(script.canonicalize().map_err(|e| format!("无法解析后端入口路径：{e}"))?)
             .arg("--port")
             .arg("0")
             .arg("--web-dist")
@@ -478,6 +481,7 @@ mod tests {
             &script,
             format!(
                 r#"const fs = require('node:fs');
+if (process.argv[1] !== fs.realpathSync(__filename)) process.exit(0);
 const dataDir = {data_dir:?};
 const file = dataDir + '/connection.json';
 fs.writeFileSync(file, JSON.stringify({{version:1,url:'http://127.0.0.1:42001',token:'a'.repeat(64),pid:process.pid}}));
@@ -488,7 +492,9 @@ setInterval(() => {{}}, 1000);
         )
         .unwrap();
 
-        let (mut backend, ready) = Backend::spawn(&node, &script, &directory, &data_dir)
+        let alias = directory.join("linked-main.js");
+        std::os::unix::fs::symlink(&script, &alias).unwrap();
+        let (mut backend, ready) = Backend::spawn(&node, &alias, &directory, &data_dir)
             .unwrap_or_else(|error| panic!("{}", error.message()));
         assert_eq!(ready.url.port(), Some(42001));
         backend.shutdown();

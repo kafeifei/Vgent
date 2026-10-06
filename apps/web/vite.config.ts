@@ -7,8 +7,10 @@ import { defineConfig } from "vitest/config";
 
 const serverUrl = process.env.VGENT_SERVER_URL ?? "http://127.0.0.1:7412";
 
-/** Build info: `number` is the committed auto-increment counter in `apps/desktop/build-number`, `version` is `0.1.<number>`. */
+/** Product version comes from the desktop config; build number is an independent counter. */
 function getBuildInfo(): { version: string; number: number; sha: string; dirty: boolean } {
+  const configPath = fileURLToPath(new URL("../desktop/src-tauri/tauri.conf.json", import.meta.url));
+  const { version } = JSON.parse(readFileSync(configPath, "utf8")) as { version: string };
   let number = 0;
   try {
     const buildNumberPath = fileURLToPath(new URL("../desktop/build-number", import.meta.url));
@@ -28,7 +30,7 @@ function getBuildInfo(): { version: string; number: number; sha: string; dirty: 
     dirty = false;
   }
 
-  return { version: `0.1.${number}`, number, sha, dirty };
+  return { version, number, sha, dirty };
 }
 
 export default defineConfig({

@@ -6,6 +6,8 @@ Vgent 是我用于学习、研究和探索 Coding Agent 技术及人与 Agent �
 
 目前提供 macOS 桌面、本地 Web 和远程访问入口，支持从计划、执行、纠偏到验收、提交与归档的任务流程。项目会随着学习、研究和实际使用中的发现持续演进。
 
+macOS 安装包见 [GitHub Releases](https://github.com/kafeifei/Vgent/releases)。下载对应架构的 ZIP，解压后将 `Vgent.app` 放入「应用程序」。签名、公证状态及使用要求见对应版本的发布说明。
+
 ## 要求
 
 - Node ≥ 22.12（根 `package.json` 的 `engines`，`.npmrc` 开了 `engine-strict`）

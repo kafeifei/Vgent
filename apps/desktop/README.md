@@ -13,6 +13,14 @@ pnpm desktop:install        # 装到 /Applications/Vgent.app
 
 打包使用 `tauri.conf.json` 中固定的 Developer ID Application 证书（团队 `UVZM439VGU`），构建机器的钥匙串需要有对应私钥。bundle ID 固定为 `dev.vgent.desktop`，让 macOS 的系统授权跨版本沿用；缺少证书时构建失败，不能退回 ad-hoc 签名交付。从旧版 ad-hoc 签名第一次升级后，系统可能要求重新授权一次；仍在运行的旧进程继续使用原来的身份，需用户自己 ⌘Q 重开才切到新包。
 
+## GitHub Release
+
+产品版本以 `src-tauri/tauri.conf.json` 的 `version` 为准，Web 界面读取同一份配置；`build-number` 是独立递增的构建计数。`desktop:bump` 保留当前 major/minor，将 patch 设为新 build 号，用于日常 debug 交付。正式发布时递增 build 号，再将产品版本设为目标版本（如 `0.2.0`）。
+
+在干净且等于 main 的提交上构建，验证 App 版本、`server/runtime.json` 的来源提交以及 Developer ID 签名后，用 `ditto -c -k --sequesterRsrc --keepParent` 打包为 `Vgent-<version>-mac-arm64.zip`（Intel 构建用 `mac-x64`），并生成 SHA-256 校验文件。标签使用 `v<version>`，与安装包来自同一提交；GitHub Release 上传 ZIP 和校验文件。
+
+目前默认构建没有 Apple 公证。发布说明必须标明实际签名、公证状态，不能把已签名当作已公证；若另行完成公证，应先给 App 附加票据，再生成最终 ZIP。发布和安装都不启动、退出或重启已有 Vgent 进程。
+
 `tauri build` 之前会自动跑 `scripts/prepare-desktop.mjs`（也可以单独 `pnpm --filter @vgent/desktop prepare:resources`），它做五件事：
 
 1. 下载官方 Node.js **22.23.2** 独立发行包（不是 Homebrew 的），**先校验 sha256 再解压**，放到 `src-tauri/binaries/vgent-node-<triple>`（Tauri 的 sidecar），许可证放 `resources/server/NODE-LICENSE.txt`。压缩包缓存在 `apps/desktop/.local/node-runtime/`。

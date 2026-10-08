@@ -18,6 +18,12 @@ Rust 在后台线程安装工作台环境到 `<dataDir>/desktop-runtime/<target>
 
 服务端首次使用原生 Codex 时按 `server/codex-runtime.json` 将签名的 vendor tree 安装到 `<dataDir>/native-codex/<sha256>`。同一进程并发请求共享安装，失败清理临时目录并允许重试，完整缓存离线复用；启动 native binary 保留进程组退出清理。源码与 CLI 使用 npm 依赖的原有路径。新旧环境按摘要隔离，不替换运行中的旧版本；旧缓存暂不自动删除。
 
+### 下载与更新（2026-10-08）
+
+设置提供独立的「下载与更新」入口，汇总应用发布版本、工作台环境、安装工具、原生 Codex、Claude Code 和 OpenCode。应用检查固定 GitHub 仓库的已发布资产，按数字版本和当前架构选择安装包，明确区分预览版；下载后仍需用户替换应用并重新打开。工作台和原生 Codex 按应用清单固定版本，不单独追踪 npm latest。
+
+pnpm 固定项目的 packageManager 版本，在构建时下载官方 npm 包并验证 SHA-512，放入工作台 companion archive，与 Node 一起安装；Rust 将它加入后端 PATH 并设置 VGENT_PNPM_DIR，harness 不依赖用户额外安装 pnpm。Claude Code / OpenCode 的首次安装由服务端采用官方 bootstrap recipe，在临时目录冻结安装、验证 CLI、改写 pnpm 绝对路径、原子发布后写入官方 marker；手动安装和首次任务共享 promise。状态、错误及中断意图由原有运行时管理器维护，升级和回退继续拒绝正在使用的引擎。所有安装与检查操作放在 /api/runtimes 下，远程会话只能读状态。
+
 ## 三个决策
 
 **0. 主线只有三条边界清楚的路。** Claude Code 原生、Codex 原生、自研引擎（API key / Gateway / Codex 订阅）。每条路里循环、工具、模型属于同一方，不做跨方混搭。
@@ -48,7 +54,7 @@ Rust 在后台线程安装工作台环境到 `<dataDir>/desktop-runtime/<target>
 - **窗口**：Codex 订阅的窗口（272K）和 API 的不一样，OpenCode 只认后者。模型目录里的窗口经 `openCodeConfig.provider.openai.models[slug].limit.context` 告诉它，它就按这个自动压缩；它不认识的 slug（gpt-6-sol）也就此有了定义。
 - **提供商**：`PROVIDER_AGENTS` 多了 `opencode`。它跟自研引擎用同一个 AI SDK 包、同一个地址，目录和自定义提供商都照 `vgent` 那份给；老提供商在模型表 OpenCode 列点开时复用 `vgent` 的地址。任务跑时 `openCodeProviderConfig`（`@vgent/providers`）把提供商翻成 OpenCode 的 `provider` 配置：命名空间 `vgent-<id>`（不和 OpenCode 自带的合并），`npm` + `options` 与 `sdkProviderFor` 同一套（第三方 Anthropic 用 `authToken`、输出上限 16000，OpenAI 兼容带 `includeUsage`）。有思考等级的模型标 `reasoning: true`，OpenCode 按包和 id 自己算出 variant，任务的等级作为 `reasoningVariant` 传进去；「不指定」什么都不传。
 - **指令**：OpenCode 自己读仓库的 AGENTS.md；我们只补 `~/.agents/AGENTS.md` 和计划模式的附加说明。计划回合只开 `read / grep / glob / ls / todowrite`，其余内建工具由 harness 宿主一律拒绝。
-- **没做的**：手动压缩（适配器只能在两轮之间压，结果要到下一轮的流里才出现）；MCP / skills / 记忆、Computer Use；插话只报「已接收」（OpenCode 没有「某一步取走了这条消息」的事件）；OpenCode 版本不进「引擎运行时」的升级管理（它的安装脚本放行名单钉了版本号）。
+- **没做的**：手动压缩（适配器只能在两轮之间压，结果要到下一轮的流里才出现）；MCP / skills / 记忆、Computer Use；插话只报「已接收」（OpenCode 没有「某一步取走了这条消息」的事件）；OpenCode 在「下载与更新」里与 Claude Code 共用安装、升级和回退管理，升级时 CLI 与 SDK 保持同版本并更新安装脚本放行名单。
 - **补丁**：见 `patches/README.md` 的「OpenCode permission order」。
 - **用量**：OpenCode 的 `tokens.input` 只含未缓存输入，bridge 补丁把读取缓存、写入缓存补回 AI SDK 的输入总数，并保留分项；步骤、累计、会话差分共用这个映射。`message-usage.ts` 兼容旧 bridge 的续接流和历史记录，以当轮 `run.engine` 识别来源，每个 usage 写 `inputTokensIncludeCache` 防止二次相加。旧记录读出即修正，下一次正常保存时落盘，不因读取改变任务活动时间；其它引擎按 SDK 原有口径。详见 `patches/README.md` 的「OpenCode input usage」。
 

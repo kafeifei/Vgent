@@ -20,7 +20,7 @@ describe("runtimeSummary", () => {
     expect(runtimeSummary({ ...base, installed: "2.1.278", latest: "2.1.278" })).toBe("2.1.278 · 已是最新");
     expect(runtimeSummary({ ...base, installed: "2.1.245", latest: "2.1.278", updateAvailable: true })).toBe("2.1.245 · 最新 2.1.278");
     expect(runtimeSummary({ ...base, installed: "2.1.245", working: true })).toBe("2.1.245 · 正在准备新版");
-    expect(runtimeSummary({ ...base, working: true })).toContain("正在恢复");
+    expect(runtimeSummary({ ...base, working: true })).toContain("正在安装");
     expect(runtimeSummary({ ...base, broken: true })).toContain("安装不完整");
   });
 

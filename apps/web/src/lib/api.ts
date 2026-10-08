@@ -510,8 +510,11 @@ export function createClient(token: string) {
       api<ModelCatalog>(`/engines/${engine}/models${refresh ? "?refresh=1" : ""}`, token),
 
     /** 引擎运行时: which Claude Code / Codex is installed, and what the newest is. */
-    nativeCodexStatus: () => api<{ available: boolean; phase: "missing" | "downloading" | "installing" | "ready" | "error"; downloaded: number; total: number; error?: string }>("/runtimes/native-codex", token),
+    checkApplicationUpdate: () => api<{ version: string | null; downloadUrl: string | null; prerelease: boolean; updateAvailable: boolean }>("/runtimes/application/check", token, { method: "POST" }),
+    runtimeEnvironment: () => api<{ desktop: boolean; version: string | null; nodeVersion: string; pnpmVersion: string | null; managedInstaller: boolean; releasesUrl: string }>("/runtimes/environment", token),
+    nativeCodexStatus: () => api<{ version?: string; available: boolean; phase: "missing" | "downloading" | "installing" | "ready" | "error"; downloaded: number; total: number; error?: string }>("/runtimes/native-codex", token),
     installNativeCodex: () => api<unknown>("/runtimes/native-codex/install", token, { method: "POST" }),
+    installRuntime: (engine: HarnessEngineId) => api<{ accepted: boolean }>(`/runtimes/${engine}/install`, token, { method: "POST" }),
     listRuntimes: () => api<{ runtimes: HarnessRuntimeStatus[] }>("/runtimes", token).then((body) => body.runtimes),
     /** Asks npm again first. */
     checkRuntimes: () =>

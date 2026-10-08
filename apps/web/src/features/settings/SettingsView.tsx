@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { CircleUserRound, Globe, Cpu, Plug, Settings2, Wrench } from "lucide-react";
+import { CircleUserRound, Download, Globe, Cpu, Plug, Settings2, Wrench } from "lucide-react";
 import type { ApiClient } from "@/lib/api";
 import { isImeKeyEvent } from "@/lib/ime";
 import { useToast } from "@/lib/toast";
@@ -18,7 +18,7 @@ import { RuntimesSection } from "./RuntimesSection";
 import { WorktreesSection } from "./WorktreesSection";
 import { BUTTON_SECONDARY, SettingsGroup, SettingsPage, SettingsRow } from "./layout";
 
-export type SettingsTab = "general" | "accounts" | "engines" | "providers" | "tools" | "remote";
+export type SettingsTab = "general" | "accounts" | "engines" | "providers" | "tools" | "remote" | "downloads";
 
 const TABS: ReadonlyArray<{ id: SettingsTab; label: string; icon: typeof Cpu }> = [
   { id: "general", label: "通用", icon: Settings2 },
@@ -26,6 +26,7 @@ const TABS: ReadonlyArray<{ id: SettingsTab; label: string; icon: typeof Cpu }> 
   { id: "engines", label: "引擎", icon: Cpu },
   { id: "providers", label: "模型与提供商", icon: Plug },
   { id: "tools", label: "工具与扩展", icon: Wrench },
+  { id: "downloads", label: "下载与更新", icon: Download },
   { id: "remote", label: "远程访问", icon: Globe },
 ];
 
@@ -117,6 +118,10 @@ export function SettingsView({ initialTab = "general", initialAccount, settings,
             const { engineOptions: _, ...rest } = previous;
             return result.engineOptions == null ? rest : { ...rest, engineOptions: result.engineOptions };
           })} />
+      </SettingsPage>
+    ),
+    downloads: (
+      <SettingsPage title="下载与更新">
         <RuntimesSection client={client} autoUpgrade={current.autoUpgradeRuntimes !== false} disabled={saving}
           onAutoUpgrade={(value) => { void save({ autoUpgradeRuntimes: value }); }} />
       </SettingsPage>

@@ -4,7 +4,7 @@ import type { ApiClient } from "@/lib/api";
 import { renderTree, type Tree } from "@/lib/testing/renderTree";
 import { ToastProvider } from "@/lib/toast";
 import type { Settings } from "@/lib/types";
-import { SettingsView } from "./SettingsView";
+import { SettingsView, type SettingsTab } from "./SettingsView";
 
 // It reads the theme off `<html>`, which the hand-made DOM does not have; nothing here is about it.
 vi.mock("./AppearanceSection", () => ({ AppearanceSection: () => null }));
@@ -16,9 +16,9 @@ afterEach(async () => {
 
 const settings = (allowlist: string[]): Settings => ({ allowlist }) as unknown as Settings;
 
-async function show(client: Partial<ApiClient>, initial: Settings) {
+async function show(client: Partial<ApiClient>, initial: Settings, initialTab: SettingsTab = "general") {
   const tree = await renderTree(
-    createElement(ToastProvider, null, createElement(SettingsView, { settings: initial, engines: [], client: client as ApiClient, onClose: () => undefined })),
+    createElement(ToastProvider, null, createElement(SettingsView, { initialTab, settings: initial, engines: [], client: client as ApiClient, onClose: () => undefined })),
   );
   trees.push(tree);
   return tree;
@@ -52,4 +52,27 @@ describe("设置 → 一直允许", () => {
     expect(tree.text()).toContain("设置写不进去");
     expect(removeButtons(tree).map((node) => node.getAttribute("aria-label"))).toEqual(["移除 write"]);
   });
+});
+
+
+it("shows all managed components in 下载与更新 and submits a manual install", async () => {
+  const runtime = { engine: "opencode" as const, label: "OpenCode", package: "opencode-ai", updateAvailable: false, unverified: false, bad: [], busy: false, working: false, broken: false };
+  const client: Partial<ApiClient> = {
+    runtimeEnvironment: async () => ({ desktop: true, version: "0.2.224", nodeVersion: "22.23.2", pnpmVersion: "10.33.2", managedInstaller: true, releasesUrl: "https://github.com/kafeifei/Vgent/releases" }),
+    nativeCodexStatus: async () => ({ available: true, phase: "ready", version: "0.156.1", downloaded: 0, total: 100 }),
+    checkApplicationUpdate: async () => ({ version: "0.2.225", downloadUrl: "https://github.com/kafeifei/Vgent/releases/download/v0.2.225/Vgent-0.2.225-mac-arm64.zip", updateAvailable: true, prerelease: false }),
+    checkRuntimes: async () => [runtime],
+    listRuntimes: async () => [runtime],
+    installRuntime: vi.fn(async () => ({ accepted: true })),
+  };
+  const tree = await show(client, settings([]), "downloads");
+  expect(tree.text()).toContain("工作台环境");
+  expect(tree.text()).toContain("pnpm 10.33.2");
+  expect(tree.text()).toContain("OpenCode");
+  expect(tree.text()).toContain("0.156.1");
+  expect(tree.text()).toContain("下载 0.2.225");
+  const install = tree.all(node => node.tagName === "BUTTON" && node.textContent === "立即安装")[0];
+  expect(install).toBeDefined();
+  await tree.click(install!);
+  expect(client.installRuntime).toHaveBeenCalledWith("opencode");
 });

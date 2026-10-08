@@ -150,7 +150,7 @@ fn path_with(node_dir: Option<&Path>) -> Option<std::ffi::OsString> {
         .or_else(|| std::env::var_os("PATH"))
         .unwrap_or_default();
     let mut entries: Vec<PathBuf> = node_dir
-        .map(|dir| vec![dir.to_path_buf()])
+        .map(|dir| vec![dir.to_path_buf(), dir.join("bin")])
         .unwrap_or_default();
     entries.extend(std::env::split_paths(&base));
     std::env::join_paths(entries).ok()
@@ -207,6 +207,12 @@ impl Backend {
         }
         if let Some(value) = path_with(node.parent()) {
             command.env("PATH", value);
+        }
+        if let Some(root) = node.parent() {
+            let pnpm_dir = root.join("bin");
+            if pnpm_dir.join("pnpm").is_file() {
+                command.env("VGENT_PNPM_DIR", pnpm_dir);
+            }
         }
         let mut child = command
             .spawn()

@@ -127,6 +127,8 @@ test("keeps how the machine may behave with the machine, while the remote page k
     ["PUT", "/api/settings/engine-options", { engine: "opencode", key: "web", value: false }],
     ["POST", "/api/computer-use/cua/start", {}],
     ["POST", "/api/runtimes/claude-code/upgrade", {}],
+    ["POST", "/api/runtimes/opencode/install", {}],
+    ["POST", "/api/runtimes/native-codex/install", {}],
   ] as const) {
     expect((await write(method, path, body)).status, `${method} ${path}`).toBe(403);
   }

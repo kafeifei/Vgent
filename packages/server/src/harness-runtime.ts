@@ -4,7 +4,7 @@ import { renameSync } from "node:fs";
 import { appendFile, copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { DEFAULT_CLAUDE_CODE_DATA_DIR, DEFAULT_CODEX_DATA_DIR } from "@vgent/engines";
+import { DEFAULT_CLAUDE_CODE_DATA_DIR, DEFAULT_CODEX_DATA_DIR, DEFAULT_OPENCODE_DATA_DIR } from "@vgent/engines";
 import { ConflictError, VgentServerError } from "./errors.js";
 import { writeJsonAtomic } from "./store/atomic-file.js";
 import type { Logger } from "./types.js";
@@ -57,7 +57,7 @@ import { silentLogger } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
-export type HarnessEngineId = "claude-code" | "codex";
+export type HarnessEngineId = "claude-code" | "codex" | "opencode";
 
 /** `package name → exact version`. */
 export type VersionSet = Record<string, string>;
@@ -165,6 +165,22 @@ const SPECS: readonly RuntimeSpec[] = [
       "@openai/codex-sdk": versionOf(await fetchJson(`${REGISTRY}/@openai/codex-sdk/latest`), "Codex SDK"),
     }),
   },
+  {
+    engine: "opencode",
+    label: "OpenCode",
+    dataDir: DEFAULT_OPENCODE_DATA_DIR,
+    bootstrapDir: join(".harness-bootstrap", "opencode"),
+    primary: "opencode-ai",
+    packages: ["opencode-ai", "@opencode-ai/sdk"],
+    versionCommand: ["./node_modules/.bin/opencode", "--version"],
+    resolveLatest: async (fetchJson) => {
+      const version = versionOf(await fetchJson(`${REGISTRY}/opencode-ai/latest`), "OpenCode");
+      // The CLI and SDK must come from the same release.
+      const sdk = versionOf(await fetchJson(`${REGISTRY}/@opencode-ai/sdk/${version}`), "OpenCode SDK");
+      if (sdk !== version) throw new Error("OpenCode 的 CLI 与 SDK 版本不匹配");
+      return { "opencode-ai": version, "@opencode-ai/sdk": sdk };
+    },
+  },
 ];
 
 /** What the settings page shows for one engine. */
@@ -194,6 +210,7 @@ export interface HarnessRuntimeStatus {
 }
 
 interface RuntimeState {
+  installing?: { stage: string; pid: number };
   /** Written before an install touches anything, removed when it is over either way. */
   upgrading?: { from: VersionSet; to: VersionSet; pid: number; startedAt: string; stage?: string; preservePrevious?: boolean };
   /** How often an install of a version was cut off. Twice, and only a click installs it. */
@@ -225,6 +242,8 @@ export interface HarnessRuntimeOptions {
 
 export interface HarnessRuntime {
   status(): Promise<HarnessRuntimeStatus[]>;
+  /** Install the official pinned recipe; concurrent first uses share the same job. */
+  install(engine: HarnessEngineId): Promise<HarnessRuntimeStatus>;
   /** Asks the registry again, then reports. */
   check(): Promise<HarnessRuntimeStatus[]>;
   /** To the newest set. Resolves with the fresh status; rejects when refused or when the install was rolled back. */
@@ -514,6 +533,66 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
     }
   };
 
+  const installations = new Map<HarnessEngineId, Promise<HarnessRuntimeStatus>>();
+  const install = (engine: HarnessEngineId): Promise<HarnessRuntimeStatus> => {
+    const existing = installations.get(engine);
+    if (existing != null) return existing;
+    const spec = must(engine);
+    const job = (async () => {
+      if (working.has(engine)) throw new ConflictError("引擎正在更新，请稍后再试", "runtime_working");
+      // Reserve before the first await: a task and a manual install cannot race.
+      working.add(engine);
+      let stage: string | undefined;
+      let published = false;
+      try {
+        if (await installedSet(spec) != null) {
+          working.delete(engine);
+          return describe(spec);
+        }
+        const recipe = await options.bootstrapRecipe?.(engine);
+        if (recipe == null) throw new ConflictError("当前服务未配置引擎安装配方", "runtime_no_recipe");
+        await mkdir(dataDirOf(spec), { recursive: true });
+        stage = await mkdtemp(join(dataDirOf(spec), ".vgent-install-"));
+        const intent = { stage, pid: process.pid };
+        await updateState(spec, state => ({ ...state, installing: intent }));
+        for (const file of recipe.files) {
+          if (!file.path.startsWith(recipe.bootstrapDir + "/")) throw new Error("引擎安装配方包含无效路径");
+          const path = resolve(stage, file.path.slice(recipe.bootstrapDir.length + 1));
+          if (!path.startsWith(stage + "/")) throw new Error("引擎安装配方包含无效路径");
+          await mkdir(dirname(path), { recursive: true });
+          await writeFile(path, file.content);
+        }
+        await pnpm(spec, ["install", "--frozen-lockfile"], stage);
+        const manifest = JSON.parse(await readFile(join(stage, "node_modules", spec.primary, "package.json"), "utf8")) as { version: string };
+        await verify(spec, manifest.version, stage);
+        await relocateCandidate(stage, dirOf(spec));
+
+        await mkdir(dirname(dirOf(spec)), { recursive: true });
+        // Only an incomplete installation is replaced; upgrades retain busy guards.
+        await rm(dirOf(spec), { recursive: true, force: true });
+        renameSync(stage, dirOf(spec));
+        stage = undefined;
+        published = true;
+        await verify(spec, manifest.version);
+        await writeFile(join(dirOf(spec), `.bootstrap-${bootstrapIdentity(recipe)}.ok`), "ok\n");
+        await updateState(spec, ({ lastError: _error, installing: _installing, ...state }) => state);
+        await record(spec, `install ${spec.label}: OK`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (published) await rm(dirOf(spec), { recursive: true, force: true });
+        await updateState(spec, ({ installing: _installing, ...state }) => ({ ...state, lastError: `安装失败：${message.slice(0, 300)}` }));
+        await record(spec, `install ${spec.label}: FAILED`, errorDetail(error));
+        throw error;
+      } finally {
+        if (stage != null) await rm(stage, { recursive: true, force: true }).catch(error => log.warn(`清理 ${spec.label} 安装目录失败`, error));
+        working.delete(engine);
+      }
+      return describe(spec);
+    })().finally(() => installations.delete(engine));
+    installations.set(engine, job);
+    return job;
+  };
+
   const upgradeOne = (spec: RuntimeSpec): Promise<void> =>
     guard(spec, "升级", async () => {
       const installed = await installedSet(spec);
@@ -658,6 +737,14 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
    */
   const recoverOne = async (spec: RuntimeSpec): Promise<void> => {
     const state = await readState(spec);
+    if (state.installing != null && !working.has(spec.engine)) {
+      if (isAlive(state.installing.pid)) return;
+      const stage = resolve(state.installing.stage);
+      if (dirname(stage) === resolve(dataDirOf(spec)) && basename(stage).startsWith(".vgent-install-")) {
+        await rm(stage, { recursive: true, force: true });
+      }
+      await updateState(spec, ({ installing: _installing, ...current }) => ({ ...current, lastError: "上次安装被中断，可重新安装" }));
+    }
     const note = state.upgrading;
     if (note == null || working.has(spec.engine)) return;
     if (note.pid !== process.pid && isAlive(note.pid)) return;
@@ -760,6 +847,7 @@ export function createHarnessRuntime(options: HarnessRuntimeOptions): HarnessRun
 
   return {
     recover: recoverAll,
+    install,
 
     async status() {
       await recoverAll();

@@ -8,8 +8,8 @@ import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-interface Manifest { schema: number; gitSha: string; target: string; sha256: string; size: number; url: string }
-export interface NativeCodexStatus { available: boolean; phase: "missing" | "downloading" | "installing" | "ready" | "error"; downloaded: number; total: number; error?: string }
+interface Manifest { version?: string; schema: number; gitSha: string; target: string; sha256: string; size: number; url: string }
+export interface NativeCodexStatus { version?: string; available: boolean; phase: "missing" | "downloading" | "installing" | "ready" | "error"; downloaded: number; total: number; error?: string }
 const states = new Map<string, NativeCodexStatus>();
 const pending = new Map<string, Promise<string>>();
 const exec = promisify(execFile);
@@ -29,7 +29,7 @@ export async function ensureNativeCodex(dataDir: string, report: (message: strin
   const key = join(dataDir, "native-codex", manifest.sha256);
   const previous = pending.get(key);
   if (previous != null) return previous;
-  const state: NativeCodexStatus = { available: true, phase: "downloading", downloaded: 0, total: manifest.size };
+  const state: NativeCodexStatus = { ...(manifest.version != null ? { version: manifest.version } : {}), available: true, phase: "downloading", downloaded: 0, total: manifest.size };
   states.set(key, state);
   const installation = installCodexArchive(manifest, key, report, fetch, (phase, downloaded) => {
     state.phase = phase; state.downloaded = downloaded;
@@ -61,7 +61,7 @@ export async function nativeCodexStatus(dataDir: string): Promise<NativeCodexSta
   const command = join(key, "vendor", manifest.target, "bin/codex");
   const marker = await readFile(join(key, "installed.sha256"), "utf8").catch(() => "");
   const exists = await access(command).then(() => true, () => false);
-  return { available: true, phase: marker === manifest.sha256 && exists ? "ready" : "missing", downloaded: 0, total: manifest.size };
+  return { ...(manifest.version != null ? { version: manifest.version } : {}), available: true, phase: marker === manifest.sha256 && exists ? "ready" : "missing", downloaded: 0, total: manifest.size };
 }
 
 export async function installCodexArchive(manifest: Manifest, directory: string, report: (message: string) => void, fetchArchive: typeof fetch = fetch, progress: (phase: "downloading" | "installing", bytes: number) => void = () => {}): Promise<string> {

@@ -37,6 +37,7 @@ import type { Files } from "./files.js";
 import { defaultDownloadsDir, saveDownload } from "./downloads.js";
 import { createFiles } from "./files.js";
 import { harnessBootstrapRecipe } from "@vgent/engines";
+import { checkApplicationUpdate, runtimeEnvironment } from "./runtime-environment.js";
 import { ensureNativeCodex, nativeCodexStatus } from "./native-codex-runtime.js";
 import type { HarnessEngineId, HarnessRuntime } from "./harness-runtime.js";
 import { createHarnessRuntime } from "./harness-runtime.js";
@@ -464,7 +465,10 @@ export function createApp(options: CreateAppOptions): VgentApp {
   const runs = createRunManager({
     whenWorkspaceReady,
     whenEngineReady: async (engine) => {
-      if (engine === "claude-code" || engine === "codex") await runtimeReady;
+      if (engine === "claude-code" || engine === "codex" || engine === "opencode") {
+        await runtimeReady;
+        if (options.autoUpgradeRuntimes === true && engine !== "codex") await harnessRuntime.install(engine);
+      }
     },
     threads,
     projects,
@@ -641,6 +645,10 @@ export function createApp(options: CreateAppOptions): VgentApp {
   app.post("/api/accounts/login", async (c) => {
     const body = (await c.req.json().catch(() => undefined)) as { kind?: unknown; accountId?: unknown } | undefined;
     const kind = accountKind(body?.kind);
+    if (kind === "claude" && options.autoUpgradeRuntimes === true) {
+      await runtimeReady;
+      await harnessRuntime.install("claude-code");
+    }
     if (body?.accountId != null && !isAccountId(body.accountId)) throw new BadRequestError("没有这个账号", "invalid_account");
     return c.json(await accounts.startLogin(kind, body?.accountId as string | undefined).catch(accountFailure));
   });
@@ -1899,15 +1907,22 @@ export function createApp(options: CreateAppOptions): VgentApp {
   // between them. An install takes a while, so both POSTs answer when it is
   // over — with the fresh status, or with why it was refused or rolled back.
   const asRuntimeEngine = (value: string): HarnessEngineId => {
-    if (value === "claude-code" || value === "codex") return value;
+    if (value === "claude-code" || value === "codex" || value === "opencode") return value;
     throw new NotFoundError(`${value} 没有可升级的运行时`);
   };
+  app.post("/api/runtimes/application/check", async (c) => c.json(await checkApplicationUpdate()));
+  app.get("/api/runtimes/environment", async (c) => c.json(await runtimeEnvironment()));
   app.get("/api/runtimes/native-codex", async (c) => c.json(await nativeCodexStatus(dataDir)));
   app.post("/api/runtimes/native-codex/install", async (c) => {
     const status = await nativeCodexStatus(dataDir);
     if (!status.available) return c.json({ error: "当前安装不需要单独下载 Codex。" }, 409);
     void ensureNativeCodex(dataDir).catch(error => log.warn("Codex 首次安装失败", error));
     return c.json({ ...status, phase: status.phase === "ready" ? "ready" : "downloading" }, 202);
+  });
+  app.post("/api/runtimes/:engine/install", async (c) => {
+    const engine = asRuntimeEngine(c.req.param("engine"));
+    void harnessRuntime.install(engine).catch(error => log.warn(`${engine} 安装失败`, error));
+    return c.json({ accepted: true }, 202);
   });
   app.get("/api/runtimes", async (c) => c.json({ runtimes: await harnessRuntime.status() }));
   app.post("/api/runtimes/check", async (c) => c.json({ runtimes: await harnessRuntime.check() }));

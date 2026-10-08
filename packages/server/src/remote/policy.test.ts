@@ -73,6 +73,9 @@ describe("isHostOnly", () => {
       ["PUT", "/api/subscriptions/codex/models"],
       ["POST", "/api/runtimes/claude-code/upgrade"],
       ["POST", "/api/runtimes/check"],
+      ["POST", "/api/runtimes/opencode/install"],
+      ["POST", "/api/runtimes/native-codex/install"],
+      ["POST", "/api/runtimes/application/check"],
     ] as const) {
       expect(isHostOnly(method, path), `${method} ${path}`).toBe(true);
     }

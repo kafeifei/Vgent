@@ -56,7 +56,7 @@ async function fixture(options: { busy?: boolean; brokenVersion?: string; broken
   let latest = "278";
   const runtime: HarnessRuntime = createHarnessRuntime({
     isBusy: async () => busy,
-    dataDirs: { "claude-code": root, codex: join(root, "no-codex") },
+    dataDirs: { "claude-code": root, codex: join(root, "no-codex"), opencode: join(root, "no-opencode") },
     now: () => new Date("2026-09-20T00:00:00.000Z"),
     ...(options.recipe != null ? { bootstrapRecipe: async (engine) => (engine === "claude-code" ? options.recipe?.() : undefined) } : {}),
     fetchJson: async (url) => {
@@ -441,5 +441,81 @@ describe("createHarnessRuntime", () => {
     await runtime.reportTurn("vgent", { ok: false, produced: false });
     await runtime.reportTurn("claude-code", { ok: false, produced: false });
     expect(calls).toEqual([]);
+  });
+});
+
+describe("managed first installation", () => {
+  async function installer() {
+    const root = await mkdtemp(join(tmpdir(), "vgent-install-test-"));
+    roots.push(root);
+    const recipe = await harnessBootstrapRecipe("opencode");
+    if (recipe == null) throw new Error("Missing OpenCode recipe");
+    let installs = 0;
+    let fail = false;
+    let release: (() => void) | undefined;
+    let hold: Promise<void> | undefined;
+    const runtime = createHarnessRuntime({
+      // The requesting task may already be running: initial installation is safe.
+      isBusy: async () => true,
+      dataDirs: { "claude-code": join(root, "claude"), codex: join(root, "codex"), opencode: root },
+      bootstrapRecipe: async engine => engine === "opencode" ? recipe : undefined,
+      run: async (command, args, cwd) => {
+        if (command === "pnpm") {
+          expect(args[0]).toBe("install");
+          installs++;
+          await hold;
+          if (fail) throw new Error("Download interrupted");
+          const project = JSON.parse(await readFile(join(cwd, "package.json"), "utf8")) as { dependencies: Record<string, string> };
+          for (const name of ["opencode-ai", "@opencode-ai/sdk"]) {
+            await mkdir(join(cwd, "node_modules", name), { recursive: true });
+            await writeFile(join(cwd, "node_modules", name, "package.json"), JSON.stringify({ version: project.dependencies[name] }));
+          }
+          return "";
+        }
+        return "1.18.31\n";
+      },
+    });
+    return { runtime, root, recipe, count: () => installs, fail: (value: boolean) => { fail = value; }, hold: () => { hold = new Promise(resolve => { release = resolve; }); }, release: () => release?.() };
+  }
+
+  it("deduplicates manual and task installs and publishes the official bootstrap marker", async () => {
+    const f = await installer();
+    f.hold();
+    const first = f.runtime.install("opencode");
+    const second = f.runtime.install("opencode");
+    expect(first).toBe(second);
+    f.release();
+    expect((await first).installed).toBe("1.18.31");
+    const directory = join(f.root, f.recipe.bootstrapDir);
+    expect(await readFile(join(directory, `.bootstrap-${bootstrapIdentity(f.recipe)}.ok`), "utf8")).toBe("ok\n");
+    await f.runtime.install("opencode");
+    expect(f.count()).toBe(1);
+    await expect(f.runtime.upgrade("opencode")).rejects.toThrow("任务在运行");
+  });
+
+  it("retains a failed job's error, removes its staging directory and permits retry", async () => {
+    const f = await installer();
+    f.fail(true);
+    await expect(f.runtime.install("opencode")).rejects.toThrow("Download interrupted");
+    const status = (await f.runtime.status()).find(entry => entry.engine === "opencode")!;
+    expect(status.installed).toBeUndefined();
+    expect(status.working).toBe(false);
+    expect(status.lastError).toContain("Download interrupted");
+    const { readdir } = await import("node:fs/promises");
+    expect((await readdir(f.root)).filter(name => name.startsWith(".vgent-install-"))).toEqual([]);
+    f.fail(false);
+    expect((await f.runtime.install("opencode")).installed).toBe("1.18.31");
+    expect((await f.runtime.status()).find(entry => entry.engine === "opencode")!.lastError).toBeUndefined();
+  });
+
+  it("cleans an interrupted first install without affecting installed components", async () => {
+    const f = await installer();
+    const stage = join(f.root, ".vgent-install-interrupted");
+    await mkdir(stage);
+    await writeFile(join(f.root, ".vgent-runtime.json"), JSON.stringify({ installing: { stage, pid: 2147483647 } }));
+    await f.runtime.recover();
+    expect(await stat(stage).catch(() => undefined)).toBeUndefined();
+    expect((await f.runtime.status()).find(entry => entry.engine === "opencode")!.lastError).toContain("中断");
+    expect((await f.runtime.install("opencode")).installed).toBe("1.18.31");
   });
 });

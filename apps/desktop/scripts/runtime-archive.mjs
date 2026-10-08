@@ -30,6 +30,27 @@ export async function createRuntimeArchive({ desktopRoot, repoRoot, bundledNode,
       }
     }
   }
+  // The installer belongs to the runtime; end users do not need system pnpm.
+  const pnpmVersion = JSON.parse(await readFile(join(repoRoot, "package.json"), "utf8")).packageManager.split("@")[1];
+  const metadataResponse = await fetch(`https://registry.npmjs.org/pnpm/${pnpmVersion}`, { signal: AbortSignal.timeout(30_000) });
+  if (!metadataResponse.ok) throw new Error("无法获取固定版本 pnpm 的下载清单");
+  const metadata = await metadataResponse.json();
+  if (metadata.version !== pnpmVersion || metadata.dist.tarball !== `https://registry.npmjs.org/pnpm/-/pnpm-${pnpmVersion}.tgz` || !metadata.dist.integrity.startsWith("sha512-")) throw new Error("pnpm 下载清单无效");
+  const response = await fetch(metadata.dist.tarball, { signal: AbortSignal.timeout(180_000) });
+  if (!response.ok) throw new Error(`pnpm 下载失败：HTTP ${response.status}`);
+  const pnpmBytes = Buffer.from(await response.arrayBuffer());
+  if (`sha512-${createHash("sha512").update(pnpmBytes).digest("base64")}` !== metadata.dist.integrity) throw new Error("pnpm 下载校验失败");
+  const pnpmArchive = join(output, "pnpm.tgz");
+  await writeFile(pnpmArchive, pnpmBytes);
+  const tools = join(tree, "tools");
+  await mkdir(tools);
+  run("/usr/bin/tar", ["-xzf", pnpmArchive, "-C", tools]);
+  const bin = join(tree, "bin");
+  await mkdir(bin);
+  await writeFile(join(bin, "pnpm"), '#!/bin/sh\nroot="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"\nexec "$root/node" "$root/tools/package/bin/pnpm.cjs" "$@"\n', { mode: 0o755 });
+  const runtimePath = join(tree, "server/runtime.json");
+  const runtime = JSON.parse(await readFile(runtimePath, "utf8"));
+  await writeFile(runtimePath, JSON.stringify({ ...runtime, version: config.version, pnpmVersion }, null, 2) + "\n");
   await sign(tree);
   // Native Codex is large and is not needed to open the workbench. Publish it
   // separately, keeping all vendor resources together for code-mode / voice.
@@ -39,7 +60,7 @@ export async function createRuntimeArchive({ desktopRoot, repoRoot, bundledNode,
   run("/usr/bin/tar", ["-czf", codexArchive, "-C", codexPackage, "vendor"]);
   const codexBytes = await readFile(codexArchive);
   const codexManifest = {
-    schema: 1, gitSha, target,
+    schema: 1, gitSha, target, version: JSON.parse(await readFile(join(tree, "server/node_modules/@openai/codex/package.json"), "utf8")).version,
     sha256: createHash("sha256").update(codexBytes).digest("hex"), size: codexBytes.length,
     url: `https://github.com/kafeifei/Vgent/releases/download/runtime-${gitSha}/${codexName}`,
   };
@@ -47,7 +68,7 @@ export async function createRuntimeArchive({ desktopRoot, repoRoot, bundledNode,
   await rm(codexPackage, { recursive: true, force: true });
   const name = `Vgent-runtime-${target}-${gitSha}.tar.gz`;
   const archive = join(output, name);
-  run("/usr/bin/tar", ["-czf", archive, "-C", tree, "node", "server", "web"]);
+  run("/usr/bin/tar", ["-czf", archive, "-C", tree, "node", "server", "web", "bin", "tools"]);
   const bytes = await readFile(archive);
   const manifest = {
     schema: 1, gitSha, target, version: config.version,

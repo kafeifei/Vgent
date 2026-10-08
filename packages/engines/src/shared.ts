@@ -1,6 +1,7 @@
+import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { mkdir, stat } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { HarnessV1SandboxProvider } from "@ai-sdk/harness";
 
 /**
@@ -9,6 +10,8 @@ import type { HarnessV1SandboxProvider } from "@ai-sdk/harness";
  * from this process, so the directory has to be put on it explicitly.
  */
 export function resolvePnpmDir(): string {
+  const managed = process.env.VGENT_PNPM_DIR;
+  if (managed != null && existsSync(join(managed, "pnpm"))) return managed;
   const found = execFileSync("/bin/sh", ["-c", "command -v pnpm || true"], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],

@@ -36,9 +36,10 @@ export function accountOfModel(engine: EngineId, model: string | undefined): Acc
   const spec = model ?? "";
   const prefixed = /^@((?:claude|codex|github)-[0-9a-f]{8}):/.exec(spec)?.[1];
   if (prefixed != null) return prefixed;
+  // Copilot's on every engine that runs it.
+  if (spec.startsWith("github-copilot:")) return "github";
   if (engine === "claude-code") return spec.includes(":") ? undefined : "claude";
   if (engine === "codex") return spec.includes(":") ? undefined : "codex";
-  if (spec.startsWith("github-copilot:")) return "github";
   return spec === "" || spec.startsWith("codex-subscription:") ? "codex" : undefined;
 }
 

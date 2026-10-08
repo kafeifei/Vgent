@@ -14,6 +14,7 @@ import { trackClaudeUsage } from "./account-usage.js";
 import { stripDeniedApprovalResults } from "./harness-messages.js";
 import type { EngineAccounts, EngineContext, EngineFactory, EngineRunner } from "./registry.js";
 import { DEFAULT_ACCOUNT, splitAccountSpec } from "../accounts/spec.js";
+import { copilotRouteFor, type CopilotRoute } from "./copilot.js";
 
 /** 引擎能力表, the Claude Code row: it can ask, and it can plan; the rest is not wired. */
 const DESCRIPTOR: EngineDescriptor = {
@@ -156,6 +157,19 @@ export function providerRoute(model: string | undefined, providers: readonly Pro
 }
 
 /**
+ * A Copilot model on Claude Code: the relay is its Anthropic-compatible
+ * endpoint, so it runs the way a provider's model does. The window is
+ * Copilot's prompt limit, which is where the CLI has to compact.
+ */
+export function claudeCodeCopilotRoute(route: CopilotRoute) {
+  return {
+    ...claudeCodeProviderEnv({ baseURL: route.baseURL, apiKey: route.apiKey, model: route.model.id }),
+    model: route.model.id,
+    ...(route.model.contextWindow != null ? { contextWindow: route.model.contextWindow } : {}),
+  };
+}
+
+/**
  * The harness's `instructions` for a turn. Claude Code reads CLAUDE.md, never
  * AGENTS.md, so the rules every engine follows reach it here — re-read each
  * turn like the in-house engine's — followed by plan mode's when it plans.
@@ -208,7 +222,9 @@ export function createClaudeCodeEngineFactory(accounts?: EngineAccounts): Engine
       // `@<account>:<model>`: another Claude account's config directory, same model.
       const { accountId, spec: model } = ctx.thread.model == null ? { spec: undefined } : splitAccountSpec(ctx.thread.model);
       const accountEnv = accountId != null && accounts != null ? await accounts.claudeEnv(accountId) : {};
-      const routed = providerRoute(model, await createProviderStore(ctx.dataDir, ctx.log).list());
+      const copilot = await copilotRouteFor(DESCRIPTOR, { accountId, spec: model }, accounts);
+      const routed: { model: string; auth: Readonly<Record<string, string>>; env: Readonly<Record<string, string>>; contextWindow?: number } | undefined =
+        copilot != null ? claudeCodeCopilotRoute(copilot) : providerRoute(model, await createProviderStore(ctx.dataDir, ctx.log).list());
       const reportUsage = routed == null ? await accounts?.bindUsage?.(accountId ?? DEFAULT_ACCOUNT.claude).catch(() => undefined) : undefined;
       const cua = settings.computerUseProvider === "cua" && !ctx.planMode
         ? await connectMcpServers([cuaMcpConfig(await requireCuaDriver())], { log: ctx.log })
@@ -220,8 +236,8 @@ export function createClaudeCodeEngineFactory(accounts?: EngineAccounts): Engine
       }
 
       // 上下文: Claude Code's long window is asked for on the model name itself.
-      const window = ctx.thread.contextWindow ?? CLAUDE_CODE_STANDARD_CONTEXT;
-      const route = routed == null ? undefined : { ...routed, model: withLongContext(routed.model, window) };
+      const window = ctx.thread.contextWindow ?? routed?.contextWindow ?? CLAUDE_CODE_STANDARD_CONTEXT;
+      const route = routed == null ? undefined : { auth: routed.auth, env: routed.env, model: withLongContext(routed.model, window) };
       // The window is also where the runtime compacts, chosen or not: without
       // this the CLI compacts at its own idea of the model's limit, and a task
       // on 200K would run far past what its ring shows as full.

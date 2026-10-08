@@ -28,6 +28,7 @@ import type { EngineDescriptor } from "./capabilities.js";
 import { stripDeniedApprovalResults } from "./harness-messages.js";
 import type { EngineAccounts, EngineContext, EngineFactory, EngineRunner } from "./registry.js";
 import { memoryDirOf, memorySourcesOf, NO_MODEL } from "./vgent.js";
+import { copilotRouteFor, type CopilotRoute } from "./copilot.js";
 import { engineOptionsOf, type EngineOptions } from "../engine-options.js";
 import { createSettingsStore } from "../store/settings.js";
 
@@ -159,6 +160,47 @@ export function openCodeRoute(
   return { model: `${id}/${split.modelId}`, provider: { [id]: config } };
 }
 
+/** The AI SDK package OpenCode reaches Copilot with, per protocol. */
+const COPILOT_NPM = { messages: "@ai-sdk/anthropic", responses: "@ai-sdk/openai", "chat-completions": "@ai-sdk/openai-compatible" } as const;
+
+/**
+ * A Copilot model on OpenCode: a provider of its own whose endpoint is the
+ * relay, under the package for the protocol Copilot serves the model on.
+ * Namespaced like a settings-page provider, so OpenCode's own `github-copilot`
+ * — which would want a login of its own — never takes it over.
+ */
+export function openCodeCopilotRoute(route: CopilotRoute, facts: { reasoning?: boolean; contextWindow?: number | undefined } = {}): OpenCodeRoute {
+  const id = openCodeProviderId("github-copilot");
+  const { model } = route;
+  const options =
+    route.protocol === "messages"
+      ? { baseURL: `${route.baseURL}/v1`, apiKey: route.apiKey }
+      : route.protocol === "chat-completions"
+        ? { baseURL: route.baseURL, apiKey: route.apiKey, includeUsage: true }
+        : { baseURL: route.baseURL, apiKey: route.apiKey };
+  const context = facts.contextWindow ?? model.contextWindow;
+  return {
+    model: `${id}/${model.id}`,
+    provider: {
+      [id]: {
+        npm: COPILOT_NPM[route.protocol],
+        name: "GitHub Copilot",
+        options,
+        models: {
+          [model.id]: {
+            name: model.name,
+            ...(facts.reasoning === true ? { reasoning: true } : {}),
+            // Both or neither: OpenCode's own `0` means unknown.
+            ...(context != null || model.maxOutputTokens != null ? { limit: { context: context ?? 0, output: model.maxOutputTokens ?? 0 } } : {}),
+            // Copilot keeps no Responses state to refer back to.
+            ...(route.protocol === "responses" ? { options: { store: false } } : {}),
+          },
+        },
+      },
+    },
+  };
+}
+
 /**
  * The `instructions` for a turn. OpenCode reads the repository's AGENTS.md on
  * its own; what it does not know about is the user's global one
@@ -195,11 +237,11 @@ export function createOpenCodeEngineFactory(options: OpenCodeEngineFactoryOption
     async ensureAvailable({ thread }) {
       if (thread.model == null) throw new EngineUnavailableError(NO_MODEL);
       const { accountId, spec } = splitAccountSpec(thread.model);
-      if (!spec.startsWith(CODEX_SUBSCRIPTION_PREFIX)) return;
       if (accountId != null) {
         await accounts?.ensure(accountId);
         return;
       }
+      if (!spec.startsWith(CODEX_SUBSCRIPTION_PREFIX)) return;
       const home = accounts?.codexHome(DEFAULT_ACCOUNT.codex);
       const report = await describeSubscriptionAuth(home != null ? { env: { ...process.env, CODEX_HOME: home } } : {});
       if (!report.codex.available) throw new EngineUnavailableError("Codex 未登录：在「账号」里添加一个 Codex 账号");
@@ -212,11 +254,13 @@ export function createOpenCodeEngineFactory(options: OpenCodeEngineFactoryOption
       if (model == null) throw new EngineUnavailableError(NO_MODEL);
       const level = ctx.thread.reasoningEffort;
       const listed = await options.modelOf?.(model).catch(() => undefined);
-      const route = openCodeRoute(model, await createProviderStore(ctx.dataDir, ctx.log).list(), {
+      const facts = {
         // 「不指定」 sends nothing; otherwise the model reasons, and OpenCode picks the matching variant.
         ...(level !== PROVIDER_DEFAULT_LEVEL && (listed?.reasoningLevels?.length ?? 0) > 0 ? { reasoning: true } : {}),
         contextWindow: ctx.thread.contextWindow ?? listed?.contextWindow,
-      });
+      };
+      const copilot = await copilotRouteFor(DESCRIPTOR, splitAccountSpec(model), accounts);
+      const route = copilot != null ? openCodeCopilotRoute(copilot, facts) : openCodeRoute(model, await createProviderStore(ctx.dataDir, ctx.log).list(), facts);
       // OpenCode's login store for this session: the Codex account's token, or nothing at all.
       const login =
         route.codexAccount != null

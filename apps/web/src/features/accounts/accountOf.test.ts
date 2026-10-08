@@ -32,6 +32,8 @@ describe("accountOfModel", () => {
     expect(accountOfModel("claude-code", "deepseek:deepseek-v4")).toBeUndefined();
     expect(accountOfModel("codex", undefined)).toBe("codex");
     expect(accountOfModel("vgent", "github-copilot:gpt-4.1")).toBe("github");
+    expect(accountOfModel("claude-code", "github-copilot:claude-sonnet-5.5")).toBe("github");
+    expect(accountOfModel("codex", "github-copilot:gpt-6-luna")).toBe("github");
     expect(accountOfModel("vgent", "@codex-0a1b2c3d:codex-subscription:gpt-5.5")).toBe("codex-0a1b2c3d");
     expect(accountOfModel("vgent", "openai/gpt-5")).toBeUndefined();
     expect(bareSpec("@codex-0a1b2c3d:codex-subscription:gpt-5.5")).toBe("codex-subscription:gpt-5.5");

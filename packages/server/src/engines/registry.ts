@@ -1,6 +1,8 @@
 import type { VgentEngineFactoryOptions } from "./vgent.js";
 import { ENGINE_OPTION_DEFAULTS } from "../engine-options.js";
 import type { AccountId, AccountUsage } from "../accounts/types.js";
+import type { CopilotModel } from "../accounts/copilot.js";
+import type { CopilotEndpoint } from "../accounts/copilot-relay.js";
 import type { EngineOutcome, TaskState } from "@vgent/engine";
 import type { ModelMessage, TextStreamPart, ToolSet } from "ai";
 import type { EngineId, HarnessState, Logger, PermissionMode, Project, ThreadRecord } from "../types.js";
@@ -146,6 +148,8 @@ export interface EngineAccounts {
   /** Throws when the account is not there (signed out, removed). */
   ensure(id: AccountId): Promise<void>;
   bindUsage?(id: AccountId): Promise<(usage: AccountUsage) => Promise<void>>;
+  /** A GitHub account's Copilot model as an engine process reaches it: the relay's address and key, and the model as Copilot lists it. */
+  copilot?(id: AccountId, model: string): Promise<CopilotEndpoint & { model: CopilotModel }>;
 }
 
 /** Engine ids whose turns hold no live state; see `EngineFactory.statelessTurns`. */

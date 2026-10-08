@@ -76,7 +76,7 @@ impl Default for Status {
     fn default() -> Self {
         Self {
             phase: "waiting".into(),
-            message: "正在准备运行环境…".into(),
+            message: "正在准备内置工作台…".into(),
             downloaded: 0,
             total: 0,
         }
@@ -136,16 +136,15 @@ fn complete(directory: &Path, manifest: &Manifest) -> bool {
         .and_then(|bytes| serde_json::from_slice::<Manifest>(&bytes).ok())
         .as_ref()
         == Some(manifest)
-        && ["node", "server/dist/main.js", "web/index.html"]
+        && ["node", "server/dist/main.js", "web/index.html", "bin/pnpm", "tools/package/bin/pnpm.cjs"]
             .iter()
             .all(|p| directory.join(p).is_file())
 }
 
-/// Poll child processes so quitting while downloading also stops curl / tar.
+/// Poll child processes so quitting during verification or extraction reaps them.
 fn command(
     mut command: Command,
     state: &RuntimeState,
-    progress: Option<(&Path, u64)>,
 ) -> Result<(), String> {
     use std::os::unix::process::CommandExt;
     command.process_group(0);
@@ -168,7 +167,7 @@ fn command(
                     Ok(())
                 } else {
                     Err(format!(
-                        "运行环境安装命令失败（{status}），请检查网络后重试。"
+                        "内置工作台安装命令失败（{status}），请重试；持续失败请重新安装应用。"
                     ))
                 }
             }
@@ -179,19 +178,11 @@ fn command(
             }
             _ => {}
         }
-        if let Some((file, total)) = progress {
-            state.update(
-                "downloading",
-                "首次启动正在下载运行环境，完成后无需重复下载。",
-                fs::metadata(file).map(|m| m.len()).unwrap_or(0),
-                total,
-            );
-        }
         thread::sleep(Duration::from_millis(100));
     }
 }
 
-pub fn install(manifest: &Manifest, data: &Path, state: &RuntimeState) -> Result<PathBuf, String> {
+pub fn install(manifest: &Manifest, data: &Path, state: &RuntimeState, bundled_archive: &Path) -> Result<PathBuf, String> {
     manifest.validate()?;
     let directory = manifest.directory(data);
     if complete(&directory, manifest) {
@@ -206,35 +197,17 @@ pub fn install(manifest: &Manifest, data: &Path, state: &RuntimeState) -> Result
     fs::create_dir(&staging).map_err(|e| e.to_string())?;
     let result = (|| {
         let archive = staging.join("runtime.tar.gz");
-        let mut curl = Command::new("/usr/bin/curl");
-        curl.args([
-            "--fail",
-            "--location",
-            "--silent",
-            "--show-error",
-            "--proto",
-            "=https",
-            "--proto-redir",
-            "=https",
-            "--connect-timeout",
-            "30",
-            "--max-time",
-            "1800",
-            "--retry",
-            "2",
-            "--output",
-        ])
-        .arg(&archive)
-        .arg(&manifest.url);
-        command(curl, state, Some((&archive, manifest.size)))?;
+        state.update("preparing", "正在准备内置工作台…", 0, manifest.size);
+        fs::copy(bundled_archive, &archive)
+            .map_err(|e| format!("无法读取内置工作台，请重新安装应用：{e}"))?;
         state.update(
             "verifying",
-            "正在校验下载内容…",
+            "正在校验内置工作台…",
             manifest.size,
             manifest.size,
         );
         if fs::metadata(&archive).map_err(|e| e.to_string())?.len() != manifest.size {
-            return Err("运行环境下载不完整，请重试。".into());
+            return Err("内置工作台大小不匹配，请重新安装应用。".into());
         }
         let checksum_file = staging.join("checksum.txt");
         fs::write(
@@ -246,11 +219,11 @@ pub fn install(manifest: &Manifest, data: &Path, state: &RuntimeState) -> Result
         sha.current_dir(&staging)
             .args(["-a", "256", "-c"])
             .arg(&checksum_file);
-        command(sha, state, None)
-            .map_err(|_| "下载校验失败，请重试；未执行下载内容。".to_string())?;
+        command(sha, state)
+            .map_err(|_| "内置工作台校验失败，请重新安装应用。".to_string())?;
         state.update(
             "installing",
-            "正在安装运行环境…",
+            "正在解压内置工作台…",
             manifest.size,
             manifest.size,
         );
@@ -258,11 +231,11 @@ pub fn install(manifest: &Manifest, data: &Path, state: &RuntimeState) -> Result
         fs::create_dir(&tree).map_err(|e| e.to_string())?;
         let mut tar = Command::new("/usr/bin/tar");
         tar.arg("-xzf").arg(&archive).arg("-C").arg(&tree);
-        command(tar, state, None)?;
+        command(tar, state)?;
         // The archive is pinned by the signed App; verify the executable's identity too.
         let mut signature = Command::new("/usr/bin/codesign");
         signature.args(["--verify", "--strict", "--test-requirement", "=anchor apple generic and certificate leaf[subject.OU] = \"UVZM439VGU\" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"]).arg(tree.join("node"));
-        command(signature, state, None)?;
+        command(signature, state)?;
         fs::write(
             tree.join("installed.json"),
             serde_json::to_vec(manifest).map_err(|e| e.to_string())?,
@@ -347,7 +320,7 @@ mod tests {
         )
         .unwrap();
         assert!(!complete(&dir, &manifest));
-        for file in ["node", "server/dist/main.js", "web/index.html"] {
+        for file in ["node", "server/dist/main.js", "web/index.html", "bin/pnpm", "tools/package/bin/pnpm.cjs"] {
             let path = dir.join(file);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, "fixture").unwrap();
@@ -359,13 +332,30 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
+    fn missing_or_corrupt_bundle_never_falls_back_to_a_download() {
+        let dir = std::env::temp_dir().join(format!("vgent-bundled-runtime-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let manifest = fixture();
+        let archive = dir.join("workbench.tar.gz");
+        let state = RuntimeState::default();
+        assert!(install(&manifest, &dir, &state, &archive).unwrap_err().contains("内置工作台"));
+        assert!(!manifest.directory(&dir).exists());
+        fs::write(&archive, b"0123456789").unwrap();
+        assert!(install(&manifest, &dir, &state, &archive).unwrap_err().contains("校验失败"));
+        assert!(!manifest.directory(&dir).exists());
+        assert!(state.child.lock().unwrap().is_none());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn quitting_kills_an_active_installer_process_group() {
         let state = RuntimeState::default();
         let worker_state = state.clone();
         let worker = thread::spawn(move || {
             let mut child = Command::new("/bin/sleep");
             child.arg("30");
-            command(child, &worker_state, None)
+            command(child, &worker_state)
         });
         for _ in 0..100 {
             if state.child.lock().unwrap().is_some() {
@@ -385,6 +375,6 @@ mod tests {
         state.cancelled.store(true, Ordering::SeqCst);
         let mut process = Command::new("/bin/sleep");
         process.arg("30");
-        assert!(command(process, &state, None).unwrap_err().contains("取消"));
+        assert!(command(process, &state).unwrap_err().contains("取消"));
     }
 }

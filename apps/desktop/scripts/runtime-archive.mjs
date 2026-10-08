@@ -1,4 +1,4 @@
-// Produce an immutable, signed companion runtime; only its pinned manifest enters the App.
+// Bundle the complete workbench archive; only optional engines download separately.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFile, cp, mkdir, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -69,6 +69,7 @@ export async function createRuntimeArchive({ desktopRoot, repoRoot, bundledNode,
   const name = `Vgent-runtime-${target}-${gitSha}.tar.gz`;
   const archive = join(output, name);
   run("/usr/bin/tar", ["-czf", archive, "-C", tree, "node", "server", "web", "bin", "tools"]);
+  await copyFile(archive, join(desktopRoot, "src-tauri/resources/workbench.tar.gz"));
   const bytes = await readFile(archive);
   const manifest = {
     schema: 1, gitSha, target, version: config.version,
@@ -77,5 +78,5 @@ export async function createRuntimeArchive({ desktopRoot, repoRoot, bundledNode,
   };
   await writeFile(join(desktopRoot, "src-tauri/resources/bootstrap.json"), JSON.stringify(manifest, null, 2) + "\n");
   await writeFile(join(output, "bootstrap.json"), JSON.stringify(manifest, null, 2) + "\n");
-  console.log(`可下载运行环境：${archive}；请在发布 App 前上传至 runtime-${gitSha}。`);
+  console.log(`内置工作台：${archive}；可选 Codex 资产请发布至 runtime-${gitSha}。`);
 }

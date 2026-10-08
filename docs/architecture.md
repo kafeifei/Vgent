@@ -10,11 +10,11 @@ Vgent 是一个 **Web 优先**的本地 coding agent 工作台，底下可换引
 
 桌面交付使用固定的 `dev.vgent.desktop` 和 Developer ID Application（团队 `UVZM439VGU`）。之前的 ad-hoc 签名以每次变化的 `cdhash` 作为 designated requirement，系统授权不能稳定跨版本沿用。`install-app.mjs` 在替换前校验完整签名、bundle ID、Apple 证书链、Developer ID 类型和团队；缺少正式签名就拒绝安装。仍在使用的旧包放到 `/Applications/.Vgent.app.old-<时间>/Vgent.app`，保留有效的 bundle 名称；兼容清理旧命名的包，按启动时间及显式备份路径识别在用进程。正式发布经 Apple 公证；自动更新尚未实现。
 
-### 桌面运行环境按需安装（2026-10-06）
+### 内置工作台与可选引擎安装（2026-10-08）
 
-App 只带 Rust/Tauri 可执行文件、初始化页和签名保护下的 `bootstrap.json`。构建脚本产出两个固定提交的 companion archive：Node + standalone server + Web 工作台，以及独立的 Codex vendor tree；全部 Mach-O 在归档前以同一 Developer ID 签名。下载资产发布在 `runtime-<gitSha>` Release，App 清单固定 HTTPS URL、架构、SHA-256 和大小，不使用 latest 指针。
+App 包含 Rust/Tauri 可执行文件、初始化页、签名保护下的 `bootstrap.json` 和完整的 `workbench.tar.gz`（Node、服务端、Web、pnpm）。工作台必须随安装包交付，首次打开不下载工作台。构建脚本产出两个固定提交的 companion archive：Node + standalone server + Web 工作台，以及独立的 Codex vendor tree；全部 Mach-O 在归档前以同一 Developer ID 签名。可选 Codex 资产发布在 `runtime-<gitSha>` Release，清单固定 HTTPS URL、架构、SHA-256 和大小，不使用 latest 指针。
 
-Rust 在后台线程安装工作台环境到 `<dataDir>/desktop-runtime/<target>-<sha256>`，不阻塞窗口；使用系统 curl / shasum / tar，下载、校验和解压期间退出会终止并回收子进程。大小、摘要和 Node 签名通过后才原子发布目录，完成标记与启动文件同时存在才算缓存命中。安装命令仅授权本地初始化页面；HTTP 工作台沿用原有 capability，不获得安装 IPC。
+Rust 在后台线程安装工作台环境到 `<dataDir>/desktop-runtime/<target>-<sha256>`，不阻塞窗口；直接读取 App 内的压缩工作台，使用系统 shasum / tar 校验和解压，全程不联网；校验和解压期间退出会终止并回收子进程。大小、摘要和 Node 签名通过后才原子发布目录，完成标记与启动文件同时存在才算缓存命中。安装命令仅授权本地初始化页面；HTTP 工作台沿用原有 capability，不获得安装 IPC。
 
 服务端首次使用原生 Codex 时按 `server/codex-runtime.json` 将签名的 vendor tree 安装到 `<dataDir>/native-codex/<sha256>`。同一进程并发请求共享安装，失败清理临时目录并允许重试，完整缓存离线复用；启动 native binary 保留进程组退出清理。源码与 CLI 使用 npm 依赖的原有路径。新旧环境按摘要隔离，不替换运行中的旧版本；旧缓存暂不自动删除。
 
@@ -22,7 +22,7 @@ Rust 在后台线程安装工作台环境到 `<dataDir>/desktop-runtime/<target>
 
 设置提供独立的「下载与更新」入口，汇总应用发布版本、工作台环境、安装工具、原生 Codex、Claude Code 和 OpenCode。应用检查固定 GitHub 仓库的已发布资产，按数字版本和当前架构选择安装包，明确区分预览版；下载后仍需用户替换应用并重新打开。工作台和原生 Codex 按应用清单固定版本，不单独追踪 npm latest。
 
-pnpm 固定项目的 packageManager 版本，在构建时下载官方 npm 包并验证 SHA-512，放入工作台 companion archive，与 Node 一起安装；Rust 将它加入后端 PATH 并设置 VGENT_PNPM_DIR，harness 不依赖用户额外安装 pnpm。Claude Code / OpenCode 的首次安装由服务端采用官方 bootstrap recipe，在临时目录冻结安装、验证 CLI、改写 pnpm 绝对路径、原子发布后写入官方 marker；手动安装和首次任务共享 promise。状态、错误及中断意图由原有运行时管理器维护，升级和回退继续拒绝正在使用的引擎。所有安装与检查操作放在 /api/runtimes 下，远程会话只能读状态。
+pnpm 固定项目的 packageManager 版本，在构建时下载官方 npm 包并验证 SHA-512，放入随 App 内置的工作台 archive，与 Node 一起安装；Rust 将它加入后端 PATH 并设置 VGENT_PNPM_DIR，harness 不依赖用户额外安装 pnpm。Claude Code / OpenCode 的首次安装由服务端采用官方 bootstrap recipe，在临时目录冻结安装、验证 CLI、改写 pnpm 绝对路径、原子发布后写入官方 marker；手动安装和首次任务共享 promise。状态、错误及中断意图由原有运行时管理器维护，升级和回退继续拒绝正在使用的引擎。所有安装与检查操作放在 /api/runtimes 下，远程会话只能读状态。
 
 ## 三个决策
 

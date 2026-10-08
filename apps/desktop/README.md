@@ -1,6 +1,6 @@
 # @vgent/desktop
 
-Tauri 2 的 macOS 桌面壳。安装包仅含原生壳和初始化页。首次启动自动安装工作台运行环境，之后窗口指向本机 Node 服务；原生 Codex 首次使用时独立安装。
+Tauri 2 的 macOS 桌面壳。安装包包含原生壳、初始化页以及完整工作台（Node、服务端、Web 与 pnpm）。首次启动在本机解压工作台，无需下载，之后窗口指向本机 Node 服务；原生 Codex 首次使用时独立安装。
 
 ## 构建
 
@@ -19,11 +19,11 @@ pnpm desktop:install        # 装到 /Applications/Vgent.app
 
 在干净且等于 main 的提交上构建。`prepare-desktop.mjs` 构建服务与 Web、下载并校验官方 Node、真实启动部署后的服务自检，再给全部 Mach-O 签名并产出：
 
-- `src-tauri/resources/bootstrap.json`：App 内固定版本、架构、大小和 SHA-256 的下载清单。
-- `.local/runtime/Vgent-runtime-<target>-<gitSha>.tar.gz`：Node、server 和 Web；不含 Codex native vendor。
+- `src-tauri/resources/bootstrap.json`：App 内固定版本、架构、大小和 SHA-256 的校验清单。
+- `.local/runtime/Vgent-runtime-<target>-<gitSha>.tar.gz`：Node、server、Web 与 pnpm；复制为 `src-tauri/resources/workbench.tar.gz` 放入 App，不含 Codex native vendor。
 - `.local/runtime/Vgent-codex-<target>-<gitSha>.tar.gz`：Codex 和完整配套资源，首次用到才下载。
 
-**分发 App 前必须**将两个 archive 上传至 GitHub `runtime-<gitSha>` Release，资产名与清单一致；不要覆盖已发布 archive。再执行 `node apps/desktop/scripts/sign-release.mjs` 签壳、用 `xcrun notarytool ... --keychain-profile vgent-release` 公证 ZIP，并 staple / spctl 验证。首次启动需要联网，下载失败在初始化页点「重试安装」。工作台环境缓存到 `~/.vgent/desktop-runtime/`，原生 Codex 可在设置的「引擎运行时」里提前安装、查看下载进度或重试，缓存到 `~/.vgent/native-codex/`；`VGENT_DATA_DIR` 可改位置。完整缓存不再次下载；首次升级到不同内容版本需重新安装，不改动旧环境和任务数据。
+**分发 App 前必须**将 Codex archive 上传至 GitHub `runtime-<gitSha>` Release，资产名与清单一致；不要覆盖已发布 archive。再执行 `node apps/desktop/scripts/sign-release.mjs` 签壳、用 `xcrun notarytool ... --keychain-profile vgent-release` 公证 ZIP，并 staple / spctl 验证。首次启动离线校验并解压包内工作台，不下载运行环境；包内资源缺失或损坏时需重新安装应用。工作台环境缓存到 `~/.vgent/desktop-runtime/`，原生 Codex 可在设置的「下载与更新」里提前安装、查看下载进度或重试，缓存到 `~/.vgent/native-codex/`；`VGENT_DATA_DIR` 可改位置。完整缓存直接复用；升级到不同内容版本会重新解压包内工作台，不改动旧环境和任务数据。
 
 开发模式仍从 `src-tauri/binaries` 和 `resources/server` / `resources/web` 直接启动，保留已有本机调试方式。`pnpm deploy --prod --legacy --node-linker=hoisted` 生成 standalone server；构建自检使用固定 Node 真启动，确认远程控制默认关闭。
 
@@ -68,13 +68,13 @@ pnpm --filter @vgent/desktop prepare:resources   # Tauri 的构建脚本要求 b
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml -- --include-ignored
 ```
 
-已发布 companion 资产的端到端校验可在隔离目录运行，不触碰已安装的 Vgent：
+内置工作台的端到端校验可在隔离目录运行，不触碰已安装的 Vgent：
 
 ```bash
-cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml --example runtime-install -- apps/desktop/.local/runtime/bootstrap.json /tmp/vgent-runtime-qa
+cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml --example runtime-install -- apps/desktop/.local/runtime/bootstrap.json /tmp/vgent-runtime-qa apps/desktop/src-tauri/resources/workbench.tar.gz
 ```
 
-该工具执行真实下载、校验、安装、离线缓存复用以及服务握手和关停。
+该工具直接使用包内工作台，执行离线校验、安装、缓存复用以及服务握手和关停。
 
 `backend.rs` 里四个要真起内置 Node 的测试（拉起并关停、启动失败留 stderr 尾巴、意外退出记信号、数据目录被占时立刻报「已在运行」）标了 `#[ignore]`：默认的 `cargo test` 只把它们报成 ignored，不算通过；没放好内置 Node 时加 `--include-ignored` 它们会失败，不会假装通过。只跑它们用 `-- --ignored`。CI 的 `desktop` job（`.github/workflows/ci.yml`）不跑 prepare 脚本（太重），而是把 `setup-node` 装的 Node 22 拷成 `binaries/vgent-node-<triple>`、建好空的 `resources/server` 和 `resources/web`，再 `cargo test -- --include-ignored`。
 
@@ -84,5 +84,5 @@ cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml --example runtime-in
 - **有 Developer ID 签名和发布公证流程，尚无自动更新**。
 - 退出只认 macOS 的正常退出（⌘Q、菜单退出、AppleScript `quit`）。关窗口不会退出。直接对 `vgent-desktop` 进程 `kill` 不会走清理，内置服务会变成孤儿进程（`kill -TERM -<pid>` 手动收掉）。
 - 单窗口，没有多开；桌面实例和命令行 `pnpm server` 共用 `~/.vgent`，`connection.json` 会互相覆盖（壳自己靠 pid 判断，但命令行那边的文件会被抹掉）。
-- Claude Code / Codex 引擎第一次运行时，官方 harness 会在 `~/.vgent/harness/<harness>/` 里用 `pnpm install` 拉自己的 bootstrap（`@anthropic-ai/claude-code` 等不在 `.app` 里）。所以首次使用需要联网，且机器上要有 `pnpm` —— 这也是上面那段登录 shell PATH 的原因之一。
-- 初始 App 不包含 Node 或引擎。安装与启动的联网状态、磁盘占用应分别计算；旧版缓存暂不自动回收。
+- Claude Code / Codex 引擎第一次运行时，官方 harness 会在 `~/.vgent/harness/<harness>/` 里用 `pnpm install` 拉自己的 bootstrap（`@anthropic-ai/claude-code` 等不在 `.app` 里）。所以首次使用需要联网，由内置 `pnpm` 安装 —— 这也是上面那段登录 shell PATH 的原因之一。
+- App 内置 Node、工作台和 pnpm，首次打开无需下载工作台。可选引擎首次安装需要联网；旧版缓存暂不自动回收。

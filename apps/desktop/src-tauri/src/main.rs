@@ -145,7 +145,8 @@ fn locate_bundle(app: &tauri::AppHandle) -> Result<Bundle, String> {
     }
     let manifest = runtime::manifest(app)?;
     let state = app.state::<runtime::RuntimeState>();
-    let root = runtime::install(&manifest, &data_dir()?, &state)?;
+    let archive = app.path().resource_dir().map_err(|e| e.to_string())?.join("workbench.tar.gz");
+    let root = runtime::install(&manifest, &data_dir()?, &state, &archive)?;
     Ok(Bundle {
         node: root.join("node"),
         script: root.join("server/dist/main.js"),

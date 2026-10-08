@@ -139,7 +139,7 @@ export function RuntimesSection({
         <SettingsRow title="Vgent 桌面应用" help={environment.desktop ? `当前 ${environment.version ?? "开发版"}${application?.version != null ? ` · ${application.updateAvailable ? "可更新到" : "最新发布"} ${application.version}${application.prerelease ? "（预览版）" : ""}` : ""} · 替换安装后重新打开生效` : "当前运行源码版；桌面版本在 GitHub Releases 发布"}>
           <a className={BUTTON_SECONDARY} href={application?.updateAvailable && application.downloadUrl != null ? application.downloadUrl : environment.releasesUrl} target="_blank" rel="noreferrer">{application?.updateAvailable ? `下载 ${application.version}` : "查看发布版本"}</a>
         </SettingsRow>
-        <SettingsRow title="工作台环境" help={`Node.js ${environment.nodeVersion} · ${environment.desktop ? "已安装，与应用版本一起更新" : "使用当前源码环境"}`} />
+        <SettingsRow title="工作台环境" help={`Node.js ${environment.nodeVersion} · ${environment.desktop ? "随应用内置，首次打开无需下载；与应用版本一起更新" : "使用当前源码环境"}`} />
         <SettingsRow title="安装工具" help={environment.managedInstaller ? `pnpm ${environment.pnpmVersion ?? ""} · 由 Vgent 管理，与工作台一起安装和更新` : "使用本机 pnpm；新版桌面应用自带安装工具"} />
       </>}
       <SettingsRow title="自动升级" help="引擎空闲时自动更新。安装失败保留当前版本；旧版保留到新版成功运行，期间可随时回退。">

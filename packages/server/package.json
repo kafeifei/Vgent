@@ -33,7 +33,7 @@
     "@vgent/engines": "workspace:*",
     "@vgent/providers": "workspace:*",
     "ai": "7.0.111",
-    "hono": "4.13.8",
+    "hono": "4.13.11",
     "node-rsa": "1.1.1"
   }
 }
